@@ -69,7 +69,23 @@ def test_reader_validates_exact_v4_artifact_and_writes_nothing(tmp_path: Path) -
         "research_runtime_default": False,
         "trade": False,
     }
-    assert result.predecessor_git_commit == "ec1370553fdf7ca0951ec4b03ea9fc426a872b4e"
+    assert result.predecessor_git_commit == "1da7ffb636a3254940525d746549d15e827f06ba"
+    assert (
+        result.predecessor_package_manifest_byte_sha256
+        == "80dd615730ccf94eb453664936b0f265180dc68c18651e90932ce05fa3fb1428"
+    )
+    assert (
+        result.predecessor_runtime_manifest_byte_sha256
+        == "a7d27d0d16153d5b55558cd608a9155dd3b968d2721135ba77d777d409a7e63c"
+    )
+    assert (
+        result.predecessor_package_manifest_relative_path
+        == "quant_investor/v17_v4_contract/resources/package_manifest.v1.json"
+    )
+    assert (
+        result.predecessor_runtime_manifest_relative_path
+        == "quant_investor/v17_v4_contract/resources/runtime_build_manifest.v1.json"
+    )
     assert result.closure[0].relative_path == RELATIVE_PATH
     assert _tree(tmp_path) == before
 

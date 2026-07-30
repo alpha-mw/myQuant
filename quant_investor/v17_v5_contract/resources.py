@@ -34,9 +34,13 @@ from .validators import (
     FACTOR_DIAGNOSTIC_POLICY_ID,
     FACTOR_DIAGNOSTIC_POLICY_VERSION,
     FACTOR_REGIME_DIAGNOSTIC_POLICY_ID,
+    FACTOR_REGIME_DIAGNOSTIC_POLICY_V1_ID,
+    FACTOR_REGIME_DIAGNOSTIC_POLICY_V1_VERSION,
     FACTOR_REGIME_DIAGNOSTIC_POLICY_VERSION,
     NO_AUTHORITY,
     V4_COMPATIBILITY_POLICY_ID,
+    V4_COMPATIBILITY_POLICY_V1_ID,
+    V4_COMPATIBILITY_POLICY_V1_VERSION,
     V4_FACTOR_EVIDENCE_ADAPTER_POLICY_ID,
     V4_FACTOR_EVIDENCE_ADAPTER_POLICY_VERSION,
 )
@@ -44,13 +48,15 @@ from .validators import (
 PROTOCOL_VERSION: Final = "myquant.v17.v5"
 PACKAGE_MANIFEST_PATH: Final = "resources/package_manifest.v1.json"
 RUNTIME_BUILD_MANIFEST_PATH: Final = "resources/runtime_build_manifest.v1.json"
-COMPATIBILITY_POLICY_PATH: Final = "resources/v4_compatibility_policy.v1.json"
+COMPATIBILITY_POLICY_V1_PATH: Final = "resources/v4_compatibility_policy.v1.json"
+COMPATIBILITY_POLICY_PATH: Final = "resources/v4_compatibility_policy.v2.json"
 FACTOR_DIAGNOSTIC_POLICY_PATH: Final = "resources/factor_diagnostic_policy.v1.json"
-FACTOR_REGIME_DIAGNOSTIC_POLICY_PATH: Final = "resources/factor_regime_diagnostic_policy.v1.json"
+FACTOR_REGIME_DIAGNOSTIC_POLICY_V1_PATH: Final = "resources/factor_regime_diagnostic_policy.v1.json"
+FACTOR_REGIME_DIAGNOSTIC_POLICY_PATH: Final = "resources/factor_regime_diagnostic_policy.v2.json"
 V4_FACTOR_EVIDENCE_ADAPTER_POLICY_PATH: Final = (
     "resources/v4_factor_evidence_adapter_policy.v1.json"
 )
-PACKAGE_MANIFEST_SHA256: Final = "83338ab238e524b89c8e91e7b929475176ca8de89ded5dd3f2a65582be7027a5"
+PACKAGE_MANIFEST_SHA256: Final = "ca49c081cbd27b7adb03070a60f641fa5b6be88a3f50a2b67f0250fe8daa12d9"
 _PACKAGE_ROOT: Final = Path(__file__).resolve().parent
 
 
@@ -204,11 +210,14 @@ def load_packaged_json(
     return deepcopy(payload)
 
 
-def load_compatibility_policy(
+def _load_compatibility_policy(
     *,
     package_root: Path | None = None,
+    relative_path: str,
+    expected_version: str,
+    expected_artifact_id: str,
 ) -> dict[str, Any]:
-    policy = load_packaged_json(COMPATIBILITY_POLICY_PATH, package_root=package_root)
+    policy = load_packaged_json(relative_path, package_root=package_root)
     expected_keys = {
         "allowed_artifacts",
         "array_order_semantics",
@@ -225,8 +234,8 @@ def load_compatibility_policy(
     if (
         set(policy) != expected_keys
         or policy["protocol_version"] != PROTOCOL_VERSION
-        or policy["version"] != "myquant.v17.v5.v4-compatibility-policy.v1"
-        or policy["artifact_id"] != V4_COMPATIBILITY_POLICY_ID
+        or policy["version"] != expected_version
+        or policy["artifact_id"] != expected_artifact_id
         or policy["authority"] != NO_AUTHORITY
         or policy["forbidden_import_prefixes"] != ["quant_investor.v17_v4_runtime"]
     ):
@@ -380,6 +389,30 @@ def load_compatibility_policy(
     return policy
 
 
+def load_compatibility_policy_v1(
+    *,
+    package_root: Path | None = None,
+) -> dict[str, Any]:
+    return _load_compatibility_policy(
+        package_root=package_root,
+        relative_path=COMPATIBILITY_POLICY_V1_PATH,
+        expected_version=V4_COMPATIBILITY_POLICY_V1_VERSION,
+        expected_artifact_id=V4_COMPATIBILITY_POLICY_V1_ID,
+    )
+
+
+def load_compatibility_policy(
+    *,
+    package_root: Path | None = None,
+) -> dict[str, Any]:
+    return _load_compatibility_policy(
+        package_root=package_root,
+        relative_path=COMPATIBILITY_POLICY_PATH,
+        expected_version="myquant.v17.v5.v4-compatibility-policy.v2",
+        expected_artifact_id=V4_COMPATIBILITY_POLICY_ID,
+    )
+
+
 def load_factor_diagnostic_policy(
     *,
     package_root: Path | None = None,
@@ -446,43 +479,79 @@ def load_factor_diagnostic_policy(
     return policy
 
 
-def load_factor_regime_diagnostic_policy(
+def _load_factor_regime_diagnostic_policy(
     *,
     package_root: Path | None = None,
+    relative_path: str,
+    expected_version: str,
+    expected_artifact_id: str,
 ) -> dict[str, Any]:
     policy = load_packaged_json(
-        FACTOR_REGIME_DIAGNOSTIC_POLICY_PATH,
+        relative_path,
         package_root=package_root,
     )
+    v1_expected_keys = {
+        "accepted_factor_evidence_versions",
+        "accepted_label_versions",
+        "artifact_id",
+        "authority",
+        "conditioning_dimension",
+        "decimal_quantization",
+        "deterministic_ordering",
+        "horizon_sessions",
+        "minimum_descriptive_origins",
+        "minimum_stability_origins",
+        "missing_evidence_statuses",
+        "newey_west_lag",
+        "no_governance_action",
+        "origin_binding_policy",
+        "overlap_adjustment_policy",
+        "protocol_version",
+        "publication_causality_policy",
+        "regime_source_versions",
+        "semantic_sha256",
+        "status_contract",
+        "version",
+    }
+    v2_expected_keys = {
+        "accepted_factor_evidence_versions",
+        "accepted_label_versions",
+        "accepted_regime_source_versions",
+        "artifact_id",
+        "authority",
+        "conditioning_dimension",
+        "conditioning_ineligible_states",
+        "conditioning_states",
+        "decimal_quantization",
+        "deterministic_ordering",
+        "horizon_sessions",
+        "minimum_descriptive_origins",
+        "minimum_stability_origins",
+        "missing_evidence_statuses",
+        "newey_west_lag",
+        "no_governance_action",
+        "origin_binding_policy",
+        "overlap_adjustment_policy",
+        "protocol_version",
+        "publication_causality_policy",
+        "regime_source_requirements",
+        "required_hard_state_derivation",
+        "required_inference_kind",
+        "required_no_retroactive_causal_backfill",
+        "required_publication_phase",
+        "required_scope_kind",
+        "required_smoothing_used",
+        "semantic_sha256",
+        "status_contract",
+        "version",
+    }
+    is_v2 = expected_version == FACTOR_REGIME_DIAGNOSTIC_POLICY_VERSION
     if (
-        set(policy)
-        != {
-            "accepted_factor_evidence_versions",
-            "accepted_label_versions",
-            "artifact_id",
-            "authority",
-            "conditioning_dimension",
-            "decimal_quantization",
-            "deterministic_ordering",
-            "horizon_sessions",
-            "minimum_descriptive_origins",
-            "minimum_stability_origins",
-            "missing_evidence_statuses",
-            "newey_west_lag",
-            "no_governance_action",
-            "origin_binding_policy",
-            "overlap_adjustment_policy",
-            "protocol_version",
-            "publication_causality_policy",
-            "regime_source_versions",
-            "semantic_sha256",
-            "status_contract",
-            "version",
-        }
-        or policy["artifact_id"] != FACTOR_REGIME_DIAGNOSTIC_POLICY_ID
+        set(policy) != (v2_expected_keys if is_v2 else v1_expected_keys)
+        or policy["artifact_id"] != expected_artifact_id
         or policy["authority"] != NO_AUTHORITY
         or policy["protocol_version"] != PROTOCOL_VERSION
-        or policy["version"] != FACTOR_REGIME_DIAGNOSTIC_POLICY_VERSION
+        or policy["version"] != expected_version
         or policy["conditioning_dimension"] != "ORIGIN_REGIME"
         or policy["horizon_sessions"] != 20
         or policy["minimum_descriptive_origins"] != 20
@@ -496,23 +565,6 @@ def load_factor_regime_diagnostic_policy(
             "myquant.v17.v4.forward-evaluation-receipt.v1",
         ]
         or policy["accepted_label_versions"] != ["myquant.v17.v4.forward-label.v1"]
-        or policy["regime_source_versions"]
-        != {
-            "capabilities": [
-                {
-                    "capability_status": ("CONDITIONING_INELIGIBLE_HARD_STATE_ABSENT"),
-                    "decision_session": "ABSENT",
-                    "effective_session": "ABSENT",
-                    "hard_state": "ABSENT",
-                    "posterior": "ABSENT",
-                    "published_at": "ABSENT",
-                    "source_refs": "ABSENT",
-                    "version": "myquant.v17.v4.regime-evidence.v1",
-                }
-            ],
-            "conditioning_eligible": [],
-            "registered": ["myquant.v17.v4.regime-evidence.v1"],
-        }
         or policy["decimal_quantization"]
         != {
             "decimal_places": 12,
@@ -536,7 +588,72 @@ def load_factor_regime_diagnostic_policy(
         }
     ):
         raise PackageResourceError("factor regime diagnostic policy identity mismatch")
+    if is_v2:
+        if (
+            policy["accepted_regime_source_versions"] != ["myquant.v17.v4.regime-evidence.v2"]
+            or policy["required_inference_kind"] != "FILTERED_CAUSAL"
+            or policy["required_smoothing_used"] is not False
+            or policy["required_publication_phase"] != "PRIOR_SESSION_EFFECTIVE_NEXT_SESSION"
+            or policy["required_scope_kind"] != "FULL_MARKET"
+            or policy["required_hard_state_derivation"] != "SEALED_ARGMAX_POLICY_V1"
+            or policy["required_no_retroactive_causal_backfill"] is not True
+            or policy["conditioning_states"] != ["趋势上涨", "震荡低波", "震荡高波", "趋势下跌"]
+            or policy["conditioning_ineligible_states"] != ["未知"]
+            or policy["regime_source_requirements"]
+            != {
+                "hard_state_derivation": "SEALED_ARGMAX_POLICY_V1",
+                "inference_kind": "FILTERED_CAUSAL",
+                "no_retroactive_causal_backfill": True,
+                "publication_phase": "PRIOR_SESSION_EFFECTIVE_NEXT_SESSION",
+                "scope_kind": "FULL_MARKET",
+                "smoothing_used": False,
+                "state_probabilities_sum": "1.000000000000",
+            }
+        ):
+            raise PackageResourceError("factor regime diagnostic policy v2 mismatch")
+    else:
+        if policy["regime_source_versions"] != {
+            "capabilities": [
+                {
+                    "capability_status": ("CONDITIONING_INELIGIBLE_HARD_STATE_ABSENT"),
+                    "decision_session": "ABSENT",
+                    "effective_session": "ABSENT",
+                    "hard_state": "ABSENT",
+                    "posterior": "ABSENT",
+                    "published_at": "ABSENT",
+                    "source_refs": "ABSENT",
+                    "version": "myquant.v17.v4.regime-evidence.v1",
+                }
+            ],
+            "conditioning_eligible": [],
+            "registered": ["myquant.v17.v4.regime-evidence.v1"],
+        }:
+            raise PackageResourceError("factor regime diagnostic policy v1 mismatch")
     return policy
+
+
+def load_factor_regime_diagnostic_policy_v1(
+    *,
+    package_root: Path | None = None,
+) -> dict[str, Any]:
+    return _load_factor_regime_diagnostic_policy(
+        package_root=package_root,
+        relative_path=FACTOR_REGIME_DIAGNOSTIC_POLICY_V1_PATH,
+        expected_version=FACTOR_REGIME_DIAGNOSTIC_POLICY_V1_VERSION,
+        expected_artifact_id=FACTOR_REGIME_DIAGNOSTIC_POLICY_V1_ID,
+    )
+
+
+def load_factor_regime_diagnostic_policy(
+    *,
+    package_root: Path | None = None,
+) -> dict[str, Any]:
+    return _load_factor_regime_diagnostic_policy(
+        package_root=package_root,
+        relative_path=FACTOR_REGIME_DIAGNOSTIC_POLICY_PATH,
+        expected_version=FACTOR_REGIME_DIAGNOSTIC_POLICY_VERSION,
+        expected_artifact_id=FACTOR_REGIME_DIAGNOSTIC_POLICY_ID,
+    )
 
 
 def load_v4_factor_evidence_adapter_policy(
@@ -745,13 +862,16 @@ __all__ = [
     "COMPATIBILITY_POLICY_PATH",
     "FACTOR_DIAGNOSTIC_POLICY_PATH",
     "FACTOR_REGIME_DIAGNOSTIC_POLICY_PATH",
+    "FACTOR_REGIME_DIAGNOSTIC_POLICY_V1_PATH",
     "PACKAGE_MANIFEST_PATH",
     "PACKAGE_MANIFEST_SHA256",
     "PackageResourceError",
     "RUNTIME_BUILD_MANIFEST_PATH",
     "load_compatibility_policy",
+    "load_compatibility_policy_v1",
     "load_factor_diagnostic_policy",
     "load_factor_regime_diagnostic_policy",
+    "load_factor_regime_diagnostic_policy_v1",
     "load_package_manifest",
     "load_packaged_json",
     "read_packaged_asset",

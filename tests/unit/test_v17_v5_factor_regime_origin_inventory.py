@@ -7,7 +7,6 @@ import hashlib
 import pytest
 
 from quant_investor.v17_v5_contract import canonical_bytes, seal_semantic, validate_artifact
-from quant_investor.v17_v5_contract.validators import ArtifactContractError
 from quant_investor.v17_v5_contract.validators import (
     FACTOR_REGIME_DIAGNOSTIC_POLICY_BYTE_SHA256,
     FACTOR_REGIME_DIAGNOSTIC_POLICY_ID,
@@ -50,28 +49,48 @@ def _v4_ref(kind: str, index: int, *, strategy_id: str = "cn-strategy") -> Conte
     return ContentArtifactRef(
         artifact_id=f"{kind}.{index:03d}",
         byte_sha256=_sha(f"{kind}-{index}-bytes"),
-        cutoff=f"2026-01-{index + 1:02d}T08:00:00Z",
+        cutoff=f"2026-01-{index + 2:02d}T08:00:00Z",
         relative_path=f"tests/fixtures/v17_v5_sprint1b/{kind}/{index:03d}.json",
         semantic_sha256=_sha(f"{kind}-{index}-semantic"),
         strategy_id=strategy_id,
-        version=f"myquant.v17.v4.{kind}.v1",
+        version=(
+            "myquant.v17.v4.regime-evidence.v2"
+            if kind == "regime-evidence"
+            else f"myquant.v17.v4.{kind}.v1"
+        ),
     )
 
 
 def _regime(index: int, *, state: str = "趋势上涨") -> RegimeEvidenceSnapshot:
     return RegimeEvidenceSnapshot(
-        available_at=f"2026-01-{index + 1:02d}T07:00:00Z",
-        cutoff=f"2026-01-{index + 1:02d}T07:30:00Z",
-        decision_session=f"2026-01-{index + 1:02d}",
-        effective_session=f"2026-01-{index + 1:02d}",
-        published_at=f"2026-01-{index + 1:02d}T07:45:00Z",
+        available_at=f"2026-01-{index + 2:02d}T07:00:00Z",
+        calendar_previous_open_session=f"2026-01-{index + 1:02d}",
+        cutoff=f"2026-01-{index + 2:02d}T07:30:00Z",
+        decision_session=f"2026-01-{index + 2:02d}",
+        effective_session=f"2026-01-{index + 2:02d}",
+        hard_state_derivation="SEALED_ARGMAX_POLICY_V1",
+        inference_kind="FILTERED_CAUSAL",
+        no_retroactive_causal_backfill=True,
+        observed_through_session=f"2026-01-{index + 1:02d}",
+        publication_phase="PRIOR_SESSION_EFFECTIVE_NEXT_SESSION",
+        published_at=f"2026-01-{index + 2:02d}T07:45:00Z",
         regime_artifact_ref=replace(
             _v4_ref("regime-evidence", index),
-            cutoff=f"2026-01-{index + 1:02d}T07:30:00Z",
+            cutoff=f"2026-01-{index + 2:02d}T07:30:00Z",
         ),
         regime_state=state,
-        source_version="myquant.v17.v4.regime-evidence.v1",
-        state_probabilities={state: "0.8", "震荡低波": "0.2"},
+        scope_kind="FULL_MARKET",
+        smoothing_used=False,
+        source_commit="1da7ffb636a3254940525d746549d15e827f06ba",
+        source_version="myquant.v17.v4.regime-evidence.v2",
+        state_order=["趋势上涨", "震荡低波", "震荡高波", "趋势下跌", "未知"],
+        state_probabilities={
+            "趋势上涨": "0.8" if state == "趋势上涨" else "0.0",
+            "震荡低波": "0.2" if state == "趋势上涨" else "0.0",
+            "震荡高波": "0.0",
+            "趋势下跌": "1.0" if state == "趋势下跌" else "0.0",
+            "未知": "1.0" if state == "未知" else "0.0",
+        },
         strategy_id="cn-strategy",
     )
 
@@ -82,7 +101,7 @@ def _origin(
     return FactorRegimeOriginInput(
         comparable_symbol_count=8,
         coverage="0.8",
-        decision_session=f"2026-01-{index + 1:02d}",
+        decision_session=f"2026-01-{index + 2:02d}",
         eligible_symbol_count=10,
         factor_evidence_ref=_v4_ref("forward-evaluation-receipt", index),
         factor_implementation_sha256=_sha("implementation"),
@@ -90,10 +109,10 @@ def _origin(
         factor_observation_ref=_v4_ref("factor-universe-observation", index),
         label_end_session=f"2026-02-{index + 1:02d}",
         label_horizon_sessions=20,
-        label_origin_session=f"2026-01-{index + 1:02d}",
+        label_origin_session=f"2026-01-{index + 2:02d}",
         matured_label_ref=_v4_ref("forward-label", index),
         observation_run_ref=_v4_ref("forward-observation-run", index),
-        origin_cutoff=f"2026-01-{index + 1:02d}T08:00:00Z",
+        origin_cutoff=f"2026-01-{index + 2:02d}T08:00:00Z",
         origin_id=f"origin.{index:03d}",
         rank_ic=rank_ic,
         regime_evidence=_regime(index, state=state),
@@ -140,6 +159,9 @@ def test_synthetic_test_only_inventory_is_deterministic_and_preserves_regime_enu
     assert row["state_probabilities"] == [
         {"probability": "0.800000000000", "regime_state": "趋势上涨"},
         {"probability": "0.200000000000", "regime_state": "震荡低波"},
+        {"probability": "0.000000000000", "regime_state": "震荡高波"},
+        {"probability": "0.000000000000", "regime_state": "趋势下跌"},
+        {"probability": "0.000000000000", "regime_state": "未知"},
     ]
     assert validate_factor_regime_origin_inventory(first) == first
     assert validate_artifact(first) == first
@@ -161,11 +183,11 @@ def test_synthetic_test_only_inventory_is_deterministic_and_preserves_regime_enu
 def test_regime_publication_or_effective_after_origin_fails_closed() -> None:
     late_publication = replace(
         _origin(0),
-        regime_evidence=replace(_regime(0), published_at="2026-01-01T08:00:01Z"),
+        regime_evidence=replace(_regime(0), published_at="2026-01-02T08:00:01Z"),
     )
     late_effective = replace(
         _origin(0),
-        regime_evidence=replace(_regime(0), effective_session="2026-01-02"),
+        regime_evidence=replace(_regime(0), effective_session="2026-01-03"),
     )
 
     with pytest.raises(FactorRegimeOriginInventoryError, match="published_at"):
@@ -201,11 +223,11 @@ def test_duplicate_origin_strategy_and_implementation_mismatch_fail_closed() -> 
         )
 
 
-def test_regime_ref_version_cutoff_and_hard_state_posterior_must_close() -> None:
+def test_regime_ref_version_cutoff_and_sealed_hard_state_are_preserved() -> None:
     origin = _origin(0)
     regime = origin.regime_evidence
     with pytest.raises(FactorRegimeOriginInventoryError, match="source version"):
-        _inventory(replace(origin, regime_evidence=replace(regime, source_version="other.v1")))
+        _inventory(replace(origin, regime_evidence=replace(regime, source_version="other.v2")))
     with pytest.raises(FactorRegimeOriginInventoryError, match="cutoff does not match"):
         _inventory(
             replace(
@@ -213,16 +235,90 @@ def test_regime_ref_version_cutoff_and_hard_state_posterior_must_close() -> None
                 regime_evidence=replace(regime, cutoff="2026-01-01T07:00:00Z"),
             )
         )
-    with pytest.raises(FactorRegimeOriginInventoryError, match="sealed hard regime state"):
-        _inventory(
-            replace(
-                origin,
-                regime_evidence=replace(
-                    regime,
-                    state_probabilities={"震荡低波": "1.0"},
-                ),
-            )
-        )
+    posterior_argmax_differs = replace(
+        origin,
+        regime_evidence=replace(
+            regime,
+            state_probabilities={
+                "趋势上涨": "0.0",
+                "震荡低波": "1.0",
+                "震荡高波": "0.0",
+                "趋势下跌": "0.0",
+                "未知": "0.0",
+            },
+        ),
+    )
+    artifact = _inventory(posterior_argmax_differs)
+    assert artifact["origin_rows"][0]["regime_state"] == "趋势上涨"
+
+
+def test_v2_origin_binding_rejects_stale_future_smoothed_and_subset_regime() -> None:
+    stale = replace(
+        _origin(0),
+        regime_evidence=replace(_regime(0), decision_session="2026-01-01"),
+    )
+    wrong_observed = replace(
+        _origin(0),
+        regime_evidence=replace(_regime(0), observed_through_session="2026-01-02"),
+    )
+    smoothed = replace(_origin(0), regime_evidence=replace(_regime(0), smoothing_used=True))
+    subset = replace(_origin(0), regime_evidence=replace(_regime(0), scope_kind="SUBSET"))
+
+    with pytest.raises(FactorRegimeOriginInventoryError, match="decision_session"):
+        _inventory(stale)
+    with pytest.raises(FactorRegimeOriginInventoryError, match="previous open"):
+        _inventory(wrong_observed)
+    with pytest.raises(FactorRegimeOriginInventoryError, match="smoothing_used"):
+        _inventory(smoothed)
+    with pytest.raises(FactorRegimeOriginInventoryError, match="scope_kind"):
+        _inventory(subset)
+
+
+def test_unknown_regime_is_excluded_and_counted_without_conditionable_bucket() -> None:
+    artifact = _inventory(_origin(0, state="未知"))
+
+    assert artifact["origin_count"] == 0
+    assert artifact["excluded_origin_count"] == 1
+    assert artifact["regime_counts"] == []
+    assert artifact["limitation_codes"] == ["REGIME_HARD_STATE_UNKNOWN"]
+    assert artifact["excluded_origin_rows"][0]["regime_state"] == "未知"
+    assert validate_factor_regime_origin_inventory(artifact) == artifact
+    assert validate_artifact(artifact) == artifact
+
+
+def test_two_distinct_unknown_regime_evidence_refs_for_one_origin_fail_closed() -> None:
+    first = _origin(0, state="未知")
+    second_regime = replace(
+        _regime(0, state="未知"),
+        regime_artifact_ref=replace(
+            _regime(0, state="未知").regime_artifact_ref,
+            artifact_id="regime-evidence.alternate",
+            byte_sha256=_sha("alternate-regime-bytes"),
+            semantic_sha256=_sha("alternate-regime-semantic"),
+        ),
+    )
+    second = replace(
+        _origin(0, state="未知"),
+        origin_id="origin.unknown-alternate",
+        regime_evidence=second_regime,
+    )
+
+    with pytest.raises(FactorRegimeOriginInventoryError, match="duplicate origin"):
+        _inventory(first, second)
+
+
+def test_regime_source_commit_must_match_active_predecessor_pin() -> None:
+    origin = _origin(0)
+    wrong_source = replace(
+        origin,
+        regime_evidence=replace(
+            origin.regime_evidence,
+            source_commit="ec1370553fdf7ca0951ec4b03ea9fc426a872b4e",
+        ),
+    )
+
+    with pytest.raises(FactorRegimeOriginInventoryError, match="pinned V4 predecessor"):
+        _inventory(wrong_source)
 
 
 def test_non_20_session_label_bad_coverage_and_v5_path_ref_fail_closed() -> None:
@@ -260,13 +356,13 @@ def test_public_contract_rejects_resealed_identity_coverage_and_ref_drift() -> N
 
     bad_row_identity = copy.deepcopy(artifact)
     bad_row_identity["origin_rows"][0]["row_identity_sha256"] = _sha("forged-row")
-    with pytest.raises(ArtifactContractError, match="row identity"):
-        validate_artifact(_reseal(bad_row_identity))
+    with pytest.raises(FactorRegimeOriginInventoryError, match="row identity"):
+        validate_factor_regime_origin_inventory(_reseal(bad_row_identity))
 
     bad_inventory_id = copy.deepcopy(artifact)
     bad_inventory_id["inventory_id"] = "factor-regime-origin-inventory-forged"
-    with pytest.raises(ArtifactContractError, match="inventory identity"):
-        validate_artifact(_reseal(bad_inventory_id))
+    with pytest.raises(FactorRegimeOriginInventoryError, match="inventory identity"):
+        validate_factor_regime_origin_inventory(_reseal(bad_inventory_id))
 
     bad_coverage = copy.deepcopy(artifact)
     row = bad_coverage["origin_rows"][0]
@@ -274,8 +370,8 @@ def test_public_contract_rejects_resealed_identity_coverage_and_ref_drift() -> N
     identity_row = dict(row)
     identity_row.pop("row_identity_sha256")
     row["row_identity_sha256"] = hashlib.sha256(canonical_bytes(identity_row)).hexdigest()
-    with pytest.raises(ArtifactContractError, match="coverage"):
-        validate_artifact(_reseal(bad_coverage))
+    with pytest.raises(FactorRegimeOriginInventoryError, match="identity"):
+        validate_factor_regime_origin_inventory(_reseal(bad_coverage))
 
     bad_ref = copy.deepcopy(artifact)
     row = bad_ref["origin_rows"][0]
@@ -283,5 +379,5 @@ def test_public_contract_rejects_resealed_identity_coverage_and_ref_drift() -> N
     identity_row = dict(row)
     identity_row.pop("row_identity_sha256")
     row["row_identity_sha256"] = hashlib.sha256(canonical_bytes(identity_row)).hexdigest()
-    with pytest.raises(ArtifactContractError, match="ref strategy"):
-        validate_artifact(_reseal(bad_ref))
+    with pytest.raises(FactorRegimeOriginInventoryError, match="identity"):
+        validate_factor_regime_origin_inventory(_reseal(bad_ref))

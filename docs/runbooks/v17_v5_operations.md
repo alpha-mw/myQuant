@@ -1,9 +1,11 @@
-# V17 v5 Sprint-1B Operations
+# V17 v5 Sprint-1D Operations
 
 V17 v5 remains non-operational. V15 remains the default and V17 v4 remains the
-Forward Evidence runtime. Sprint 1B adds only a read-only regime evidence
-adapter and origin-regime descriptive diagnostics. It does not add online
-Factor weights, tier changes, lifecycle actions or operational authority.
+Forward Evidence runtime. Sprint 1D pins V5 to the exact V4 causal Regime
+Evidence v2 predecessor and enables the read-only v2 adapter for descriptive
+origin-regime diagnostics. It does not modify the V4 producer, create regime
+artifacts, add online Factor weights, change tiers, recommend lifecycle
+actions or grant operational authority.
 
 The available commands are:
 
@@ -20,7 +22,7 @@ protocol_version = myquant.v17.v5
 default_protocol_state = V15_DEFAULT
 global_activation_state = INACTIVE
 run_state = INACTIVE
-status = SPRINT1B_REGIME_CONDITIONED_FACTOR_DIAGNOSTICS_AVAILABLE_NOT_OPERATIONAL
+status = SPRINT1D_CAUSAL_REGIME_ADAPTER_AVAILABLE_NOT_OPERATIONAL
 ```
 
 All authority fields must be false.
@@ -30,7 +32,12 @@ All authority fields must be false.
 - the closed V17 v5 package manifest;
 - the closed V17 v5 runtime manifest;
 - the compatibility policy;
-- the pinned V17 v4 package and runtime manifests.
+- the pinned V17 v4 package and runtime manifests at
+  `1da7ffb636a3254940525d746549d15e827f06ba`.
+
+Sprint 1D uses a worktree-colocated predecessor integration. The local V5
+branch keeps the exact V4 Sprint 1C commit as a merge parent instead of
+hand-copying V4 files. V5 still treats V4 as read-only.
 
 There is no V17 v5 operational run, schedule, output path or mutable pointer.
 `factor-regime-diagnostics` returns one JSON object to stdout and must not
@@ -51,9 +58,18 @@ With the current real evidence gap, use explicit unavailable declarations:
 ```
 
 The result must have `status=UNAVAILABLE` and the reason codes
-`V4_FACTOR_EVIDENCE_UNAVAILABLE` and `V4_REGIME_EVIDENCE_UNAVAILABLE`.
+`V4_FACTOR_EVIDENCE_UNAVAILABLE` and
+`V4_REGIME_EVIDENCE_V2_UNAVAILABLE`. Installing the v2 schema is not enough to
+return `UNOBSERVED` or `ACCUMULATING`; those states require explicit real v2
+evidence and, for `ACCUMULATING`, at least one conditionable mature origin.
 `output-id` identifies the stdout delivery envelope; the diagnostic retains its
 own content-derived `diagnostic_id`.
+
+The Sprint 1D CLI validates explicit Factor and regime inputs but does not
+assemble multiple mature origins from a single receipt/regime pair. If both
+exact inputs are otherwise eligible, it fails closed with
+`OBSERVED_FACTOR_REGIME_CLI_PATH_NOT_ENABLED` and
+`origin_binding_result=NOT_ENABLED`; it never fabricates an origin inventory.
 
 Exact evidence mode requires both path and SHA-256 for each input:
 
@@ -65,6 +81,11 @@ Exact evidence mode requires both path and SHA-256 for each input:
 Paths are explicit workspace-relative V4 artifact refs. The command never
 scans for a latest artifact. A hash, identity, closure, causality or policy
 contradiction exits 2; malformed evidence is not converted to `UNAVAILABLE`.
+The regime evidence path must point to
+`myquant.v17.v4.regime-evidence.v2`. `myquant.v17.v4.regime-evidence.v1` may
+still be integrity-checked by the compatibility reader, but it is not
+conditioning-eligible and returns
+`REGIME_EVIDENCE_V1_NOT_CONDITIONING_ELIGIBLE`.
 
 The library-only surface is:
 
@@ -116,10 +137,23 @@ reference, schema failure or authority violation raises
 `V4CompatibilityError` and writes nothing. Raw upstream source bindings remain
 terminal provenance and are never followed.
 
-Do not add an artifact version to the compatibility policy until its complete
-transitive closure and resource bounds have independent tests. The current
-adapter is pure and descriptive: it cannot write Factor Governance, alter a
-tier or weight, make a promotion decision, or create an operational run.
+The v2 regime adapter accepts only evidence that satisfies the pinned Sprint 1D
+policy:
+
+```text
+version = myquant.v17.v4.regime-evidence.v2
+inference_kind = FILTERED_CAUSAL
+smoothing_used = false
+publication_phase = PRIOR_SESSION_EFFECTIVE_NEXT_SESSION
+scope_kind = FULL_MARKET
+hard_state_derivation = SEALED_ARGMAX_POLICY_V1
+no_retroactive_causal_backfill = true
+```
+
+V5 does not recompute the posterior, rerun argmax, change tie-breaks, map
+states, call the V4 producer or read V15 JSONL history. The hard state is the
+sealed V4 state. The `未知` state is a valid v2 artifact state but is
+conditioning-ineligible and is not placed in a by-regime bucket.
 
 When no compatible V4 evaluation receipt exists, use the empty adapter input.
 The result is `UNAVAILABLE`; do not synthesize a receipt, origin, label or
@@ -129,10 +163,20 @@ market calendar.
 filename-inventoried rather than byte-bound inside the self-referential package
 manifest; use the reviewed Git checkpoint as its source binding.
 
-The registered V4 `regime-evidence.v1` currently has no sealed hard state,
-posterior, decision/effective session, publication timestamp or source refs.
-The adapter therefore reports `REGIME_HARD_STATE_UNAVAILABLE`; it must not
-derive a state from `gross_multiplier`, `role`, timestamps or raw market data.
-No real `ACCUMULATING` regime-conditioned diagnostic can be produced until both
-a causally complete V4 regime artifact and real V4 Factor evaluation receipts
-exist.
+Regime-chain deployability remains a read-only audit result in Sprint 1D. If a
+long chain exceeds the current closure limits or a missed session permanently
+blocks later evidence, record the blocker as
+`V4_REGIME_CHAIN_SCALABILITY_GAP` or `V4_REGIME_CHAIN_LIVENESS_GAP`. Do not
+raise V5 closure limits and do not modify the V4 producer in this Sprint.
+
+The Sprint 1D synthetic V4 probe first fails at contiguous session 3, before
+the requested 20/60/260/1,000-session checkpoints. All four checkpoints are
+therefore `BLOCKED`; timing and peak memory are not extrapolated. The direct
+error is `REGIME_EVIDENCE_V2_INPUT_TAMPER` /
+`model_snapshot_ref readback failed`, with the V4 closure resource budget as
+the nested cause. In the missed-session S0/S1/S2/S3 scenario, S3 is likewise
+blocked. An explicit S3 restart without a predecessor fails with
+`REGIME_EVIDENCE_V2_TEMPORAL_CAUSALITY` /
+`NORMAL publication requires the contiguous prior v2`; the sealed
+contiguous-predecessor rule provides neither a stale fallback nor a restart
+path.

@@ -23,6 +23,8 @@ from quant_investor.v17_v5_runtime.v4_factor_adapter import (
 )
 from quant_investor.v17_v5_contract.validators import (
     V4_COMPATIBILITY_POLICY_BYTE_SHA256,
+    V4_PACKAGE_MANIFEST_SHA256,
+    V4_RUNTIME_MANIFEST_SHA256,
     V4_SOURCE_GIT_COMMIT,
 )
 
@@ -378,6 +380,15 @@ def _read(*, complete: bool = True, corrupt_label_lineage: bool = False) -> V4Co
         document=receipt,
         documents=documents,
         predecessor_git_commit=V4_SOURCE_GIT_COMMIT,
+        predecessor_package_manifest_byte_sha256=V4_PACKAGE_MANIFEST_SHA256,
+        predecessor_package_manifest_relative_path=(
+            "quant_investor/v17_v4_contract/resources/package_manifest.v1.json"
+        ),
+        predecessor_protocol_version="myquant.v17.v4",
+        predecessor_runtime_manifest_byte_sha256=V4_RUNTIME_MANIFEST_SHA256,
+        predecessor_runtime_manifest_relative_path=(
+            "quant_investor/v17_v4_contract/resources/runtime_build_manifest.v1.json"
+        ),
         root_ref={
             "artifact_id": root_node.artifact_id,
             "artifact_version": root_node.version,

@@ -144,7 +144,19 @@ def main() -> None:
 
     validators = CONTRACT / "validators.py"
     source = validators.read_text(encoding="utf-8")
-    compatibility = resources_dir / "v4_compatibility_policy.v1.json"
+    compatibility_v1 = resources_dir / "v4_compatibility_policy.v1.json"
+    compatibility_v1_payload = json.loads(compatibility_v1.read_bytes())
+    source = _replace_digest(
+        source,
+        "V4_COMPATIBILITY_POLICY_V1_BYTE_SHA256",
+        _sha(compatibility_v1),
+    )
+    source = _replace_digest(
+        source,
+        "V4_COMPATIBILITY_POLICY_V1_SEMANTIC_SHA256",
+        compatibility_v1_payload["semantic_sha256"],
+    )
+    compatibility = resources_dir / "v4_compatibility_policy.v2.json"
     compatibility_payload = json.loads(compatibility.read_bytes())
     source = _replace_digest(
         source,
@@ -168,7 +180,19 @@ def main() -> None:
         "V4_FACTOR_EVIDENCE_ADAPTER_POLICY_SEMANTIC_SHA256",
         adapter_payload["semantic_sha256"],
     )
-    regime_policy = resources_dir / "factor_regime_diagnostic_policy.v1.json"
+    regime_policy_v1 = resources_dir / "factor_regime_diagnostic_policy.v1.json"
+    regime_policy_v1_payload = json.loads(regime_policy_v1.read_bytes())
+    source = _replace_digest(
+        source,
+        "FACTOR_REGIME_DIAGNOSTIC_POLICY_V1_BYTE_SHA256",
+        _sha(regime_policy_v1),
+    )
+    source = _replace_digest(
+        source,
+        "FACTOR_REGIME_DIAGNOSTIC_POLICY_V1_SEMANTIC_SHA256",
+        regime_policy_v1_payload["semantic_sha256"],
+    )
+    regime_policy = resources_dir / "factor_regime_diagnostic_policy.v2.json"
     regime_policy_payload = json.loads(regime_policy.read_bytes())
     source = _replace_digest(
         source,
@@ -203,7 +227,9 @@ def main() -> None:
             {
                 "adapter_policy_byte_sha256": _sha(adapter),
                 "compatibility_policy_byte_sha256": _sha(compatibility),
+                "compatibility_policy_v1_byte_sha256": _sha(compatibility_v1),
                 "factor_regime_diagnostic_policy_byte_sha256": _sha(regime_policy),
+                "factor_regime_diagnostic_policy_v1_byte_sha256": _sha(regime_policy_v1),
                 "package_manifest_byte_sha256": _sha(package_manifest),
                 "runtime_manifest_byte_sha256": _sha(runtime_manifest),
             },

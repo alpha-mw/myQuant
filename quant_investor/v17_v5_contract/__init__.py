@@ -12,8 +12,10 @@ from .canonical import (
 )
 from .resources import (
     load_compatibility_policy,
+    load_compatibility_policy_v1,
     load_factor_diagnostic_policy,
     load_factor_regime_diagnostic_policy,
+    load_factor_regime_diagnostic_policy_v1,
     load_v4_factor_evidence_adapter_policy,
     verify_package,
     verify_predecessor,
@@ -63,8 +65,10 @@ __all__ = [
     "load_canonical_artifact",
     "load_canonical_resource",
     "load_compatibility_policy",
+    "load_compatibility_policy_v1",
     "load_factor_diagnostic_policy",
     "load_factor_regime_diagnostic_policy",
+    "load_factor_regime_diagnostic_policy_v1",
     "load_v4_factor_evidence_adapter_policy",
     "seal_semantic",
     "semantic_sha256",

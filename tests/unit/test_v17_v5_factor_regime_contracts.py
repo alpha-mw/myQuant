@@ -102,8 +102,10 @@ def test_policy_is_content_addressed_descriptive_only_and_source_ineligible() ->
     assert policy["minimum_descriptive_origins"] == 20
     assert policy["minimum_stability_origins"] == 60
     assert policy["newey_west_lag"] == 19
-    assert policy["regime_source_versions"]["registered"] == ["myquant.v17.v4.regime-evidence.v1"]
-    assert policy["regime_source_versions"]["conditioning_eligible"] == []
+    assert policy["accepted_regime_source_versions"] == ["myquant.v17.v4.regime-evidence.v2"]
+    assert policy["required_inference_kind"] == "FILTERED_CAUSAL"
+    assert policy["required_smoothing_used"] is False
+    assert policy["conditioning_ineligible_states"] == ["未知"]
     assert policy["authority"] == NO_AUTHORITY
 
 
@@ -114,8 +116,16 @@ def test_new_schemas_register_identity_and_exclude_governance_fields() -> None:
             "factor_regime_origin_inventory.v1.schema.json",
             "inventory_id",
         ),
+        "myquant.v17.v5.factor-regime-origin-inventory.v2": (
+            "factor_regime_origin_inventory.v2.schema.json",
+            "inventory_id",
+        ),
         "myquant.v17.v5.regime-conditioned-factor-diagnostic.v1": (
             "regime_conditioned_factor_diagnostic.v1.schema.json",
+            "diagnostic_id",
+        ),
+        "myquant.v17.v5.regime-conditioned-factor-diagnostic.v2": (
+            "regime_conditioned_factor_diagnostic.v2.schema.json",
             "diagnostic_id",
         ),
     }
@@ -230,7 +240,9 @@ def test_cli_exact_v4_regime_v1_stays_unavailable_without_inference(
     )
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "UNAVAILABLE"
-    assert "REGIME_HARD_STATE_UNAVAILABLE" in payload["diagnostic"]["limitation_codes"]
+    assert (
+        "REGIME_EVIDENCE_V1_NOT_CONDITIONING_ELIGIBLE" in payload["diagnostic"]["limitation_codes"]
+    )
     assert _tree(tmp_path) == before
 
 
@@ -329,3 +341,72 @@ def test_cli_rejects_exact_factor_receipt_for_another_factor(
         == 2
     )
     assert "does not match --factor-name" in capsys.readouterr().out
+
+
+def test_cli_exact_eligible_inputs_fail_closed_until_origin_assembly_is_enabled(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reads = iter(
+        (
+            SimpleNamespace(
+                document={
+                    "lineage_key": {"factor_name": "cn-factor"},
+                    "subject_id": "cn-factor",
+                    "version": "myquant.v17.v4.forward-evaluation-receipt.v1",
+                }
+            ),
+            SimpleNamespace(document={"version": "myquant.v17.v4.regime-evidence.v2"}),
+        )
+    )
+    monkeypatch.setattr(cli_module, "read_v4_artifact", lambda *args, **kwargs: next(reads))
+    monkeypatch.setattr(
+        cli_module,
+        "adapt_v4_regime_evidence",
+        lambda read: SimpleNamespace(
+            conditioning_eligible=True,
+            conditioning_ineligibility_reason=None,
+            hard_state="趋势上涨",
+            inference_kind="FILTERED_CAUSAL",
+            publication_phase="PRIOR_SESSION_EFFECTIVE_NEXT_SESSION",
+            scope_kind="FULL_MARKET",
+            smoothing_used=False,
+            source_version="myquant.v17.v4.regime-evidence.v2",
+        ),
+    )
+
+    assert (
+        main(
+            [
+                "factor-regime-diagnostics",
+                "--workspace-root",
+                str(tmp_path),
+                "--strategy-id",
+                STRATEGY,
+                "--factor-name",
+                "cn-factor",
+                "--evaluation-cutoff",
+                CUTOFF,
+                "--created-at",
+                CREATED_AT,
+                "--output-id",
+                "diagnostic-request-observed-not-enabled",
+                "--factor-evidence-path",
+                "data/private/v17_v4_runs/factor-receipt.json",
+                "--factor-evidence-sha256",
+                "1" * 64,
+                "--regime-evidence-path",
+                "data/private/v17_v4_runs/regime-evidence-v2.json",
+                "--regime-evidence-sha256",
+                "2" * 64,
+            ]
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "UNAVAILABLE"
+    assert payload["origin_binding_result"] == "NOT_ENABLED"
+    assert (
+        "OBSERVED_FACTOR_REGIME_CLI_PATH_NOT_ENABLED" in payload["diagnostic"]["limitation_codes"]
+    )

@@ -36,7 +36,7 @@ def _predecessor_binding() -> dict[str, Any]:
                 "artifact_id": policy["artifact_id"],
                 "byte_sha256": hashlib.sha256(policy_raw).hexdigest(),
                 "relative_path": (
-                    "quant_investor/v17_v5_contract/" "resources/v4_compatibility_policy.v1.json"
+                    "quant_investor/v17_v5_contract/" "resources/v4_compatibility_policy.v2.json"
                 ),
                 "semantic_sha256": policy["semantic_sha256"],
                 "version": policy["version"],
@@ -52,7 +52,7 @@ def _predecessor_binding() -> dict[str, Any]:
             "source_runtime_manifest_relative_path": (
                 predecessor["runtime_manifest_relative_path"]
             ),
-            "version": "myquant.v17.v5.v4-predecessor-binding.v1",
+            "version": "myquant.v17.v5.v4-predecessor-binding.v2",
         }
     )
 
@@ -62,7 +62,7 @@ def test_v5_package_runtime_and_predecessor_are_closed() -> None:
     runtime = verify_runtime_build()
     predecessor = verify_predecessor()
 
-    assert len(package) == 12
+    assert len(package) == 17
     assert set(runtime) == {
         "v17_v5_runtime/__init__.py",
         "v17_v5_runtime/authority.py",
@@ -71,21 +71,22 @@ def test_v5_package_runtime_and_predecessor_are_closed() -> None:
         "v17_v5_runtime/factor_lifecycle.py",
         "v17_v5_runtime/factor_regime_diagnostics.py",
         "v17_v5_runtime/factor_regime_origin_inventory.py",
+        "v17_v5_runtime/regime_chain_deployability.py",
         "v17_v5_runtime/v4_compat_reader.py",
         "v17_v5_runtime/v4_factor_adapter.py",
         "v17_v5_runtime/v4_regime_adapter.py",
     }
     assert predecessor == {
-        "package_asset_count": 93,
+        "package_asset_count": 102,
         "package_manifest_byte_sha256": (
-            "fdc0aba035cdfff243df1a191431c84cfd7638fd0d94d877c7b37b29d5bc6875"
+            "80dd615730ccf94eb453664936b0f265180dc68c18651e90932ce05fa3fb1428"
         ),
         "protocol_version": "myquant.v17.v4",
         "runtime_manifest_byte_sha256": (
-            "09700937c1fac82b2e3bbd405f1cbe7d31e71faea6a6c71e2d57d0c8c2b87b04"
+            "a7d27d0d16153d5b55558cd608a9155dd3b968d2721135ba77d777d409a7e63c"
         ),
-        "runtime_source_count": 30,
-        "source_git_commit": "ec1370553fdf7ca0951ec4b03ea9fc426a872b4e",
+        "runtime_source_count": 31,
+        "source_git_commit": "1da7ffb636a3254940525d746549d15e827f06ba",
         "status": "PINNED_AND_VERIFIED",
     }
 
@@ -145,14 +146,14 @@ def test_v4_predecessor_binding_rejects_compatibility_policy_version_drift() -> 
     artifact = _predecessor_binding()
     artifact.pop("semantic_sha256")
     policy_ref = dict(artifact["compatibility_policy_ref"])
-    policy_ref["version"] = "myquant.v17.v5.v4-compatibility-policy.v2"
+    policy_ref["version"] = "myquant.v17.v5.v4-compatibility-policy.v1"
     artifact["compatibility_policy_ref"] = policy_ref
 
     with pytest.raises(SchemaValidationError, match="does not match const"):
         validate_artifact(seal_semantic(artifact))
 
 
-def test_compatibility_policy_is_exact_sprint1a_allowlist() -> None:
+def test_compatibility_policy_is_exact_sprint1d_allowlist() -> None:
     policy = load_compatibility_policy()
 
     assert [row["version"] for row in policy["allowed_artifacts"]] == [
@@ -169,13 +170,22 @@ def test_compatibility_policy_is_exact_sprint1a_allowlist() -> None:
         "myquant.v17.v4.forward-source-slice-manifest.v1",
         "myquant.v17.v4.forward-stage-output.v1",
         "myquant.v17.v4.forward-stage-receipt.v1",
+        "myquant.v17.v4.regime-calendar-terminal.v1",
         "myquant.v17.v4.regime-evidence.v1",
+        "myquant.v17.v4.regime-evidence.v2",
+        "myquant.v17.v4.regime-feature-snapshot.v1",
+        "myquant.v17.v4.regime-market-terminal.v1",
+        "myquant.v17.v4.regime-model-snapshot.v1",
+        "myquant.v17.v4.regime-pit-membership-terminal.v1",
+        "myquant.v17.v4.regime-source-locator-terminal.v1",
+        "myquant.v17.v4.regime-transition-matrix-snapshot.v1",
         "myquant.v17.v4.research-shadow-factor-set.v1",
         "myquant.v17.v4.shadow-factor-selection-audit.v1",
     ]
     assert [row["version"] for row in policy["allowed_artifacts"] if row["root_admissible"]] == [
         "myquant.v17.v4.forward-evaluation-receipt.v1",
         "myquant.v17.v4.regime-evidence.v1",
+        "myquant.v17.v4.regime-evidence.v2",
     ]
     assert policy["forbidden_import_prefixes"] == ["quant_investor.v17_v4_runtime"]
     assert all(value is False for value in policy["authority"].values())
@@ -228,10 +238,10 @@ def test_v4_compatibility_policy_and_reader_are_manifest_bound() -> None:
     runtime = verify_runtime_build()
 
     assert (
-        package["resources/v4_compatibility_policy.v1.json"]
+        package["resources/v4_compatibility_policy.v2.json"]
         == hashlib.sha256(
             (
-                root / "quant_investor/v17_v5_contract/resources/" "v4_compatibility_policy.v1.json"
+                root / "quant_investor/v17_v5_contract/resources/" "v4_compatibility_policy.v2.json"
             ).read_bytes()
         ).hexdigest()
     )

@@ -14,7 +14,6 @@ from quant_investor.v17_v5_contract import (
     seal_semantic,
     validate_artifact,
 )
-from quant_investor.v17_v5_contract.validators import ArtifactContractError
 from quant_investor.v17_v5_contract.validators import (
     FACTOR_REGIME_DIAGNOSTIC_POLICY_BYTE_SHA256,
     FACTOR_REGIME_DIAGNOSTIC_POLICY_ID,
@@ -22,6 +21,7 @@ from quant_investor.v17_v5_contract.validators import (
     FACTOR_REGIME_DIAGNOSTIC_POLICY_SEMANTIC_SHA256,
     FACTOR_REGIME_DIAGNOSTIC_POLICY_VERSION,
 )
+from quant_investor.v17_v5_contract.schema_validation import SchemaValidationError
 from quant_investor.v17_v5_runtime.factor_regime_diagnostics import (
     FactorRegimeDiagnosticError,
     build_regime_conditioned_factor_diagnostic,
@@ -31,6 +31,7 @@ from quant_investor.v17_v5_runtime.factor_regime_diagnostics import (
 )
 from quant_investor.v17_v5_runtime.factor_regime_origin_inventory import (
     ContentArtifactRef,
+    FACTOR_REGIME_ORIGIN_INVENTORY_VERSION,
     FactorRegimeOriginInput,
     RegimeEvidenceSnapshot,
     build_factor_regime_origin_inventory,
@@ -71,28 +72,48 @@ def _v4_ref(kind: str, index: int) -> ContentArtifactRef:
     return ContentArtifactRef(
         artifact_id=f"{kind}.{index:03d}",
         byte_sha256=_sha(f"{kind}-{index}-bytes"),
-        cutoff=f"2026-01-{index + 1:02d}T08:00:00Z",
+        cutoff=f"2026-01-{index + 2:02d}T08:00:00Z",
         relative_path=f"tests/fixtures/v17_v5_sprint1b/{kind}/{index:03d}.json",
         semantic_sha256=_sha(f"{kind}-{index}-semantic"),
         strategy_id="cn-strategy",
-        version=f"myquant.v17.v4.{kind}.v1",
+        version=(
+            "myquant.v17.v4.regime-evidence.v2"
+            if kind == "regime-evidence"
+            else f"myquant.v17.v4.{kind}.v1"
+        ),
     )
 
 
 def _regime(index: int, *, state: str) -> RegimeEvidenceSnapshot:
     return RegimeEvidenceSnapshot(
-        available_at=f"2026-01-{index + 1:02d}T07:00:00Z",
-        cutoff=f"2026-01-{index + 1:02d}T07:30:00Z",
-        decision_session=f"2026-01-{index + 1:02d}",
-        effective_session=f"2026-01-{index + 1:02d}",
-        published_at=f"2026-01-{index + 1:02d}T07:45:00Z",
+        available_at=f"2026-01-{index + 2:02d}T07:00:00Z",
+        calendar_previous_open_session=f"2026-01-{index + 1:02d}",
+        cutoff=f"2026-01-{index + 2:02d}T07:30:00Z",
+        decision_session=f"2026-01-{index + 2:02d}",
+        effective_session=f"2026-01-{index + 2:02d}",
+        hard_state_derivation="SEALED_ARGMAX_POLICY_V1",
+        inference_kind="FILTERED_CAUSAL",
+        no_retroactive_causal_backfill=True,
+        observed_through_session=f"2026-01-{index + 1:02d}",
+        publication_phase="PRIOR_SESSION_EFFECTIVE_NEXT_SESSION",
+        published_at=f"2026-01-{index + 2:02d}T07:45:00Z",
         regime_artifact_ref=replace(
             _v4_ref("regime-evidence", index),
-            cutoff=f"2026-01-{index + 1:02d}T07:30:00Z",
+            cutoff=f"2026-01-{index + 2:02d}T07:30:00Z",
         ),
         regime_state=state,
-        source_version="myquant.v17.v4.regime-evidence.v1",
-        state_probabilities={state: "0.8", "震荡低波": "0.2"},
+        scope_kind="FULL_MARKET",
+        smoothing_used=False,
+        source_commit="1da7ffb636a3254940525d746549d15e827f06ba",
+        source_version="myquant.v17.v4.regime-evidence.v2",
+        state_order=["趋势上涨", "震荡低波", "震荡高波", "趋势下跌", "未知"],
+        state_probabilities={
+            "趋势上涨": "0.8" if state == "趋势上涨" else "0.0",
+            "震荡低波": "0.2" if state == "趋势上涨" else "0.0",
+            "震荡高波": "0.0",
+            "趋势下跌": "1.0" if state == "趋势下跌" else "0.0",
+            "未知": "1.0" if state == "未知" else "0.0",
+        },
         strategy_id="cn-strategy",
     )
 
@@ -104,7 +125,7 @@ def _origin(
     return FactorRegimeOriginInput(
         comparable_symbol_count=comparable,
         coverage=coverage,
-        decision_session=f"2026-01-{index + 1:02d}",
+        decision_session=f"2026-01-{index + 2:02d}",
         eligible_symbol_count=10,
         factor_evidence_ref=_v4_ref("forward-evaluation-receipt", index),
         factor_implementation_sha256=_sha("implementation"),
@@ -112,10 +133,10 @@ def _origin(
         factor_observation_ref=_v4_ref("factor-universe-observation", index),
         label_end_session=f"2026-02-{index + 1:02d}",
         label_horizon_sessions=20,
-        label_origin_session=f"2026-01-{index + 1:02d}",
+        label_origin_session=f"2026-01-{index + 2:02d}",
         matured_label_ref=_v4_ref("forward-label", index),
         observation_run_ref=_v4_ref("forward-observation-run", index),
-        origin_cutoff=f"2026-01-{index + 1:02d}T08:00:00Z",
+        origin_cutoff=f"2026-01-{index + 2:02d}T08:00:00Z",
         origin_id=f"origin.{index:03d}",
         rank_ic=rank_ic,
         regime_evidence=_regime(index, state=state),
@@ -142,7 +163,7 @@ def _inventory_ref(inventory: dict[str, object]) -> dict[str, str]:
         "artifact_id": str(inventory["inventory_id"]),
         "byte_sha256": hashlib.sha256(canonical_resource_bytes(inventory)).hexdigest(),
         "semantic_sha256": str(inventory["semantic_sha256"]),
-        "version": "myquant.v17.v5.factor-regime-origin-inventory.v1",
+        "version": FACTOR_REGIME_ORIGIN_INVENTORY_VERSION,
     }
 
 
@@ -262,12 +283,13 @@ def test_synthetic_test_only_accumulating_metrics_are_deterministic() -> None:
     assert down["rank_icir"] is None
     assert artifact["regime_occupancy"]["regime_concentration"] == "0.555555555556"
     assert artifact["regime_occupancy"]["posterior_confidence_summary"] == {
-        "hard_state_probability_mean": "0.800000000000",
+        "hard_state_probability_mean": "0.866666666667",
         "hard_state_probability_min": "0.800000000000",
         "hard_state_probability_p10": "0.800000000000",
         "posterior_origin_count": 3,
     }
     assert validate_regime_conditioned_factor_diagnostic(artifact) == artifact
+    assert validate_artifact(artifact) == artifact
 
 
 def test_newey_west_lag_19_matches_manual_formula_for_20_origins() -> None:
@@ -332,11 +354,60 @@ def test_origin_inventory_ref_mismatch_fails_closed() -> None:
             )
 
 
-def test_public_contract_rejects_resealed_diagnostic_identity_drift() -> None:
+def test_contract_rejects_resealed_diagnostic_identity_drift() -> None:
     diagnostic = copy.deepcopy(_diagnostic(_inventory(_origin(0, rank_ic="0.1"))))
     diagnostic["diagnostic_id"] = "regime-conditioned-factor-diagnostic-forged"
-    with pytest.raises(ArtifactContractError, match="diagnostic identity"):
-        validate_artifact(_reseal(diagnostic))
+    with pytest.raises(FactorRegimeDiagnosticError, match="diagnostic identity"):
+        validate_regime_conditioned_factor_diagnostic(_reseal(diagnostic))
+
+
+@pytest.mark.parametrize(
+    ("section", "expected_error"),
+    (
+        ("by_regime", "by-regime diagnostic contains an ineligible state"),
+        ("regime_origin_counts", "regime occupancy contains an ineligible state"),
+    ),
+)
+def test_contract_rejects_unknown_state_in_public_diagnostic_groups(
+    section: str,
+    expected_error: str,
+) -> None:
+    diagnostic = copy.deepcopy(_diagnostic(_inventory(_origin(0, rank_ic="0.1"))))
+    if section == "by_regime":
+        diagnostic["by_regime"][0]["regime_state"] = "未知"
+    else:
+        diagnostic["regime_occupancy"]["regime_origin_counts"][0]["regime_state"] = "未知"
+    diagnostic = _reseal(diagnostic)
+    identity_material = copy.deepcopy(diagnostic)
+    identity_material.pop("diagnostic_id")
+    identity_material.pop("semantic_sha256")
+    diagnostic["diagnostic_id"] = (
+        "regime-conditioned-factor-diagnostic-"
+        f"{hashlib.sha256(canonical_bytes(identity_material)).hexdigest()[:32]}"
+    )
+    diagnostic = _reseal(diagnostic)
+
+    with pytest.raises(FactorRegimeDiagnosticError, match=expected_error):
+        validate_regime_conditioned_factor_diagnostic(diagnostic)
+    with pytest.raises(SchemaValidationError, match="is outside the closed enum"):
+        validate_artifact(diagnostic)
+
+
+def test_all_unknown_origins_are_unobserved_and_not_bucketed() -> None:
+    inventory = _inventory(
+        _origin(0, rank_ic="0.1", state="未知"),
+        _origin(1, rank_ic="0.2", state="未知"),
+    )
+    artifact = _diagnostic(inventory)
+
+    assert artifact["status"] == "UNOBSERVED"
+    assert artifact["by_regime"] == []
+    assert artifact["unconditional_metrics"] is None
+    assert artifact["regime_occupancy"]["missing_regime_count"] == 2
+    assert artifact["regime_occupancy"]["total_origin_count"] == 0
+    assert "NO_CONDITIONING_ELIGIBLE_ORIGIN" in artifact["limitation_codes"]
+    assert "REGIME_HARD_STATE_UNKNOWN" in artifact["limitation_codes"]
+    assert validate_artifact(artifact) == artifact
 
 
 def test_created_at_before_cutoff_and_bad_unavailable_reason_fail_closed() -> None:

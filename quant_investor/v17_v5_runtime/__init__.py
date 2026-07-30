@@ -41,6 +41,14 @@ from .factor_regime_origin_inventory import (
     validate_factor_regime_origin_inventory,
     validate_factor_regime_origin_inventory_replay,
 )
+from .regime_chain_deployability import (
+    ChainLengthAudit,
+    MissedSessionRecoveryAudit,
+    ObservedReplayOutcome,
+    RegimeChainDeployabilityAudit,
+    ReplayLimitSnapshot,
+    audit_regime_chain_deployability,
+)
 from .v4_factor_adapter import (
     V4ArtifactReference,
     V4FactorAdaptationStatus,
@@ -65,6 +73,7 @@ from .v4_compat_reader import (
 
 __all__ = [
     "DELIVERY_STATUS",
+    "ChainLengthAudit",
     "ContentArtifactRef",
     "FactorDiagnosticError",
     "FactorDiagnosticStatus",
@@ -76,8 +85,12 @@ __all__ = [
     "FactorRegimeOriginInput",
     "FactorRegimeOriginInventoryError",
     "GLOBAL_ACTIVATION_STATE",
+    "MissedSessionRecoveryAudit",
+    "ObservedReplayOutcome",
     "RUN_STATE",
+    "RegimeChainDeployabilityAudit",
     "RegimeEvidenceSnapshot",
+    "ReplayLimitSnapshot",
     "STATE",
     "V4ClosureNode",
     "V4CompatibilityError",
@@ -93,6 +106,7 @@ __all__ = [
     "adapt_v4_factor_evidence",
     "adapt_v4_regime_evidence",
     "authority_envelope",
+    "audit_regime_chain_deployability",
     "build_factor_diagnostic",
     "build_factor_diagnostic_from_v4",
     "build_factor_lifecycle_diagnostic",

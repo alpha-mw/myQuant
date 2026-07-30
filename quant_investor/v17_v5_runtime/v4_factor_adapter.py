@@ -25,6 +25,8 @@ from quant_investor.v17_v5_contract.resources import (
 )
 from quant_investor.v17_v5_contract.validators import (
     V4_COMPATIBILITY_POLICY_BYTE_SHA256,
+    V4_PACKAGE_MANIFEST_SHA256,
+    V4_RUNTIME_MANIFEST_SHA256,
     V4_SOURCE_GIT_COMMIT,
 )
 from quant_investor.v17_v5_runtime.factor_diagnostics import (
@@ -779,6 +781,9 @@ def adapt_v4_factor_evidence(
         if (
             read.compatibility_policy_byte_sha256 != V4_COMPATIBILITY_POLICY_BYTE_SHA256
             or read.predecessor_git_commit != V4_SOURCE_GIT_COMMIT
+            or read.predecessor_package_manifest_byte_sha256 != V4_PACKAGE_MANIFEST_SHA256
+            or read.predecessor_runtime_manifest_byte_sha256 != V4_RUNTIME_MANIFEST_SHA256
+            or read.predecessor_protocol_version != "myquant.v17.v4"
         ):
             _fail("V4 compatibility read policy or predecessor identity mismatch")
         candidate_stratum, origin, binding, candidate_blockers = _origin_from_read(

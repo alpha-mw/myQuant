@@ -11,8 +11,6 @@ from pathlib import Path, PurePosixPath
 import stat
 from typing import Any, Final, Mapping, Sequence
 
-import pyarrow.parquet as pq
-
 from quant_investor.v17_v4_contract import (
     artifact_identity_field as v4_identity_field,
     load_canonical_artifact as load_v4_artifact,
@@ -123,6 +121,11 @@ class V4CompatibilityRead:
     document: Mapping[str, Any]
     documents: Mapping[str, Mapping[str, Any]]
     predecessor_git_commit: str
+    predecessor_package_manifest_byte_sha256: str
+    predecessor_package_manifest_relative_path: str
+    predecessor_protocol_version: str
+    predecessor_runtime_manifest_byte_sha256: str
+    predecessor_runtime_manifest_relative_path: str
     root_ref: Mapping[str, str]
     terminal_bindings: tuple[V4TerminalBinding, ...]
 
@@ -478,6 +481,8 @@ def _parquet_metadata(
     limits: Mapping[str, int],
 ) -> tuple[str, str]:
     try:
+        import pyarrow.parquet as pq
+
         parquet = pq.ParquetFile(io.BytesIO(raw))
         metadata = parquet.metadata
         schema_metadata = parquet.schema_arrow.metadata or {}
@@ -773,6 +778,21 @@ def read_v4_artifact(
         document=dict(root_document),
         documents={key: dict(documents[key]) for key in sorted(documents)},
         predecessor_git_commit=predecessor["source_git_commit"],
+        predecessor_package_manifest_byte_sha256=predecessor.get(
+            "package_manifest_byte_sha256",
+            "",
+        ),
+        predecessor_package_manifest_relative_path=policy["predecessor"][
+            "package_manifest_relative_path"
+        ],
+        predecessor_protocol_version=predecessor.get("protocol_version", ""),
+        predecessor_runtime_manifest_byte_sha256=predecessor.get(
+            "runtime_manifest_byte_sha256",
+            "",
+        ),
+        predecessor_runtime_manifest_relative_path=policy["predecessor"][
+            "runtime_manifest_relative_path"
+        ],
         root_ref=root_ref,
         terminal_bindings=tuple(terminal_bindings[key] for key in sorted(terminal_bindings)),
     )

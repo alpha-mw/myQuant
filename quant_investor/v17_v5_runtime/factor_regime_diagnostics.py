@@ -34,6 +34,7 @@ from quant_investor.v17_v5_contract.validators import (
     FACTOR_REGIME_DIAGNOSTIC_POLICY_SEMANTIC_SHA256,
     FACTOR_REGIME_DIAGNOSTIC_POLICY_VERSION,
     NO_AUTHORITY,
+    REGIME_CONDITIONING_STATES,
 )
 from quant_investor.v17_v5_runtime.factor_regime_origin_inventory import (
     FACTOR_REGIME_ORIGIN_INVENTORY_VERSION,
@@ -41,13 +42,17 @@ from quant_investor.v17_v5_runtime.factor_regime_origin_inventory import (
 
 PROTOCOL_VERSION: Final = "myquant.v17.v5"
 REGIME_CONDITIONED_FACTOR_DIAGNOSTIC_VERSION: Final = (
-    "myquant.v17.v5.regime-conditioned-factor-diagnostic.v1"
+    "myquant.v17.v5.regime-conditioned-factor-diagnostic.v2"
 )
 HORIZON_SESSIONS: Final = 20
 MINIMUM_DESCRIPTIVE_ORIGINS: Final = 20
 MINIMUM_STABILITY_ORIGINS: Final = 60
 NEWEY_WEST_LAG: Final = 19
 OUTPUT_SCALE: Final = Decimal("0.000000000001")
+POLICY_V2_VERSION: Final = "myquant.v17.v5.factor-regime-diagnostic-policy.v2"
+POLICY_V2_PATH: Final = (
+    "quant_investor/v17_v5_contract/resources/factor_regime_diagnostic_policy.v2.json"
+)
 _UTC_RE: Final = re.compile(
     r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
     re.ASCII,
@@ -232,14 +237,19 @@ def _policy_ref(policy_ref: Mapping[str, Any]) -> dict[str, Any]:
         )
     except IdentityContractError as exc:
         raise FactorRegimeDiagnosticError(str(exc)) from exc
-    if document != {
+    expected_current = {
         "artifact_id": FACTOR_REGIME_DIAGNOSTIC_POLICY_ID,
         "byte_sha256": FACTOR_REGIME_DIAGNOSTIC_POLICY_BYTE_SHA256,
         "relative_path": FACTOR_REGIME_DIAGNOSTIC_POLICY_PATH,
         "semantic_sha256": FACTOR_REGIME_DIAGNOSTIC_POLICY_SEMANTIC_SHA256,
         "version": FACTOR_REGIME_DIAGNOSTIC_POLICY_VERSION,
-    }:
-        _fail("policy_ref does not bind the sealed Sprint 1B policy")
+    }
+    if document == expected_current and document["version"] == POLICY_V2_VERSION:
+        return document
+    if document["version"].endswith(".v1"):
+        _fail("Sprint 1D regime diagnostics must bind policy v2")
+    if document["version"] != POLICY_V2_VERSION or document["relative_path"] != POLICY_V2_PATH:
+        _fail("policy_ref does not bind the sealed Sprint 1D policy v2")
     return document
 
 
@@ -274,6 +284,8 @@ def _inventory(document: Mapping[str, Any]) -> dict[str, Any]:
         _fail("origin inventory grants authority")
     if payload.get("horizon_sessions") != HORIZON_SESSIONS:
         _fail("origin inventory horizon mismatch")
+    if payload.get("policy_ref", {}).get("version") != POLICY_V2_VERSION:
+        _fail("origin inventory must bind Sprint 1D policy v2")
     return payload
 
 
@@ -457,6 +469,23 @@ def _validate_diagnostic(document: Mapping[str, Any]) -> dict[str, Any]:
         _fail("regime-conditioned diagnostic grants authority")
     if payload.get("status") not in {"UNAVAILABLE", "UNOBSERVED", "ACCUMULATING"}:
         _fail("regime-conditioned diagnostic status is invalid")
+    occupancy = payload.get("regime_occupancy")
+    by_regime = payload.get("by_regime")
+    if type(occupancy) is not dict or type(by_regime) is not list:
+        _fail("regime-conditioned diagnostic grouping is invalid")
+    regime_counts = occupancy.get("regime_origin_counts")
+    if type(regime_counts) is not list:
+        _fail("regime-conditioned diagnostic occupancy is invalid")
+    if any(
+        type(row) is not dict or row.get("regime_state") not in REGIME_CONDITIONING_STATES
+        for row in regime_counts
+    ):
+        _fail("regime occupancy contains an ineligible state")
+    if any(
+        type(row) is not dict or row.get("regime_state") not in REGIME_CONDITIONING_STATES
+        for row in by_regime
+    ):
+        _fail("by-regime diagnostic contains an ineligible state")
     _forbidden_key_scan(payload)
     encoded = canonical_bytes(payload)
     if b"NaN" in encoded or b"Infinity" in encoded:
@@ -579,6 +608,11 @@ def build_regime_conditioned_factor_diagnostic(
     if _timestamp(created_at, label="created_at") < _timestamp(cutoff, label="cutoff"):
         _fail("created_at must not precede cutoff")
     rows = _rows(inventory)
+    excluded_origin_count = int(inventory.get("excluded_origin_count", 0))
+    inventory_limitations = [
+        _limitation_code(value, label="inventory limitation code")
+        for value in inventory.get("limitation_codes", [])
+    ]
     available = [row for row in rows if isinstance(row["rank_ic"], Decimal)]
     unconditional_mean = _mean([row["rank_ic"] for row in available]) if available else None
     unconditional = _unconditional_metrics(rows) if rows else None
@@ -608,10 +642,13 @@ def build_regime_conditioned_factor_diagnostic(
     limitations: list[str] = []
     if status == "UNOBSERVED":
         limitations.append("regime_conditioned_no_observed_origins")
+        if excluded_origin_count:
+            limitations.append("NO_CONDITIONING_ELIGIBLE_ORIGIN")
     elif len(rows) < MINIMUM_DESCRIPTIVE_ORIGINS:
         limitations.append("descriptive_origin_threshold_not_met")
     if rows and len(rows) < MINIMUM_STABILITY_ORIGINS:
         limitations.append("stability_origin_threshold_not_met")
+    limitations = sorted(set([*limitations, *inventory_limitations]))
     return _seal(
         {
             "authority": dict(NO_AUTHORITY),
@@ -629,7 +666,7 @@ def build_regime_conditioned_factor_diagnostic(
             "protocol_version": PROTOCOL_VERSION,
             "regime_occupancy": {
                 "ambiguous_regime_count": 0,
-                "missing_regime_count": 0,
+                "missing_regime_count": excluded_origin_count,
                 "posterior_confidence_summary": _posterior_summary(rows),
                 "regime_concentration": concentration,
                 "regime_origin_counts": [

@@ -21,6 +21,7 @@ from quant_investor.v17_v5_contract.canonical import (
 )
 from quant_investor.v17_v5_contract.identities import (
     IdentityContractError,
+    require_git_commit,
     require_identifier,
     require_relative_path,
     require_sha256,
@@ -32,12 +33,23 @@ from quant_investor.v17_v5_contract.validators import (
     FACTOR_REGIME_DIAGNOSTIC_POLICY_SEMANTIC_SHA256,
     FACTOR_REGIME_DIAGNOSTIC_POLICY_VERSION,
     NO_AUTHORITY,
+    V4_SOURCE_GIT_COMMIT,
 )
 
 PROTOCOL_VERSION: Final = "myquant.v17.v5"
-FACTOR_REGIME_ORIGIN_INVENTORY_VERSION: Final = "myquant.v17.v5.factor-regime-origin-inventory.v1"
+FACTOR_REGIME_ORIGIN_INVENTORY_VERSION: Final = "myquant.v17.v5.factor-regime-origin-inventory.v2"
 HORIZON_SESSIONS: Final = 20
 OUTPUT_SCALE: Final = Decimal("0.000000000001")
+REGIME_EVIDENCE_V2_VERSION: Final = "myquant.v17.v4.regime-evidence.v2"
+POLICY_V2_VERSION: Final = "myquant.v17.v5.factor-regime-diagnostic-policy.v2"
+POLICY_V2_PATH: Final = (
+    "quant_investor/v17_v5_contract/resources/factor_regime_diagnostic_policy.v2.json"
+)
+REQUIRED_PUBLICATION_PHASE: Final = "PRIOR_SESSION_EFFECTIVE_NEXT_SESSION"
+REQUIRED_INFERENCE_KIND: Final = "FILTERED_CAUSAL"
+REQUIRED_HARD_STATE_DERIVATION: Final = "SEALED_ARGMAX_POLICY_V1"
+REQUIRED_SCOPE_KIND: Final = "FULL_MARKET"
+UNKNOWN_REGIME_STATE: Final = "未知"
 _SESSION_RE: Final = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$", re.ASCII)
 _UTC_RE: Final = re.compile(
     r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
@@ -98,6 +110,16 @@ class RegimeEvidenceSnapshot:
     decision_session: str | None = None
     effective_session: str | None = None
     state_probabilities: Mapping[str, str] | None = None
+    observed_through_session: str | None = None
+    calendar_previous_open_session: str | None = None
+    publication_phase: str | None = None
+    inference_kind: str | None = None
+    smoothing_used: bool | None = None
+    hard_state_derivation: str | None = None
+    scope_kind: str | None = None
+    no_retroactive_causal_backfill: bool | None = None
+    source_commit: str | None = None
+    state_order: Sequence[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -240,25 +262,46 @@ def _policy_ref(policy_ref: Mapping[str, Any]) -> dict[str, Any]:
         )
     except IdentityContractError as exc:
         raise FactorRegimeOriginInventoryError(str(exc)) from exc
-    if document != {
+    expected_current = {
         "artifact_id": FACTOR_REGIME_DIAGNOSTIC_POLICY_ID,
         "byte_sha256": FACTOR_REGIME_DIAGNOSTIC_POLICY_BYTE_SHA256,
         "relative_path": FACTOR_REGIME_DIAGNOSTIC_POLICY_PATH,
         "semantic_sha256": FACTOR_REGIME_DIAGNOSTIC_POLICY_SEMANTIC_SHA256,
         "version": FACTOR_REGIME_DIAGNOSTIC_POLICY_VERSION,
-    }:
-        _fail("policy_ref does not bind the sealed Sprint 1B policy")
+    }
+    if document == expected_current and document["version"] == POLICY_V2_VERSION:
+        return document
+    if document["version"].endswith(".v1"):
+        _fail("Sprint 1D regime diagnostics must bind policy v2")
+    if document["version"] != POLICY_V2_VERSION or document["relative_path"] != POLICY_V2_PATH:
+        _fail("policy_ref does not bind the sealed Sprint 1D policy v2")
     return document
 
 
-def _probabilities(values: Mapping[str, str] | None) -> list[dict[str, str]] | None:
+def _probabilities(
+    values: Mapping[str, str] | None,
+    *,
+    state_order: Sequence[str] | None = None,
+) -> list[dict[str, str]] | None:
     if values is None:
         return None
     if not isinstance(values, Mapping) or not values:
         _fail("state_probabilities must be a nonempty mapping")
+    ordered_states: list[str]
+    if state_order is None:
+        ordered_states = sorted(values)
+    else:
+        if isinstance(state_order, (str, bytes)) or not isinstance(state_order, Sequence):
+            _fail("state_order must be a sequence")
+        ordered_states = [_text(value, label="state_order item") for value in state_order]
+        if len(ordered_states) != len(set(ordered_states)):
+            _fail("state_order contains duplicates")
+        if set(values) != set(ordered_states):
+            _fail("state probabilities must exactly match state_order")
     result: dict[str, str] = {}
     total = Decimal(0)
-    for state, probability in values.items():
+    for state in ordered_states:
+        probability = values[state]
         name = _text(state, label="state probability regime_state")
         value = _decimal(
             probability,
@@ -268,14 +311,14 @@ def _probabilities(values: Mapping[str, str] | None) -> list[dict[str, str]] | N
         )
         result[name] = value
         total += Decimal(value)
-    if total > Decimal("1.000000000001"):
-        _fail("state probabilities sum above one")
+    if total.quantize(OUTPUT_SCALE, rounding=ROUND_HALF_EVEN) != Decimal("1.000000000000"):
+        _fail("state probabilities must sum exactly to one")
     return [
         {
             "probability": result[key],
             "regime_state": key,
         }
-        for key in sorted(result)
+        for key in ordered_states
     ]
 
 
@@ -303,7 +346,7 @@ def _origin_row(
     factor_name: str,
     factor_implementation_sha256: str,
     horizon_sessions: int,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     if not isinstance(origin, FactorRegimeOriginInput):
         _fail("origin_rows must contain FactorRegimeOriginInput values")
     try:
@@ -425,6 +468,8 @@ def _origin_row(
         _fail("strategy_id mismatch")
     if regime_source_version != regime_ref["version"]:
         _fail("regime source version does not match artifact ref")
+    if regime_source_version != REGIME_EVIDENCE_V2_VERSION:
+        _fail("regime source version must be myquant.v17.v4.regime-evidence.v2")
     regime_cutoff = _timestamp(regime.cutoff, label=f"{origin_id}.regime.cutoff")
     if regime_ref["cutoff"] != regime.cutoff:
         _fail("regime cutoff does not match artifact ref")
@@ -436,28 +481,72 @@ def _origin_row(
         _fail("regime published_at is later than origin cutoff")
     if regime_cutoff > origin_cutoff:
         _fail("regime cutoff is later than origin cutoff")
-    regime_decision_session = None
-    if regime.decision_session is not None:
-        regime_decision_session = _session(
-            regime.decision_session,
-            label=f"{origin_id}.regime.decision_session",
+    regime_decision_session = _session(
+        regime.decision_session,
+        label=f"{origin_id}.regime.decision_session",
+    )
+    regime_effective_session = _session(
+        regime.effective_session,
+        label=f"{origin_id}.regime.effective_session",
+    )
+    observed_through_session = _session(
+        regime.observed_through_session,
+        label=f"{origin_id}.regime.observed_through_session",
+    )
+    calendar_previous_open_session = _session(
+        regime.calendar_previous_open_session,
+        label=f"{origin_id}.regime.calendar_previous_open_session",
+    )
+    if regime_decision_session != decision_session:
+        _fail("regime decision_session must equal factor origin")
+    if regime_effective_session != decision_session:
+        _fail("regime effective_session must equal factor origin")
+    if observed_through_session != calendar_previous_open_session:
+        _fail("regime observed_through_session must equal sealed previous open session")
+    if calendar_previous_open_session >= decision_session:
+        _fail("sealed previous open session must precede factor origin")
+    if regime.publication_phase != REQUIRED_PUBLICATION_PHASE:
+        _fail("regime publication_phase is not conditioning eligible")
+    if regime.inference_kind != REQUIRED_INFERENCE_KIND:
+        _fail("regime inference_kind is not FILTERED_CAUSAL")
+    if regime.smoothing_used is not False:
+        _fail("regime smoothing_used must be false")
+    if regime.hard_state_derivation != REQUIRED_HARD_STATE_DERIVATION:
+        _fail("regime hard_state_derivation is not SEALED_ARGMAX_POLICY_V1")
+    if regime.scope_kind != REQUIRED_SCOPE_KIND:
+        _fail("regime scope_kind is not FULL_MARKET")
+    if regime.no_retroactive_causal_backfill is not True:
+        _fail("regime no-backfill flag is absent")
+    try:
+        source_commit = require_git_commit(
+            regime.source_commit,
+            label=f"{origin_id}.regime.source_commit",
         )
-        if regime_decision_session > decision_session:
-            _fail("regime decision_session is later than factor origin")
-    regime_effective_session = None
-    if regime.effective_session is not None:
-        regime_effective_session = _session(
-            regime.effective_session,
-            label=f"{origin_id}.regime.effective_session",
-        )
-        if regime_effective_session > decision_session:
-            _fail("regime effective_session is later than factor origin")
+    except IdentityContractError as exc:
+        raise FactorRegimeOriginInventoryError(str(exc)) from exc
+    if source_commit != V4_SOURCE_GIT_COMMIT:
+        _fail("regime source commit does not match the pinned V4 predecessor")
     regime_state = _text(regime.regime_state, label=f"{origin_id}.regime_state")
-    state_probabilities = _probabilities(regime.state_probabilities)
-    if state_probabilities is not None and regime_state not in {
-        row["regime_state"] for row in state_probabilities
-    }:
+    state_probabilities = _probabilities(regime.state_probabilities, state_order=regime.state_order)
+    if state_probabilities is None:
+        _fail("V4 regime-evidence.v2 must carry sealed state probabilities")
+    if regime_state not in {row["regime_state"] for row in state_probabilities}:
         _fail("posterior does not contain the sealed hard regime state")
+    # The V4 producer sealed the native state and tie-break.  V5 verifies the
+    # exact state set and preserves the sealed value; it must not rerun argmax.
+    base_row = {
+        "decision_session": decision_session,
+        "factor_name": factor_name,
+        "origin_id": origin_id,
+        "regime_evidence_ref": regime_ref,
+        "regime_state": regime_state,
+        "row_limitation_codes": [],
+    }
+    if regime_state == UNKNOWN_REGIME_STATE:
+        excluded = dict(base_row)
+        excluded["row_limitation_codes"] = ["REGIME_HARD_STATE_UNKNOWN"]
+        excluded["row_identity_sha256"] = hashlib.sha256(canonical_bytes(excluded)).hexdigest()
+        return None, excluded
     row = {
         "comparable_symbol_count": origin.comparable_symbol_count,
         "coverage": coverage,
@@ -478,15 +567,23 @@ def _origin_row(
         "regime_decision_session": regime_decision_session,
         "regime_effective_session": regime_effective_session,
         "regime_evidence_ref": regime_ref,
+        "regime_hard_state_derivation": regime.hard_state_derivation,
+        "regime_inference_kind": regime.inference_kind,
+        "regime_no_retroactive_causal_backfill": regime.no_retroactive_causal_backfill,
+        "regime_observed_through_session": observed_through_session,
+        "regime_publication_phase": regime.publication_phase,
         "regime_published_at": regime.published_at,
+        "regime_scope_kind": regime.scope_kind,
+        "regime_smoothing_used": regime.smoothing_used,
         "regime_source_version": regime_source_version,
         "regime_state": regime_state,
+        "regime_source_commit": source_commit,
         "source_locator_ref": source_locator_ref,
         "state_probabilities": state_probabilities,
     }
     row_identity = hashlib.sha256(canonical_bytes(row)).hexdigest()
     row["row_identity_sha256"] = row_identity
-    return row
+    return row, None
 
 
 def _validate_inventory(document: Mapping[str, Any]) -> dict[str, Any]:
@@ -515,6 +612,16 @@ def _validate_inventory(document: Mapping[str, Any]) -> dict[str, Any]:
         _fail("origin_rows must be a list")
     if payload.get("origin_count") != len(rows):
         _fail("origin_count mismatch")
+    excluded_rows = payload.get("excluded_origin_rows", [])
+    if not isinstance(excluded_rows, list):
+        _fail("excluded_origin_rows must be a list")
+    if payload.get("excluded_origin_count", 0) != len(excluded_rows):
+        _fail("excluded_origin_count mismatch")
+    limitation_codes = payload.get("limitation_codes", [])
+    if not isinstance(limitation_codes, list) or limitation_codes != sorted(set(limitation_codes)):
+        _fail("limitation_codes must be canonical")
+    if excluded_rows and "REGIME_HARD_STATE_UNKNOWN" not in limitation_codes:
+        _fail("unknown hard-state exclusions require limitation code")
     expected_order = sorted(
         rows,
         key=lambda row: (
@@ -531,7 +638,7 @@ def _validate_inventory(document: Mapping[str, Any]) -> dict[str, Any]:
     seen_origins: set[tuple[str, str]] = set()
     seen_origin_ids: set[str] = set()
     regime_counts: dict[str, int] = {}
-    for row in rows:
+    for row in [*rows, *excluded_rows]:
         origin_key = (row["decision_session"], row["factor_name"])
         if origin_key in seen_origins or row["origin_id"] in seen_origin_ids:
             _fail("duplicate origin")
@@ -541,7 +648,18 @@ def _validate_inventory(document: Mapping[str, Any]) -> dict[str, Any]:
         observed = expected_row_identity.pop("row_identity_sha256")
         if hashlib.sha256(canonical_bytes(expected_row_identity)).hexdigest() != observed:
             _fail("origin row identity mismatch")
+    for row in rows:
         regime_counts[row["regime_state"]] = regime_counts.get(row["regime_state"], 0) + 1
+    if excluded_rows != sorted(
+        excluded_rows,
+        key=lambda row: (
+            row["decision_session"],
+            row["factor_name"],
+            row["regime_state"],
+            row["regime_evidence_ref"]["artifact_id"],
+        ),
+    ):
+        _fail("excluded origin rows are not canonical")
     if payload.get("regime_counts") != [
         {
             "origin_count": regime_counts[key],
@@ -589,16 +707,20 @@ def build_factor_regime_origin_inventory(
         _fail("created_at must not precede cutoff")
     if isinstance(origin_rows, (str, bytes)) or not isinstance(origin_rows, Sequence):
         _fail("origin_rows must be a sequence")
-    rows = [
-        _origin_row(
+    rows: list[dict[str, Any]] = []
+    excluded_rows: list[dict[str, Any]] = []
+    for origin in origin_rows:
+        row, excluded = _origin_row(
             origin,
             strategy_id=subject_strategy,
             factor_name=subject_factor,
             factor_implementation_sha256=implementation_sha,
             horizon_sessions=horizon_sessions,
         )
-        for origin in origin_rows
-    ]
+        if row is not None:
+            rows.append(row)
+        if excluded is not None:
+            excluded_rows.append(excluded)
     rows = sorted(
         rows,
         key=lambda row: (
@@ -610,17 +732,32 @@ def build_factor_regime_origin_inventory(
             row["regime_evidence_ref"]["artifact_id"],
         ),
     )
+    excluded_rows = sorted(
+        excluded_rows,
+        key=lambda row: (
+            row["decision_session"],
+            row["factor_name"],
+            row["regime_state"],
+            row["regime_evidence_ref"]["artifact_id"],
+        ),
+    )
     regime_counts: dict[str, int] = {}
     for row in rows:
         regime_counts[row["regime_state"]] = regime_counts.get(row["regime_state"], 0) + 1
+    limitation_codes: list[str] = []
+    if excluded_rows:
+        limitation_codes.append("REGIME_HARD_STATE_UNKNOWN")
     document = {
         "authority": dict(NO_AUTHORITY),
         "created_at": created_at,
         "cutoff": cutoff,
+        "excluded_origin_count": len(excluded_rows),
+        "excluded_origin_rows": excluded_rows,
         "factor_implementation_sha256": implementation_sha,
         "factor_name": subject_factor,
         "horizon_sessions": HORIZON_SESSIONS,
         "inventory_id": "",
+        "limitation_codes": limitation_codes,
         "origin_count": len(rows),
         "origin_rows": rows,
         "policy_ref": _policy_ref(policy_ref),
