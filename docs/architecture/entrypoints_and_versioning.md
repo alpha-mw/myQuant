@@ -51,6 +51,16 @@
   它不开放 run、schedule、模型、
   provider、LLM、Factor Governance writer、portfolio、selector、formal、
   canary、promotion、execution、broker、order 或 trade surface。
+- V17 v4 因果 Regime Evidence 入口：
+  `quant-investor-v17-v4 regime-evidence-build` 与
+  `quant-investor-v17-v4 regime-evidence-status`。两者只接受显式 path+SHA，
+  不扫描 latest、目录或 JSONL history。新增
+  `myquant.v17.v4.regime-evidence.v2` 只允许
+  `PRIOR_SESSION_EFFECTIVE_NEXT_SESSION`、`FULL_PIT_MARKET` 和 filtered
+  causal inference；它固定为全 authority false，且不被 v1 portfolio、
+  forward stage、formal、canary、Factor Governance、weight/tier、selector
+  或 V15/default surface 接受。既有 `regime-evidence.v1` 不变且不能作为
+  v2 conditioning input。V5 adapter/pin 更新延后至 Sprint 1D。
 - 当前包版本为 `17.0.0`，它是删除旧公共入口的 V16 retirement release，
   不是 V17 runtime 协议。`market analyze/run` 只接受并默认使用 `v15`；
   任何已退役协议 literal 都在解析阶段 exit 2，且不回退、不写文件。
@@ -81,8 +91,11 @@
 - V17 production-research successor：`myquant.v17.v4`。当前新增显式、
   Factor-v4-gated 的 Shadow 运行和 V15/v4 日度灰度，但 Deep v2 尚未迁移
   到 formal portfolio、eligibility 或 canary v1 合同，selector 也不会执行
-  cutover。默认仍是 V15。完整迁移边界见
-  `docs/architecture/v17_v4_production_research_contract.md`。
+  cutover。新增 causal Regime Evidence v2 也是 additive research artifact
+  production，不是 production/default/formal authority。默认仍是 V15。完整
+  迁移边界见 `docs/architecture/v17_v4_production_research_contract.md`；
+  Regime v2 的因果、精度、closure 和回放合同见
+  `docs/architecture/v17_v4_causal_regime_evidence.md`。
 - V17 Investment Intelligence successor：`myquant.v17.v5`。Phase 0 仅建立
   research-only 契约、封闭 package/runtime manifest、永久 false authority
   和 v4 immutable artifact 只读兼容边界；它不是 v4 artifact 的重标，也未

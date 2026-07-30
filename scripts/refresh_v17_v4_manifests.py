@@ -36,6 +36,14 @@ def _write(path: Path, value: dict[str, object]) -> None:
 
 
 def main() -> None:
+    regime_source = RUNTIME / "regime_evidence_v2.py"
+    regime_policy = CONTRACT / "resources/regime_inference_policy.v1.json"
+    if regime_source.is_file() and regime_policy.is_file():
+        policy = json.loads(regime_policy.read_bytes())
+        policy["model_implementation_sha256"] = _sha(regime_source)
+        policy.pop("semantic_sha256", None)
+        _write(regime_policy, policy)
+
     forward_source_paths = [
         QUANT_INVESTOR / "factors/forward_evaluator.py",
         *sorted((QUANT_INVESTOR / "industry").glob("*.py")),

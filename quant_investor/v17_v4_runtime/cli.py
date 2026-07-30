@@ -5,9 +5,10 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from quant_investor.v17_v4_contract import verify_package
 
@@ -27,6 +28,12 @@ from .public_surfaces import (
 )
 from .research_quant import compile_research_quant_branch
 from .research_factor_set import ResearchFactorSetStore
+from .regime_evidence_v2 import (
+    RegimeEvidenceV2Error,
+    RegimeEvidenceV2InputGap,
+    build_regime_evidence_v2,
+    read_regime_evidence_v2,
+)
 from .shadow_runtime import publish_shadow_run, read_shadow_session
 from .source_builder import (
     SourceSnapshotError,
@@ -34,6 +41,26 @@ from .source_builder import (
     build_source_snapshot,
     gap_payload,
 )
+
+REGIME_EVIDENCE_AUTHORITY_ATTESTATION: Final = {
+    "broker": False,
+    "execution": False,
+    "formal_research_publication": False,
+    "order": False,
+    "research_runtime_default": False,
+    "trade": False,
+}
+
+REGIME_EVIDENCE_SIDE_EFFECTS: Final = {
+    "broker_calls": False,
+    "execution_calls": False,
+    "factor_governance_writes": False,
+    "order_calls": False,
+    "portfolio_writes": False,
+    "provider_calls": False,
+    "selector_writes": False,
+    "trade_calls": False,
+}
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -79,6 +106,46 @@ def _parser() -> argparse.ArgumentParser:
     )
     build_source.add_argument(
         "--strategy-universe-manifest-sha256",
+        required=True,
+    )
+    regime_evidence_build = commands.add_parser(
+        "regime-evidence-build",
+        help=(
+            "build one immutable, filtered-causal Regime Evidence v2 "
+            "artifact from explicit local path and SHA closure"
+        ),
+    )
+    regime_evidence_build.add_argument("--workspace-root", required=True)
+    regime_evidence_build.add_argument("--evidence-id", required=True)
+    regime_evidence_build.add_argument("--strategy-id", required=True)
+    regime_evidence_build.add_argument("--decision-session", required=True)
+    regime_evidence_build.add_argument("--cutoff", required=True)
+    regime_evidence_build.add_argument("--created-at", required=True)
+    for name in (
+        "inference-policy",
+        "model-snapshot",
+        "transition-matrix",
+        "feature-snapshot",
+    ):
+        regime_evidence_build.add_argument(f"--{name}-path", required=True)
+        regime_evidence_build.add_argument(f"--{name}-sha256", required=True)
+    regime_evidence_build.add_argument("--prior-evidence-path")
+    regime_evidence_build.add_argument("--prior-evidence-sha256")
+    regime_evidence_status = commands.add_parser(
+        "regime-evidence-status",
+        help="read and replay one exact Regime Evidence v2 artifact",
+    )
+    regime_evidence_status.add_argument("--workspace-root", required=True)
+    regime_evidence_status.add_argument(
+        "--artifact-path",
+        "--evidence-path",
+        dest="artifact_path",
+        required=True,
+    )
+    regime_evidence_status.add_argument(
+        "--expected-sha256",
+        "--evidence-sha256",
+        dest="expected_sha256",
         required=True,
     )
     deep_compile = commands.add_parser(
@@ -276,6 +343,123 @@ def _emit(payload: dict[str, Any]) -> None:
     )
 
 
+def _regime_evidence_base_payload() -> dict[str, Any]:
+    return {
+        "artifact_version": "myquant.v17.v4.regime-evidence.v2",
+        "authority": dict(REGIME_EVIDENCE_AUTHORITY_ATTESTATION),
+        "broker": False,
+        "default_protocol_state": "V15_DEFAULT",
+        "execution": False,
+        "factor_governance_write": False,
+        "formal_activation": False,
+        "global_activation_state": "INACTIVE",
+        "order": False,
+        "promotion": False,
+        "protocol_version": "myquant.v17.v4",
+        "provider_calls": False,
+        "research_runtime_default": False,
+        "run_state": "INACTIVE",
+        "selector": False,
+        "side_effects": dict(REGIME_EVIDENCE_SIDE_EFFECTS),
+        "trade": False,
+    }
+
+
+def _mapping(value: object) -> dict[str, Any]:
+    if isinstance(value, Mapping):
+        return dict(value)
+    if is_dataclass(value) and not isinstance(value, type):
+        converted = asdict(value)
+        if isinstance(converted, dict):
+            return converted
+    raise TypeError("Regime Evidence v2 result must be a mapping or dataclass")
+
+
+def _regime_evidence_success_payload(
+    value: object,
+    *,
+    status_read: bool,
+) -> dict[str, Any]:
+    result = _mapping(value)
+    document_value = result.get("document", result)
+    document = _mapping(document_value)
+    payload = _regime_evidence_base_payload()
+    for key in (
+        "available_at",
+        "created",
+        "created_at",
+        "coverage_ratio",
+        "cutoff",
+        "decision_session",
+        "effective_session",
+        "evidence_id",
+        "evidence_path",
+        "evidence_sha256",
+        "hard_state",
+        "inference_kind",
+        "model_id",
+        "model_version",
+        "market_sample_count",
+        "minimum_market_sample",
+        "observed_through_session",
+        "publication_phase",
+        "published_at",
+        "reused",
+        "scope_kind",
+        "smoothing_used",
+        "state_probabilities",
+        "strategy_id",
+    ):
+        if key in result:
+            payload[key] = result[key]
+        elif key in document:
+            payload[key] = document[key]
+    payload["blocker_codes"] = list(
+        document.get(
+            "blocker_codes",
+            result.get("blocker_codes", []),
+        )
+        or []
+    )
+    payload["evidence"] = document
+    payload["replay_result"] = document.get(
+        "replay_result",
+        result.get(
+            "replay_result",
+            {
+                "closure_replayed": True,
+                "hard_state_reclassified": False,
+                "status": "EXACT_REPLAY_VERIFIED",
+            },
+        ),
+    )
+    payload["status"] = (
+        "AVAILABLE"
+        if status_read
+        else str(result.get("status") or document.get("status") or "AVAILABLE")
+    )
+    return payload
+
+
+def _regime_evidence_failure_payload(
+    *,
+    status: str,
+    blocker_code: str,
+    detail: str,
+) -> dict[str, Any]:
+    return {
+        **_regime_evidence_base_payload(),
+        "blocker_codes": [blocker_code],
+        "detail": detail,
+        "replay_result": {
+            "closure_replayed": False,
+            "hard_state_reclassified": False,
+            "status": "NOT_AVAILABLE",
+        },
+        "status": status,
+    }
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.command == "verify":
@@ -309,6 +493,112 @@ def main(argv: Sequence[str] | None = None) -> int:
             gap = SourceSnapshotGap(f"SOURCE_SNAPSHOT_BUILD_FAILED: {exc}")
             _emit(gap_payload(gap))
             return gap.exit_code
+    if args.command == "regime-evidence-build":
+        if bool(args.prior_evidence_path) != bool(args.prior_evidence_sha256):
+            _emit(
+                _regime_evidence_failure_payload(
+                    status="BLOCKED",
+                    blocker_code="PRIOR_EVIDENCE_EXPLICIT_PAIR_REQUIRED",
+                    detail=(
+                        "--prior-evidence-path and --prior-evidence-sha256 "
+                        "must be supplied together"
+                    ),
+                )
+            )
+            return 2
+        try:
+            build_result = build_regime_evidence_v2(
+                workspace_root=str(Path(args.workspace_root).resolve()),
+                evidence_id=args.evidence_id,
+                strategy_id=args.strategy_id,
+                decision_session=args.decision_session,
+                cutoff=args.cutoff,
+                created_at=args.created_at,
+                inference_policy_path=args.inference_policy_path,
+                inference_policy_sha256=args.inference_policy_sha256,
+                model_snapshot_path=args.model_snapshot_path,
+                model_snapshot_sha256=args.model_snapshot_sha256,
+                transition_matrix_path=args.transition_matrix_path,
+                transition_matrix_sha256=args.transition_matrix_sha256,
+                feature_snapshot_path=args.feature_snapshot_path,
+                feature_snapshot_sha256=args.feature_snapshot_sha256,
+                prior_evidence_path=args.prior_evidence_path,
+                prior_evidence_sha256=args.prior_evidence_sha256,
+            )
+            _emit(
+                _regime_evidence_success_payload(
+                    build_result,
+                    status_read=False,
+                )
+            )
+            return 0
+        except RegimeEvidenceV2InputGap as exc:
+            code = str(
+                getattr(
+                    exc,
+                    "blocker_code",
+                    "TRUE_CURRENT_CANONICAL_INPUT_GAP",
+                )
+            )
+            _emit(
+                _regime_evidence_failure_payload(
+                    status="TRUE_CURRENT_CANONICAL_INPUT_GAP",
+                    blocker_code=code,
+                    detail=str(exc),
+                )
+            )
+            return 2
+        except RegimeEvidenceV2Error as exc:
+            code = str(getattr(exc, "blocker_code", "REGIME_EVIDENCE_V2_BLOCKED"))
+            _emit(
+                _regime_evidence_failure_payload(
+                    status="BLOCKED",
+                    blocker_code=code,
+                    detail=str(exc),
+                )
+            )
+            return 2
+    if args.command == "regime-evidence-status":
+        try:
+            status_result = read_regime_evidence_v2(
+                workspace_root=str(Path(args.workspace_root).resolve()),
+                evidence_path=args.artifact_path,
+                evidence_sha256=args.expected_sha256,
+            )
+            payload = _regime_evidence_success_payload(
+                status_result,
+                status_read=True,
+            )
+            payload["evidence_path"] = args.artifact_path
+            payload["evidence_sha256"] = args.expected_sha256
+            _emit(payload)
+            return 0
+        except RegimeEvidenceV2InputGap as exc:
+            code = str(
+                getattr(
+                    exc,
+                    "blocker_code",
+                    "TRUE_CURRENT_CANONICAL_INPUT_GAP",
+                )
+            )
+            _emit(
+                _regime_evidence_failure_payload(
+                    status="TRUE_CURRENT_CANONICAL_INPUT_GAP",
+                    blocker_code=code,
+                    detail=str(exc),
+                )
+            )
+            return 2
+        except RegimeEvidenceV2Error as exc:
+            code = str(getattr(exc, "blocker_code", "REGIME_EVIDENCE_V2_BLOCKED"))
+            _emit(
+                _regime_evidence_failure_payload(
+                    status="BLOCKED",
+                    blocker_code=code,
+                    detail=str(exc),
+                )
+            )
+            return 2
     if args.command == "run-forward":
         try:
             _emit(
