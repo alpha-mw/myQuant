@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, cast
@@ -7,6 +8,7 @@ from typing import Any, cast
 import pytest
 
 import quant_investor.v17_v4_runtime.cli as cli
+import quant_investor.v17_v4_runtime.regime_evidence_v2 as regime_v2
 
 SHA = "a" * 64
 
@@ -117,59 +119,44 @@ def test_build_parser_has_exact_required_closure_and_optional_prior_pair() -> No
     assert "output_path" not in optional | required
 
 
-def test_build_wires_only_explicit_inputs_and_emits_full_attestation(
+def test_public_build_is_blocked_without_writes_or_producer_calls(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    captured: dict[str, Any] = {}
+    called = {"v2": False, "v3": False}
 
-    def fake_build(**kwargs: Any) -> dict[str, Any]:
-        captured.update(kwargs)
-        return {
-            "status": "AVAILABLE",
-            "evidence_id": "regime-evidence-20260730",
-            "evidence_path": (
-                "data/private/v17_v4_sources/regime_evidence/"
-                "cn-aggressive-tech-manufacturing/2026-07-30/regime_evidence.v2.json"
-            ),
-            "evidence_sha256": SHA,
-            "created": True,
-            "reused": False,
-            "document": _document(),
-        }
+    def forbidden_v2(**kwargs: Any) -> object:
+        del kwargs
+        called["v2"] = True
+        raise AssertionError("V2 producer must not run")
 
-    monkeypatch.setattr(cli, "build_regime_evidence_v2", fake_build)
+    def forbidden_v3(**kwargs: Any) -> object:
+        del kwargs
+        called["v3"] = True
+        raise AssertionError("V3 producer must not run")
 
-    assert cli.main(_build_argv(tmp_path)) == 0
+    def forbidden_scan(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise AssertionError("blocked V2 command must not scan")
+
+    monkeypatch.setattr(regime_v2, "build_regime_evidence_v2", forbidden_v2)
+    monkeypatch.setattr(cli, "build_regime_evidence_v3", forbidden_v3)
+    monkeypatch.setattr(Path, "glob", forbidden_scan)
+    monkeypatch.setattr(Path, "rglob", forbidden_scan)
+
+    assert cli.main(_build_argv(tmp_path)) == 2
     body = json.loads(capsys.readouterr().out)
 
-    assert captured == {
-        "workspace_root": str(tmp_path.resolve()),
-        "evidence_id": "regime-evidence-20260730",
-        "strategy_id": "cn-aggressive-tech-manufacturing",
-        "decision_session": "2026-07-30",
-        "cutoff": "2026-07-30T07:00:00Z",
-        "created_at": "2026-07-29T07:05:00Z",
-        "inference_policy_path": "resources/regime_inference_policy.v1.json",
-        "inference_policy_sha256": SHA,
-        "model_snapshot_path": "data/private/v17_v4_sources/regime/model.json",
-        "model_snapshot_sha256": SHA,
-        "transition_matrix_path": ("data/private/v17_v4_sources/regime/transition.json"),
-        "transition_matrix_sha256": SHA,
-        "feature_snapshot_path": ("data/private/v17_v4_sources/regime/features.json"),
-        "feature_snapshot_sha256": SHA,
-        "prior_evidence_path": (
-            "data/private/v17_v4_sources/regime_evidence/"
-            "cn-aggressive-tech-manufacturing/2026-07-29/regime_evidence.v2.json"
-        ),
-        "prior_evidence_sha256": SHA,
-    }
-    assert body["status"] == "AVAILABLE"
-    assert body["hard_state"] == "趋势上涨"
-    assert sum(float(value) for value in body["state_probabilities"].values()) == pytest.approx(1.0)
-    assert body["replay_result"]["status"] == "EXACT_REPLAY_VERIFIED"
-    assert body["blocker_codes"] == []
+    assert called == {"v2": False, "v3": False}
+    assert list(tmp_path.iterdir()) == []
+    assert body["status"] == "REGIME_EVIDENCE_V2_CHAIN_NON_DEPLOYABLE"
+    assert body["blocker_codes"] == ["REGIME_EVIDENCE_V2_CHAIN_NON_DEPLOYABLE"]
+    assert body["requested_version"] == "myquant.v17.v4.regime-evidence.v2"
+    assert body["deployment_status"] == "CONTRACT_VALIDATED_NOT_DEPLOYABLE"
+    assert body["replacement_command"] == "regime-evidence-v3-build"
+    assert body["artifact_created"] is False
+    assert body["replay_result"]["status"] == "NOT_AVAILABLE"
     assert body["default_protocol_state"] == "V15_DEFAULT"
     assert body["global_activation_state"] == "INACTIVE"
     assert body["run_state"] == "INACTIVE"
@@ -183,11 +170,6 @@ def test_build_wires_only_explicit_inputs_and_emits_full_attestation(
     assert body["trade"] is False
     assert body["selector"] is False
     assert body["provider_calls"] is False
-    assert body["publication_phase"] == "PRIOR_SESSION_EFFECTIVE_NEXT_SESSION"
-    assert body["inference_kind"] == "FILTERED_CAUSAL"
-    assert body["smoothing_used"] is False
-    assert body["scope_kind"] == "FULL_MARKET"
-    assert body["market_sample_count"] == 5502
     assert set(body["authority"]) == {
         "broker",
         "execution",
@@ -200,29 +182,18 @@ def test_build_wires_only_explicit_inputs_and_emits_full_attestation(
     assert all(value is False for value in body["side_effects"].values())
 
 
-def test_build_rejects_half_of_optional_prior_pair_before_producer_call(
+def test_publication_block_precedes_optional_pair_validation(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    called = False
-
-    def forbidden_build(**kwargs: Any) -> object:
-        del kwargs
-        nonlocal called
-        called = True
-        raise AssertionError("producer must not run")
-
-    monkeypatch.setattr(cli, "build_regime_evidence_v2", forbidden_build)
     argv = _build_argv(tmp_path)
     del argv[-2:]
     argv.extend(["--prior-evidence-path", "data/private/v17_v4_sources/prior.json"])
 
     assert cli.main(argv) == 2
     body = json.loads(capsys.readouterr().out)
-    assert called is False
-    assert body["status"] == "BLOCKED"
-    assert body["blocker_codes"] == ["PRIOR_EVIDENCE_EXPLICIT_PAIR_REQUIRED"]
+    assert body["status"] == "REGIME_EVIDENCE_V2_CHAIN_NON_DEPLOYABLE"
+    assert body["artifact_created"] is False
     assert all(value is False for value in body["authority"].values())
 
 
@@ -288,47 +259,24 @@ def test_status_requires_exact_path_and_sha_without_latest_scanning(
     assert missing_sha.value.code == 2
 
 
-def test_missing_current_closure_is_gap_exit_two(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    class Gap(RuntimeError):
-        blocker_code = "TRUE_CURRENT_CANONICAL_INPUT_GAP"
-
-    def missing(**kwargs: Any) -> object:
-        del kwargs
-        raise Gap("feature snapshot is absent")
-
-    monkeypatch.setattr(cli, "RegimeEvidenceV2InputGap", Gap)
-    monkeypatch.setattr(cli, "build_regime_evidence_v2", missing)
-
-    assert cli.main(_build_argv(tmp_path)) == 2
-    body = json.loads(capsys.readouterr().out)
-    assert body["status"] == "TRUE_CURRENT_CANONICAL_INPUT_GAP"
-    assert body["blocker_codes"] == ["TRUE_CURRENT_CANONICAL_INPUT_GAP"]
-    assert body["replay_result"]["status"] == "NOT_AVAILABLE"
-    assert all(value is False for value in body["authority"].values())
-
-
-def test_integrity_failure_is_blocked_exit_two_not_gap(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    class Blocked(RuntimeError):
-        blocker_code = "FEATURE_SNAPSHOT_SHA256_MISMATCH"
-
-    def blocked(**kwargs: Any) -> object:
-        del kwargs
-        raise Blocked("feature snapshot SHA-256 mismatch")
-
-    monkeypatch.setattr(cli, "RegimeEvidenceV2Error", Blocked)
-    monkeypatch.setattr(cli, "build_regime_evidence_v2", blocked)
-
-    assert cli.main(_build_argv(tmp_path)) == 2
-    body = json.loads(capsys.readouterr().out)
-    assert body["status"] == "BLOCKED"
-    assert body["blocker_codes"] == ["FEATURE_SNAPSHOT_SHA256_MISMATCH"]
-    assert body["status"] != "TRUE_CURRENT_CANONICAL_INPUT_GAP"
-    assert all(value is False for value in body["side_effects"].values())
+def test_frozen_v1_v2_contract_policy_and_producer_bytes_are_unchanged() -> None:
+    root = Path(__file__).resolve().parents[2]
+    expected = {
+        "quant_investor/v17_v4_contract/schemas/regime_evidence.v1.schema.json": (
+            "49d006413465d7304c621f74f9732cc0d5636c400989d25b170ee4337ff229a3"
+        ),
+        "quant_investor/v17_v4_contract/schemas/regime_evidence.v2.schema.json": (
+            "1d2b624d63808038240d29cf27a48b62d1f3d3da32b757be8bd196916f22de8c"
+        ),
+        "quant_investor/v17_v4_contract/resources/regime_inference_policy.v1.json": (
+            "006773e24f47f0b7f28d6f7707ff6f570066cb212bd83ebd9566512fda7734ef"
+        ),
+        "quant_investor/v17_v4_runtime/regime_evidence_v2.py": (
+            "4e90e06eb340438e909b842a4f40e1dec7eb5ff3231e02c087499bda7646cc7a"
+        ),
+    }
+    observed = {
+        relative: hashlib.sha256((root / relative).read_bytes()).hexdigest()
+        for relative in expected
+    }
+    assert observed == expected

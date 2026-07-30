@@ -11,6 +11,10 @@ from pathlib import Path
 from typing import Any, Final
 
 from quant_investor.v17_v4_contract import verify_package
+from quant_investor.v17_v4_contract.canonical import (
+    CanonicalContractError,
+    load_canonical_resource,
+)
 
 from .authority import DELIVERY_STATUS, authority_envelope
 from .deep_v2 import compile_deep_v2
@@ -31,8 +35,15 @@ from .research_factor_set import ResearchFactorSetStore
 from .regime_evidence_v2 import (
     RegimeEvidenceV2Error,
     RegimeEvidenceV2InputGap,
-    build_regime_evidence_v2,
     read_regime_evidence_v2,
+)
+from .regime_evidence_v3 import (
+    REGIME_EVIDENCE_V3_VERSION,
+    RegimeEvidenceV3Error,
+    RegimeEvidenceV3InputGap,
+    audit_regime_chain_v3,
+    build_regime_evidence_v3,
+    replay_regime_evidence_v3,
 )
 from .shadow_runtime import publish_shadow_run, read_shadow_session
 from .source_builder import (
@@ -41,6 +52,7 @@ from .source_builder import (
     build_source_snapshot,
     gap_payload,
 )
+from .source_storage import SourceStorageError, SourceStore
 
 REGIME_EVIDENCE_AUTHORITY_ATTESTATION: Final = {
     "broker": False,
@@ -61,6 +73,8 @@ REGIME_EVIDENCE_SIDE_EFFECTS: Final = {
     "selector_writes": False,
     "trade_calls": False,
 }
+
+REGIME_EVIDENCE_V2_PUBLICATION_BLOCKER: Final = "REGIME_EVIDENCE_V2_CHAIN_NON_DEPLOYABLE"
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -111,8 +125,8 @@ def _parser() -> argparse.ArgumentParser:
     regime_evidence_build = commands.add_parser(
         "regime-evidence-build",
         help=(
-            "build one immutable, filtered-causal Regime Evidence v2 "
-            "artifact from explicit local path and SHA closure"
+            "fail closed because new Regime Evidence v2 publication is "
+            "not deployable; use regime-evidence-v3-build"
         ),
     )
     regime_evidence_build.add_argument("--workspace-root", required=True)
@@ -142,6 +156,41 @@ def _parser() -> argparse.ArgumentParser:
         dest="artifact_path",
         required=True,
     )
+    regime_v3_build = commands.add_parser(
+        "regime-evidence-v3-build",
+        help="build one bounded, checkpointed Regime Evidence v3 artifact",
+    )
+    regime_v3_build.add_argument("--workspace-root", required=True)
+    regime_v3_build.add_argument("--evidence-id", required=True)
+    regime_v3_build.add_argument("--strategy-id", required=True)
+    regime_v3_build.add_argument("--decision-session", required=True)
+    regime_v3_build.add_argument("--cutoff", required=True)
+    regime_v3_build.add_argument("--created-at", required=True)
+    for name in (
+        "inference-policy",
+        "model-snapshot",
+        "transition-matrix",
+        "feature-snapshot",
+    ):
+        regime_v3_build.add_argument(f"--{name}-path", required=True)
+        regime_v3_build.add_argument(f"--{name}-sha256", required=True)
+    for name in ("prior-evidence", "prior-checkpoint", "chain-anchor"):
+        regime_v3_build.add_argument(f"--{name}-path")
+        regime_v3_build.add_argument(f"--{name}-sha256")
+    regime_v3_status = commands.add_parser(
+        "regime-evidence-v3-status",
+        help="read and replay one exact Regime Evidence v3 artifact",
+    )
+    regime_v3_status.add_argument("--workspace-root", required=True)
+    regime_v3_status.add_argument("--artifact-path", required=True)
+    regime_v3_status.add_argument("--expected-sha256", required=True)
+    regime_v3_audit = commands.add_parser(
+        "regime-chain-v3-audit",
+        help="audit an explicit bounded V3 evidence-ref stream",
+    )
+    regime_v3_audit.add_argument("--workspace-root", required=True)
+    regime_v3_audit.add_argument("--request-path", required=True)
+    regime_v3_audit.add_argument("--request-sha256", required=True)
     regime_evidence_status.add_argument(
         "--expected-sha256",
         "--evidence-sha256",
@@ -460,6 +509,39 @@ def _regime_evidence_failure_payload(
     }
 
 
+def _regime_v3_payload(value: object, *, status_read: bool) -> dict[str, Any]:
+    payload = _regime_evidence_success_payload(value, status_read=status_read)
+    payload["artifact_version"] = REGIME_EVIDENCE_V3_VERSION
+    document = _mapping(_mapping(value).get("document", value))
+    for key in (
+        "chain_id",
+        "current_checkpoint_ref",
+        "finalized_evidence_ordinal",
+        "global_accumulator",
+        "missing_sessions",
+        "phase",
+        "record_commitment",
+        "segment_accumulator",
+        "segment_anchor_ref",
+        "segment_id",
+        "segment_index",
+        "segment_position",
+    ):
+        if key in document:
+            payload[key] = document[key]
+    return payload
+
+
+def _regime_v3_failure(exc: RegimeEvidenceV3Error) -> dict[str, Any]:
+    payload = _regime_evidence_failure_payload(
+        status=exc.status,
+        blocker_code=exc.blocker_code,
+        detail=exc.detail,
+    )
+    payload["artifact_version"] = REGIME_EVIDENCE_V3_VERSION
+    return payload
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.command == "verify":
@@ -493,21 +575,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             gap = SourceSnapshotGap(f"SOURCE_SNAPSHOT_BUILD_FAILED: {exc}")
             _emit(gap_payload(gap))
             return gap.exit_code
-    if args.command == "regime-evidence-build":
-        if bool(args.prior_evidence_path) != bool(args.prior_evidence_sha256):
-            _emit(
-                _regime_evidence_failure_payload(
-                    status="BLOCKED",
-                    blocker_code="PRIOR_EVIDENCE_EXPLICIT_PAIR_REQUIRED",
-                    detail=(
-                        "--prior-evidence-path and --prior-evidence-sha256 "
-                        "must be supplied together"
-                    ),
+    if args.command == "regime-evidence-v3-build":
+        for name in ("prior_evidence", "prior_checkpoint", "chain_anchor"):
+            if bool(getattr(args, f"{name}_path")) != bool(getattr(args, f"{name}_sha256")):
+                failure = RegimeEvidenceV3Error(
+                    "REGIME_EVIDENCE_V3_EXPLICIT_PAIR_REQUIRED",
+                    f"--{name.replace('_', '-')}-path and SHA must be supplied together",
                 )
-            )
-            return 2
+                _emit(_regime_v3_failure(failure))
+                return failure.exit_code
         try:
-            build_result = build_regime_evidence_v2(
+            result = build_regime_evidence_v3(
                 workspace_root=str(Path(args.workspace_root).resolve()),
                 evidence_id=args.evidence_id,
                 strategy_id=args.strategy_id,
@@ -524,40 +602,88 @@ def main(argv: Sequence[str] | None = None) -> int:
                 feature_snapshot_sha256=args.feature_snapshot_sha256,
                 prior_evidence_path=args.prior_evidence_path,
                 prior_evidence_sha256=args.prior_evidence_sha256,
+                prior_checkpoint_path=args.prior_checkpoint_path,
+                prior_checkpoint_sha256=args.prior_checkpoint_sha256,
+                chain_anchor_path=args.chain_anchor_path,
+                chain_anchor_sha256=args.chain_anchor_sha256,
+            )
+            _emit(_regime_v3_payload(result, status_read=False))
+            return 0
+        except RegimeEvidenceV3Error as exc:
+            _emit(_regime_v3_failure(exc))
+            return exc.exit_code
+    if args.command == "regime-evidence-v3-status":
+        try:
+            document = replay_regime_evidence_v3(
+                workspace_root=str(Path(args.workspace_root).resolve()),
+                evidence_path=args.artifact_path,
+                evidence_sha256=args.expected_sha256,
+            )
+            payload = _regime_v3_payload(document, status_read=True)
+            payload["evidence_path"] = args.artifact_path
+            payload["evidence_sha256"] = args.expected_sha256
+            _emit(payload)
+            return 0
+        except RegimeEvidenceV3Error as exc:
+            _emit(_regime_v3_failure(exc))
+            return exc.exit_code
+    if args.command == "regime-chain-v3-audit":
+        try:
+            store = SourceStore(str(Path(args.workspace_root).resolve()))
+            raw = store.read(args.request_path, args.request_sha256)
+            request = load_canonical_resource(
+                raw,
+                label="regime_chain_v3_audit_request",
+            )
+            if type(request) is not dict:
+                raise RegimeEvidenceV3Error(
+                    "REGIME_EVIDENCE_V3_AUDIT_REQUEST_INVALID",
+                    "audit request root must be an object",
+                )
+            audit_result = audit_regime_chain_v3(
+                workspace_root=str(Path(args.workspace_root).resolve()),
+                evidence_refs=request.get("evidence_refs", []),
+                expected_head_path=str(request.get("expected_head_path", "")),
+                expected_head_sha256=str(request.get("expected_head_sha256", "")),
+                audit_as_of_session=str(request.get("audit_as_of_session", "")),
             )
             _emit(
-                _regime_evidence_success_payload(
-                    build_result,
-                    status_read=False,
-                )
+                {
+                    **_regime_evidence_base_payload(),
+                    **audit_result,
+                    "artifact_version": REGIME_EVIDENCE_V3_VERSION,
+                }
             )
             return 0
-        except RegimeEvidenceV2InputGap as exc:
-            code = str(
-                getattr(
-                    exc,
-                    "blocker_code",
-                    "TRUE_CURRENT_CANONICAL_INPUT_GAP",
-                )
+        except RegimeEvidenceV3Error as exc:
+            _emit(_regime_v3_failure(exc))
+            return exc.exit_code
+        except (CanonicalContractError, SourceStorageError) as exc:
+            failure = RegimeEvidenceV3Error(
+                "REGIME_EVIDENCE_V3_AUDIT_REQUEST_INVALID",
+                str(exc),
             )
-            _emit(
-                _regime_evidence_failure_payload(
-                    status="TRUE_CURRENT_CANONICAL_INPUT_GAP",
-                    blocker_code=code,
-                    detail=str(exc),
-                )
-            )
-            return 2
-        except RegimeEvidenceV2Error as exc:
-            code = str(getattr(exc, "blocker_code", "REGIME_EVIDENCE_V2_BLOCKED"))
-            _emit(
-                _regime_evidence_failure_payload(
-                    status="BLOCKED",
-                    blocker_code=code,
-                    detail=str(exc),
-                )
-            )
-            return 2
+            _emit(_regime_v3_failure(failure))
+            return failure.exit_code
+    if args.command == "regime-evidence-build":
+        payload = _regime_evidence_failure_payload(
+            status=REGIME_EVIDENCE_V2_PUBLICATION_BLOCKER,
+            blocker_code=REGIME_EVIDENCE_V2_PUBLICATION_BLOCKER,
+            detail=(
+                "Regime Evidence v2 remains readable and replayable, but its "
+                "recursive predecessor chain is not deployable for new publication"
+            ),
+        )
+        payload.update(
+            {
+                "artifact_created": False,
+                "deployment_status": "CONTRACT_VALIDATED_NOT_DEPLOYABLE",
+                "replacement_command": "regime-evidence-v3-build",
+                "requested_version": "myquant.v17.v4.regime-evidence.v2",
+            }
+        )
+        _emit(payload)
+        return 2
     if args.command == "regime-evidence-status":
         try:
             status_result = read_regime_evidence_v2(

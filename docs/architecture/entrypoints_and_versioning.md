@@ -60,9 +60,12 @@
   canary、promotion、execution、broker、order 或 trade surface。
 - V17 v4 因果 Regime Evidence 入口：
   `quant-investor-v17-v4 regime-evidence-build` 与
-  `quant-investor-v17-v4 regime-evidence-status`。两者只接受显式 path+SHA，
-  不扫描 latest、目录或 JSONL history。新增
-  `myquant.v17.v4.regime-evidence.v2` 只允许
+  `quant-investor-v17-v4 regime-evidence-status`。V2 contract、validator 和
+  历史 status/replay 继续有效，但 `regime-evidence-build` 已固定返回
+  `REGIME_EVIDENCE_V2_CHAIN_NON_DEPLOYABLE`，不读取输入、不调用 producer、
+  不写 artifact；新发布只能使用 `regime-evidence-v3-build`，且不自动转换
+  V2 或历史回填。读取入口只接受显式 path+SHA，不扫描 latest、目录或
+  JSONL history。`myquant.v17.v4.regime-evidence.v2` 只允许
   `PRIOR_SESSION_EFFECTIVE_NEXT_SESSION`、`FULL_PIT_MARKET` 和 filtered
   causal inference；它固定为全 authority false，且不被 v1 portfolio、
   forward stage、formal、canary、Factor Governance、weight/tier、selector
@@ -110,6 +113,11 @@
   `1da7ffb636a3254940525d746549d15e827f06ba`，但它仍不是 v4 artifact 的
   重标，也未进入 operational runtime。后续 Sprint 必须逐阶段验收，且真实
   统计结论受成熟 forward-origin 门禁约束。
+- Additive Regime
+  Evidence v3 使用 bounded state checkpoint、64-record segment 和 hash
+  accumulator 修复 v2 的递归闭包与漏跑后永久阻塞问题；它不改变 v1/v2
+  consumer，也不具备任何新增权限。完整边界见
+  `docs/architecture/v17_v4_regime_checkpoint_chain.md`。
 - Factor Governance：`v4`，使用版本中立的 `results/factor_governance/`
 - Dashboard：Contract v3
 

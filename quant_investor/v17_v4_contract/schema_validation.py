@@ -252,6 +252,10 @@ _ARTIFACT_REGISTRY: Final = {
         "schemas/regime_evidence.v2.schema.json",
         "evidence_id",
     ),
+    "myquant.v17.v4.regime-evidence.v3": (
+        "schemas/regime_evidence.v3.schema.json",
+        "evidence_id",
+    ),
     "myquant.v17.v4.regime-feature-snapshot.v1": (
         "schemas/regime_feature_snapshot.v1.schema.json",
         "feature_snapshot_id",
@@ -259,6 +263,14 @@ _ARTIFACT_REGISTRY: Final = {
     "myquant.v17.v4.regime-model-snapshot.v1": (
         "schemas/regime_model_snapshot.v1.schema.json",
         "model_snapshot_id",
+    ),
+    "myquant.v17.v4.regime-model-snapshot.v2": (
+        "schemas/regime_model_snapshot.v2.schema.json",
+        "model_snapshot_id",
+    ),
+    "myquant.v17.v4.regime-chain-anchor.v1": (
+        "schemas/regime_chain_anchor.v1.schema.json",
+        "chain_anchor_id",
     ),
     "myquant.v17.v4.regime-market-terminal.v1": (
         "schemas/regime_market_terminal.v1.schema.json",
@@ -272,8 +284,20 @@ _ARTIFACT_REGISTRY: Final = {
         "schemas/regime_source_locator_terminal.v1.schema.json",
         "source_locator_terminal_id",
     ),
+    "myquant.v17.v4.regime-segment-anchor.v1": (
+        "schemas/regime_segment_anchor.v1.schema.json",
+        "segment_anchor_id",
+    ),
+    "myquant.v17.v4.regime-state-checkpoint.v1": (
+        "schemas/regime_state_checkpoint.v1.schema.json",
+        "checkpoint_id",
+    ),
     "myquant.v17.v4.regime-transition-matrix-snapshot.v1": (
         "schemas/regime_transition_matrix_snapshot.v1.schema.json",
+        "transition_snapshot_id",
+    ),
+    "myquant.v17.v4.regime-transition-matrix-snapshot.v2": (
+        "schemas/regime_transition_matrix_snapshot.v2.schema.json",
         "transition_snapshot_id",
     ),
     "myquant.v17.v4.research-factor-shadow-assertion.v1": (
