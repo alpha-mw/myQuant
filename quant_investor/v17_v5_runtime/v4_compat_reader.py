@@ -16,6 +16,9 @@ from quant_investor.v17_v4_contract import (
     load_canonical_artifact as load_v4_artifact,
 )
 from quant_investor.v17_v4_contract.canonical import load_canonical_resource
+from quant_investor.v17_v4_contract.resources import (
+    read_packaged_asset as read_v4_packaged_asset,
+)
 from quant_investor.v17_v5_contract.canonical import (
     canonical_bytes,
     validate_semantic_sha,
@@ -56,6 +59,20 @@ _SOURCE_REF_FIELDS: Final = frozenset(
         "relative_path",
         "role",
         "status",
+    }
+)
+_POLICY_REF_FIELDS: Final = frozenset(
+    {
+        "byte_sha256",
+        "relative_path",
+        "semantic_sha256",
+        "version",
+    }
+)
+_ALLOWED_REGIME_POLICY_PATHS: Final = frozenset(
+    {
+        "resources/regime_inference_policy.v1.json",
+        "resources/regime_inference_policy.v2.json",
     }
 )
 _FORBIDDEN_TRUE_FIELDS: Final = frozenset(
@@ -317,6 +334,46 @@ def _resolve_pointer(value: Any, pattern: str) -> tuple[tuple[str, Any], ...]:
 
 def _is_artifact_ref(value: Any) -> bool:
     return type(value) is dict and set(value) == _ARTIFACT_REF_FIELDS
+
+
+def _is_packaged_regime_policy_ref(value: Any) -> bool:
+    return type(value) is dict and set(value) == _POLICY_REF_FIELDS
+
+
+def _validate_packaged_regime_policy_ref(value: Any, *, label: str) -> None:
+    if not _is_packaged_regime_policy_ref(value):
+        raise V4CompatibilityError(f"{label} is not an exact packaged policy reference")
+    try:
+        relative_path = require_relative_path(
+            value["relative_path"],
+            label=f"{label}.relative_path",
+        )
+        byte_sha = require_sha256(value["byte_sha256"], label=f"{label}.byte_sha256")
+        semantic_sha = require_sha256(
+            value["semantic_sha256"],
+            label=f"{label}.semantic_sha256",
+        )
+        version = require_identifier(value["version"], label=f"{label}.version")
+    except IdentityContractError as exc:
+        raise V4CompatibilityError(str(exc)) from exc
+    if relative_path not in _ALLOWED_REGIME_POLICY_PATHS:
+        raise V4CompatibilityError(f"{label} packaged policy path is not allowed")
+    try:
+        raw = read_v4_packaged_asset(relative_path)
+        document = load_canonical_resource(raw, label=relative_path)
+        if type(document) is not dict:
+            raise V4CompatibilityError(f"{label} packaged policy is not an object")
+        validate_semantic_sha(document)
+    except V4CompatibilityError:
+        raise
+    except Exception as exc:
+        raise V4CompatibilityError(f"{label} packaged policy verification failed") from exc
+    if (
+        hashlib.sha256(raw).hexdigest() != byte_sha
+        or document.get("semantic_sha256") != semantic_sha
+        or document.get("version") != version
+    ):
+        raise V4CompatibilityError(f"{label} packaged policy identity mismatch")
 
 
 def _validate_artifact_ref(
@@ -726,6 +783,17 @@ def read_v4_artifact(
             discovered_refs = {
                 pointer for pointer, value in _walk(document) if _is_artifact_ref(value)
             }
+            packaged_policy_pointers = {
+                pointer
+                for pointer, value in _walk(document)
+                if _is_packaged_regime_policy_ref(value)
+            }
+            for pointer in sorted(packaged_policy_pointers):
+                resolved_value = dict(_walk(document))[pointer]
+                _validate_packaged_regime_policy_ref(
+                    resolved_value,
+                    label=f"{child_path}:{pointer}",
+                )
             ordinary_declared = {
                 pointer
                 for pointer in declared_ref_pointers
@@ -741,6 +809,7 @@ def read_v4_artifact(
                     and ("relative_path" in value or "byte_sha256" in value)
                     and not _is_artifact_ref(value)
                     and pointer not in terminal_source_pointers
+                    and pointer not in packaged_policy_pointers
                 ):
                     raise V4CompatibilityError("artifact contains a partial external reference")
             for _, reference in sorted(

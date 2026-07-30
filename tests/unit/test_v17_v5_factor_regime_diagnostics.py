@@ -77,9 +77,13 @@ def _v4_ref(kind: str, index: int) -> ContentArtifactRef:
         semantic_sha256=_sha(f"{kind}-{index}-semantic"),
         strategy_id="cn-strategy",
         version=(
-            "myquant.v17.v4.regime-evidence.v2"
+            "myquant.v17.v4.regime-evidence.v3"
             if kind == "regime-evidence"
-            else f"myquant.v17.v4.{kind}.v1"
+            else (
+                "myquant.v17.v4.regime-state-checkpoint.v1"
+                if kind == "regime-state-checkpoint"
+                else f"myquant.v17.v4.{kind}.v1"
+            )
         ),
     )
 
@@ -104,8 +108,8 @@ def _regime(index: int, *, state: str) -> RegimeEvidenceSnapshot:
         regime_state=state,
         scope_kind="FULL_MARKET",
         smoothing_used=False,
-        source_commit="1da7ffb636a3254940525d746549d15e827f06ba",
-        source_version="myquant.v17.v4.regime-evidence.v2",
+        source_commit="73c5b6eea6c60d9a31865e176646687ffeee9d6a",
+        source_version="myquant.v17.v4.regime-evidence.v3",
         state_order=["趋势上涨", "震荡低波", "震荡高波", "趋势下跌", "未知"],
         state_probabilities={
             "趋势上涨": "0.8" if state == "趋势上涨" else "0.0",
@@ -115,6 +119,18 @@ def _regime(index: int, *, state: str) -> RegimeEvidenceSnapshot:
             "未知": "1.0" if state == "未知" else "0.0",
         },
         strategy_id="cn-strategy",
+        checkpoint_ref=replace(
+            _v4_ref("regime-state-checkpoint", index),
+            cutoff=f"2026-01-{index + 2:02d}T07:30:00Z",
+        ),
+        finalized=True,
+        continuity_kind="CONTIGUOUS",
+        segment_id=_sha(f"segment-{index // 64}"),
+        segment_index=index // 64,
+        segment_position=(index % 63) + 1,
+        transition_commitment_sha256=_sha(f"record-{index}"),
+        chain_digest_sha256=_sha(f"chain-{index}"),
+        segment_accumulator_sha256=_sha(f"segment-accumulator-{index}"),
     )
 
 

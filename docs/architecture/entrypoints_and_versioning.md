@@ -36,25 +36,27 @@
   SHA，并在 exact calendar/bars/holdings/source-closure 绑定一致时生成
   `v15_v17_v4_gray_comparison`；不再扫描 v3 workspace。该显式入口不改变
   V15 默认路由。
-- V17 v5 Sprint-1D 契约入口：`quant-investor-v17-v5`。当前开放
+- V17 v5 Sprint-1E-0B 契约入口：`quant-investor-v17-v5`。当前开放
   `status`、`verify` 和 stdout-only 的 `factor-regime-diagnostics`，状态固定为
-  `SPRINT1D_CAUSAL_REGIME_ADAPTER_AVAILABLE_NOT_OPERATIONAL`。它使用独立
+  `SPRINT1E0B_BOUNDED_REGIME_EVIDENCE_ADAPTER_AVAILABLE_NOT_OPERATIONAL`。它使用独立
   `myquant.v17.v5` 协议和
   `quant_investor.v17_v5_contract` / `quant_investor.v17_v5_runtime`
   包，只读验证 pin 至
-  `1da7ffb636a3254940525d746549d15e827f06ba` 的 v4 predecessor 和显式
+  `73c5b6eea6c60d9a31865e176646687ffeee9d6a` 的 v4 predecessor 和显式
   allowlist dependency closure，
   并提供纯内存、描述性、无文件写入的 V4 evidence adapter、Factor
   maturity/RankIC/coverage/replay、lifecycle 与 origin-regime diagnostic
-  library。Sprint 1D 的 regime conditioning 只接受
-  `myquant.v17.v4.regime-evidence.v2`，且必须是
+  library。Sprint 1E-0B 的 regime conditioning 只接受 finalized
+  `myquant.v17.v4.regime-evidence.v3`，且必须是
   `PRIOR_SESSION_EFFECTIVE_NEXT_SESSION`、`FILTERED_CAUSAL`、
   `smoothing_used=false`、`FULL_MARKET`、producer-sealed hard state；
-  `regime-evidence.v1` 可保持完整性验证但不具备 conditioning 资格，`未知`
-  不进入有效 regime bucket。它不扫描或写入 V4 artifact，不调用 V4 producer，
-  不重算 posterior/argmax，不输出 effectiveness、inference、tier、weight、
-  action 或 promotion 结论；`descriptive_coverage_minimum_met` 也不是 Factor
-  Governance 门禁。
+  evidence 与显式 current checkpoint 必须通过复合终局和直接 bounded closure
+  校验。`CONTIGUOUS`、`ROLLOVER` 可进入 conditioning；`GENESIS`、`RECOVERY`
+  和 `未知`不进入。`regime-evidence.v1`、`regime-evidence.v2` 仍可完整性
+  验证但不具备 conditioning 资格。它不扫描或写入 V4 artifact，不调用 V4
+  producer，不递归历史 checkpoint，不重算 posterior/argmax/commitment/digest，
+  不输出 effectiveness、inference、tier、weight、action 或 promotion 结论；
+  `descriptive_coverage_minimum_met` 也不是 Factor Governance 门禁。
   它不开放 run、schedule、模型、
   provider、LLM、Factor Governance writer、portfolio、selector、formal、
   canary、promotion、execution、broker、order 或 trade surface。
@@ -70,7 +72,8 @@
   causal inference；它固定为全 authority false，且不被 v1 portfolio、
   forward stage、formal、canary、Factor Governance、weight/tier、selector
   或 V15/default surface 接受。既有 `regime-evidence.v1` 不变且不能作为
-  v2 conditioning input。V5 Sprint 1D 只读接入 v2；不会修改该 V4 producer。
+  v2 conditioning input。V5 Sprint 1E-0B 只读接入 finalized v3；不会修改
+  该 V4 producer。
 - 当前包版本为 `17.0.0`，它是删除旧公共入口的 V16 retirement release，
   不是 V17 runtime 协议。`market analyze/run` 只接受并默认使用 `v15`；
   任何已退役协议 literal 都在解析阶段 exit 2，且不回退、不写文件。
@@ -101,16 +104,18 @@
 - V17 production-research successor：`myquant.v17.v4`。当前新增显式、
   Factor-v4-gated 的 Shadow 运行和 V15/v4 日度灰度，但 Deep v2 尚未迁移
   到 formal portfolio、eligibility 或 canary v1 合同，selector 也不会执行
-  cutover。新增 causal Regime Evidence v2 也是 additive research artifact
-  production，不是 production/default/formal authority。默认仍是 V15。完整
+  cutover。Additive causal Regime Evidence v3 只提供 research artifact
+  publication，不是 production/default/formal authority。默认仍是 V15。完整
   迁移边界见 `docs/architecture/v17_v4_production_research_contract.md`；
-  Regime v2 的因果、精度、closure 和回放合同见
-  `docs/architecture/v17_v4_causal_regime_evidence.md`。
+  Regime v1/v2 保留历史读取兼容性，新的因果 Regime publication 只允许
+  bounded `regime-evidence.v3`；其因果、精度、closure 和回放合同见
+  `docs/architecture/v17_v4_causal_regime_evidence.md` 与
+  `docs/architecture/v17_v4_regime_checkpoint_chain.md`。
 - V17 Investment Intelligence successor：`myquant.v17.v5`。当前建立
   research-only 契约、封闭 package/runtime manifest、永久 false authority
-  和 v4 immutable artifact 只读兼容边界；Sprint 1D 将 predecessor pin 更新
-  到 V4 causal regime evidence producer commit
-  `1da7ffb636a3254940525d746549d15e827f06ba`，但它仍不是 v4 artifact 的
+  和 v4 immutable artifact 只读兼容边界；Sprint 1E-0B 将 predecessor pin 更新
+  到 V4 bounded regime evidence commit
+  `73c5b6eea6c60d9a31865e176646687ffeee9d6a`，但它仍不是 v4 artifact 的
   重标，也未进入 operational runtime。后续 Sprint 必须逐阶段验收，且真实
   统计结论受成熟 forward-origin 门禁约束。
 - Additive Regime

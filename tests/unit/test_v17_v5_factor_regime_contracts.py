@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 from typing import Any
 
@@ -32,6 +34,16 @@ CUTOFF = "2026-07-29T08:00:00Z"
 CREATED_AT = "2026-07-29T08:00:01Z"
 STRATEGY = "quant-first"
 REGIME_PATH = "data/private/v17_v4_runs/run-1/regime.json"
+
+_V3_TEST_PATH = Path(__file__).with_name("test_v17_v4_regime_evidence_v3.py")
+_V3_SPEC = importlib.util.spec_from_file_location(
+    "_v4_v3_regime_cli_test_support",
+    _V3_TEST_PATH,
+)
+assert _V3_SPEC is not None and _V3_SPEC.loader is not None
+_V3_SUPPORT = importlib.util.module_from_spec(_V3_SPEC)
+sys.modules[_V3_SPEC.name] = _V3_SUPPORT
+_V3_SPEC.loader.exec_module(_V3_SUPPORT)
 
 
 def _policy_ref() -> dict[str, str]:
@@ -102,10 +114,12 @@ def test_policy_is_content_addressed_descriptive_only_and_source_ineligible() ->
     assert policy["minimum_descriptive_origins"] == 20
     assert policy["minimum_stability_origins"] == 60
     assert policy["newey_west_lag"] == 19
-    assert policy["accepted_regime_source_versions"] == ["myquant.v17.v4.regime-evidence.v2"]
+    assert policy["accepted_regime_source_versions"] == ["myquant.v17.v4.regime-evidence.v3"]
     assert policy["required_inference_kind"] == "FILTERED_CAUSAL"
     assert policy["required_smoothing_used"] is False
     assert policy["conditioning_ineligible_states"] == ["未知"]
+    assert policy["conditioning_eligible_continuity"] == ["CONTIGUOUS", "ROLLOVER"]
+    assert policy["conditioning_ineligible_continuity"] == ["GENESIS", "RECOVERY"]
     assert policy["authority"] == NO_AUTHORITY
 
 
@@ -120,12 +134,20 @@ def test_new_schemas_register_identity_and_exclude_governance_fields() -> None:
             "factor_regime_origin_inventory.v2.schema.json",
             "inventory_id",
         ),
+        "myquant.v17.v5.factor-regime-origin-inventory.v3": (
+            "factor_regime_origin_inventory.v3.schema.json",
+            "inventory_id",
+        ),
         "myquant.v17.v5.regime-conditioned-factor-diagnostic.v1": (
             "regime_conditioned_factor_diagnostic.v1.schema.json",
             "diagnostic_id",
         ),
         "myquant.v17.v5.regime-conditioned-factor-diagnostic.v2": (
             "regime_conditioned_factor_diagnostic.v2.schema.json",
+            "diagnostic_id",
+        ),
+        "myquant.v17.v5.regime-conditioned-factor-diagnostic.v3": (
+            "regime_conditioned_factor_diagnostic.v3.schema.json",
             "diagnostic_id",
         ),
     }
@@ -156,7 +178,7 @@ def test_unavailable_diagnostic_validates_without_fake_factor_sha() -> None:
         created_at=CREATED_AT,
         unavailable_prerequisites=(
             "V4_FACTOR_EVIDENCE_UNAVAILABLE",
-            "V4_REGIME_EVIDENCE_UNAVAILABLE",
+            "V4_REGIME_EVIDENCE_V3_UNAVAILABLE",
         ),
     )
 
@@ -243,6 +265,65 @@ def test_cli_exact_v4_regime_v1_stays_unavailable_without_inference(
     assert (
         "REGIME_EVIDENCE_V1_NOT_CONDITIONING_ELIGIBLE" in payload["diagnostic"]["limitation_codes"]
     )
+    assert _tree(tmp_path) == before
+
+
+def test_cli_exact_finalized_v3_reports_metadata_without_persisting(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    sessions = _V3_SUPPORT._business_sessions("2026-07-29", 8)
+    factory = _V3_SUPPORT.V3Factory(tmp_path, sessions)
+    genesis, _ = factory.build(
+        observed=sessions[0],
+        effective=sessions[1],
+        created_at="2026-07-30T00:01:00Z",
+    )
+    contiguous, _ = factory.build(
+        observed=sessions[1],
+        effective=sessions[2],
+        created_at="2026-07-30T15:21:00Z",
+        prior=genesis,
+    )
+    before = _tree(tmp_path)
+
+    assert (
+        main(
+            [
+                "factor-regime-diagnostics",
+                "--workspace-root",
+                str(tmp_path),
+                "--strategy-id",
+                str(contiguous.document["strategy_id"]),
+                "--factor-name",
+                "cn-factor",
+                "--evaluation-cutoff",
+                str(contiguous.document["cutoff"]),
+                "--created-at",
+                "2026-07-31T08:00:00Z",
+                "--output-id",
+                "diagnostic-request-v3",
+                "--factor-evidence-unavailable",
+                "--regime-evidence-path",
+                contiguous.evidence_path,
+                "--regime-evidence-sha256",
+                contiguous.evidence_sha256,
+                "--regime-checkpoint-path",
+                contiguous.chain_checkpoint_path,
+                "--regime-checkpoint-sha256",
+                contiguous.chain_checkpoint_sha256,
+            ]
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "UNAVAILABLE"
+    assert payload["regime_source_version"] == "myquant.v17.v4.regime-evidence.v3"
+    assert payload["regime_finalized"] is True
+    assert payload["continuity_kind"] == "CONTIGUOUS"
+    assert payload["regime_conditioning_eligibility"] is True
+    assert payload["predecessor_source_commit"] == ("73c5b6eea6c60d9a31865e176646687ffeee9d6a")
+    assert payload["diagnostic"]["limitation_codes"] == ["V4_FACTOR_EVIDENCE_UNAVAILABLE"]
     assert _tree(tmp_path) == before
 
 
@@ -357,22 +438,24 @@ def test_cli_exact_eligible_inputs_fail_closed_until_origin_assembly_is_enabled(
                     "version": "myquant.v17.v4.forward-evaluation-receipt.v1",
                 }
             ),
-            SimpleNamespace(document={"version": "myquant.v17.v4.regime-evidence.v2"}),
+            SimpleNamespace(document={"version": "myquant.v17.v4.regime-evidence.v3"}),
         )
     )
     monkeypatch.setattr(cli_module, "read_v4_artifact", lambda *args, **kwargs: next(reads))
     monkeypatch.setattr(
         cli_module,
         "adapt_v4_regime_evidence",
-        lambda read: SimpleNamespace(
+        lambda read, **kwargs: SimpleNamespace(
             conditioning_eligible=True,
             conditioning_ineligibility_reason=None,
+            continuity_kind="CONTIGUOUS",
+            finalized=True,
             hard_state="趋势上涨",
             inference_kind="FILTERED_CAUSAL",
             publication_phase="PRIOR_SESSION_EFFECTIVE_NEXT_SESSION",
             scope_kind="FULL_MARKET",
             smoothing_used=False,
-            source_version="myquant.v17.v4.regime-evidence.v2",
+            source_version="myquant.v17.v4.regime-evidence.v3",
         ),
     )
 
@@ -397,9 +480,13 @@ def test_cli_exact_eligible_inputs_fail_closed_until_origin_assembly_is_enabled(
                 "--factor-evidence-sha256",
                 "1" * 64,
                 "--regime-evidence-path",
-                "data/private/v17_v4_runs/regime-evidence-v2.json",
+                "data/private/v17_v4_runs/regime-evidence-v3.json",
                 "--regime-evidence-sha256",
                 "2" * 64,
+                "--regime-checkpoint-path",
+                "data/private/v17_v4_runs/regime-state-checkpoint.json",
+                "--regime-checkpoint-sha256",
+                "3" * 64,
             ]
         )
         == 0

@@ -29,6 +29,10 @@ _ARTIFACT_REGISTRY: Final = {
         "schemas/factor_regime_origin_inventory.v2.schema.json",
         "inventory_id",
     ),
+    "myquant.v17.v5.factor-regime-origin-inventory.v3": (
+        "schemas/factor_regime_origin_inventory.v3.schema.json",
+        "inventory_id",
+    ),
     "myquant.v17.v5.regime-conditioned-factor-diagnostic.v1": (
         "schemas/regime_conditioned_factor_diagnostic.v1.schema.json",
         "diagnostic_id",
@@ -37,12 +41,20 @@ _ARTIFACT_REGISTRY: Final = {
         "schemas/regime_conditioned_factor_diagnostic.v2.schema.json",
         "diagnostic_id",
     ),
+    "myquant.v17.v5.regime-conditioned-factor-diagnostic.v3": (
+        "schemas/regime_conditioned_factor_diagnostic.v3.schema.json",
+        "diagnostic_id",
+    ),
     "myquant.v17.v5.v4-predecessor-binding.v1": (
         "schemas/v4_predecessor_binding.v1.schema.json",
         "binding_id",
     ),
     "myquant.v17.v5.v4-predecessor-binding.v2": (
         "schemas/v4_predecessor_binding.v2.schema.json",
+        "binding_id",
+    ),
+    "myquant.v17.v5.v4-predecessor-binding.v3": (
+        "schemas/v4_predecessor_binding.v3.schema.json",
         "binding_id",
     ),
 }

@@ -8,6 +8,7 @@ import pytest
 
 from quant_investor.v17_v5_contract import canonical_bytes, seal_semantic, validate_artifact
 from quant_investor.v17_v5_contract.validators import (
+    ArtifactContractError,
     FACTOR_REGIME_DIAGNOSTIC_POLICY_BYTE_SHA256,
     FACTOR_REGIME_DIAGNOSTIC_POLICY_ID,
     FACTOR_REGIME_DIAGNOSTIC_POLICY_PATH,
@@ -54,14 +55,24 @@ def _v4_ref(kind: str, index: int, *, strategy_id: str = "cn-strategy") -> Conte
         semantic_sha256=_sha(f"{kind}-{index}-semantic"),
         strategy_id=strategy_id,
         version=(
-            "myquant.v17.v4.regime-evidence.v2"
+            "myquant.v17.v4.regime-evidence.v3"
             if kind == "regime-evidence"
-            else f"myquant.v17.v4.{kind}.v1"
+            else (
+                "myquant.v17.v4.regime-state-checkpoint.v1"
+                if kind == "regime-state-checkpoint"
+                else f"myquant.v17.v4.{kind}.v1"
+            )
         ),
     )
 
 
-def _regime(index: int, *, state: str = "趋势上涨") -> RegimeEvidenceSnapshot:
+def _regime(
+    index: int,
+    *,
+    state: str = "趋势上涨",
+    continuity: str = "CONTIGUOUS",
+) -> RegimeEvidenceSnapshot:
+    segment_position = 0 if continuity in {"GENESIS", "RECOVERY", "ROLLOVER"} else (index % 63) + 1
     return RegimeEvidenceSnapshot(
         available_at=f"2026-01-{index + 2:02d}T07:00:00Z",
         calendar_previous_open_session=f"2026-01-{index + 1:02d}",
@@ -81,8 +92,8 @@ def _regime(index: int, *, state: str = "趋势上涨") -> RegimeEvidenceSnapsho
         regime_state=state,
         scope_kind="FULL_MARKET",
         smoothing_used=False,
-        source_commit="1da7ffb636a3254940525d746549d15e827f06ba",
-        source_version="myquant.v17.v4.regime-evidence.v2",
+        source_commit="73c5b6eea6c60d9a31865e176646687ffeee9d6a",
+        source_version="myquant.v17.v4.regime-evidence.v3",
         state_order=["趋势上涨", "震荡低波", "震荡高波", "趋势下跌", "未知"],
         state_probabilities={
             "趋势上涨": "0.8" if state == "趋势上涨" else "0.0",
@@ -92,6 +103,18 @@ def _regime(index: int, *, state: str = "趋势上涨") -> RegimeEvidenceSnapsho
             "未知": "1.0" if state == "未知" else "0.0",
         },
         strategy_id="cn-strategy",
+        checkpoint_ref=replace(
+            _v4_ref("regime-state-checkpoint", index),
+            cutoff=f"2026-01-{index + 2:02d}T07:30:00Z",
+        ),
+        finalized=True,
+        continuity_kind=continuity,
+        segment_id=_sha(f"segment-{index // 64}"),
+        segment_index=index // 64,
+        segment_position=segment_position,
+        transition_commitment_sha256=_sha(f"record-{index}"),
+        chain_digest_sha256=_sha(f"chain-{index}"),
+        segment_accumulator_sha256=_sha(f"segment-accumulator-{index}"),
     )
 
 
@@ -252,7 +275,7 @@ def test_regime_ref_version_cutoff_and_sealed_hard_state_are_preserved() -> None
     assert artifact["origin_rows"][0]["regime_state"] == "趋势上涨"
 
 
-def test_v2_origin_binding_rejects_stale_future_smoothed_and_subset_regime() -> None:
+def test_v3_origin_binding_rejects_stale_future_smoothed_and_subset_regime() -> None:
     stale = replace(
         _origin(0),
         regime_evidence=replace(_regime(0), decision_session="2026-01-01"),
@@ -284,6 +307,83 @@ def test_unknown_regime_is_excluded_and_counted_without_conditionable_bucket() -
     assert artifact["excluded_origin_rows"][0]["regime_state"] == "未知"
     assert validate_factor_regime_origin_inventory(artifact) == artifact
     assert validate_artifact(artifact) == artifact
+
+
+@pytest.mark.parametrize(
+    ("continuity", "eligible", "limitation"),
+    (
+        ("GENESIS", False, "REGIME_CONTINUITY_GENESIS"),
+        ("RECOVERY", False, "REGIME_CONTINUITY_RECOVERY"),
+        ("CONTIGUOUS", True, None),
+        ("ROLLOVER", True, None),
+    ),
+)
+def test_v3_continuity_conditioning_eligibility_is_sealed(
+    continuity: str,
+    eligible: bool,
+    limitation: str | None,
+) -> None:
+    origin = replace(
+        _origin(0),
+        regime_evidence=_regime(0, continuity=continuity),
+    )
+    artifact = _inventory(origin)
+
+    assert artifact["origin_count"] == (1 if eligible else 0)
+    assert artifact["excluded_origin_count"] == (0 if eligible else 1)
+    if limitation is not None:
+        assert artifact["limitation_codes"] == [limitation]
+
+
+def test_v3_not_finalized_fails_closed() -> None:
+    origin = _origin(0)
+    with pytest.raises(
+        FactorRegimeOriginInventoryError,
+        match="REGIME_EVIDENCE_V3_NOT_FINALIZED",
+    ):
+        _inventory(
+            replace(
+                origin,
+                regime_evidence=replace(origin.regime_evidence, finalized=False),
+            )
+        )
+
+
+def test_multi_segment_conditioning_uses_only_current_sealed_continuity() -> None:
+    continuities = (
+        "GENESIS",
+        "CONTIGUOUS",
+        "CONTIGUOUS",
+        "ROLLOVER",
+        "RECOVERY",
+        "CONTIGUOUS",
+    )
+    origins = [
+        replace(
+            _origin(index),
+            regime_evidence=_regime(index, continuity=continuity),
+        )
+        for index, continuity in enumerate(continuities)
+    ]
+
+    artifact = _inventory(*origins)
+
+    assert artifact["origin_count"] == 4
+    assert artifact["excluded_origin_count"] == 2
+    assert [row["regime_continuity_kind"] for row in artifact["origin_rows"]] == [
+        "CONTIGUOUS",
+        "CONTIGUOUS",
+        "ROLLOVER",
+        "CONTIGUOUS",
+    ]
+    assert {row["regime_continuity_kind"] for row in artifact["excluded_origin_rows"]} == {
+        "GENESIS",
+        "RECOVERY",
+    }
+    assert artifact["limitation_codes"] == [
+        "REGIME_CONTINUITY_GENESIS",
+        "REGIME_CONTINUITY_RECOVERY",
+    ]
 
 
 def test_two_distinct_unknown_regime_evidence_refs_for_one_origin_fail_closed() -> None:
@@ -381,3 +481,39 @@ def test_public_contract_rejects_resealed_identity_coverage_and_ref_drift() -> N
     row["row_identity_sha256"] = hashlib.sha256(canonical_bytes(identity_row)).hexdigest()
     with pytest.raises(FactorRegimeOriginInventoryError, match="identity"):
         validate_factor_regime_origin_inventory(_reseal(bad_ref))
+
+
+@pytest.mark.parametrize(
+    ("continuity", "state", "limitation_codes"),
+    [
+        ("CONTIGUOUS", "趋势上涨", ["REGIME_HARD_STATE_UNKNOWN"]),
+        ("GENESIS", "趋势上涨", ["REGIME_CONTINUITY_RECOVERY"]),
+        ("RECOVERY", "未知", ["REGIME_CONTINUITY_RECOVERY"]),
+    ],
+)
+def test_resealed_excluded_origin_must_match_exact_exclusion_facts(
+    continuity: str,
+    state: str,
+    limitation_codes: list[str],
+) -> None:
+    artifact = _inventory(
+        replace(
+            _origin(0, state="未知"),
+            regime_evidence=_regime(0, state="未知", continuity="GENESIS"),
+        )
+    )
+    tampered = copy.deepcopy(artifact)
+    row = tampered["excluded_origin_rows"][0]
+    row["regime_continuity_kind"] = continuity
+    row["regime_state"] = state
+    row["row_limitation_codes"] = limitation_codes
+    identity_row = dict(row)
+    identity_row.pop("row_identity_sha256")
+    row["row_identity_sha256"] = hashlib.sha256(canonical_bytes(identity_row)).hexdigest()
+    tampered["limitation_codes"] = sorted(limitation_codes)
+    resealed = _reseal(tampered)
+
+    with pytest.raises(FactorRegimeOriginInventoryError, match="excluded origin"):
+        validate_factor_regime_origin_inventory(resealed)
+    with pytest.raises(ArtifactContractError, match="excluded origin"):
+        validate_artifact(resealed)

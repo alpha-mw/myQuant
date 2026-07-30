@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import copy
 import hashlib
+import importlib.util
 from pathlib import Path
+import sys
 from typing import Any
 
 import pytest
@@ -22,6 +25,10 @@ from quant_investor.v17_v5_runtime.v4_regime_adapter import (
     REGIME_EVIDENCE_V1_NOT_CONDITIONING_ELIGIBLE,
     REGIME_EVIDENCE_V1_VERSION,
     REGIME_EVIDENCE_V2_VERSION,
+    REGIME_EVIDENCE_V2_NON_DEPLOYABLE,
+    REGIME_EVIDENCE_V3_NOT_FINALIZED,
+    REGIME_CONTINUITY_GENESIS,
+    REGIME_CONTINUITY_RECOVERY,
     REGIME_HARD_STATE_UNAVAILABLE,
     REGIME_HARD_STATE_UNKNOWN,
     V4RegimeAdapterError,
@@ -32,6 +39,13 @@ from quant_investor.v17_v5_runtime.v4_regime_adapter import (
 CUTOFF = "2026-07-29T08:00:00Z"
 RELATIVE_PATH = "data/private/v17_v4_runs/run-1/regime.json"
 STRATEGY = "quant-first"
+
+_V3_TEST_PATH = Path(__file__).with_name("test_v17_v4_regime_evidence_v3.py")
+_V3_SPEC = importlib.util.spec_from_file_location("_v4_v3_regime_test_support", _V3_TEST_PATH)
+assert _V3_SPEC is not None and _V3_SPEC.loader is not None
+_V3_SUPPORT = importlib.util.module_from_spec(_V3_SPEC)
+sys.modules[_V3_SPEC.name] = _V3_SUPPORT
+_V3_SPEC.loader.exec_module(_V3_SUPPORT)
 
 
 def _artifact(**overrides: Any) -> dict[str, Any]:
@@ -79,10 +93,21 @@ def _read(root: Path, sha256: str) -> V4CompatibilityRead:
     )
 
 
+def _read_v3(root: Path, result: Any) -> V4CompatibilityRead:
+    return read_v4_artifact(
+        root,
+        relative_path=result.evidence_path,
+        expected_byte_sha256=result.evidence_sha256,
+        expected_strategy_id=str(result.document["strategy_id"]),
+        decision_cutoff=str(result.document["cutoff"]),
+    )
+
+
 def _with_read(
     read: V4CompatibilityRead,
     *,
     document: dict[str, Any] | None = None,
+    documents: dict[str, dict[str, Any]] | None = None,
     root_ref: dict[str, str] | None = None,
     closure: tuple[V4ClosureNode, ...] | None = None,
     policy_sha256: str | None = None,
@@ -93,7 +118,7 @@ def _with_read(
             read.compatibility_policy_byte_sha256 if policy_sha256 is None else policy_sha256
         ),
         document=read.document if document is None else document,
-        documents=read.documents,
+        documents=read.documents if documents is None else documents,
         predecessor_git_commit=read.predecessor_git_commit,
         predecessor_package_manifest_byte_sha256=(read.predecessor_package_manifest_byte_sha256),
         predecessor_package_manifest_relative_path=(
@@ -415,7 +440,7 @@ def test_adapter_rejects_unregistered_posterior_shape_without_argmax(tmp_path: P
         adapt_v4_regime_evidence(_with_read(read, document=posterior_document))
 
 
-def test_adapter_accepts_v2_sealed_hard_state_without_recomputing_argmax() -> None:
+def test_adapter_verifies_v2_without_recomputing_argmax_but_rejects_conditioning() -> None:
     document, refs, documents = _v2_document(
         hard_state="趋势上涨",
         state_probabilities={
@@ -430,9 +455,9 @@ def test_adapter_accepts_v2_sealed_hard_state_without_recomputing_argmax() -> No
 
     result = adapt_v4_regime_evidence(read)
 
-    assert result.status == V4RegimeEvidenceStatus.CONDITIONING_ELIGIBLE
-    assert result.conditioning_eligible is True
-    assert result.conditioning_ineligibility_reason is None
+    assert result.status == V4RegimeEvidenceStatus.CONDITIONING_INELIGIBLE
+    assert result.conditioning_eligible is False
+    assert result.conditioning_ineligibility_reason == REGIME_EVIDENCE_V2_NON_DEPLOYABLE
     assert result.regime_state == "趋势上涨"
     assert result.hard_state == "趋势上涨"
     assert result.state_order == ("趋势上涨", "震荡低波", "震荡高波", "趋势下跌", "未知")
@@ -452,8 +477,11 @@ def test_adapter_marks_v2_unknown_as_valid_but_conditioning_ineligible() -> None
 
     assert result.status == V4RegimeEvidenceStatus.CONDITIONING_INELIGIBLE
     assert result.conditioning_eligible is False
-    assert result.conditioning_ineligibility_reason == REGIME_HARD_STATE_UNKNOWN
-    assert result.blockers == (REGIME_HARD_STATE_UNKNOWN,)
+    assert result.conditioning_ineligibility_reason == REGIME_EVIDENCE_V2_NON_DEPLOYABLE
+    assert result.blockers == (
+        REGIME_EVIDENCE_V2_NON_DEPLOYABLE,
+        REGIME_HARD_STATE_UNKNOWN,
+    )
 
 
 def test_adapter_rejects_v2_posterior_sum_drift_without_normalizing() -> None:
@@ -508,3 +536,216 @@ def test_adapter_requires_sealed_calendar_to_prove_previous_open_session() -> No
 
     with pytest.raises(V4RegimeAdapterError, match="sealed calendar"):
         adapt_v4_regime_evidence(_manual_read(document, refs, documents))
+
+
+def test_adapter_accepts_only_composite_finalized_contiguous_v3(
+    tmp_path: Path,
+) -> None:
+    sessions = _V3_SUPPORT._business_sessions("2026-07-29", 8)
+    factory = _V3_SUPPORT.V3Factory(tmp_path, sessions)
+    genesis, _ = factory.build(
+        observed=sessions[0],
+        effective=sessions[1],
+        created_at="2026-07-30T00:01:00Z",
+    )
+    contiguous, _ = factory.build(
+        observed=sessions[1],
+        effective=sessions[2],
+        created_at="2026-07-30T15:21:00Z",
+        prior=genesis,
+    )
+    read = _read_v3(tmp_path, contiguous)
+    before = {
+        path.relative_to(tmp_path).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in tmp_path.rglob("*")
+        if path.is_file()
+    }
+
+    result = adapt_v4_regime_evidence(
+        read,
+        checkpoint_relative_path=contiguous.chain_checkpoint_path,
+        checkpoint_byte_sha256=contiguous.chain_checkpoint_sha256,
+    )
+
+    assert result.source_version == "myquant.v17.v4.regime-evidence.v3"
+    assert result.finalized is True
+    assert result.continuity_kind == "CONTIGUOUS"
+    assert result.conditioning_eligible is True
+    assert result.checkpoint_ref == contiguous.document["current_checkpoint_ref"]
+    assert result.chain_digest_sha256 == contiguous.document["global_accumulator"]
+    assert result.transition_commitment_sha256 == contiguous.document["record_commitment"]
+    assert before == {
+        path.relative_to(tmp_path).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in tmp_path.rglob("*")
+        if path.is_file()
+    }
+
+
+def test_adapter_rejects_v3_without_exact_checkpoint_finality(
+    tmp_path: Path,
+) -> None:
+    sessions = _V3_SUPPORT._business_sessions("2026-07-29", 5)
+    factory = _V3_SUPPORT.V3Factory(tmp_path, sessions)
+    genesis, _ = factory.build(
+        observed=sessions[0],
+        effective=sessions[1],
+        created_at="2026-07-30T00:01:00Z",
+    )
+    read = _read_v3(tmp_path, genesis)
+
+    with pytest.raises(V4RegimeAdapterError, match=REGIME_EVIDENCE_V3_NOT_FINALIZED):
+        adapt_v4_regime_evidence(read)
+    with pytest.raises(V4RegimeAdapterError, match=REGIME_EVIDENCE_V3_NOT_FINALIZED):
+        adapt_v4_regime_evidence(
+            read,
+            checkpoint_relative_path=genesis.chain_checkpoint_path,
+            checkpoint_byte_sha256="0" * 64,
+        )
+
+
+def test_adapter_marks_genesis_and_recovery_v3_conditioning_ineligible(
+    tmp_path: Path,
+) -> None:
+    sessions = _V3_SUPPORT._business_sessions("2026-07-29", 8)
+    factory = _V3_SUPPORT.V3Factory(tmp_path, sessions)
+    genesis, _ = factory.build(
+        observed=sessions[0],
+        effective=sessions[1],
+        created_at="2026-07-30T00:01:00Z",
+    )
+    recovery, _ = factory.build(
+        observed=sessions[4],
+        effective=sessions[5],
+        created_at=f"{sessions[4]}T08:21:00Z",
+        prior=genesis,
+    )
+
+    for result, reason in (
+        (genesis, REGIME_CONTINUITY_GENESIS),
+        (recovery, REGIME_CONTINUITY_RECOVERY),
+    ):
+        normalized = adapt_v4_regime_evidence(
+            _read_v3(tmp_path, result),
+            checkpoint_relative_path=result.chain_checkpoint_path,
+            checkpoint_byte_sha256=result.chain_checkpoint_sha256,
+        )
+        assert normalized.finalized is True
+        assert normalized.conditioning_eligible is False
+        assert normalized.conditioning_ineligibility_reason == reason
+
+
+def test_adapter_fail_closes_composite_finality_conflicts_and_orphan_evidence(
+    tmp_path: Path,
+) -> None:
+    sessions = _V3_SUPPORT._business_sessions("2026-07-29", 8)
+    factory = _V3_SUPPORT.V3Factory(tmp_path, sessions)
+    genesis, _ = factory.build(
+        observed=sessions[0],
+        effective=sessions[1],
+        created_at="2026-07-30T00:01:00Z",
+    )
+    contiguous, _ = factory.build(
+        observed=sessions[1],
+        effective=sessions[2],
+        created_at="2026-07-30T15:21:00Z",
+        prior=genesis,
+    )
+    read = _read_v3(tmp_path, contiguous)
+    checkpoint_path = contiguous.chain_checkpoint_path
+
+    for field, value in (
+        ("hard_state", "趋势下跌"),
+        ("record_commitment", "0" * 64),
+        ("global_accumulator", "1" * 64),
+        ("segment_accumulator", "2" * 64),
+        ("chain_id", "3" * 64),
+        ("segment_id", "4" * 64),
+        ("phase", "RECOVERY"),
+    ):
+        documents = copy.deepcopy(dict(read.documents))
+        documents[checkpoint_path][field] = value
+        with pytest.raises(
+            V4RegimeAdapterError,
+            match=REGIME_EVIDENCE_V3_NOT_FINALIZED,
+        ):
+            adapt_v4_regime_evidence(
+                _with_read(read, documents=documents),
+                checkpoint_relative_path=checkpoint_path,
+                checkpoint_byte_sha256=contiguous.chain_checkpoint_sha256,
+            )
+
+    root_document = copy.deepcopy(dict(read.document))
+    root_document["source_refs"] = root_document["source_refs"][1:]
+    documents = copy.deepcopy(dict(read.documents))
+    documents[contiguous.evidence_path] = root_document
+    with pytest.raises(
+        V4RegimeAdapterError,
+        match=REGIME_EVIDENCE_V3_NOT_FINALIZED,
+    ):
+        adapt_v4_regime_evidence(
+            _with_read(read, document=root_document, documents=documents),
+            checkpoint_relative_path=checkpoint_path,
+            checkpoint_byte_sha256=contiguous.chain_checkpoint_sha256,
+        )
+
+    orphan_closure = tuple(node for node in read.closure if node.relative_path != checkpoint_path)
+    orphan_documents = {
+        path: document for path, document in read.documents.items() if path != checkpoint_path
+    }
+    with pytest.raises(
+        V4RegimeAdapterError,
+        match=REGIME_EVIDENCE_V3_NOT_FINALIZED,
+    ):
+        adapt_v4_regime_evidence(
+            _with_read(
+                read,
+                closure=orphan_closure,
+                documents=orphan_documents,
+            ),
+            checkpoint_relative_path=checkpoint_path,
+            checkpoint_byte_sha256=contiguous.chain_checkpoint_sha256,
+        )
+
+
+@pytest.mark.parametrize(
+    ("ref_field", "historical_field"),
+    [
+        ("model_snapshot_ref", "training_source_refs"),
+        ("transition_matrix_ref", "source_evidence_refs"),
+    ],
+)
+def test_adapter_rejects_historical_v3_refs_without_recursive_traversal(
+    tmp_path: Path,
+    ref_field: str,
+    historical_field: str,
+) -> None:
+    sessions = _V3_SUPPORT._business_sessions("2026-07-29", 5)
+    factory = _V3_SUPPORT.V3Factory(tmp_path, sessions)
+    genesis, _ = factory.build(
+        observed=sessions[0],
+        effective=sessions[1],
+        created_at="2026-07-30T00:01:00Z",
+    )
+    read = _read_v3(tmp_path, genesis)
+    referenced_path = genesis.document[ref_field]["relative_path"]
+    documents = copy.deepcopy(dict(read.documents))
+    documents[referenced_path][historical_field] = [
+        {
+            "artifact_id": "forbidden-historical-evidence",
+            "artifact_version": "myquant.v17.v4.regime-evidence.v3",
+            "byte_sha256": "0" * 64,
+            "cutoff": genesis.document["cutoff"],
+            "relative_path": (
+                "data/private/v17_v4_sources/regime_evidence/" "forbidden-historical-evidence.json"
+            ),
+            "semantic_sha256": "1" * 64,
+            "strategy_id": genesis.document["strategy_id"],
+        }
+    ]
+
+    with pytest.raises(V4RegimeAdapterError, match="bounded direct closure mismatch"):
+        adapt_v4_regime_evidence(
+            _with_read(read, documents=documents),
+            checkpoint_relative_path=genesis.chain_checkpoint_path,
+            checkpoint_byte_sha256=genesis.chain_checkpoint_sha256,
+        )

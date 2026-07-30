@@ -36,11 +36,15 @@ from .validators import (
     FACTOR_REGIME_DIAGNOSTIC_POLICY_ID,
     FACTOR_REGIME_DIAGNOSTIC_POLICY_V1_ID,
     FACTOR_REGIME_DIAGNOSTIC_POLICY_V1_VERSION,
+    FACTOR_REGIME_DIAGNOSTIC_POLICY_V2_ID,
+    FACTOR_REGIME_DIAGNOSTIC_POLICY_V2_VERSION,
     FACTOR_REGIME_DIAGNOSTIC_POLICY_VERSION,
     NO_AUTHORITY,
     V4_COMPATIBILITY_POLICY_ID,
     V4_COMPATIBILITY_POLICY_V1_ID,
     V4_COMPATIBILITY_POLICY_V1_VERSION,
+    V4_COMPATIBILITY_POLICY_V2_ID,
+    V4_COMPATIBILITY_POLICY_V2_VERSION,
     V4_FACTOR_EVIDENCE_ADAPTER_POLICY_ID,
     V4_FACTOR_EVIDENCE_ADAPTER_POLICY_VERSION,
 )
@@ -49,14 +53,16 @@ PROTOCOL_VERSION: Final = "myquant.v17.v5"
 PACKAGE_MANIFEST_PATH: Final = "resources/package_manifest.v1.json"
 RUNTIME_BUILD_MANIFEST_PATH: Final = "resources/runtime_build_manifest.v1.json"
 COMPATIBILITY_POLICY_V1_PATH: Final = "resources/v4_compatibility_policy.v1.json"
-COMPATIBILITY_POLICY_PATH: Final = "resources/v4_compatibility_policy.v2.json"
+COMPATIBILITY_POLICY_V2_PATH: Final = "resources/v4_compatibility_policy.v2.json"
+COMPATIBILITY_POLICY_PATH: Final = "resources/v4_compatibility_policy.v3.json"
 FACTOR_DIAGNOSTIC_POLICY_PATH: Final = "resources/factor_diagnostic_policy.v1.json"
 FACTOR_REGIME_DIAGNOSTIC_POLICY_V1_PATH: Final = "resources/factor_regime_diagnostic_policy.v1.json"
-FACTOR_REGIME_DIAGNOSTIC_POLICY_PATH: Final = "resources/factor_regime_diagnostic_policy.v2.json"
+FACTOR_REGIME_DIAGNOSTIC_POLICY_V2_PATH: Final = "resources/factor_regime_diagnostic_policy.v2.json"
+FACTOR_REGIME_DIAGNOSTIC_POLICY_PATH: Final = "resources/factor_regime_diagnostic_policy.v3.json"
 V4_FACTOR_EVIDENCE_ADAPTER_POLICY_PATH: Final = (
     "resources/v4_factor_evidence_adapter_policy.v1.json"
 )
-PACKAGE_MANIFEST_SHA256: Final = "ca49c081cbd27b7adb03070a60f641fa5b6be88a3f50a2b67f0250fe8daa12d9"
+PACKAGE_MANIFEST_SHA256: Final = "13fbd48b07821057bb2470d4995bd8f79b3841f7720d1f97d80e6fec62b018a4"
 _PACKAGE_ROOT: Final = Path(__file__).resolve().parent
 
 
@@ -401,6 +407,18 @@ def load_compatibility_policy_v1(
     )
 
 
+def load_compatibility_policy_v2(
+    *,
+    package_root: Path | None = None,
+) -> dict[str, Any]:
+    return _load_compatibility_policy(
+        package_root=package_root,
+        relative_path=COMPATIBILITY_POLICY_V2_PATH,
+        expected_version=V4_COMPATIBILITY_POLICY_V2_VERSION,
+        expected_artifact_id=V4_COMPATIBILITY_POLICY_V2_ID,
+    )
+
+
 def load_compatibility_policy(
     *,
     package_root: Path | None = None,
@@ -408,7 +426,7 @@ def load_compatibility_policy(
     return _load_compatibility_policy(
         package_root=package_root,
         relative_path=COMPATIBILITY_POLICY_PATH,
-        expected_version="myquant.v17.v5.v4-compatibility-policy.v2",
+        expected_version="myquant.v17.v5.v4-compatibility-policy.v3",
         expected_artifact_id=V4_COMPATIBILITY_POLICY_ID,
     )
 
@@ -545,9 +563,16 @@ def _load_factor_regime_diagnostic_policy(
         "status_contract",
         "version",
     }
-    is_v2 = expected_version == FACTOR_REGIME_DIAGNOSTIC_POLICY_VERSION
+    v3_expected_keys = v2_expected_keys | {
+        "conditioning_eligible_continuity",
+        "conditioning_ineligible_continuity",
+        "segment_sequence_rules",
+    }
+    is_v2 = expected_version == FACTOR_REGIME_DIAGNOSTIC_POLICY_V2_VERSION
+    is_v3 = expected_version == FACTOR_REGIME_DIAGNOSTIC_POLICY_VERSION
     if (
-        set(policy) != (v2_expected_keys if is_v2 else v1_expected_keys)
+        set(policy)
+        != (v3_expected_keys if is_v3 else v2_expected_keys if is_v2 else v1_expected_keys)
         or policy["artifact_id"] != expected_artifact_id
         or policy["authority"] != NO_AUTHORITY
         or policy["protocol_version"] != PROTOCOL_VERSION
@@ -588,9 +613,16 @@ def _load_factor_regime_diagnostic_policy(
         }
     ):
         raise PackageResourceError("factor regime diagnostic policy identity mismatch")
-    if is_v2:
+    if is_v2 or is_v3:
         if (
-            policy["accepted_regime_source_versions"] != ["myquant.v17.v4.regime-evidence.v2"]
+            policy["accepted_regime_source_versions"]
+            != [
+                (
+                    "myquant.v17.v4.regime-evidence.v3"
+                    if is_v3
+                    else "myquant.v17.v4.regime-evidence.v2"
+                )
+            ]
             or policy["required_inference_kind"] != "FILTERED_CAUSAL"
             or policy["required_smoothing_used"] is not False
             or policy["required_publication_phase"] != "PRIOR_SESSION_EFFECTIVE_NEXT_SESSION"
@@ -599,8 +631,37 @@ def _load_factor_regime_diagnostic_policy(
             or policy["required_no_retroactive_causal_backfill"] is not True
             or policy["conditioning_states"] != ["趋势上涨", "震荡低波", "震荡高波", "趋势下跌"]
             or policy["conditioning_ineligible_states"] != ["未知"]
+            or (
+                not is_v3
+                and policy["regime_source_requirements"]
+                != {
+                    "hard_state_derivation": "SEALED_ARGMAX_POLICY_V1",
+                    "inference_kind": "FILTERED_CAUSAL",
+                    "no_retroactive_causal_backfill": True,
+                    "publication_phase": "PRIOR_SESSION_EFFECTIVE_NEXT_SESSION",
+                    "scope_kind": "FULL_MARKET",
+                    "smoothing_used": False,
+                    "state_probabilities_sum": "1.000000000000",
+                }
+            )
+        ):
+            raise PackageResourceError(
+                f"factor regime diagnostic policy {'v3' if is_v3 else 'v2'} mismatch"
+            )
+        if is_v3 and (
+            policy["conditioning_eligible_continuity"] != ["CONTIGUOUS", "ROLLOVER"]
+            or policy["conditioning_ineligible_continuity"] != ["GENESIS", "RECOVERY"]
+            or policy["segment_sequence_rules"]
+            != {
+                "CONTIGUOUS": "SEQUENCE_GT_ZERO_ELIGIBLE",
+                "GENESIS": "SEQUENCE_ZERO_INELIGIBLE",
+                "RECOVERY": "SEQUENCE_ZERO_INELIGIBLE",
+                "ROLLOVER": "ELIGIBLE_AFTER_V4_COMPOSITE_FINALITY",
+            }
             or policy["regime_source_requirements"]
             != {
+                "bounded_replay": "ROOT_AND_CURRENT_DIRECT_CLOSURE_ONLY",
+                "finalized": "EVIDENCE_CURRENT_CHECKPOINT_COMPOSITE",
                 "hard_state_derivation": "SEALED_ARGMAX_POLICY_V1",
                 "inference_kind": "FILTERED_CAUSAL",
                 "no_retroactive_causal_backfill": True,
@@ -610,7 +671,7 @@ def _load_factor_regime_diagnostic_policy(
                 "state_probabilities_sum": "1.000000000000",
             }
         ):
-            raise PackageResourceError("factor regime diagnostic policy v2 mismatch")
+            raise PackageResourceError("factor regime diagnostic policy v3 mismatch")
     else:
         if policy["regime_source_versions"] != {
             "capabilities": [
@@ -641,6 +702,18 @@ def load_factor_regime_diagnostic_policy_v1(
         relative_path=FACTOR_REGIME_DIAGNOSTIC_POLICY_V1_PATH,
         expected_version=FACTOR_REGIME_DIAGNOSTIC_POLICY_V1_VERSION,
         expected_artifact_id=FACTOR_REGIME_DIAGNOSTIC_POLICY_V1_ID,
+    )
+
+
+def load_factor_regime_diagnostic_policy_v2(
+    *,
+    package_root: Path | None = None,
+) -> dict[str, Any]:
+    return _load_factor_regime_diagnostic_policy(
+        package_root=package_root,
+        relative_path=FACTOR_REGIME_DIAGNOSTIC_POLICY_V2_PATH,
+        expected_version=FACTOR_REGIME_DIAGNOSTIC_POLICY_V2_VERSION,
+        expected_artifact_id=FACTOR_REGIME_DIAGNOSTIC_POLICY_V2_ID,
     )
 
 
@@ -817,8 +890,12 @@ def verify_package(
     for row in rows:
         raw = read_packaged_asset(row["relative_path"], package_root=root)
         result[row["relative_path"]] = hashlib.sha256(raw).hexdigest()
+    load_compatibility_policy_v1(package_root=root)
+    load_compatibility_policy_v2(package_root=root)
     load_compatibility_policy(package_root=root)
     load_factor_diagnostic_policy(package_root=root)
+    load_factor_regime_diagnostic_policy_v1(package_root=root)
+    load_factor_regime_diagnostic_policy_v2(package_root=root)
     load_factor_regime_diagnostic_policy(package_root=root)
     load_v4_factor_evidence_adapter_policy(package_root=root)
     verify_runtime_build(package_root=root)
@@ -847,7 +924,37 @@ def verify_predecessor(
         raise PackageResourceError("pinned V17 v4 predecessor manifest drift")
     v4_assets = verify_v4_package()
     v4_sources = verify_v4_runtime_build()
+    evidence_schema_sha = hashlib.sha256(
+        (
+            workspace_root / "quant_investor/v17_v4_contract/schemas/regime_evidence.v3.schema.json"
+        ).read_bytes()
+    ).hexdigest()
+    inference_policy_sha = hashlib.sha256(
+        (
+            workspace_root
+            / "quant_investor/v17_v4_contract/resources/regime_inference_policy.v2.json"
+        ).read_bytes()
+    ).hexdigest()
+    producer_sha = hashlib.sha256(
+        (workspace_root / "quant_investor/v17_v4_runtime/regime_evidence_v3.py").read_bytes()
+    ).hexdigest()
+    cli_raw = (workspace_root / "quant_investor/v17_v4_runtime/cli.py").read_bytes()
+    cli_sha = hashlib.sha256(cli_raw).hexdigest()
+    if (
+        len(v4_assets) != 109
+        or len(v4_sources) != 32
+        or evidence_schema_sha != "429c9ed6f664ae70f0a34d92e0a94bc10293291217d58eb22f2fb2e36e83ab80"
+        or inference_policy_sha
+        != "46733a14377476c43ed230f9167dd786795c9b01159755cf91f358d07d44a3c1"
+        or producer_sha != "b9819326d32df1f094ecc5954f3664c36f060d9e5e3044adaaf17c4abb8b4180"
+        or cli_sha != "015f0a05e03ae3864d8f8935f7260a42aa01531f9dd133bef1527d69a5adadc3"
+        or b"REGIME_EVIDENCE_V2_CHAIN_NON_DEPLOYABLE" not in cli_raw
+    ):
+        raise PackageResourceError("pinned V17 v4 bounded-regime predecessor drift")
     return {
+        "regime_evidence_v3_runtime_sha256": producer_sha,
+        "regime_evidence_v3_schema_sha256": evidence_schema_sha,
+        "regime_inference_policy_v2_sha256": inference_policy_sha,
         "package_asset_count": len(v4_assets),
         "package_manifest_byte_sha256": package_sha,
         "protocol_version": predecessor["protocol_version"],
@@ -855,23 +962,29 @@ def verify_predecessor(
         "runtime_source_count": len(v4_sources),
         "source_git_commit": predecessor["source_git_commit"],
         "status": "PINNED_AND_VERIFIED",
+        "v2_cli_source_sha256": cli_sha,
+        "v2_publication_status": "REGIME_EVIDENCE_V2_CHAIN_NON_DEPLOYABLE",
     }
 
 
 __all__ = [
     "COMPATIBILITY_POLICY_PATH",
+    "COMPATIBILITY_POLICY_V2_PATH",
     "FACTOR_DIAGNOSTIC_POLICY_PATH",
     "FACTOR_REGIME_DIAGNOSTIC_POLICY_PATH",
     "FACTOR_REGIME_DIAGNOSTIC_POLICY_V1_PATH",
+    "FACTOR_REGIME_DIAGNOSTIC_POLICY_V2_PATH",
     "PACKAGE_MANIFEST_PATH",
     "PACKAGE_MANIFEST_SHA256",
     "PackageResourceError",
     "RUNTIME_BUILD_MANIFEST_PATH",
     "load_compatibility_policy",
     "load_compatibility_policy_v1",
+    "load_compatibility_policy_v2",
     "load_factor_diagnostic_policy",
     "load_factor_regime_diagnostic_policy",
     "load_factor_regime_diagnostic_policy_v1",
+    "load_factor_regime_diagnostic_policy_v2",
     "load_package_manifest",
     "load_packaged_json",
     "read_packaged_asset",

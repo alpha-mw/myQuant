@@ -1,11 +1,8 @@
-# V17 v5 Sprint-1D Operations
+# V17 v5 Sprint 1E-0B Operations
 
-V17 v5 remains non-operational. V15 remains the default and V17 v4 remains the
-Forward Evidence runtime. Sprint 1D pins V5 to the exact V4 causal Regime
-Evidence v2 predecessor and enables the read-only v2 adapter for descriptive
-origin-regime diagnostics. It does not modify the V4 producer, create regime
-artifacts, add online Factor weights, change tiers, recommend lifecycle
-actions or grant operational authority.
+V17 v5 remains non-operational. V15 remains the default protocol and V17 v4
+remains the Forward Evidence producer. Sprint 1E-0B only verifies the exact V4
+predecessor and enables read-only V3 origin-regime diagnostics.
 
 The available commands are:
 
@@ -15,35 +12,35 @@ The available commands are:
 ./.venv/bin/quant-investor-v17-v5 factor-regime-diagnostics --help
 ```
 
-`status` must report:
+`status` must keep:
 
 ```text
 protocol_version = myquant.v17.v5
 default_protocol_state = V15_DEFAULT
 global_activation_state = INACTIVE
 run_state = INACTIVE
-status = SPRINT1D_CAUSAL_REGIME_ADAPTER_AVAILABLE_NOT_OPERATIONAL
+research_runtime_default = false
 ```
 
-All authority fields must be false.
+All authority fields are false.
 
-`verify` additionally validates:
+## Verification
 
-- the closed V17 v5 package manifest;
-- the closed V17 v5 runtime manifest;
-- the compatibility policy;
-- the pinned V17 v4 package and runtime manifests at
-  `1da7ffb636a3254940525d746549d15e827f06ba`.
+`verify` closes:
 
-Sprint 1D uses a worktree-colocated predecessor integration. The local V5
-branch keeps the exact V4 Sprint 1C commit as a merge parent instead of
-hand-copying V4 files. V5 still treats V4 as read-only.
+- the V5 package and runtime manifests;
+- V5 Regime diagnostic policies v1, v2, and v3;
+- the exact worktree-colocated V4 predecessor
+  `73c5b6eea6c60d9a31865e176646687ffeee9d6a`;
+- all V4 package assets and runtime sources;
+- the V3 schema, V2 inference policy, V3 producer source, and V2 public
+  publication block.
 
-There is no V17 v5 operational run, schedule, output path or mutable pointer.
-`factor-regime-diagnostics` returns one JSON object to stdout and must not
-create files.
+V5 does not copy or modify V4 files and has no fallback to an older pin.
 
-With the current real evidence gap, use explicit unavailable declarations:
+## Current unavailable mode
+
+Until real V4 evidence exists:
 
 ```bash
 ./.venv/bin/quant-investor-v17-v5 factor-regime-diagnostics \
@@ -57,126 +54,86 @@ With the current real evidence gap, use explicit unavailable declarations:
   --regime-evidence-unavailable
 ```
 
-The result must have `status=UNAVAILABLE` and the reason codes
-`V4_FACTOR_EVIDENCE_UNAVAILABLE` and
-`V4_REGIME_EVIDENCE_V2_UNAVAILABLE`. Installing the v2 schema is not enough to
-return `UNOBSERVED` or `ACCUMULATING`; those states require explicit real v2
-evidence and, for `ACCUMULATING`, at least one conditionable mature origin.
-`output-id` identifies the stdout delivery envelope; the diagnostic retains its
-own content-derived `diagnostic_id`.
-
-The Sprint 1D CLI validates explicit Factor and regime inputs but does not
-assemble multiple mature origins from a single receipt/regime pair. If both
-exact inputs are otherwise eligible, it fails closed with
-`OBSERVED_FACTOR_REGIME_CLI_PATH_NOT_ENABLED` and
-`origin_binding_result=NOT_ENABLED`; it never fabricates an origin inventory.
-
-Exact evidence mode requires both path and SHA-256 for each input:
+Expected status and reasons:
 
 ```text
---factor-evidence-path + --factor-evidence-sha256
---regime-evidence-path + --regime-evidence-sha256
+UNAVAILABLE
+V4_FACTOR_EVIDENCE_UNAVAILABLE
+V4_REGIME_EVIDENCE_V3_UNAVAILABLE
 ```
 
-Paths are explicit workspace-relative V4 artifact refs. The command never
-scans for a latest artifact. A hash, identity, closure, causality or policy
-contradiction exits 2; malformed evidence is not converted to `UNAVAILABLE`.
-The regime evidence path must point to
-`myquant.v17.v4.regime-evidence.v2`. `myquant.v17.v4.regime-evidence.v1` may
-still be integrity-checked by the compatibility reader, but it is not
-conditioning-eligible and returns
-`REGIME_EVIDENCE_V1_NOT_CONDITIONING_ELIGIBLE`.
+Installing V3 schemas does not imply `UNOBSERVED` or `ACCUMULATING`.
 
-The library-only surface is:
+## Explicit V3 validation mode
 
-```python
-from quant_investor.v17_v5_runtime import (
-    FactorOriginSample,
-    FactorSampleStratum,
-    adapt_v4_factor_evidence,
-    build_factor_diagnostic,
-    build_factor_diagnostic_from_v4,
-    build_factor_lifecycle_diagnostic,
-    build_unavailable_factor_diagnostic,
-    build_unavailable_factor_lifecycle_diagnostic,
-    validate_factor_diagnostic_replay,
-    validate_factor_lifecycle_diagnostic_replay,
-    adapt_v4_regime_evidence,
-    build_factor_regime_origin_inventory,
-    build_regime_conditioned_factor_diagnostic,
-    build_unavailable_regime_conditioned_factor_diagnostic,
-)
-```
-
-Callers may provide one exact stratum directly, or first use
-`read_v4_artifact` on exact V4 forward-evaluation-receipt path/SHA inputs and
-pass the returned closure to `build_factor_diagnostic_from_v4`. The runtime
-derives maturity and comparable symbol intersections. It does not scan for
-evidence or write the returned dictionary.
-
-Do not persist the result as a receipt, treat
-`descriptive_coverage_minimum_met` as a statistical or promotion gate, or infer
-Factor effectiveness. Even when that field is true,
-`inference_gate_passed=false` and every authority field remains false.
-
-The Python compatibility reader is limited to exact caller-supplied V17 v4
-references. It requires:
+An explicit V3 read requires:
 
 ```text
-workspace_root
-relative_path
-expected_byte_sha256
-expected_strategy_id
-decision_cutoff
+--regime-evidence-path
+--regime-evidence-sha256
+--regime-checkpoint-path
+--regime-checkpoint-sha256
 ```
 
-It returns a read-only in-memory root plus its complete, sorted dependency
-closure. A path escape, symlink, hard link, case alias, hash mismatch, future
-cutoff/availability, unknown artifact, cycle, partial/hidden transitive
-reference, schema failure or authority violation raises
-`V4CompatibilityError` and writes nothing. Raw upstream source bindings remain
-terminal provenance and are never followed.
+Factor evidence likewise requires both path and SHA. Paths are
+workspace-relative immutable V4 refs. The command never scans for a latest
+artifact, calls a provider, downloads data, invokes the V4 producer, or writes
+V4/V5 artifacts.
 
-The v2 regime adapter accepts only evidence that satisfies the pinned Sprint 1D
-policy:
+V1 and V2 can still be integrity-checked by the compatibility reader:
+
+- V1 returns `REGIME_EVIDENCE_V1_NOT_CONDITIONING_ELIGIBLE`;
+- V2 returns `REGIME_EVIDENCE_V2_NON_DEPLOYABLE`;
+- only finalized V3 can be conditioning eligible.
+
+The CLI currently validates exact inputs and emits one stdout-only diagnostic.
+It does not assemble a multi-origin inventory from a single Factor/Regime pair.
+An otherwise complete pair therefore remains fail-closed with
+`OBSERVED_FACTOR_REGIME_CLI_PATH_NOT_ENABLED` until a separately reviewed
+origin assembly entrypoint exists.
+
+## Composite finality
+
+V3 evidence is finalized only when:
+
+- evidence path/SHA, schema, identity, semantic SHA, strategy, cutoff, and
+  pinned closure pass;
+- `current_checkpoint_ref` resolves from the caller's explicit checkpoint
+  path/SHA;
+- checkpoint is in the evidence direct `source_refs` closure;
+- evidence and checkpoint agree on session, segment, phase, posterior, hard
+  state, record commitment, global accumulator, segment accumulator, and chain
+  identity;
+- the current chain/segment/feature/model/transition/scope/policy closure is
+  bounded and complete.
+
+A standalone checkpoint is insufficient. Missing or conflicting checkpoint
+state exits 2 with `REGIME_EVIDENCE_V3_NOT_FINALIZED`.
+
+The checkpoint does not reverse-bind evidence bytes because that would form a
+hash cycle with the evidence's checkpoint content reference. V5 adds no
+finality receipt and does not alter V4 publication.
+
+V5 does not recompute posterior, argmax, commitments, digests, or continuity,
+and it does not traverse historical checkpoints.
+
+## Conditioning
 
 ```text
-version = myquant.v17.v4.regime-evidence.v2
-inference_kind = FILTERED_CAUSAL
-smoothing_used = false
-publication_phase = PRIOR_SESSION_EFFECTIVE_NEXT_SESSION
-scope_kind = FULL_MARKET
-hard_state_derivation = SEALED_ARGMAX_POLICY_V1
-no_retroactive_causal_backfill = true
+CONTIGUOUS -> eligible
+ROLLOVER   -> eligible
+GENESIS    -> ineligible
+RECOVERY   -> ineligible
+未知        -> ineligible
+not finalized -> malformed/fail closed
 ```
 
-V5 does not recompute the posterior, rerun argmax, change tie-breaks, map
-states, call the V4 producer or read V15 JSONL history. The hard state is the
-sealed V4 state. The `未知` state is a valid v2 artifact state but is
-conditioning-ineligible and is not placed in a by-regime bucket.
+Eligibility also requires `FILTERED_CAUSAL`, no smoothing,
+`PRIOR_SESSION_EFFECTIVE_NEXT_SESSION`, `FULL_MARKET`,
+`SEALED_ARGMAX_POLICY_V1`, the no-backfill flag, exact origin/effective session
+binding, prior Shanghai open-session observation, and publication before the
+Factor cutoff.
 
-When no compatible V4 evaluation receipt exists, use the empty adapter input.
-The result is `UNAVAILABLE`; do not synthesize a receipt, origin, label or
-market calendar.
-
-`verify` byte-binds packaged JSON and runtime Python. Contract Python is
-filename-inventoried rather than byte-bound inside the self-referential package
-manifest; use the reviewed Git checkpoint as its source binding.
-
-Regime-chain deployability remains a read-only audit result in Sprint 1D. If a
-long chain exceeds the current closure limits or a missed session permanently
-blocks later evidence, record the blocker as
-`V4_REGIME_CHAIN_SCALABILITY_GAP` or `V4_REGIME_CHAIN_LIVENESS_GAP`. Do not
-raise V5 closure limits and do not modify the V4 producer in this Sprint.
-
-The Sprint 1D synthetic V4 probe first fails at contiguous session 3, before
-the requested 20/60/260/1,000-session checkpoints. All four checkpoints are
-therefore `BLOCKED`; timing and peak memory are not extrapolated. The direct
-error is `REGIME_EVIDENCE_V2_INPUT_TAMPER` /
-`model_snapshot_ref readback failed`, with the V4 closure resource budget as
-the nested cause. In the missed-session S0/S1/S2/S3 scenario, S3 is likewise
-blocked. An explicit S3 restart without a predecessor fails with
-`REGIME_EVIDENCE_V2_TEMPORAL_CAUSALITY` /
-`NORMAL publication requires the contiguous prior v2`; the sealed
-contiguous-predecessor rule provides neither a stale fallback nor a restart
-path.
+No online Factor weight, tier change, lifecycle action, validity conclusion,
+promotion, production target, portfolio output, broker call, order, or trade is
+produced.

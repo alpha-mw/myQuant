@@ -33,18 +33,25 @@ NO_AUTHORITY: Final = {
     "trade": False,
 }
 PREDECESSOR_BINDING_V1_VERSION: Final = "myquant.v17.v5.v4-predecessor-binding.v1"
-PREDECESSOR_BINDING_VERSION: Final = "myquant.v17.v5.v4-predecessor-binding.v2"
+PREDECESSOR_BINDING_V2_VERSION: Final = "myquant.v17.v5.v4-predecessor-binding.v2"
+PREDECESSOR_BINDING_VERSION: Final = "myquant.v17.v5.v4-predecessor-binding.v3"
 FACTOR_DIAGNOSTIC_VERSION: Final = "myquant.v17.v5.factor-diagnostic.v1"
 FACTOR_LIFECYCLE_DIAGNOSTIC_VERSION: Final = "myquant.v17.v5.factor-lifecycle-diagnostic.v1"
 FACTOR_REGIME_ORIGIN_INVENTORY_V1_VERSION: Final = (
     "myquant.v17.v5.factor-regime-origin-inventory.v1"
 )
-FACTOR_REGIME_ORIGIN_INVENTORY_VERSION: Final = "myquant.v17.v5.factor-regime-origin-inventory.v2"
+FACTOR_REGIME_ORIGIN_INVENTORY_V2_VERSION: Final = (
+    "myquant.v17.v5.factor-regime-origin-inventory.v2"
+)
+FACTOR_REGIME_ORIGIN_INVENTORY_VERSION: Final = "myquant.v17.v5.factor-regime-origin-inventory.v3"
 REGIME_CONDITIONED_FACTOR_DIAGNOSTIC_V1_VERSION: Final = (
     "myquant.v17.v5.regime-conditioned-factor-diagnostic.v1"
 )
-REGIME_CONDITIONED_FACTOR_DIAGNOSTIC_VERSION: Final = (
+REGIME_CONDITIONED_FACTOR_DIAGNOSTIC_V2_VERSION: Final = (
     "myquant.v17.v5.regime-conditioned-factor-diagnostic.v2"
+)
+REGIME_CONDITIONED_FACTOR_DIAGNOSTIC_VERSION: Final = (
+    "myquant.v17.v5.regime-conditioned-factor-diagnostic.v3"
 )
 REGIME_CONDITIONING_STATES: Final = frozenset({"趋势上涨", "震荡低波", "震荡高波", "趋势下跌"})
 FACTOR_DIAGNOSTIC_POLICY_ID: Final = "v17.v5.factor.diagnostic.policy.sprint1a"
@@ -71,16 +78,29 @@ FACTOR_REGIME_DIAGNOSTIC_POLICY_V1_BYTE_SHA256: Final = (
 FACTOR_REGIME_DIAGNOSTIC_POLICY_V1_SEMANTIC_SHA256: Final = (
     "6e406c5c7b66be9f85550c9a5931b866452a73762fc5b46b7505ba8473082ca6"
 )
-FACTOR_REGIME_DIAGNOSTIC_POLICY_ID: Final = "v17.v5.factor.regime.diagnostic.policy.sprint1d"
-FACTOR_REGIME_DIAGNOSTIC_POLICY_VERSION: Final = "myquant.v17.v5.factor-regime-diagnostic-policy.v2"
-FACTOR_REGIME_DIAGNOSTIC_POLICY_PATH: Final = (
+FACTOR_REGIME_DIAGNOSTIC_POLICY_V2_ID: Final = "v17.v5.factor.regime.diagnostic.policy.sprint1d"
+FACTOR_REGIME_DIAGNOSTIC_POLICY_V2_VERSION: Final = (
+    "myquant.v17.v5.factor-regime-diagnostic-policy.v2"
+)
+FACTOR_REGIME_DIAGNOSTIC_POLICY_V2_PATH: Final = (
     "quant_investor/v17_v5_contract/resources/" "factor_regime_diagnostic_policy.v2.json"
 )
-FACTOR_REGIME_DIAGNOSTIC_POLICY_BYTE_SHA256: Final = (
+FACTOR_REGIME_DIAGNOSTIC_POLICY_V2_BYTE_SHA256: Final = (
     "10d87fe085caa69f9ecac80fd5a069e449b5f59509a088bb24727ad473e797c1"
 )
-FACTOR_REGIME_DIAGNOSTIC_POLICY_SEMANTIC_SHA256: Final = (
+FACTOR_REGIME_DIAGNOSTIC_POLICY_V2_SEMANTIC_SHA256: Final = (
     "ac2e13a79f06e7e172b3263b0271ff7de179e9ac2b32f96d08cca39dd1d11d60"
+)
+FACTOR_REGIME_DIAGNOSTIC_POLICY_ID: Final = "v17.v5.factor.regime.diagnostic.policy.sprint1e0b"
+FACTOR_REGIME_DIAGNOSTIC_POLICY_VERSION: Final = "myquant.v17.v5.factor-regime-diagnostic-policy.v3"
+FACTOR_REGIME_DIAGNOSTIC_POLICY_PATH: Final = (
+    "quant_investor/v17_v5_contract/resources/" "factor_regime_diagnostic_policy.v3.json"
+)
+FACTOR_REGIME_DIAGNOSTIC_POLICY_BYTE_SHA256: Final = (
+    "8e78febb36c40e751851bf494061d8ee6baf96519a1baad872425a196064ab03"
+)
+FACTOR_REGIME_DIAGNOSTIC_POLICY_SEMANTIC_SHA256: Final = (
+    "0da838ccf64afc1a7f5c71683b7c85d022a10cae2745f9d5590d987386ec3d50"
 )
 V4_COMPATIBILITY_POLICY_V1_ID: Final = "v17.v4.compatibility.policy.sprint1a"
 V4_COMPATIBILITY_POLICY_V1_VERSION: Final = "myquant.v17.v5.v4-compatibility-policy.v1"
@@ -93,16 +113,27 @@ V4_COMPATIBILITY_POLICY_V1_BYTE_SHA256: Final = (
 V4_COMPATIBILITY_POLICY_V1_SEMANTIC_SHA256: Final = (
     "73439952d7844949694df4c1259db70dd46b0ed870700c98ec9aee088db47c53"
 )
-V4_COMPATIBILITY_POLICY_ID: Final = "v17.v4.compatibility.policy.sprint1d"
-V4_COMPATIBILITY_POLICY_VERSION: Final = "myquant.v17.v5.v4-compatibility-policy.v2"
-V4_COMPATIBILITY_POLICY_PATH: Final = (
+V4_COMPATIBILITY_POLICY_V2_ID: Final = "v17.v4.compatibility.policy.sprint1d"
+V4_COMPATIBILITY_POLICY_V2_VERSION: Final = "myquant.v17.v5.v4-compatibility-policy.v2"
+V4_COMPATIBILITY_POLICY_V2_PATH: Final = (
     "quant_investor/v17_v5_contract/resources/v4_compatibility_policy.v2.json"
 )
-V4_COMPATIBILITY_POLICY_BYTE_SHA256: Final = (
+V4_COMPATIBILITY_POLICY_V2_BYTE_SHA256: Final = (
     "0c0c4ccd5030e54f4e8cabc2742b7510be294c5b536a582cd59ab57635118190"
 )
-V4_COMPATIBILITY_POLICY_SEMANTIC_SHA256: Final = (
+V4_COMPATIBILITY_POLICY_V2_SEMANTIC_SHA256: Final = (
     "0581fbd43bb77d63362a60b12734e3acd43e5aeac00e072a4be9b0681a077995"
+)
+V4_COMPATIBILITY_POLICY_ID: Final = "v17.v4.compatibility.policy.sprint1e0b"
+V4_COMPATIBILITY_POLICY_VERSION: Final = "myquant.v17.v5.v4-compatibility-policy.v3"
+V4_COMPATIBILITY_POLICY_PATH: Final = (
+    "quant_investor/v17_v5_contract/resources/v4_compatibility_policy.v3.json"
+)
+V4_COMPATIBILITY_POLICY_BYTE_SHA256: Final = (
+    "c61b3bc188d3dc8b23f531855a0399b5523cade4eea62d12034cb0ae68f7637f"
+)
+V4_COMPATIBILITY_POLICY_SEMANTIC_SHA256: Final = (
+    "bd8b77337eb90e9310792bdd4dbd28f6c8d0623a804c76ec74fd50084efca966"
 )
 V4_FACTOR_EVIDENCE_ADAPTER_POLICY_ID: Final = "v17.v5.v4.factor.evidence.adapter.policy.sprint1a"
 V4_FACTOR_EVIDENCE_ADAPTER_POLICY_VERSION: Final = (
@@ -117,12 +148,24 @@ V4_FACTOR_EVIDENCE_ADAPTER_POLICY_BYTE_SHA256: Final = (
 V4_FACTOR_EVIDENCE_ADAPTER_POLICY_SEMANTIC_SHA256: Final = (
     "463cd280d80ebb7914bca720d1b585380638b59863a48bec7a4f5615cdf8e225"
 )
-V4_SOURCE_GIT_COMMIT: Final = "1da7ffb636a3254940525d746549d15e827f06ba"
+V4_SOURCE_GIT_COMMIT: Final = "73c5b6eea6c60d9a31865e176646687ffeee9d6a"
 V4_PACKAGE_MANIFEST_SHA256: Final = (
-    "80dd615730ccf94eb453664936b0f265180dc68c18651e90932ce05fa3fb1428"
+    "270c863fdcc2b092265444db9cc2fac9e3e19e1ef5fb2a36ddde6b47e443a1ff"
 )
 V4_RUNTIME_MANIFEST_SHA256: Final = (
-    "a7d27d0d16153d5b55558cd608a9155dd3b968d2721135ba77d777d409a7e63c"
+    "7c7dc183a419623542fb1d8b95d092283c948c46a804eedd8424f931645f3a28"
+)
+V4_REGIME_EVIDENCE_V3_SCHEMA_SHA256: Final = (
+    "429c9ed6f664ae70f0a34d92e0a94bc10293291217d58eb22f2fb2e36e83ab80"
+)
+V4_REGIME_INFERENCE_POLICY_V2_SHA256: Final = (
+    "46733a14377476c43ed230f9167dd786795c9b01159755cf91f358d07d44a3c1"
+)
+V4_REGIME_EVIDENCE_V3_RUNTIME_SHA256: Final = (
+    "b9819326d32df1f094ecc5954f3664c36f060d9e5e3044adaaf17c4abb8b4180"
+)
+V4_V2_PUBLICATION_BLOCK_CLI_SHA256: Final = (
+    "015f0a05e03ae3864d8f8935f7260a42aa01531f9dd133bef1527d69a5adadc3"
 )
 
 
@@ -130,6 +173,31 @@ class ArtifactContractError(ValueError):
     """Raised when a schema-valid V17 v5 artifact violates semantics."""
 
     exit_code = 2
+
+
+def validate_v3_excluded_regime_origin_row(row: Mapping[str, Any]) -> None:
+    """Require every excluded V3 origin to carry its exact exclusion facts."""
+
+    continuity = row.get("regime_continuity_kind")
+    regime_state = row.get("regime_state")
+    observed_codes = row.get("row_limitation_codes")
+    expected_codes: list[str] = []
+    if continuity == "GENESIS":
+        expected_codes.append("REGIME_CONTINUITY_GENESIS")
+    elif continuity == "RECOVERY":
+        expected_codes.append("REGIME_CONTINUITY_RECOVERY")
+    elif continuity not in {"CONTIGUOUS", "ROLLOVER"}:
+        raise ArtifactContractError("factor regime v3 excluded continuity mismatch")
+    if regime_state == "未知":
+        expected_codes.append("REGIME_HARD_STATE_UNKNOWN")
+    elif regime_state not in REGIME_CONDITIONING_STATES:
+        raise ArtifactContractError("factor regime v3 excluded state mismatch")
+    if (
+        row.get("regime_finalized") is not True
+        or not expected_codes
+        or observed_codes != sorted(expected_codes)
+    ):
+        raise ArtifactContractError("factor regime v3 excluded origin mismatch")
 
 
 def _fixed_decimal(value: Any, *, label: str) -> Decimal:
@@ -202,6 +270,17 @@ def _factor_regime_policy_ref(*, version: str) -> dict[str, str]:
             "semantic_sha256": FACTOR_REGIME_DIAGNOSTIC_POLICY_V1_SEMANTIC_SHA256,
             "version": FACTOR_REGIME_DIAGNOSTIC_POLICY_V1_VERSION,
         }
+    if version in {
+        FACTOR_REGIME_ORIGIN_INVENTORY_V2_VERSION,
+        REGIME_CONDITIONED_FACTOR_DIAGNOSTIC_V2_VERSION,
+    }:
+        return {
+            "artifact_id": FACTOR_REGIME_DIAGNOSTIC_POLICY_V2_ID,
+            "byte_sha256": FACTOR_REGIME_DIAGNOSTIC_POLICY_V2_BYTE_SHA256,
+            "relative_path": FACTOR_REGIME_DIAGNOSTIC_POLICY_V2_PATH,
+            "semantic_sha256": FACTOR_REGIME_DIAGNOSTIC_POLICY_V2_SEMANTIC_SHA256,
+            "version": FACTOR_REGIME_DIAGNOSTIC_POLICY_V2_VERSION,
+        }
     return {
         "artifact_id": FACTOR_REGIME_DIAGNOSTIC_POLICY_ID,
         "byte_sha256": FACTOR_REGIME_DIAGNOSTIC_POLICY_BYTE_SHA256,
@@ -241,16 +320,22 @@ def _validate_factor_regime_origin_inventory(
     ):
         raise ArtifactContractError("factor regime origin inventory contract mismatch")
     rows = document["origin_rows"]
-    is_v2 = document["version"] == FACTOR_REGIME_ORIGIN_INVENTORY_VERSION
+    is_v2 = document["version"] == FACTOR_REGIME_ORIGIN_INVENTORY_V2_VERSION
+    is_v3 = document["version"] == FACTOR_REGIME_ORIGIN_INVENTORY_VERSION
+    is_modern = is_v2 or is_v3
     if document["origin_count"] != len(rows):
         raise ArtifactContractError("factor regime origin count mismatch")
     excluded_rows = document.get("excluded_origin_rows", [])
-    if is_v2 and (
-        document.get("excluded_origin_count") != len(excluded_rows)
-        or document.get("limitation_codes")
-        != (["REGIME_HARD_STATE_UNKNOWN"] if excluded_rows else [])
-    ):
+    if is_modern and (document.get("excluded_origin_count") != len(excluded_rows)):
         raise ArtifactContractError("factor regime excluded origin count mismatch")
+    if is_v2 and document.get("limitation_codes") != (
+        ["REGIME_HARD_STATE_UNKNOWN"] if excluded_rows else []
+    ):
+        raise ArtifactContractError("factor regime v2 limitation code mismatch")
+    if is_v3 and document.get("limitation_codes") != sorted(
+        {code for row in excluded_rows for code in row.get("row_limitation_codes", [])}
+    ):
+        raise ArtifactContractError("factor regime v3 limitation code mismatch")
     expected_order = sorted(
         rows,
         key=lambda row: (
@@ -279,10 +364,13 @@ def _validate_factor_regime_origin_inventory(
         ):
             raise ArtifactContractError("factor regime origin row identity mismatch")
         if row in excluded_rows:
-            if row["regime_state"] != "未知" or row["row_limitation_codes"] != [
-                "REGIME_HARD_STATE_UNKNOWN"
-            ]:
+            if is_v2 and (
+                row["regime_state"] != "未知"
+                or row["row_limitation_codes"] != ["REGIME_HARD_STATE_UNKNOWN"]
+            ):
                 raise ArtifactContractError("factor regime excluded origin mismatch")
+            if is_v3:
+                validate_v3_excluded_regime_origin_row(row)
             continue
         eligible_count = row["eligible_symbol_count"]
         comparable_count = row["comparable_symbol_count"]
@@ -351,6 +439,22 @@ def _validate_factor_regime_origin_inventory(
             or row["regime_source_version"] != "myquant.v17.v4.regime-evidence.v2"
         ):
             raise ArtifactContractError("factor regime v2 origin binding mismatch")
+        if is_v3 and (
+            row["regime_decision_session"] != row["decision_session"]
+            or row["regime_effective_session"] != row["decision_session"]
+            or row["regime_observed_through_session"] >= row["decision_session"]
+            or row["regime_publication_phase"] != "PRIOR_SESSION_EFFECTIVE_NEXT_SESSION"
+            or row["regime_inference_kind"] != "FILTERED_CAUSAL"
+            or row["regime_smoothing_used"] is not False
+            or row["regime_hard_state_derivation"] != "SEALED_ARGMAX_POLICY_V1"
+            or row["regime_scope_kind"] != "FULL_MARKET"
+            or row["regime_no_retroactive_causal_backfill"] is not True
+            or row["regime_source_commit"] != V4_SOURCE_GIT_COMMIT
+            or row["regime_source_version"] != "myquant.v17.v4.regime-evidence.v3"
+            or row["regime_continuity_kind"] not in {"CONTIGUOUS", "ROLLOVER"}
+            or row["regime_finalized"] is not True
+        ):
+            raise ArtifactContractError("factor regime v3 origin binding mismatch")
         counts[row["regime_state"]] = counts.get(row["regime_state"], 0) + 1
     expected_excluded_order = sorted(
         excluded_rows,
@@ -809,27 +913,34 @@ def _validate_predecessor_binding(payload: Mapping[str, Any]) -> dict[str, Any]:
         raise ArtifactContractError("V17 v4 predecessor binding is invalid") from exc
     if document["authority"] != NO_AUTHORITY:
         raise ArtifactContractError("V17 v5 predecessor binding grants authority")
-    expected_policy_ref = (
-        {
+    if document["version"] == PREDECESSOR_BINDING_V1_VERSION:
+        expected_policy_ref = {
             "artifact_id": V4_COMPATIBILITY_POLICY_V1_ID,
             "byte_sha256": V4_COMPATIBILITY_POLICY_V1_BYTE_SHA256,
             "relative_path": V4_COMPATIBILITY_POLICY_V1_PATH,
             "semantic_sha256": V4_COMPATIBILITY_POLICY_V1_SEMANTIC_SHA256,
             "version": V4_COMPATIBILITY_POLICY_V1_VERSION,
         }
-        if document["version"] == PREDECESSOR_BINDING_V1_VERSION
-        else {
+    elif document["version"] == PREDECESSOR_BINDING_V2_VERSION:
+        expected_policy_ref = {
+            "artifact_id": V4_COMPATIBILITY_POLICY_V2_ID,
+            "byte_sha256": V4_COMPATIBILITY_POLICY_V2_BYTE_SHA256,
+            "relative_path": V4_COMPATIBILITY_POLICY_V2_PATH,
+            "semantic_sha256": V4_COMPATIBILITY_POLICY_V2_SEMANTIC_SHA256,
+            "version": V4_COMPATIBILITY_POLICY_V2_VERSION,
+        }
+    else:
+        expected_policy_ref = {
             "artifact_id": V4_COMPATIBILITY_POLICY_ID,
             "byte_sha256": V4_COMPATIBILITY_POLICY_BYTE_SHA256,
             "relative_path": V4_COMPATIBILITY_POLICY_PATH,
             "semantic_sha256": V4_COMPATIBILITY_POLICY_SEMANTIC_SHA256,
             "version": V4_COMPATIBILITY_POLICY_VERSION,
         }
-    )
     if policy != expected_policy_ref:
         raise ArtifactContractError("V17 v4 compatibility policy identity mismatch")
-    expected_source = (
-        {
+    if document["version"] == PREDECESSOR_BINDING_V1_VERSION:
+        expected_source = {
             "source_git_commit": "ec1370553fdf7ca0951ec4b03ea9fc426a872b4e",
             "source_package_manifest_byte_sha256": (
                 "fdc0aba035cdfff243df1a191431c84cfd7638fd0d94d877c7b37b29d5bc6875"
@@ -838,13 +949,22 @@ def _validate_predecessor_binding(payload: Mapping[str, Any]) -> dict[str, Any]:
                 "09700937c1fac82b2e3bbd405f1cbe7d31e71faea6a6c71e2d57d0c8c2b87b04"
             ),
         }
-        if document["version"] == PREDECESSOR_BINDING_V1_VERSION
-        else {
+    elif document["version"] == PREDECESSOR_BINDING_V2_VERSION:
+        expected_source = {
+            "source_git_commit": "1da7ffb636a3254940525d746549d15e827f06ba",
+            "source_package_manifest_byte_sha256": (
+                "80dd615730ccf94eb453664936b0f265180dc68c18651e90932ce05fa3fb1428"
+            ),
+            "source_runtime_manifest_byte_sha256": (
+                "a7d27d0d16153d5b55558cd608a9155dd3b968d2721135ba77d777d409a7e63c"
+            ),
+        }
+    else:
+        expected_source = {
             "source_git_commit": V4_SOURCE_GIT_COMMIT,
             "source_package_manifest_byte_sha256": V4_PACKAGE_MANIFEST_SHA256,
             "source_runtime_manifest_byte_sha256": V4_RUNTIME_MANIFEST_SHA256,
         }
-    )
     if (
         document["protocol_version"] != "myquant.v17.v5"
         or document["source_protocol_version"] != "myquant.v17.v4"
@@ -855,6 +975,27 @@ def _validate_predecessor_binding(payload: Mapping[str, Any]) -> dict[str, Any]:
         != expected_source["source_runtime_manifest_byte_sha256"]
     ):
         raise ArtifactContractError("V17 v4 predecessor binding identity mismatch")
+    if document["version"] == PREDECESSOR_BINDING_VERSION:
+        try:
+            for field in (
+                "regime_evidence_v3_runtime_sha256",
+                "regime_evidence_v3_schema_sha256",
+                "regime_inference_policy_v2_sha256",
+                "v2_cli_source_sha256",
+            ):
+                require_sha256(document[field], label=field)
+        except (IdentityContractError, KeyError, TypeError) as exc:
+            raise ArtifactContractError("V17 v4 predecessor v3 binding is invalid") from exc
+        if (
+            document["source_package_asset_count"] != 109
+            or document["source_runtime_source_count"] != 32
+            or document["regime_evidence_v3_schema_sha256"] != V4_REGIME_EVIDENCE_V3_SCHEMA_SHA256
+            or document["regime_inference_policy_v2_sha256"] != V4_REGIME_INFERENCE_POLICY_V2_SHA256
+            or document["regime_evidence_v3_runtime_sha256"] != V4_REGIME_EVIDENCE_V3_RUNTIME_SHA256
+            or document["v2_cli_source_sha256"] != V4_V2_PUBLICATION_BLOCK_CLI_SHA256
+            or document["v2_publication_status"] != "REGIME_EVIDENCE_V2_CHAIN_NON_DEPLOYABLE"
+        ):
+            raise ArtifactContractError("V17 v4 predecessor v3 metadata mismatch")
     return document
 
 
@@ -867,7 +1008,11 @@ def validate_typed_artifact(
         from .schema_validation import validate_schema_version
 
         validate_schema_version(payload, payload.get("version"))
-    if payload.get("version") in {PREDECESSOR_BINDING_V1_VERSION, PREDECESSOR_BINDING_VERSION}:
+    if payload.get("version") in {
+        PREDECESSOR_BINDING_V1_VERSION,
+        PREDECESSOR_BINDING_V2_VERSION,
+        PREDECESSOR_BINDING_VERSION,
+    }:
         return _validate_predecessor_binding(payload)
     if payload.get("version") == FACTOR_DIAGNOSTIC_VERSION:
         return _validate_factor_diagnostic(payload)
@@ -875,11 +1020,13 @@ def validate_typed_artifact(
         return _validate_factor_lifecycle_diagnostic(payload)
     if payload.get("version") in {
         FACTOR_REGIME_ORIGIN_INVENTORY_V1_VERSION,
+        FACTOR_REGIME_ORIGIN_INVENTORY_V2_VERSION,
         FACTOR_REGIME_ORIGIN_INVENTORY_VERSION,
     }:
         return _validate_factor_regime_origin_inventory(payload)
     if payload.get("version") in {
         REGIME_CONDITIONED_FACTOR_DIAGNOSTIC_V1_VERSION,
+        REGIME_CONDITIONED_FACTOR_DIAGNOSTIC_V2_VERSION,
         REGIME_CONDITIONED_FACTOR_DIAGNOSTIC_VERSION,
     }:
         return _validate_regime_conditioned_factor_diagnostic(payload)
@@ -903,14 +1050,22 @@ __all__ = [
     "FACTOR_REGIME_DIAGNOSTIC_POLICY_V1_PATH",
     "FACTOR_REGIME_DIAGNOSTIC_POLICY_V1_SEMANTIC_SHA256",
     "FACTOR_REGIME_DIAGNOSTIC_POLICY_V1_VERSION",
+    "FACTOR_REGIME_DIAGNOSTIC_POLICY_V2_BYTE_SHA256",
+    "FACTOR_REGIME_DIAGNOSTIC_POLICY_V2_ID",
+    "FACTOR_REGIME_DIAGNOSTIC_POLICY_V2_PATH",
+    "FACTOR_REGIME_DIAGNOSTIC_POLICY_V2_SEMANTIC_SHA256",
+    "FACTOR_REGIME_DIAGNOSTIC_POLICY_V2_VERSION",
     "FACTOR_REGIME_DIAGNOSTIC_POLICY_VERSION",
     "FACTOR_LIFECYCLE_DIAGNOSTIC_VERSION",
     "FACTOR_REGIME_ORIGIN_INVENTORY_V1_VERSION",
+    "FACTOR_REGIME_ORIGIN_INVENTORY_V2_VERSION",
     "FACTOR_REGIME_ORIGIN_INVENTORY_VERSION",
     "NO_AUTHORITY",
     "PREDECESSOR_BINDING_V1_VERSION",
+    "PREDECESSOR_BINDING_V2_VERSION",
     "PREDECESSOR_BINDING_VERSION",
     "REGIME_CONDITIONED_FACTOR_DIAGNOSTIC_V1_VERSION",
+    "REGIME_CONDITIONED_FACTOR_DIAGNOSTIC_V2_VERSION",
     "REGIME_CONDITIONED_FACTOR_DIAGNOSTIC_VERSION",
     "V4_COMPATIBILITY_POLICY_BYTE_SHA256",
     "V4_COMPATIBILITY_POLICY_ID",
@@ -921,6 +1076,11 @@ __all__ = [
     "V4_COMPATIBILITY_POLICY_V1_PATH",
     "V4_COMPATIBILITY_POLICY_V1_SEMANTIC_SHA256",
     "V4_COMPATIBILITY_POLICY_V1_VERSION",
+    "V4_COMPATIBILITY_POLICY_V2_BYTE_SHA256",
+    "V4_COMPATIBILITY_POLICY_V2_ID",
+    "V4_COMPATIBILITY_POLICY_V2_PATH",
+    "V4_COMPATIBILITY_POLICY_V2_SEMANTIC_SHA256",
+    "V4_COMPATIBILITY_POLICY_V2_VERSION",
     "V4_COMPATIBILITY_POLICY_VERSION",
     "V4_FACTOR_EVIDENCE_ADAPTER_POLICY_BYTE_SHA256",
     "V4_FACTOR_EVIDENCE_ADAPTER_POLICY_ID",
@@ -931,4 +1091,5 @@ __all__ = [
     "V4_RUNTIME_MANIFEST_SHA256",
     "V4_SOURCE_GIT_COMMIT",
     "validate_typed_artifact",
+    "validate_v3_excluded_regime_origin_row",
 ]

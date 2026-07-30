@@ -27,6 +27,7 @@ from quant_investor.v17_v5_contract.identities import (
     require_sha256,
 )
 from quant_investor.v17_v5_contract.validators import (
+    ArtifactContractError,
     FACTOR_REGIME_DIAGNOSTIC_POLICY_BYTE_SHA256,
     FACTOR_REGIME_DIAGNOSTIC_POLICY_ID,
     FACTOR_REGIME_DIAGNOSTIC_POLICY_PATH,
@@ -34,16 +35,17 @@ from quant_investor.v17_v5_contract.validators import (
     FACTOR_REGIME_DIAGNOSTIC_POLICY_VERSION,
     NO_AUTHORITY,
     V4_SOURCE_GIT_COMMIT,
+    validate_v3_excluded_regime_origin_row,
 )
 
 PROTOCOL_VERSION: Final = "myquant.v17.v5"
-FACTOR_REGIME_ORIGIN_INVENTORY_VERSION: Final = "myquant.v17.v5.factor-regime-origin-inventory.v2"
+FACTOR_REGIME_ORIGIN_INVENTORY_VERSION: Final = "myquant.v17.v5.factor-regime-origin-inventory.v3"
 HORIZON_SESSIONS: Final = 20
 OUTPUT_SCALE: Final = Decimal("0.000000000001")
-REGIME_EVIDENCE_V2_VERSION: Final = "myquant.v17.v4.regime-evidence.v2"
-POLICY_V2_VERSION: Final = "myquant.v17.v5.factor-regime-diagnostic-policy.v2"
-POLICY_V2_PATH: Final = (
-    "quant_investor/v17_v5_contract/resources/factor_regime_diagnostic_policy.v2.json"
+REGIME_EVIDENCE_V3_VERSION: Final = "myquant.v17.v4.regime-evidence.v3"
+POLICY_V3_VERSION: Final = "myquant.v17.v5.factor-regime-diagnostic-policy.v3"
+POLICY_V3_PATH: Final = (
+    "quant_investor/v17_v5_contract/resources/factor_regime_diagnostic_policy.v3.json"
 )
 REQUIRED_PUBLICATION_PHASE: Final = "PRIOR_SESSION_EFFECTIVE_NEXT_SESSION"
 REQUIRED_INFERENCE_KIND: Final = "FILTERED_CAUSAL"
@@ -120,6 +122,15 @@ class RegimeEvidenceSnapshot:
     no_retroactive_causal_backfill: bool | None = None
     source_commit: str | None = None
     state_order: Sequence[str] | None = None
+    checkpoint_ref: ContentArtifactRef | None = None
+    finalized: bool = False
+    continuity_kind: str | None = None
+    segment_id: str | None = None
+    segment_index: int | None = None
+    segment_position: int | None = None
+    transition_commitment_sha256: str | None = None
+    chain_digest_sha256: str | None = None
+    segment_accumulator_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -269,12 +280,15 @@ def _policy_ref(policy_ref: Mapping[str, Any]) -> dict[str, Any]:
         "semantic_sha256": FACTOR_REGIME_DIAGNOSTIC_POLICY_SEMANTIC_SHA256,
         "version": FACTOR_REGIME_DIAGNOSTIC_POLICY_VERSION,
     }
-    if document == expected_current and document["version"] == POLICY_V2_VERSION:
+    if document == expected_current and document["version"] == POLICY_V3_VERSION:
         return document
-    if document["version"].endswith(".v1"):
-        _fail("Sprint 1D regime diagnostics must bind policy v2")
-    if document["version"] != POLICY_V2_VERSION or document["relative_path"] != POLICY_V2_PATH:
-        _fail("policy_ref does not bind the sealed Sprint 1D policy v2")
+    if document["version"] in {
+        "myquant.v17.v5.factor-regime-diagnostic-policy.v1",
+        "myquant.v17.v5.factor-regime-diagnostic-policy.v2",
+    }:
+        _fail("Sprint 1E-0B regime diagnostics must bind policy v3")
+    if document["version"] != POLICY_V3_VERSION or document["relative_path"] != POLICY_V3_PATH:
+        _fail("policy_ref does not bind the sealed Sprint 1E-0B policy v3")
     return document
 
 
@@ -468,8 +482,20 @@ def _origin_row(
         _fail("strategy_id mismatch")
     if regime_source_version != regime_ref["version"]:
         _fail("regime source version does not match artifact ref")
-    if regime_source_version != REGIME_EVIDENCE_V2_VERSION:
-        _fail("regime source version must be myquant.v17.v4.regime-evidence.v2")
+    if regime_source_version != REGIME_EVIDENCE_V3_VERSION:
+        _fail("regime source version must be myquant.v17.v4.regime-evidence.v3")
+    if regime.finalized is not True or regime.checkpoint_ref is None:
+        _fail("REGIME_EVIDENCE_V3_NOT_FINALIZED")
+    checkpoint_ref = _artifact_ref(
+        regime.checkpoint_ref,
+        label=f"{origin_id}.regime.checkpoint_ref",
+        v4=True,
+    )
+    if (
+        checkpoint_ref["strategy_id"] != strategy_id
+        or checkpoint_ref["version"] != "myquant.v17.v4.regime-state-checkpoint.v1"
+    ):
+        _fail("regime checkpoint ref mismatch")
     regime_cutoff = _timestamp(regime.cutoff, label=f"{origin_id}.regime.cutoff")
     if regime_ref["cutoff"] != regime.cutoff:
         _fail("regime cutoff does not match artifact ref")
@@ -526,10 +552,44 @@ def _origin_row(
         raise FactorRegimeOriginInventoryError(str(exc)) from exc
     if source_commit != V4_SOURCE_GIT_COMMIT:
         _fail("regime source commit does not match the pinned V4 predecessor")
+    continuity_kind = _text(
+        regime.continuity_kind,
+        label=f"{origin_id}.regime.continuity_kind",
+    )
+    if continuity_kind not in {"GENESIS", "RECOVERY", "CONTIGUOUS", "ROLLOVER"}:
+        _fail("regime continuity kind is invalid")
+    if type(regime.segment_index) is not int or regime.segment_index < 0:
+        _fail("regime segment_index is invalid")
+    if (
+        type(regime.segment_position) is not int
+        or regime.segment_position < 0
+        or regime.segment_position > 63
+    ):
+        _fail("regime segment_position is invalid")
+    if (
+        continuity_kind in {"GENESIS", "RECOVERY", "ROLLOVER"} and regime.segment_position != 0
+    ) or (continuity_kind == "CONTIGUOUS" and regime.segment_position == 0):
+        _fail("regime continuity and segment position mismatch")
+    try:
+        segment_id = require_sha256(regime.segment_id, label="regime.segment_id")
+        transition_commitment = require_sha256(
+            regime.transition_commitment_sha256,
+            label="regime.transition_commitment_sha256",
+        )
+        chain_digest = require_sha256(
+            regime.chain_digest_sha256,
+            label="regime.chain_digest_sha256",
+        )
+        segment_accumulator = require_sha256(
+            regime.segment_accumulator_sha256,
+            label="regime.segment_accumulator_sha256",
+        )
+    except IdentityContractError as exc:
+        raise FactorRegimeOriginInventoryError(str(exc)) from exc
     regime_state = _text(regime.regime_state, label=f"{origin_id}.regime_state")
     state_probabilities = _probabilities(regime.state_probabilities, state_order=regime.state_order)
     if state_probabilities is None:
-        _fail("V4 regime-evidence.v2 must carry sealed state probabilities")
+        _fail("V4 regime-evidence.v3 must carry sealed state probabilities")
     if regime_state not in {row["regime_state"] for row in state_probabilities}:
         _fail("posterior does not contain the sealed hard regime state")
     # The V4 producer sealed the native state and tie-break.  V5 verifies the
@@ -538,15 +598,27 @@ def _origin_row(
         "decision_session": decision_session,
         "factor_name": factor_name,
         "origin_id": origin_id,
+        "regime_checkpoint_ref": checkpoint_ref,
+        "regime_continuity_kind": continuity_kind,
         "regime_evidence_ref": regime_ref,
+        "regime_finalized": True,
         "regime_state": regime_state,
         "row_limitation_codes": [],
     }
+    limitations: list[str] = []
+    if continuity_kind == "GENESIS":
+        limitations.append("REGIME_CONTINUITY_GENESIS")
+    elif continuity_kind == "RECOVERY":
+        limitations.append("REGIME_CONTINUITY_RECOVERY")
     if regime_state == UNKNOWN_REGIME_STATE:
+        limitations.append("REGIME_HARD_STATE_UNKNOWN")
+    if limitations:
         excluded = dict(base_row)
-        excluded["row_limitation_codes"] = ["REGIME_HARD_STATE_UNKNOWN"]
+        excluded["row_limitation_codes"] = sorted(limitations)
         excluded["row_identity_sha256"] = hashlib.sha256(canonical_bytes(excluded)).hexdigest()
         return None, excluded
+    if continuity_kind not in {"CONTIGUOUS", "ROLLOVER"}:
+        _fail("regime continuity is not conditioning eligible")
     row = {
         "comparable_symbol_count": origin.comparable_symbol_count,
         "coverage": coverage,
@@ -564,9 +636,13 @@ def _origin_row(
         "rank_ic": rank_ic,
         "request_ref": request_ref,
         "regime_available_at": regime.available_at,
+        "regime_chain_digest_sha256": chain_digest,
+        "regime_checkpoint_ref": checkpoint_ref,
+        "regime_continuity_kind": continuity_kind,
         "regime_decision_session": regime_decision_session,
         "regime_effective_session": regime_effective_session,
         "regime_evidence_ref": regime_ref,
+        "regime_finalized": True,
         "regime_hard_state_derivation": regime.hard_state_derivation,
         "regime_inference_kind": regime.inference_kind,
         "regime_no_retroactive_causal_backfill": regime.no_retroactive_causal_backfill,
@@ -574,9 +650,14 @@ def _origin_row(
         "regime_publication_phase": regime.publication_phase,
         "regime_published_at": regime.published_at,
         "regime_scope_kind": regime.scope_kind,
+        "regime_segment_accumulator_sha256": segment_accumulator,
+        "regime_segment_id": segment_id,
+        "regime_segment_index": regime.segment_index,
+        "regime_segment_position": regime.segment_position,
         "regime_smoothing_used": regime.smoothing_used,
         "regime_source_version": regime_source_version,
         "regime_state": regime_state,
+        "regime_transition_commitment_sha256": transition_commitment,
         "regime_source_commit": source_commit,
         "source_locator_ref": source_locator_ref,
         "state_probabilities": state_probabilities,
@@ -620,8 +701,11 @@ def _validate_inventory(document: Mapping[str, Any]) -> dict[str, Any]:
     limitation_codes = payload.get("limitation_codes", [])
     if not isinstance(limitation_codes, list) or limitation_codes != sorted(set(limitation_codes)):
         _fail("limitation_codes must be canonical")
-    if excluded_rows and "REGIME_HARD_STATE_UNKNOWN" not in limitation_codes:
-        _fail("unknown hard-state exclusions require limitation code")
+    expected_limitations = sorted(
+        {code for row in excluded_rows for code in row.get("row_limitation_codes", [])}
+    )
+    if limitation_codes != expected_limitations:
+        _fail("excluded-origin limitation codes do not close")
     expected_order = sorted(
         rows,
         key=lambda row: (
@@ -648,6 +732,18 @@ def _validate_inventory(document: Mapping[str, Any]) -> dict[str, Any]:
         observed = expected_row_identity.pop("row_identity_sha256")
         if hashlib.sha256(canonical_bytes(expected_row_identity)).hexdigest() != observed:
             _fail("origin row identity mismatch")
+        if row.get("regime_finalized") is not True:
+            _fail("REGIME_EVIDENCE_V3_NOT_FINALIZED")
+        if row in rows and row.get("regime_continuity_kind") not in {
+            "CONTIGUOUS",
+            "ROLLOVER",
+        }:
+            _fail("conditioning inventory contains an ineligible continuity kind")
+        if row in excluded_rows:
+            try:
+                validate_v3_excluded_regime_origin_row(row)
+            except ArtifactContractError as exc:
+                raise FactorRegimeOriginInventoryError(str(exc)) from exc
     for row in rows:
         regime_counts[row["regime_state"]] = regime_counts.get(row["regime_state"], 0) + 1
     if excluded_rows != sorted(
@@ -744,9 +840,9 @@ def build_factor_regime_origin_inventory(
     regime_counts: dict[str, int] = {}
     for row in rows:
         regime_counts[row["regime_state"]] = regime_counts.get(row["regime_state"], 0) + 1
-    limitation_codes: list[str] = []
-    if excluded_rows:
-        limitation_codes.append("REGIME_HARD_STATE_UNKNOWN")
+    limitation_codes = sorted(
+        {code for row in excluded_rows for code in row["row_limitation_codes"]}
+    )
     document = {
         "authority": dict(NO_AUTHORITY),
         "created_at": created_at,

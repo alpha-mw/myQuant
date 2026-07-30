@@ -35,24 +35,25 @@ Sprint 1B adds:
 - a stdout-only CLI diagnostic surface;
 - no online weights, tier changes, lifecycle advice or authority.
 
-Sprint 1D adds:
+Sprint 1E-0B adds:
 
-- a V5 predecessor pin update to exact V4 Sprint 1C commit
-  `1da7ffb636a3254940525d746549d15e827f06ba`;
-- V4 `myquant.v17.v4.regime-evidence.v2` read-only adapter eligibility for
-  origin-regime conditioning;
-- a v2 diagnostic policy that accepts only filtered-causal, prior-session,
-  full-market, sealed-argmax V4 regime evidence;
+- an exact V5 predecessor pin to V4 bounded-chain and V2-publication-block
+  commit `73c5b6eea6c60d9a31865e176646687ffeee9d6a`;
+- V4 `myquant.v17.v4.regime-evidence.v3` composite-finality validation through
+  the existing bounded read-only adapter;
+- a v3 diagnostic policy that accepts only finalized, filtered-causal,
+  prior-session, full-market, sealed-argmax V4 regime evidence;
 - stricter origin binding: regime decision/effective session must equal the
   Factor origin session and observed-through must be the immediately preceding
   Shanghai open session;
-- a read-only regime-chain deployability audit;
+- deterministic continuity eligibility: `CONTIGUOUS` and `ROLLOVER` are
+  conditionable; `GENESIS`, `RECOVERY`, and `未知` are not;
 - no V4 producer modification, artifact creation, online weights, tier changes,
   lifecycle advice or authority.
 
 ## Scope and non-goals
 
-Sprint 1D has no run orchestrator, schedule, artifact writer, output root,
+Sprint 1E-0B has no run orchestrator, schedule, artifact writer, output root,
 model call, provider call, or portfolio surface. It does
 not modify V15, V16, V17 v2/v3, V17 v4 runtime, Factor Governance, formal
 activation, canary, promotion, the default selector, execution, broker, order,
@@ -62,11 +63,13 @@ The only root-admissible predecessor artifacts are:
 
 ```text
 myquant.v17.v4.forward-evaluation-receipt.v1
+myquant.v17.v4.regime-evidence.v1
 myquant.v17.v4.regime-evidence.v2
+myquant.v17.v4.regime-evidence.v3
 ```
 
-`myquant.v17.v4.regime-evidence.v1` remains a valid V4 artifact version for
-integrity checks, but it is not conditioning-eligible in V5.
+V1 and V2 remain valid for integrity checks but are not conditioning-eligible.
+Only finalized V3 can enter origin-regime conditioning.
 
 The evaluation receipt expands only through the sealed compatibility-policy
 graph: origin and existing-factor inventories, 20-session labels, observation
@@ -78,19 +81,19 @@ Unknown versions, partial refs, hidden refs and undeclared edges fail closed.
 
 ## Predecessor identity
 
-The Sprint 1D compatibility policy fixes:
+The Sprint 1E-0B compatibility policy fixes:
 
 ```text
 source commit:
-  1da7ffb636a3254940525d746549d15e827f06ba
+  73c5b6eea6c60d9a31865e176646687ffeee9d6a
 V17 v4 package manifest:
-  80dd615730ccf94eb453664936b0f265180dc68c18651e90932ce05fa3fb1428
+  270c863fdcc2b092265444db9cc2fac9e3e19e1ef5fb2a36ddde6b47e443a1ff
 V17 v4 runtime manifest:
-  a7d27d0d16153d5b55558cd608a9155dd3b968d2721135ba77d777d409a7e63c
+  7c7dc183a419623542fb1d8b95d092283c948c46a804eedd8424f931645f3a28
 ```
 
 The predecessor mechanism is `WORKTREE_COLOCATED_PREDECESSOR`. V5 keeps the
-exact V4 Sprint 1C commit as a merge parent, verifies the colocated V4
+exact V4 commit as a merge parent, verifies the colocated V4
 package/runtime manifests, and does not hand-copy or reinterpret V4 producer
 files.
 
@@ -142,16 +145,17 @@ checkpoint review and tests remain the source binding for those contract
 modules; `verify` must not be described as a complete byte seal of contract
 Python.
 
-## Sprint 1D Regime evidence v2 adapter
+## Sprint 1E-0B Regime evidence v3 adapter
 
 The V5 adapter accepts only explicit path plus SHA-256 inputs. It never scans
 for a latest artifact, calls the V4 producer, downloads market data, reads V15
-mutable history, converts v1 to v2, or reconstructs regime from raw data.
+mutable history, converts older evidence to V3, or reconstructs regime from raw
+data.
 
-The policy-eligible V4 v2 evidence must satisfy:
+The policy-eligible V4 V3 evidence must satisfy:
 
 ```text
-version = myquant.v17.v4.regime-evidence.v2
+version = myquant.v17.v4.regime-evidence.v3
 inference_kind = FILTERED_CAUSAL
 smoothing_used = false
 publication_phase = PRIOR_SESSION_EFFECTIVE_NEXT_SESSION
@@ -162,11 +166,15 @@ no_retroactive_causal_backfill = true
 
 State probabilities must contain exactly the sealed state order, use canonical
 12-decimal strings, be finite and in `[0, 1]`, and sum to
-`1.000000000000`. V5 does not recompute the posterior, rerun argmax, change
-the V4 tie-break rule, or map `未知` into another state. `未知` is valid as a
-V4 hard state but is conditioning-ineligible.
+`1.000000000000`. Evidence also needs its explicit current checkpoint in the
+direct source closure, and the two artifacts must agree on all duplicated
+session, segment, posterior, hard-state, commitment and accumulator fields.
+V5 does not recompute posterior, argmax, commitments, chain digest, or
+continuity. It does not issue a finality receipt or recursively traverse older
+checkpoints. `CONTIGUOUS` and `ROLLOVER` may be conditionable; `GENESIS`,
+`RECOVERY`, and `未知` are not.
 
-For a Factor origin, the v2 evidence must bind exactly:
+For a Factor origin, the V3 evidence must bind exactly:
 
 ```text
 regime.decision_session = factor_origin.decision_session
@@ -176,10 +184,11 @@ regime.available_at <= factor_origin.cutoff
 regime.observed_through_session = previous_open_session(factor_origin.decision_session)
 ```
 
-The adapter rejects stale regime fallback, label-end regime, horizon
-transition regime, multiple v2 evidences for one origin, future publication,
-and any posterior-only or smoothed state. V1 remains integrity-checkable but
-returns `REGIME_EVIDENCE_V1_NOT_CONDITIONING_ELIGIBLE`.
+The adapter rejects orphan evidence, stale fallback, label-end regime, horizon
+transition regime, multiple V3 evidences for one origin, future publication,
+and any posterior-only or smoothed state. V1 remains integrity-checkable and
+ineligible. V2 remains integrity-checkable but returns
+`REGIME_EVIDENCE_V2_NON_DEPLOYABLE`.
 
 ## Authority
 
@@ -335,9 +344,9 @@ and label refs. Structurally valid missing evidence becomes `UNAVAILABLE` or
 authority contradictions raise `V4FactorAdapterError` with exit code 2 and
 produce no artifact.
 
-No real persisted V4 evaluation receipt is available for Sprint 1D. Therefore
-the current evidence state remains `UNAVAILABLE`; no Factor effectiveness claim
-is made.
+No real persisted V4 evaluation receipt or finalized Regime Evidence V3 is
+available for Sprint 1E-0B. Therefore the current evidence state remains
+`UNAVAILABLE`; no Factor effectiveness claim is made.
 
 ## Factor lifecycle diagnostic
 
@@ -353,10 +362,10 @@ null, and every authority field remains false.
 
 ## Acceptance and stop conditions
 
-Sprint 1D is accepted only if package/runtime/predecessor verification,
-semantic replay, v2 adapter positive and negative tests, origin-binding tests,
-chain deployability audit tests, authority/import/no-write boundary tests, V15
-public smoke, full V17 v4 regression, mypy, Black and `git diff --check` pass.
+Sprint 1E-0B is accepted only if package/runtime/predecessor verification,
+semantic replay, V3 adapter positive and adversarial tests, origin-binding
+tests, authority/import/no-write boundary tests, V15 public smoke, full V17 v4
+regression, mypy, Black and `git diff --check` pass.
 
 Stop before any operational writer or governance integration if any predecessor
 manifest drifts, an unallowlisted reference is accepted, a resource limit is

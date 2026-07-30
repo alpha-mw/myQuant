@@ -71,6 +71,8 @@ def _parser() -> argparse.ArgumentParser:
     regime_mode.add_argument("--regime-evidence-path")
     regime_mode.add_argument("--regime-evidence-unavailable", action="store_true")
     diagnostics.add_argument("--regime-evidence-sha256")
+    diagnostics.add_argument("--regime-checkpoint-path")
+    diagnostics.add_argument("--regime-checkpoint-sha256")
     return parser
 
 
@@ -97,8 +99,8 @@ def _emit(payload: Any) -> None:
 
 
 def _factor_regime_policy_ref() -> dict[str, str]:
-    policy_path = "quant_investor/v17_v5_contract/resources/factor_regime_diagnostic_policy.v2.json"
-    packaged_path = "resources/factor_regime_diagnostic_policy.v2.json"
+    policy_path = "quant_investor/v17_v5_contract/resources/factor_regime_diagnostic_policy.v3.json"
+    packaged_path = "resources/factor_regime_diagnostic_policy.v3.json"
     raw = read_packaged_asset(packaged_path)
     policy = json.loads(raw)
     return {
@@ -141,12 +143,20 @@ def _run_factor_regime_diagnostics(args: argparse.Namespace) -> int:
         unavailable=args.regime_evidence_unavailable,
         label="regime evidence",
     )
+    if args.regime_evidence_unavailable:
+        if args.regime_checkpoint_path is not None or args.regime_checkpoint_sha256 is not None:
+            raise V4CompatibilityError(
+                "regime checkpoint cannot accompany an unavailable regime declaration"
+            )
+    elif (args.regime_checkpoint_path is None) != (args.regime_checkpoint_sha256 is None):
+        raise V4CompatibilityError("regime checkpoint exact path and SHA-256 are both required")
     blockers: list[str] = []
     regime_metadata: dict[str, Any] = {
         "predecessor_package_manifest_sha256": V4_PACKAGE_MANIFEST_SHA256,
         "predecessor_runtime_manifest_sha256": V4_RUNTIME_MANIFEST_SHA256,
         "predecessor_source_commit": V4_SOURCE_GIT_COMMIT,
         "regime_conditioning_eligibility": None,
+        "regime_finalized": None,
         "regime_source_version": None,
     }
     if args.factor_evidence_unavailable:
@@ -171,7 +181,7 @@ def _run_factor_regime_diagnostics(args: argparse.Namespace) -> int:
         ):
             raise V4CompatibilityError("factor evidence subject does not match --factor-name")
     if args.regime_evidence_unavailable:
-        blockers.append("V4_REGIME_EVIDENCE_V2_UNAVAILABLE")
+        blockers.append("V4_REGIME_EVIDENCE_V3_UNAVAILABLE")
     else:
         regime_read = read_v4_artifact(
             args.workspace_root,
@@ -180,7 +190,11 @@ def _run_factor_regime_diagnostics(args: argparse.Namespace) -> int:
             expected_strategy_id=args.strategy_id,
             decision_cutoff=args.evaluation_cutoff,
         )
-        normalized = adapt_v4_regime_evidence(regime_read)
+        normalized = adapt_v4_regime_evidence(
+            regime_read,
+            checkpoint_relative_path=args.regime_checkpoint_path,
+            checkpoint_byte_sha256=args.regime_checkpoint_sha256,
+        )
         source_version = str(getattr(normalized, "source_version", ""))
         conditioning_eligible = bool(getattr(normalized, "conditioning_eligible", False))
         ineligible_reason = getattr(normalized, "conditioning_ineligibility_reason", None)
@@ -188,6 +202,8 @@ def _run_factor_regime_diagnostics(args: argparse.Namespace) -> int:
         regime_metadata.update(
             {
                 "hard_state": hard_state,
+                "continuity_kind": getattr(normalized, "continuity_kind", None),
+                "regime_finalized": getattr(normalized, "finalized", False),
                 "inference_kind": getattr(normalized, "inference_kind", None),
                 "publication_phase": getattr(normalized, "publication_phase", None),
                 "regime_conditioning_eligibility": conditioning_eligible,
@@ -196,9 +212,18 @@ def _run_factor_regime_diagnostics(args: argparse.Namespace) -> int:
                 "smoothing_used": getattr(normalized, "smoothing_used", None),
             }
         )
-        if source_version != "myquant.v17.v4.regime-evidence.v2":
-            blockers.append("V4_REGIME_EVIDENCE_V2_UNAVAILABLE")
-            blockers.append("REGIME_EVIDENCE_V1_NOT_CONDITIONING_ELIGIBLE")
+        if source_version != "myquant.v17.v4.regime-evidence.v3":
+            blockers.append("V4_REGIME_EVIDENCE_V3_UNAVAILABLE")
+            blockers.append(
+                str(
+                    ineligible_reason
+                    or (
+                        "REGIME_EVIDENCE_V2_NON_DEPLOYABLE"
+                        if source_version == "myquant.v17.v4.regime-evidence.v2"
+                        else "REGIME_EVIDENCE_V1_NOT_CONDITIONING_ELIGIBLE"
+                    )
+                )
+            )
         elif not conditioning_eligible:
             blockers.append(str(ineligible_reason or "REGIME_EVIDENCE_NOT_CONDITIONING_ELIGIBLE"))
     origin_binding_result = "NOT_ATTEMPTED"

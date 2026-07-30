@@ -22,6 +22,12 @@ from quant_investor.v17_v5_contract.resources import (
 )
 from quant_investor.v17_v5_contract.schema_validation import SchemaValidationError
 from quant_investor.v17_v5_contract.validators import ArtifactContractError, NO_AUTHORITY
+from quant_investor.v17_v5_contract.validators import (
+    V4_REGIME_EVIDENCE_V3_RUNTIME_SHA256,
+    V4_REGIME_EVIDENCE_V3_SCHEMA_SHA256,
+    V4_REGIME_INFERENCE_POLICY_V2_SHA256,
+    V4_V2_PUBLICATION_BLOCK_CLI_SHA256,
+)
 
 
 def _predecessor_binding() -> dict[str, Any]:
@@ -36,13 +42,17 @@ def _predecessor_binding() -> dict[str, Any]:
                 "artifact_id": policy["artifact_id"],
                 "byte_sha256": hashlib.sha256(policy_raw).hexdigest(),
                 "relative_path": (
-                    "quant_investor/v17_v5_contract/" "resources/v4_compatibility_policy.v2.json"
+                    "quant_investor/v17_v5_contract/" "resources/v4_compatibility_policy.v3.json"
                 ),
                 "semantic_sha256": policy["semantic_sha256"],
                 "version": policy["version"],
             },
             "protocol_version": "myquant.v17.v5",
+            "regime_evidence_v3_runtime_sha256": V4_REGIME_EVIDENCE_V3_RUNTIME_SHA256,
+            "regime_evidence_v3_schema_sha256": V4_REGIME_EVIDENCE_V3_SCHEMA_SHA256,
+            "regime_inference_policy_v2_sha256": V4_REGIME_INFERENCE_POLICY_V2_SHA256,
             "source_git_commit": predecessor["source_git_commit"],
+            "source_package_asset_count": 109,
             "source_package_manifest_byte_sha256": (predecessor["package_manifest_byte_sha256"]),
             "source_package_manifest_relative_path": (
                 predecessor["package_manifest_relative_path"]
@@ -52,7 +62,10 @@ def _predecessor_binding() -> dict[str, Any]:
             "source_runtime_manifest_relative_path": (
                 predecessor["runtime_manifest_relative_path"]
             ),
-            "version": "myquant.v17.v5.v4-predecessor-binding.v2",
+            "source_runtime_source_count": 32,
+            "v2_cli_source_sha256": V4_V2_PUBLICATION_BLOCK_CLI_SHA256,
+            "v2_publication_status": "REGIME_EVIDENCE_V2_CHAIN_NON_DEPLOYABLE",
+            "version": "myquant.v17.v5.v4-predecessor-binding.v3",
         }
     )
 
@@ -62,7 +75,7 @@ def test_v5_package_runtime_and_predecessor_are_closed() -> None:
     runtime = verify_runtime_build()
     predecessor = verify_predecessor()
 
-    assert len(package) == 17
+    assert len(package) == 22
     assert set(runtime) == {
         "v17_v5_runtime/__init__.py",
         "v17_v5_runtime/authority.py",
@@ -77,17 +90,22 @@ def test_v5_package_runtime_and_predecessor_are_closed() -> None:
         "v17_v5_runtime/v4_regime_adapter.py",
     }
     assert predecessor == {
-        "package_asset_count": 102,
+        "package_asset_count": 109,
         "package_manifest_byte_sha256": (
-            "80dd615730ccf94eb453664936b0f265180dc68c18651e90932ce05fa3fb1428"
+            "270c863fdcc2b092265444db9cc2fac9e3e19e1ef5fb2a36ddde6b47e443a1ff"
         ),
         "protocol_version": "myquant.v17.v4",
+        "regime_evidence_v3_runtime_sha256": V4_REGIME_EVIDENCE_V3_RUNTIME_SHA256,
+        "regime_evidence_v3_schema_sha256": V4_REGIME_EVIDENCE_V3_SCHEMA_SHA256,
+        "regime_inference_policy_v2_sha256": V4_REGIME_INFERENCE_POLICY_V2_SHA256,
         "runtime_manifest_byte_sha256": (
-            "a7d27d0d16153d5b55558cd608a9155dd3b968d2721135ba77d777d409a7e63c"
+            "7c7dc183a419623542fb1d8b95d092283c948c46a804eedd8424f931645f3a28"
         ),
-        "runtime_source_count": 31,
-        "source_git_commit": "1da7ffb636a3254940525d746549d15e827f06ba",
+        "runtime_source_count": 32,
+        "source_git_commit": "73c5b6eea6c60d9a31865e176646687ffeee9d6a",
         "status": "PINNED_AND_VERIFIED",
+        "v2_cli_source_sha256": V4_V2_PUBLICATION_BLOCK_CLI_SHA256,
+        "v2_publication_status": "REGIME_EVIDENCE_V2_CHAIN_NON_DEPLOYABLE",
     }
 
 
@@ -153,7 +171,7 @@ def test_v4_predecessor_binding_rejects_compatibility_policy_version_drift() -> 
         validate_artifact(seal_semantic(artifact))
 
 
-def test_compatibility_policy_is_exact_sprint1d_allowlist() -> None:
+def test_compatibility_policy_is_exact_sprint1e0b_allowlist() -> None:
     policy = load_compatibility_policy()
 
     assert [row["version"] for row in policy["allowed_artifacts"]] == [
@@ -171,14 +189,20 @@ def test_compatibility_policy_is_exact_sprint1d_allowlist() -> None:
         "myquant.v17.v4.forward-stage-output.v1",
         "myquant.v17.v4.forward-stage-receipt.v1",
         "myquant.v17.v4.regime-calendar-terminal.v1",
+        "myquant.v17.v4.regime-chain-anchor.v1",
         "myquant.v17.v4.regime-evidence.v1",
         "myquant.v17.v4.regime-evidence.v2",
+        "myquant.v17.v4.regime-evidence.v3",
         "myquant.v17.v4.regime-feature-snapshot.v1",
         "myquant.v17.v4.regime-market-terminal.v1",
         "myquant.v17.v4.regime-model-snapshot.v1",
+        "myquant.v17.v4.regime-model-snapshot.v2",
         "myquant.v17.v4.regime-pit-membership-terminal.v1",
+        "myquant.v17.v4.regime-segment-anchor.v1",
         "myquant.v17.v4.regime-source-locator-terminal.v1",
+        "myquant.v17.v4.regime-state-checkpoint.v1",
         "myquant.v17.v4.regime-transition-matrix-snapshot.v1",
+        "myquant.v17.v4.regime-transition-matrix-snapshot.v2",
         "myquant.v17.v4.research-shadow-factor-set.v1",
         "myquant.v17.v4.shadow-factor-selection-audit.v1",
     ]
@@ -186,6 +210,7 @@ def test_compatibility_policy_is_exact_sprint1d_allowlist() -> None:
         "myquant.v17.v4.forward-evaluation-receipt.v1",
         "myquant.v17.v4.regime-evidence.v1",
         "myquant.v17.v4.regime-evidence.v2",
+        "myquant.v17.v4.regime-evidence.v3",
     ]
     assert policy["forbidden_import_prefixes"] == ["quant_investor.v17_v4_runtime"]
     assert all(value is False for value in policy["authority"].values())

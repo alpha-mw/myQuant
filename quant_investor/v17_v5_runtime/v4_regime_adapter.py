@@ -4,7 +4,7 @@ The adapter only consumes a :class:`V4CompatibilityRead` returned by the
 bounded compatibility reader.  It never scans for latest artifacts, never calls
 the V4 producer, and never recomputes the posterior or hard state.  V4 v1
 regime evidence remains integrity-checkable but is not conditioning eligible;
-only sealed V4 regime-evidence v2 can enter V5 origin-regime binding.
+only finalized V4 regime-evidence v3 can enter V5 origin-regime binding.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from typing import Any, Final, Mapping
 from quant_investor.v17_v5_contract.validators import (
     V4_COMPATIBILITY_POLICY_BYTE_SHA256,
     V4_PACKAGE_MANIFEST_SHA256,
+    V4_REGIME_EVIDENCE_V3_RUNTIME_SHA256,
     V4_RUNTIME_MANIFEST_SHA256,
     V4_SOURCE_GIT_COMMIT,
 )
@@ -29,10 +30,15 @@ from quant_investor.v17_v5_runtime.v4_compat_reader import (
 
 REGIME_EVIDENCE_V1_VERSION: Final = "myquant.v17.v4.regime-evidence.v1"
 REGIME_EVIDENCE_V2_VERSION: Final = "myquant.v17.v4.regime-evidence.v2"
+REGIME_EVIDENCE_V3_VERSION: Final = "myquant.v17.v4.regime-evidence.v3"
 REGIME_MARKOV_ROLE: Final = "markov_evidence"
 REGIME_HARD_STATE_UNAVAILABLE: Final = "REGIME_HARD_STATE_UNAVAILABLE"
 REGIME_EVIDENCE_V1_NOT_CONDITIONING_ELIGIBLE: Final = "REGIME_EVIDENCE_V1_NOT_CONDITIONING_ELIGIBLE"
 REGIME_HARD_STATE_UNKNOWN: Final = "REGIME_HARD_STATE_UNKNOWN"
+REGIME_EVIDENCE_V2_NON_DEPLOYABLE: Final = "REGIME_EVIDENCE_V2_NON_DEPLOYABLE"
+REGIME_EVIDENCE_V3_NOT_FINALIZED: Final = "REGIME_EVIDENCE_V3_NOT_FINALIZED"
+REGIME_CONTINUITY_GENESIS: Final = "REGIME_CONTINUITY_GENESIS"
+REGIME_CONTINUITY_RECOVERY: Final = "REGIME_CONTINUITY_RECOVERY"
 
 REQUIRED_INFERENCE_KIND: Final = "FILTERED_CAUSAL"
 REQUIRED_PUBLICATION_PHASE: Final = "PRIOR_SESSION_EFFECTIVE_NEXT_SESSION"
@@ -49,6 +55,12 @@ V4_REGIME_INFERENCE_POLICY_REF: Final = {
     "relative_path": "resources/regime_inference_policy.v1.json",
     "semantic_sha256": "8abff276d5ed217ad2cb411e26e658ac87877e6f7b03682f502d960a8487c913",
     "version": "myquant.v17.v4.regime-inference-policy.v1",
+}
+V4_REGIME_INFERENCE_POLICY_V2_REF: Final = {
+    "byte_sha256": "46733a14377476c43ed230f9167dd786795c9b01159755cf91f358d07d44a3c1",
+    "relative_path": "resources/regime_inference_policy.v2.json",
+    "semantic_sha256": "faec92f90fa4a612c57ed7aead6d6b11a86064d2fd45b20cd76062bdbac582ff",
+    "version": "myquant.v17.v4.regime-inference-policy.v2",
 }
 V4_REGIME_MODEL_IMPLEMENTATION_SHA256: Final = (
     "4e90e06eb340438e909b842a4f40e1dec7eb5ff3231e02c087499bda7646cc7a"
@@ -109,6 +121,8 @@ class NormalizedV4RegimeEvidence:
     blockers: tuple[str, ...]
     causal_status: str
     calendar_previous_open_session: str | None
+    chain_digest_sha256: str | None
+    checkpoint_ref: Mapping[str, str] | None
     conditioning_eligible: bool
     conditioning_ineligibility_reason: str | None
     coverage_ratio: str | None
@@ -117,6 +131,7 @@ class NormalizedV4RegimeEvidence:
     decision_session: str | None
     effective_session: str | None
     evidence_id: str
+    finalized: bool
     hard_state: str | None
     hard_state_derivation: str | None
     inference_kind: str | None
@@ -134,10 +149,16 @@ class NormalizedV4RegimeEvidence:
     source_identity: str
     source_role: str | None
     source_version: str
+    segment_id: str | None
+    segment_index: int | None
+    segment_position: int | None
+    segment_accumulator_sha256: str | None
+    continuity_kind: str | None
     state_order: tuple[str, ...]
     state_probabilities: Mapping[str, str] | None
     status: V4RegimeEvidenceStatus
     strategy_id: str
+    transition_commitment_sha256: str | None
 
 
 def _fail(message: str) -> None:
@@ -206,7 +227,11 @@ def _validate_verified_regime_read(
     _validate_read_binding(read)
     document = dict(read.document)
     version = document.get("version")
-    if version not in {REGIME_EVIDENCE_V1_VERSION, REGIME_EVIDENCE_V2_VERSION}:
+    if version not in {
+        REGIME_EVIDENCE_V1_VERSION,
+        REGIME_EVIDENCE_V2_VERSION,
+        REGIME_EVIDENCE_V3_VERSION,
+    }:
         _fail("V4 regime evidence version mismatch")
     node = _root_node(read)
     if node.version != version:
@@ -244,9 +269,9 @@ def _validate_probabilities(document: Mapping[str, Any]) -> Mapping[str, str]:
     order = document.get("state_order")
     probabilities = document.get("state_probabilities")
     if order != list(STATE_ORDER):
-        _fail("V4 v2 state_order mismatch")
+        _fail("V4 regime state_order mismatch")
     if type(probabilities) is not dict or set(probabilities) != set(STATE_ORDER):
-        _fail("V4 v2 state probability set mismatch")
+        _fail("V4 regime state probability set mismatch")
     total = Decimal("0")
     normalized: dict[str, str] = {}
     for state in STATE_ORDER:
@@ -254,7 +279,7 @@ def _validate_probabilities(document: Mapping[str, Any]) -> Mapping[str, str]:
         total += _decimal12(raw, label=f"state_probabilities.{state}")
         normalized[state] = raw
     if total != DECIMAL_ONE:
-        _fail("V4 v2 state probabilities do not sum to 1.000000000000")
+        _fail("V4 regime state probabilities do not sum to 1.000000000000")
     return MappingProxyType(normalized)
 
 
@@ -391,7 +416,167 @@ def _validate_v2(
     return probabilities, _sealed_previous_open_session(document, read)
 
 
-def adapt_v4_regime_evidence(read: V4CompatibilityRead) -> NormalizedV4RegimeEvidence:
+def _validate_v3(
+    document: Mapping[str, Any],
+    read: V4CompatibilityRead,
+    *,
+    expected_checkpoint_relative_path: str | None,
+    expected_checkpoint_byte_sha256: str | None,
+) -> tuple[Mapping[str, str], str, Mapping[str, str], Mapping[str, Any]]:
+    if expected_checkpoint_relative_path is None or expected_checkpoint_byte_sha256 is None:
+        _fail(f"{REGIME_EVIDENCE_V3_NOT_FINALIZED}: explicit checkpoint path and SHA are required")
+    if document.get("status") != "AVAILABLE":
+        _fail("V4 v3 regime evidence status is not AVAILABLE")
+    if document.get("authority") != _NO_AUTHORITY:
+        _fail("V4 v3 regime evidence grants authority")
+    if (
+        document.get("inference_kind") != REQUIRED_INFERENCE_KIND
+        or document.get("smoothing_used") is not False
+        or document.get("publication_phase") != REQUIRED_PUBLICATION_PHASE
+        or document.get("scope_kind") != REQUIRED_SCOPE_KIND
+        or document.get("hard_state_derivation") != REQUIRED_HARD_STATE_DERIVATION
+        or document.get("no_retroactive_causal_backfill") is not True
+        or document.get("same_session_execution_eligible") is not False
+        or document.get("shadow_only") is not True
+        or document.get("formal_activation_eligible") is not False
+        or document.get("performance_evidence_eligible") is not False
+        or document.get("promotion_eligible") is not False
+    ):
+        _fail("V4 v3 causal or authority contract mismatch")
+    phase = document.get("phase")
+    if phase not in {"GENESIS", "RECOVERY", "CONTIGUOUS", "ROLLOVER"}:
+        _fail("V4 v3 continuity kind is invalid")
+    hard_state = document.get("hard_state")
+    if type(hard_state) is not str or hard_state not in STATE_ORDER:
+        _fail("V4 v3 hard state is not in sealed state_order")
+    probabilities = _validate_probabilities(document)
+    market_sample_count = document.get("market_sample_count")
+    minimum_market_sample = document.get("minimum_market_sample")
+    if (
+        type(market_sample_count) is not int
+        or type(minimum_market_sample) is not int
+        or market_sample_count < minimum_market_sample
+    ):
+        _fail("V4 v3 market sample count is below minimum")
+    _decimal12(document.get("coverage_ratio"), label="coverage_ratio")
+    if document.get("inference_policy_ref") != V4_REGIME_INFERENCE_POLICY_V2_REF:
+        _fail("V4 v3 inference policy ref mismatch")
+
+    checkpoint_ref = _artifact_ref(
+        document.get("current_checkpoint_ref"),
+        label="current_checkpoint_ref",
+    )
+    if (
+        checkpoint_ref["relative_path"] != expected_checkpoint_relative_path
+        or checkpoint_ref["byte_sha256"] != expected_checkpoint_byte_sha256
+        or checkpoint_ref["artifact_version"] != "myquant.v17.v4.regime-state-checkpoint.v1"
+    ):
+        _fail(f"{REGIME_EVIDENCE_V3_NOT_FINALIZED}: checkpoint selection mismatch")
+    try:
+        checkpoint = _document_for_ref(
+            read,
+            checkpoint_ref,
+            label="current_checkpoint_ref",
+        )
+    except V4RegimeAdapterError as exc:
+        raise V4RegimeAdapterError(f"{REGIME_EVIDENCE_V3_NOT_FINALIZED}: {exc}") from exc
+
+    direct_fields = (
+        "chain_anchor_ref",
+        "current_checkpoint_ref",
+        "feature_snapshot_ref",
+        "model_snapshot_ref",
+        "scope_ref",
+        "segment_anchor_ref",
+        "transition_matrix_ref",
+    )
+    direct_refs = [dict(_artifact_ref(document.get(field), label=field)) for field in direct_fields]
+    source_refs = [
+        dict(_artifact_ref(value, label=f"source_refs[{index}]"))
+        for index, value in enumerate(document.get("source_refs") or ())
+    ]
+    sort_key = lambda ref: (ref["relative_path"], ref["byte_sha256"], ref["artifact_id"])
+    if len(source_refs) != len(direct_refs) or sorted(source_refs, key=sort_key) != sorted(
+        direct_refs, key=sort_key
+    ):
+        _fail(f"{REGIME_EVIDENCE_V3_NOT_FINALIZED}: direct source closure mismatch")
+
+    equality_fields = (
+        "authority",
+        "calendar_binding",
+        "calendar_prefix",
+        "chain_anchor_ref",
+        "chain_id",
+        "feature_snapshot_ref",
+        "finalized_evidence_ordinal",
+        "global_accumulator",
+        "hard_state",
+        "hard_state_derivation",
+        "inference_policy_ref",
+        "missing_sessions",
+        "model_snapshot_ref",
+        "phase",
+        "prior_finality",
+        "record_commitment",
+        "segment_accumulator",
+        "segment_anchor_ref",
+        "segment_id",
+        "segment_index",
+        "segment_position",
+        "state_order",
+        "state_probabilities",
+        "strategy_id",
+        "transition_matrix_ref",
+    )
+    if any(checkpoint.get(field) != document.get(field) for field in equality_fields):
+        _fail(f"{REGIME_EVIDENCE_V3_NOT_FINALIZED}: evidence/checkpoint field mismatch")
+    calendar_binding = checkpoint.get("calendar_binding")
+    if (
+        type(calendar_binding) is not dict
+        or calendar_binding.get("decision_session") != document.get("decision_session")
+        or calendar_binding.get("effective_session") != document.get("effective_session")
+        or calendar_binding.get("observed_through_session")
+        != document.get("observed_through_session")
+    ):
+        _fail(f"{REGIME_EVIDENCE_V3_NOT_FINALIZED}: checkpoint session mismatch")
+
+    chain_ref = _artifact_ref(document["chain_anchor_ref"], label="chain_anchor_ref")
+    chain = _document_for_ref(read, chain_ref, label="chain_anchor_ref")
+    segment_ref = _artifact_ref(document["segment_anchor_ref"], label="segment_anchor_ref")
+    segment = _document_for_ref(read, segment_ref, label="segment_anchor_ref")
+    model_ref = _artifact_ref(document["model_snapshot_ref"], label="model_snapshot_ref")
+    model = _document_for_ref(read, model_ref, label="model_snapshot_ref")
+    transition_ref = _artifact_ref(
+        document["transition_matrix_ref"],
+        label="transition_matrix_ref",
+    )
+    transition = _document_for_ref(read, transition_ref, label="transition_matrix_ref")
+    if (
+        chain.get("chain_id") != document.get("chain_id")
+        or chain.get("inference_policy_ref") != V4_REGIME_INFERENCE_POLICY_V2_REF
+        or chain.get("state_order") != list(STATE_ORDER)
+        or segment.get("chain_anchor_ref") != dict(chain_ref)
+        or segment.get("chain_id") != document.get("chain_id")
+        or segment.get("segment_id") != document.get("segment_id")
+        or segment.get("segment_index") != document.get("segment_index")
+        or model.get("transition_matrix_ref") != dict(transition_ref)
+        or model.get("inference_policy_ref") != V4_REGIME_INFERENCE_POLICY_V2_REF
+        or model.get("producer_sha256") != V4_REGIME_EVIDENCE_V3_RUNTIME_SHA256
+        or transition.get("inference_policy_ref") != V4_REGIME_INFERENCE_POLICY_V2_REF
+        or model.get("training_source_refs") != []
+        or transition.get("source_evidence_refs") != []
+    ):
+        _fail("V4 v3 bounded direct closure mismatch")
+    previous_open_session = _sealed_previous_open_session(document, read)
+    return probabilities, previous_open_session, checkpoint_ref, model
+
+
+def adapt_v4_regime_evidence(
+    read: V4CompatibilityRead,
+    *,
+    checkpoint_relative_path: str | None = None,
+    checkpoint_byte_sha256: str | None = None,
+) -> NormalizedV4RegimeEvidence:
     """Normalize one exact V4 regime closure without inferring a regime state."""
 
     document, _, artifact_ref = _validate_verified_regime_read(read)
@@ -403,6 +588,8 @@ def adapt_v4_regime_evidence(read: V4CompatibilityRead) -> NormalizedV4RegimeEvi
             blockers=_V4_REGIME_V1_LIMITATIONS,
             causal_status=REGIME_HARD_STATE_UNAVAILABLE,
             calendar_previous_open_session=None,
+            chain_digest_sha256=None,
+            checkpoint_ref=None,
             conditioning_eligible=False,
             conditioning_ineligibility_reason=REGIME_EVIDENCE_V1_NOT_CONDITIONING_ELIGIBLE,
             coverage_ratio=None,
@@ -411,6 +598,7 @@ def adapt_v4_regime_evidence(read: V4CompatibilityRead) -> NormalizedV4RegimeEvi
             decision_session=None,
             effective_session=None,
             evidence_id=str(document["evidence_id"]),
+            finalized=False,
             hard_state=None,
             hard_state_derivation=None,
             inference_kind=None,
@@ -428,34 +616,107 @@ def adapt_v4_regime_evidence(read: V4CompatibilityRead) -> NormalizedV4RegimeEvi
             source_identity=str(document["evidence_id"]),
             source_role=REGIME_MARKOV_ROLE,
             source_version=version,
+            segment_id=None,
+            segment_index=None,
+            segment_position=None,
+            segment_accumulator_sha256=None,
+            continuity_kind=None,
             state_order=(),
             state_probabilities=None,
             status=V4RegimeEvidenceStatus.UNAVAILABLE,
             strategy_id=str(document["strategy_id"]),
+            transition_commitment_sha256=None,
         )
 
-    probabilities, previous_open_session = _validate_v2(document, read)
+    if version == REGIME_EVIDENCE_V2_VERSION:
+        probabilities, previous_open_session = _validate_v2(document, read)
+        hard_state = str(document["hard_state"])
+        blockers = [REGIME_EVIDENCE_V2_NON_DEPLOYABLE]
+        if hard_state == "未知":
+            blockers.append(REGIME_HARD_STATE_UNKNOWN)
+        return NormalizedV4RegimeEvidence(
+            available_at=str(document["available_at"]),
+            blockers=tuple(blockers),
+            causal_status=REGIME_EVIDENCE_V2_NON_DEPLOYABLE,
+            calendar_previous_open_session=previous_open_session,
+            chain_digest_sha256=None,
+            checkpoint_ref=None,
+            conditioning_eligible=False,
+            conditioning_ineligibility_reason=REGIME_EVIDENCE_V2_NON_DEPLOYABLE,
+            coverage_ratio=str(document["coverage_ratio"]),
+            created_at=str(document["created_at"]),
+            cutoff=str(document["cutoff"]),
+            decision_session=str(document["decision_session"]),
+            effective_session=str(document["effective_session"]),
+            evidence_id=str(document["evidence_id"]),
+            finalized=False,
+            hard_state=hard_state,
+            hard_state_derivation=str(document["hard_state_derivation"]),
+            inference_kind=str(document["inference_kind"]),
+            market_sample_count=int(document["market_sample_count"]),
+            minimum_market_sample=int(document["minimum_market_sample"]),
+            model_implementation_sha256=str(document["model_implementation_sha256"]),
+            observed_through_session=str(document["observed_through_session"]),
+            publication_phase=str(document["publication_phase"]),
+            published_at=str(document["published_at"]),
+            regime_artifact_ref=artifact_ref,
+            regime_state=hard_state,
+            scope_kind=str(document["scope_kind"]),
+            smoothing_used=False,
+            source_commit=read.predecessor_git_commit,
+            source_identity=str(document["evidence_id"]),
+            source_role=None,
+            source_version=version,
+            segment_id=None,
+            segment_index=None,
+            segment_position=None,
+            segment_accumulator_sha256=None,
+            continuity_kind=None,
+            state_order=STATE_ORDER,
+            state_probabilities=probabilities,
+            status=V4RegimeEvidenceStatus.CONDITIONING_INELIGIBLE,
+            strategy_id=str(document["strategy_id"]),
+            transition_commitment_sha256=None,
+        )
+
+    probabilities, previous_open_session, checkpoint_ref, model = _validate_v3(
+        document,
+        read,
+        expected_checkpoint_relative_path=checkpoint_relative_path,
+        expected_checkpoint_byte_sha256=checkpoint_byte_sha256,
+    )
     hard_state = str(document["hard_state"])
-    unknown = hard_state == "未知"
+    continuity = str(document["phase"])
+    reason = None
+    if hard_state == "未知":
+        reason = REGIME_HARD_STATE_UNKNOWN
+    elif continuity == "GENESIS":
+        reason = REGIME_CONTINUITY_GENESIS
+    elif continuity == "RECOVERY":
+        reason = REGIME_CONTINUITY_RECOVERY
+    eligible = reason is None and continuity in {"CONTIGUOUS", "ROLLOVER"}
     return NormalizedV4RegimeEvidence(
         available_at=str(document["available_at"]),
-        blockers=(() if not unknown else (REGIME_HARD_STATE_UNKNOWN,)),
-        causal_status="CAUSAL_ORIGIN_REGIME_AVAILABLE",
+        blockers=(() if reason is None else (reason,)),
+        causal_status="FINALIZED_CAUSAL_ORIGIN_REGIME_AVAILABLE",
         calendar_previous_open_session=previous_open_session,
-        conditioning_eligible=not unknown,
-        conditioning_ineligibility_reason=(REGIME_HARD_STATE_UNKNOWN if unknown else None),
+        chain_digest_sha256=str(document["global_accumulator"]),
+        checkpoint_ref=checkpoint_ref,
+        conditioning_eligible=eligible,
+        conditioning_ineligibility_reason=reason,
         coverage_ratio=str(document["coverage_ratio"]),
         created_at=str(document["created_at"]),
         cutoff=str(document["cutoff"]),
         decision_session=str(document["decision_session"]),
         effective_session=str(document["effective_session"]),
         evidence_id=str(document["evidence_id"]),
+        finalized=True,
         hard_state=hard_state,
         hard_state_derivation=str(document["hard_state_derivation"]),
         inference_kind=str(document["inference_kind"]),
         market_sample_count=int(document["market_sample_count"]),
         minimum_market_sample=int(document["minimum_market_sample"]),
-        model_implementation_sha256=str(document["model_implementation_sha256"]),
+        model_implementation_sha256=str(model["producer_sha256"]),
         observed_through_session=str(document["observed_through_session"]),
         publication_phase=str(document["publication_phase"]),
         published_at=str(document["published_at"]),
@@ -467,14 +728,20 @@ def adapt_v4_regime_evidence(read: V4CompatibilityRead) -> NormalizedV4RegimeEvi
         source_identity=str(document["evidence_id"]),
         source_role=None,
         source_version=version,
+        segment_id=str(document["segment_id"]),
+        segment_index=int(document["segment_index"]),
+        segment_position=int(document["segment_position"]),
+        segment_accumulator_sha256=str(document["segment_accumulator"]),
+        continuity_kind=continuity,
         state_order=STATE_ORDER,
         state_probabilities=probabilities,
         status=(
-            V4RegimeEvidenceStatus.CONDITIONING_INELIGIBLE
-            if unknown
-            else V4RegimeEvidenceStatus.CONDITIONING_ELIGIBLE
+            V4RegimeEvidenceStatus.CONDITIONING_ELIGIBLE
+            if eligible
+            else V4RegimeEvidenceStatus.CONDITIONING_INELIGIBLE
         ),
         strategy_id=str(document["strategy_id"]),
+        transition_commitment_sha256=str(document["record_commitment"]),
     )
 
 
@@ -483,6 +750,11 @@ __all__ = [
     "REGIME_EVIDENCE_V1_NOT_CONDITIONING_ELIGIBLE",
     "REGIME_EVIDENCE_V1_VERSION",
     "REGIME_EVIDENCE_V2_VERSION",
+    "REGIME_EVIDENCE_V3_VERSION",
+    "REGIME_EVIDENCE_V2_NON_DEPLOYABLE",
+    "REGIME_EVIDENCE_V3_NOT_FINALIZED",
+    "REGIME_CONTINUITY_GENESIS",
+    "REGIME_CONTINUITY_RECOVERY",
     "REGIME_HARD_STATE_UNAVAILABLE",
     "REGIME_HARD_STATE_UNKNOWN",
     "REGIME_MARKOV_ROLE",

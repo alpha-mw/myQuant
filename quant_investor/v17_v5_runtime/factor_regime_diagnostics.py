@@ -42,16 +42,16 @@ from quant_investor.v17_v5_runtime.factor_regime_origin_inventory import (
 
 PROTOCOL_VERSION: Final = "myquant.v17.v5"
 REGIME_CONDITIONED_FACTOR_DIAGNOSTIC_VERSION: Final = (
-    "myquant.v17.v5.regime-conditioned-factor-diagnostic.v2"
+    "myquant.v17.v5.regime-conditioned-factor-diagnostic.v3"
 )
 HORIZON_SESSIONS: Final = 20
 MINIMUM_DESCRIPTIVE_ORIGINS: Final = 20
 MINIMUM_STABILITY_ORIGINS: Final = 60
 NEWEY_WEST_LAG: Final = 19
 OUTPUT_SCALE: Final = Decimal("0.000000000001")
-POLICY_V2_VERSION: Final = "myquant.v17.v5.factor-regime-diagnostic-policy.v2"
-POLICY_V2_PATH: Final = (
-    "quant_investor/v17_v5_contract/resources/factor_regime_diagnostic_policy.v2.json"
+POLICY_V3_VERSION: Final = "myquant.v17.v5.factor-regime-diagnostic-policy.v3"
+POLICY_V3_PATH: Final = (
+    "quant_investor/v17_v5_contract/resources/factor_regime_diagnostic_policy.v3.json"
 )
 _UTC_RE: Final = re.compile(
     r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
@@ -244,12 +244,15 @@ def _policy_ref(policy_ref: Mapping[str, Any]) -> dict[str, Any]:
         "semantic_sha256": FACTOR_REGIME_DIAGNOSTIC_POLICY_SEMANTIC_SHA256,
         "version": FACTOR_REGIME_DIAGNOSTIC_POLICY_VERSION,
     }
-    if document == expected_current and document["version"] == POLICY_V2_VERSION:
+    if document == expected_current and document["version"] == POLICY_V3_VERSION:
         return document
-    if document["version"].endswith(".v1"):
-        _fail("Sprint 1D regime diagnostics must bind policy v2")
-    if document["version"] != POLICY_V2_VERSION or document["relative_path"] != POLICY_V2_PATH:
-        _fail("policy_ref does not bind the sealed Sprint 1D policy v2")
+    if document["version"] in {
+        "myquant.v17.v5.factor-regime-diagnostic-policy.v1",
+        "myquant.v17.v5.factor-regime-diagnostic-policy.v2",
+    }:
+        _fail("Sprint 1E-0B regime diagnostics must bind policy v3")
+    if document["version"] != POLICY_V3_VERSION or document["relative_path"] != POLICY_V3_PATH:
+        _fail("policy_ref does not bind the sealed Sprint 1E-0B policy v3")
     return document
 
 
@@ -284,8 +287,8 @@ def _inventory(document: Mapping[str, Any]) -> dict[str, Any]:
         _fail("origin inventory grants authority")
     if payload.get("horizon_sessions") != HORIZON_SESSIONS:
         _fail("origin inventory horizon mismatch")
-    if payload.get("policy_ref", {}).get("version") != POLICY_V2_VERSION:
-        _fail("origin inventory must bind Sprint 1D policy v2")
+    if payload.get("policy_ref", {}).get("version") != POLICY_V3_VERSION:
+        _fail("origin inventory must bind Sprint 1E-0B policy v3")
     return payload
 
 
