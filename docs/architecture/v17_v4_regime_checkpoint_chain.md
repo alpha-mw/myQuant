@@ -12,6 +12,13 @@ V3 exists to remove two structural defects in the v2 predecessor chain:
   budget, and then exceeds the depth budget if the node check is bypassed;
 - a missed v2 publication permanently prevents later contiguous publication.
 
+New public v2 publication is disabled. The v2 schema, validators, historical
+reader/status/replay, and Python builder remain available for compatibility
+and isolated tests, but `regime-evidence-build` always fails closed with
+`REGIME_EVIDENCE_V2_CHAIN_NON_DEPLOYABLE` and writes nothing. V3 is the only
+version permitted for new Regime Evidence publication. V2 is never
+automatically converted or historically backfilled into V3.
+
 V3 has no Factor, portfolio, selector, governance, provider, broker, order,
 execution, trade, promotion, formal activation, or production-default
 authority. V5 consumption is a separate work package.

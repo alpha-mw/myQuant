@@ -64,70 +64,26 @@ classification may route to an already-authorized market, Fundamental, or
 Macro maintenance workflow, followed by strict storage validation. Missing
 forward history or Deep assessment bytes are not canonical-data gaps.
 
-## Build and replay causal Regime Evidence v2
+## Replay causal Regime Evidence v2
 
-`regime-evidence-build` is an additive offline producer. It does not change
-the existing `regime-evidence.v1` builder or any consumer. It accepts only
-`FULL_PIT_MARKET` filtered-causal inputs for the prior Shanghai session and
-makes them effective on the next exact open session. It never performs
-same-session inference, a smoothed-state pass, historical backfill, latest
-scanning, model training, provider collection, Factor Governance, portfolio
-allocation, selector mutation, broker, order, execution, or trade work.
-Inputs must be registered canonical JSON snapshots and terminals. Direct
-Parquet and opaque raw-file references are not accepted by this producer.
+The v2 contract remains valid, but new public v2 publication is disabled
+because its recursive predecessor chain is not deployable. The retained
+`regime-evidence-build` command preserves its argument surface, then
+immediately exits `2` without reading inputs, scanning, invoking a provider,
+calling the v2 or v3 producer, or writing any artifact. Its response contains:
 
-Preposition the exact policy, fixed no-training model, pinned native default
-transition matrix, full-market feature snapshot, and, after bootstrap, the
-unique contiguous prior v2 evidence. Then run:
-
-```bash
-quant-investor-v17-v4 regime-evidence-build \
-  --workspace-root /absolute/path/to/myQuant \
-  --evidence-id <evidence-id> \
-  --strategy-id cn-aggressive-tech-manufacturing \
-  --decision-session <YYYY-MM-DD> \
-  --cutoff <UTC-second-timestamp> \
-  --created-at <UTC-second-timestamp> \
-  --inference-policy-path resources/regime_inference_policy.v1.json \
-  --inference-policy-sha256 <sha256> \
-  --model-snapshot-path <exact-model-path> \
-  --model-snapshot-sha256 <sha256> \
-  --transition-matrix-path <exact-transition-path> \
-  --transition-matrix-sha256 <sha256> \
-  --feature-snapshot-path <exact-feature-path> \
-  --feature-snapshot-sha256 <sha256>
+```text
+status = REGIME_EVIDENCE_V2_CHAIN_NON_DEPLOYABLE
+requested_version = myquant.v17.v4.regime-evidence.v2
+deployment_status = CONTRACT_VALIDATED_NOT_DEPLOYABLE
+replacement_command = regime-evidence-v3-build
+artifact_created = false
 ```
 
-After the first session, also supply the pair:
-
-```bash
-  --prior-evidence-path <exact-prior-v2-path> \
-  --prior-evidence-sha256 <sha256>
-```
-
-Supplying only one member of the optional prior pair is a CLI error. V1 is
-never accepted as the prior. Bootstrap is allowed only for the policy's exact
-`2026-07-29` observed / `2026-07-30` decision pair. Normal publication requires the prior v2
-`effective_session` to equal the current observed session; gaps, forks, and
-rebootstrap fail closed.
-
-New publication must occur after the observed session's Shanghai close and no
-later than the declared Factor observation cutoff for the decision session.
-That cutoff must fall on the decision session in Shanghai time; a later local
-date cannot be supplied to backfill an earlier decision session.
-Its declared time must be within 300 seconds of one captured UTC runtime
-timestamp. The monotonic clock is reserved for the 10-second closure budget. A delayed
-identical retry is allowed because the occupied exact-once slot is replayed
-before the new-publication clock test. A delayed conflicting retry remains
-blocked.
-
-Success exits `0` only after exact-byte publication and deterministic readback
-replay. The response includes descriptive sessions/state, artifact path/SHA,
-`replay_result`, `blocker_codes`, and the complete all-false authority attestation.
-Missing qualified current closure exits `2` with
-`TRUE_CURRENT_CANONICAL_INPUT_GAP` and creates no v2 completion artifact.
-Schema/SHA/semantic/causality/security/conflict/replay failures exit `2` with
-`BLOCKED`; they are not relabelled as data gaps.
+Use `regime-evidence-v3-build` for every new Regime Evidence publication.
+There is no automatic v2-to-v3 conversion and no historical backfill. The
+Python v2 builder is retained only for legacy artifact validation and isolated
+contract/fixture tests; it is not an operational publication entrypoint.
 
 Read one existing artifact by exact path and expected SHA:
 
@@ -447,14 +403,15 @@ It retains filtered-causal prior-session/next-session inference, but replaces
 recursive predecessor evidence with an immutable state checkpoint, 64-record
 segments, and domain-separated hash accumulators.
 
-The v2 commands remain unchanged:
+The v2 command names remain available for compatibility:
 
 ```text
-regime-evidence-build
-regime-evidence-status
+regime-evidence-build   # always blocked; creates nothing
+regime-evidence-status  # historical exact-path status/replay remains supported
 ```
 
-V3 uses version-explicit commands:
+V3 is the only version allowed for new publication and uses version-explicit
+commands:
 
 ```text
 regime-evidence-v3-build

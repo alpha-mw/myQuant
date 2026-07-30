@@ -35,7 +35,6 @@ from .research_factor_set import ResearchFactorSetStore
 from .regime_evidence_v2 import (
     RegimeEvidenceV2Error,
     RegimeEvidenceV2InputGap,
-    build_regime_evidence_v2,
     read_regime_evidence_v2,
 )
 from .regime_evidence_v3 import (
@@ -74,6 +73,8 @@ REGIME_EVIDENCE_SIDE_EFFECTS: Final = {
     "selector_writes": False,
     "trade_calls": False,
 }
+
+REGIME_EVIDENCE_V2_PUBLICATION_BLOCKER: Final = "REGIME_EVIDENCE_V2_CHAIN_NON_DEPLOYABLE"
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -124,8 +125,8 @@ def _parser() -> argparse.ArgumentParser:
     regime_evidence_build = commands.add_parser(
         "regime-evidence-build",
         help=(
-            "build one immutable, filtered-causal Regime Evidence v2 "
-            "artifact from explicit local path and SHA closure"
+            "fail closed because new Regime Evidence v2 publication is "
+            "not deployable; use regime-evidence-v3-build"
         ),
     )
     regime_evidence_build.add_argument("--workspace-root", required=True)
@@ -665,70 +666,24 @@ def main(argv: Sequence[str] | None = None) -> int:
             _emit(_regime_v3_failure(failure))
             return failure.exit_code
     if args.command == "regime-evidence-build":
-        if bool(args.prior_evidence_path) != bool(args.prior_evidence_sha256):
-            _emit(
-                _regime_evidence_failure_payload(
-                    status="BLOCKED",
-                    blocker_code="PRIOR_EVIDENCE_EXPLICIT_PAIR_REQUIRED",
-                    detail=(
-                        "--prior-evidence-path and --prior-evidence-sha256 "
-                        "must be supplied together"
-                    ),
-                )
-            )
-            return 2
-        try:
-            build_result = build_regime_evidence_v2(
-                workspace_root=str(Path(args.workspace_root).resolve()),
-                evidence_id=args.evidence_id,
-                strategy_id=args.strategy_id,
-                decision_session=args.decision_session,
-                cutoff=args.cutoff,
-                created_at=args.created_at,
-                inference_policy_path=args.inference_policy_path,
-                inference_policy_sha256=args.inference_policy_sha256,
-                model_snapshot_path=args.model_snapshot_path,
-                model_snapshot_sha256=args.model_snapshot_sha256,
-                transition_matrix_path=args.transition_matrix_path,
-                transition_matrix_sha256=args.transition_matrix_sha256,
-                feature_snapshot_path=args.feature_snapshot_path,
-                feature_snapshot_sha256=args.feature_snapshot_sha256,
-                prior_evidence_path=args.prior_evidence_path,
-                prior_evidence_sha256=args.prior_evidence_sha256,
-            )
-            _emit(
-                _regime_evidence_success_payload(
-                    build_result,
-                    status_read=False,
-                )
-            )
-            return 0
-        except RegimeEvidenceV2InputGap as exc:
-            code = str(
-                getattr(
-                    exc,
-                    "blocker_code",
-                    "TRUE_CURRENT_CANONICAL_INPUT_GAP",
-                )
-            )
-            _emit(
-                _regime_evidence_failure_payload(
-                    status="TRUE_CURRENT_CANONICAL_INPUT_GAP",
-                    blocker_code=code,
-                    detail=str(exc),
-                )
-            )
-            return 2
-        except RegimeEvidenceV2Error as exc:
-            code = str(getattr(exc, "blocker_code", "REGIME_EVIDENCE_V2_BLOCKED"))
-            _emit(
-                _regime_evidence_failure_payload(
-                    status="BLOCKED",
-                    blocker_code=code,
-                    detail=str(exc),
-                )
-            )
-            return 2
+        payload = _regime_evidence_failure_payload(
+            status=REGIME_EVIDENCE_V2_PUBLICATION_BLOCKER,
+            blocker_code=REGIME_EVIDENCE_V2_PUBLICATION_BLOCKER,
+            detail=(
+                "Regime Evidence v2 remains readable and replayable, but its "
+                "recursive predecessor chain is not deployable for new publication"
+            ),
+        )
+        payload.update(
+            {
+                "artifact_created": False,
+                "deployment_status": "CONTRACT_VALIDATED_NOT_DEPLOYABLE",
+                "replacement_command": "regime-evidence-v3-build",
+                "requested_version": "myquant.v17.v4.regime-evidence.v2",
+            }
+        )
+        _emit(payload)
+        return 2
     if args.command == "regime-evidence-status":
         try:
             status_result = read_regime_evidence_v2(

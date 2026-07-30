@@ -8,6 +8,14 @@ V17 v4 source artifacts. It is artifact production only; it does not grant
 production, default, formal, canary, promotion, portfolio, Factor Governance,
 provider, selector, broker, order, execution, or trade authority.
 
+The v2 contract remains valid for historical validation, status, and replay,
+but new public v2 publication is disabled. The retained
+`regime-evidence-build` command exits `2` with
+`REGIME_EVIDENCE_V2_CHAIN_NON_DEPLOYABLE`, creates no artifact, and does not
+invoke either producer. `regime-evidence-v3-build` is the only command allowed
+to publish new Regime Evidence. There is no automatic v2-to-v3 conversion and
+no retrospective backfill.
+
 The existing `myquant.v17.v4.regime-evidence.v1` schema, builder, validators,
 bytes, and SHA identities remain unchanged. V1 is a portfolio-control
 multiplier envelope. It is not a causal classification and is not accepted as
@@ -254,6 +262,10 @@ extra states, and a non-unit posterior fail closed.
 
 ## Publication, exact-once behavior, and rollback
 
+The publication behavior below describes the frozen Python v2 producer used
+for legacy artifact verification and isolated contract/fixture tests. It is
+not reachable from a public V4 publication command.
+
 The caller prepositions and seals child inputs first. The builder validates
 and replays the policy, model, transition, feature, and optional predecessor
 closure, computes the causal filter, validates the candidate evidence, and
@@ -276,9 +288,9 @@ causal sessions and timestamps, replay result, `blocker_codes`, and the all-fals
 authority attestation. It contains no weight, tier, allocation, action,
 governance decision, portfolio instruction, or execution instruction.
 
-Rollback disables only the additive CLI or a future additive schedule.
-Immutable v1 and v2 evidence is retained for audit. Rollback never deletes,
-rewrites, relabels, truncates, or reuses an occupied artifact.
+The public v2 build path is disabled. Immutable v1 and v2 evidence is retained
+for audit, status, and replay. This quarantine never deletes, rewrites,
+relabels, truncates, converts, or reuses an occupied artifact.
 
 ## Missing input and failure classification
 
@@ -303,6 +315,13 @@ Provider, Factor Governance, portfolio, selector, broker, order, execution,
 and trade side effects are separately attested false. Canary, promotion,
 performance, same-session execution, and formal eligibility remain false in
 the artifact; weight, tier, and allocation fields are absent.
+
+Those classifications remain part of the frozen Python builder and historical
+reader/replay behavior. The public `regime-evidence-build` command does not
+inspect input closure: it always returns
+`REGIME_EVIDENCE_V2_CHAIN_NON_DEPLOYABLE`, reports
+`CONTRACT_VALIDATED_NOT_DEPLOYABLE`, points to
+`regime-evidence-v3-build`, and attests `artifact_created=false`.
 
 ## Acceptance matrix
 
@@ -380,6 +399,10 @@ Sprint 1C stops when v2 schemas, semantic validators, fixed resources, runtime
 producer/replay, explicit CLI, exact test matrix, manifests, and report-backed
 real-input status are complete. Missing real inputs remain
 `TRUE_CURRENT_CANONICAL_INPUT_GAP`; no fixture is promoted to current evidence.
+
+Sprint 1E-0A.1 subsequently quarantines only new public v2 publication. It
+does not change the frozen v1/v2 contracts, validator semantics, Python
+producer, status/replay behavior, or any v3 contract or producer.
 
 This sprint does not build a source snapshot or trainer, migrate Markov JSONL,
 change v1 consumers, add overlay or forward-stage acceptance, add governance,

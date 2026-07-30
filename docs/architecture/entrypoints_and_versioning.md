@@ -38,9 +38,12 @@
   V15 默认路由。
 - V17 v4 因果 Regime Evidence 入口：
   `quant-investor-v17-v4 regime-evidence-build` 与
-  `quant-investor-v17-v4 regime-evidence-status`。两者只接受显式 path+SHA，
-  不扫描 latest、目录或 JSONL history。新增
-  `myquant.v17.v4.regime-evidence.v2` 只允许
+  `quant-investor-v17-v4 regime-evidence-status`。V2 contract、validator 和
+  历史 status/replay 继续有效，但 `regime-evidence-build` 已固定返回
+  `REGIME_EVIDENCE_V2_CHAIN_NON_DEPLOYABLE`，不读取输入、不调用 producer、
+  不写 artifact；新发布只能使用 `regime-evidence-v3-build`，且不自动转换
+  V2 或历史回填。读取入口只接受显式 path+SHA，不扫描 latest、目录或
+  JSONL history。`myquant.v17.v4.regime-evidence.v2` 只允许
   `PRIOR_SESSION_EFFECTIVE_NEXT_SESSION`、`FULL_PIT_MARKET` 和 filtered
   causal inference；它固定为全 authority false，且不被 v1 portfolio、
   forward stage、formal、canary、Factor Governance、weight/tier、selector
