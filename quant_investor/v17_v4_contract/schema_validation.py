@@ -136,6 +136,10 @@ _ARTIFACT_REGISTRY: Final = {
         "schemas/forward_factor_allocation.v1.schema.json",
         "allocation_id",
     ),
+    "myquant.v17.v4.forward-factor-input-bundle.v1": (
+        "schemas/forward_factor_input_bundle.v1.schema.json",
+        "bundle_id",
+    ),
     "myquant.v17.v4.forward-label.v1": (
         "schemas/forward_label.v1.schema.json",
         "label_id",
@@ -163,6 +167,14 @@ _ARTIFACT_REGISTRY: Final = {
     "myquant.v17.v4.forward-stage-receipt.v1": (
         "schemas/forward_stage_receipt.v1.schema.json",
         "receipt_id",
+    ),
+    "myquant.v17.v4.forward-source-locator.v1": (
+        "schemas/forward_source_locator.v1.schema.json",
+        "locator_id",
+    ),
+    "myquant.v17.v4.forward-source-slice-manifest.v1": (
+        "schemas/forward_source_slice_manifest.v1.schema.json",
+        "manifest_id",
     ),
     "myquant.v17.v4.fusion-promotion-receipt.v1": (
         "schemas/fusion_promotion_receipt.v1.schema.json",
@@ -228,9 +240,65 @@ _ARTIFACT_REGISTRY: Final = {
         "schemas/pretrade_permissions.v1.schema.json",
         "permissions_id",
     ),
+    "myquant.v17.v4.regime-calendar-terminal.v1": (
+        "schemas/regime_calendar_terminal.v1.schema.json",
+        "calendar_terminal_id",
+    ),
     "myquant.v17.v4.regime-evidence.v1": (
         "schemas/regime_evidence.v1.schema.json",
         "evidence_id",
+    ),
+    "myquant.v17.v4.regime-evidence.v2": (
+        "schemas/regime_evidence.v2.schema.json",
+        "evidence_id",
+    ),
+    "myquant.v17.v4.regime-evidence.v3": (
+        "schemas/regime_evidence.v3.schema.json",
+        "evidence_id",
+    ),
+    "myquant.v17.v4.regime-feature-snapshot.v1": (
+        "schemas/regime_feature_snapshot.v1.schema.json",
+        "feature_snapshot_id",
+    ),
+    "myquant.v17.v4.regime-model-snapshot.v1": (
+        "schemas/regime_model_snapshot.v1.schema.json",
+        "model_snapshot_id",
+    ),
+    "myquant.v17.v4.regime-model-snapshot.v2": (
+        "schemas/regime_model_snapshot.v2.schema.json",
+        "model_snapshot_id",
+    ),
+    "myquant.v17.v4.regime-chain-anchor.v1": (
+        "schemas/regime_chain_anchor.v1.schema.json",
+        "chain_anchor_id",
+    ),
+    "myquant.v17.v4.regime-market-terminal.v1": (
+        "schemas/regime_market_terminal.v1.schema.json",
+        "market_terminal_id",
+    ),
+    "myquant.v17.v4.regime-pit-membership-terminal.v1": (
+        "schemas/regime_pit_membership_terminal.v1.schema.json",
+        "pit_membership_terminal_id",
+    ),
+    "myquant.v17.v4.regime-source-locator-terminal.v1": (
+        "schemas/regime_source_locator_terminal.v1.schema.json",
+        "source_locator_terminal_id",
+    ),
+    "myquant.v17.v4.regime-segment-anchor.v1": (
+        "schemas/regime_segment_anchor.v1.schema.json",
+        "segment_anchor_id",
+    ),
+    "myquant.v17.v4.regime-state-checkpoint.v1": (
+        "schemas/regime_state_checkpoint.v1.schema.json",
+        "checkpoint_id",
+    ),
+    "myquant.v17.v4.regime-transition-matrix-snapshot.v1": (
+        "schemas/regime_transition_matrix_snapshot.v1.schema.json",
+        "transition_snapshot_id",
+    ),
+    "myquant.v17.v4.regime-transition-matrix-snapshot.v2": (
+        "schemas/regime_transition_matrix_snapshot.v2.schema.json",
+        "transition_snapshot_id",
     ),
     "myquant.v17.v4.research-factor-shadow-assertion.v1": (
         "schemas/research_factor_shadow_assertion.v1.schema.json",

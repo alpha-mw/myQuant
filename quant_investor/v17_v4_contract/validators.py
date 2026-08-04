@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 import hashlib
 import re
 from types import MappingProxyType
 from typing import Any, Final, TypeVar
+from zoneinfo import ZoneInfo
 
 from .canonical import (
     CanonicalContractError,
@@ -26,6 +27,7 @@ from .identities import (
 )
 
 PROTOCOL_VERSION: Final = "myquant.v17.v4"
+_SHANGHAI: Final = ZoneInfo("Asia/Shanghai")
 _REF_KEYS: Final = {
     "artifact_id",
     "artifact_version",
@@ -89,6 +91,85 @@ _FORWARD_EXPECTED_REF_ARRAY_VERSIONS: Final = {
     "label_refs": "myquant.v17.v4.forward-label.v1",
     "stage_receipt_refs": "myquant.v17.v4.forward-stage-receipt.v1",
 }
+_REGIME_STATE_ORDER: Final = (
+    "趋势上涨",
+    "震荡低波",
+    "震荡高波",
+    "趋势下跌",
+    "未知",
+)
+_REGIME_DECIMAL_QUANTUM: Final = Decimal("0.000000000001")
+_REGIME_POLICY_REF: Final = {
+    "relative_path": "resources/regime_inference_policy.v1.json",
+    "version": "myquant.v17.v4.regime-inference-policy.v1",
+}
+_REGIME_POLICY_REF_V2: Final = {
+    "relative_path": "resources/regime_inference_policy.v2.json",
+    "version": "myquant.v17.v4.regime-inference-policy.v2",
+}
+_REGIME_TRANSITION_MATRIX: Final = {
+    "趋势上涨": {
+        "趋势上涨": "0.620000000000",
+        "震荡低波": "0.220000000000",
+        "震荡高波": "0.100000000000",
+        "趋势下跌": "0.040000000000",
+        "未知": "0.020000000000",
+    },
+    "震荡低波": {
+        "趋势上涨": "0.220000000000",
+        "震荡低波": "0.460000000000",
+        "震荡高波": "0.200000000000",
+        "趋势下跌": "0.070000000000",
+        "未知": "0.050000000000",
+    },
+    "震荡高波": {
+        "趋势上涨": "0.120000000000",
+        "震荡低波": "0.240000000000",
+        "震荡高波": "0.420000000000",
+        "趋势下跌": "0.170000000000",
+        "未知": "0.050000000000",
+    },
+    "趋势下跌": {
+        "趋势上涨": "0.070000000000",
+        "震荡低波": "0.180000000000",
+        "震荡高波": "0.250000000000",
+        "趋势下跌": "0.460000000000",
+        "未知": "0.040000000000",
+    },
+    "未知": {
+        "趋势上涨": "0.200000000000",
+        "震荡低波": "0.250000000000",
+        "震荡高波": "0.250000000000",
+        "趋势下跌": "0.200000000000",
+        "未知": "0.100000000000",
+    },
+}
+_REGIME_SHADOW_FLAGS: Final = {
+    "formal_activation_eligible": False,
+    "performance_evidence_eligible": False,
+    "promotion_eligible": False,
+    "shadow_only": True,
+}
+_REGIME_FORBIDDEN_KEY_PARTS: Final = ("action", "allocation", "lifecycle", "tier", "weight")
+_REGIME_EVIDENCE_VOLATILE_IDENTITY_FIELDS: Final = {
+    "available_at",
+    "blocker_codes",
+    "computed_at",
+    "created_at",
+    "published_at",
+}
+_REGIME_CHAIN_SEGMENT_LENGTH: Final = 64
+_REGIME_MAX_RECOVERY_SESSIONS: Final = 260
+_REGIME_CLOSURE_DUE_TIME_LOCAL: Final = "23:59:59+08:00"
+_REGIME_V3_DIRECT_REF_FIELDS: Final = (
+    "chain_anchor_ref",
+    "current_checkpoint_ref",
+    "feature_snapshot_ref",
+    "model_snapshot_ref",
+    "scope_ref",
+    "segment_anchor_ref",
+    "transition_matrix_ref",
+)
 
 
 class ArtifactContractError(ValueError):
@@ -305,6 +386,61 @@ class PortfolioOutputArtifact(ValidatedArtifact):
 
 @dataclass(frozen=True)
 class RegimeEvidenceArtifact(ValidatedArtifact):
+    pass
+
+
+@dataclass(frozen=True)
+class RegimeFeatureSnapshotArtifact(ValidatedArtifact):
+    pass
+
+
+@dataclass(frozen=True)
+class RegimeTransitionMatrixSnapshotArtifact(ValidatedArtifact):
+    pass
+
+
+@dataclass(frozen=True)
+class RegimeModelSnapshotArtifact(ValidatedArtifact):
+    pass
+
+
+@dataclass(frozen=True)
+class RegimeEvidenceV2Artifact(ValidatedArtifact):
+    pass
+
+
+@dataclass(frozen=True)
+class RegimeTransitionMatrixSnapshotV2Artifact(ValidatedArtifact):
+    pass
+
+
+@dataclass(frozen=True)
+class RegimeModelSnapshotV2Artifact(ValidatedArtifact):
+    pass
+
+
+@dataclass(frozen=True)
+class RegimeChainAnchorArtifact(ValidatedArtifact):
+    pass
+
+
+@dataclass(frozen=True)
+class RegimeSegmentAnchorArtifact(ValidatedArtifact):
+    pass
+
+
+@dataclass(frozen=True)
+class RegimeStateCheckpointArtifact(ValidatedArtifact):
+    pass
+
+
+@dataclass(frozen=True)
+class RegimeEvidenceV3Artifact(ValidatedArtifact):
+    pass
+
+
+@dataclass(frozen=True)
+class RegimeTerminalArtifact(ValidatedArtifact):
     pass
 
 
@@ -614,6 +750,455 @@ def _decimal(value: Any, *, label: str) -> Decimal:
     if not result.is_finite():
         raise ArtifactContractError(f"{label} must be finite")
     return result
+
+
+def _decimal12(value: Any, *, label: str) -> Decimal:
+    result = _decimal(value, label=label)
+    if (
+        len(value.partition(".")[2]) != 12
+        or "." not in value
+        or "e" in value.lower()
+        or value.startswith("+")
+        or (result == 0 and value.startswith("-"))
+        or format(result, ".12f") != value
+    ):
+        raise ArtifactContractError(f"{label} must be a canonical precision-12 decimal")
+    return result
+
+
+def regime_artifact_identity(
+    payload: Mapping[str, Any],
+    *,
+    identity_field: str,
+) -> str:
+    """Return the stable identity for a causal-regime contract artifact.
+
+    Snapshot identities bind their complete sealed body except the identity and
+    semantic SHA fields.  Evidence identity is precomputable before publication,
+    so publication timestamps and blocker_codes are also excluded.
+    """
+
+    if type(payload) is not dict:
+        raise ArtifactContractError("regime identity payload must be an object")
+    body = dict(payload)
+    body.pop(identity_field, None)
+    body.pop("semantic_sha256", None)
+    if payload.get("version") in {
+        "myquant.v17.v4.regime-evidence.v2",
+        "myquant.v17.v4.regime-evidence.v3",
+    }:
+        for field in _REGIME_EVIDENCE_VOLATILE_IDENTITY_FIELDS:
+            body.pop(field, None)
+    return hashlib.sha256(canonical_bytes(body)).hexdigest()
+
+
+def _validate_regime_identity(
+    payload: Mapping[str, Any],
+    *,
+    identity_field: str,
+) -> None:
+    declared = payload.get(identity_field)
+    try:
+        require_sha256(declared, label=identity_field)
+    except IdentityContractError as exc:
+        raise ArtifactContractError(str(exc)) from exc
+    expected = regime_artifact_identity(payload, identity_field=identity_field)
+    if declared != expected:
+        raise ArtifactContractError(f"{identity_field} identity mismatch")
+
+
+def _regime_state_order(value: Any, *, label: str = "state_order") -> None:
+    if value != list(_REGIME_STATE_ORDER):
+        raise ArtifactContractError(f"{label} must equal the native regime state order")
+
+
+def _regime_probability_mapping(
+    value: Any,
+    *,
+    label: str,
+    require_unit_sum: bool = True,
+) -> dict[str, Decimal]:
+    if type(value) is not dict or set(value) != set(_REGIME_STATE_ORDER):
+        raise ArtifactContractError(f"{label} must contain the exact native regime state set")
+    result = {
+        state: _decimal12(value[state], label=f"{label}.{state}") for state in _REGIME_STATE_ORDER
+    }
+    if any(probability < 0 or probability > 1 for probability in result.values()):
+        raise ArtifactContractError(f"{label} probabilities must be in [0, 1]")
+    if require_unit_sum and sum(result.values(), Decimal("0")) != Decimal("1.000000000000"):
+        raise ArtifactContractError(f"{label} probabilities must sum exactly to 1.000000000000")
+    return result
+
+
+def _regime_policy_ref(
+    value: Any,
+    *,
+    label: str,
+    expected: Mapping[str, str] = _REGIME_POLICY_REF,
+) -> dict[str, str]:
+    expected_keys = {"byte_sha256", "relative_path", "semantic_sha256", "version"}
+    if type(value) is not dict or set(value) != expected_keys:
+        raise ArtifactContractError(f"{label} shape mismatch")
+    if (
+        value["relative_path"] != expected["relative_path"]
+        or value["version"] != expected["version"]
+    ):
+        raise ArtifactContractError(f"{label} identity mismatch")
+    try:
+        require_sha256(value["byte_sha256"], label=f"{label}.byte_sha256")
+        require_sha256(value["semantic_sha256"], label=f"{label}.semantic_sha256")
+    except IdentityContractError as exc:
+        raise ArtifactContractError(str(exc)) from exc
+    return {field: str(value[field]) for field in expected_keys}
+
+
+def _regime_shadow_envelope(payload: Mapping[str, Any]) -> None:
+    if any(payload.get(field) is not expected for field, expected in _REGIME_SHADOW_FLAGS.items()):
+        raise ArtifactContractError("causal regime artifact Shadow authority mismatch")
+
+
+def _regime_audit_limits(value: Any, *, label: str = "audit_limits") -> None:
+    expected = {
+        "closure_due_time_local": _REGIME_CLOSURE_DUE_TIME_LOCAL,
+        "max_recovery_sessions": _REGIME_MAX_RECOVERY_SESSIONS,
+        "segment_length": _REGIME_CHAIN_SEGMENT_LENGTH,
+    }
+    if value != expected:
+        raise ArtifactContractError(f"{label} mismatch")
+
+
+def _reject_regime_forbidden_keys(value: Any, *, path: str = "$") -> None:
+    if type(value) is dict:
+        for key, child in value.items():
+            lowered = key.lower()
+            if any(part in lowered for part in _REGIME_FORBIDDEN_KEY_PARTS):
+                raise ArtifactContractError(f"forbidden causal regime field at {path}.{key}")
+            _reject_regime_forbidden_keys(child, path=f"{path}.{key}")
+    elif type(value) is list:
+        for index, child in enumerate(value):
+            _reject_regime_forbidden_keys(child, path=f"{path}[{index}]")
+
+
+def _canonical_session(value: Any, *, label: str) -> str:
+    if type(value) is not str:
+        raise ArtifactContractError(f"{label} must be a canonical date")
+    try:
+        normalized = date.fromisoformat(value).isoformat()
+    except ValueError as exc:
+        raise ArtifactContractError(f"{label} must be a canonical date") from exc
+    if normalized != value:
+        raise ArtifactContractError(f"{label} must be a canonical date")
+    return normalized
+
+
+def _regime_snapshot_time_closure(payload: Mapping[str, Any]) -> tuple[str, str, str]:
+    cutoff = require_utc_timestamp(payload["cutoff"], label="cutoff")
+    created_at = require_utc_timestamp(payload["created_at"], label="created_at")
+    available_at = require_utc_timestamp(payload["available_at"], label="available_at")
+    observed = _canonical_session(
+        payload["observed_through_session"],
+        label="observed_through_session",
+    )
+    effective = _canonical_session(
+        payload["effective_session"],
+        label="effective_session",
+    )
+    if observed >= effective:
+        raise ArtifactContractError("regime snapshot must be effective after observed session")
+    if created_at != available_at or available_at > cutoff:
+        raise ArtifactContractError("regime snapshot time closure mismatch")
+    return cutoff, observed, effective
+
+
+def _regime_calendar_binding(
+    value: Any,
+    *,
+    artifact_loader: Callable[[Mapping[str, str]], bytes] | None,
+    strategy_id: str,
+    cutoff: str,
+    observed: str | None = None,
+    decision: str | None = None,
+    effective: str | None = None,
+    label: str = "calendar_binding",
+) -> dict[str, Any]:
+    if type(value) is not dict or set(value) != {
+        "calendar_ref",
+        "decision_session",
+        "effective_session",
+        "observed_through_session",
+    }:
+        raise ArtifactContractError(f"{label} shape mismatch")
+    binding_observed = _canonical_session(
+        value["observed_through_session"],
+        label=f"{label}.observed_through_session",
+    )
+    binding_decision = _canonical_session(
+        value["decision_session"],
+        label=f"{label}.decision_session",
+    )
+    binding_effective = _canonical_session(
+        value["effective_session"],
+        label=f"{label}.effective_session",
+    )
+    if (
+        (observed is not None and binding_observed != observed)
+        or (decision is not None and binding_decision != decision)
+        or (effective is not None and binding_effective != effective)
+        or binding_observed >= binding_decision
+        or binding_decision != binding_effective
+    ):
+        raise ArtifactContractError(f"{label} session closure mismatch")
+    _read_regime_typed_ref(
+        value["calendar_ref"],
+        artifact_loader=artifact_loader,
+        strategy_id=strategy_id,
+        cutoff=cutoff,
+        expected_version="myquant.v17.v4.regime-calendar-terminal.v1",
+        label=f"{label}.calendar_ref",
+    )
+    return dict(value)
+
+
+def _regime_argmax_state(probabilities: Mapping[str, Decimal]) -> str:
+    return max(
+        _REGIME_STATE_ORDER,
+        key=lambda state: (probabilities[state], -_REGIME_STATE_ORDER.index(state)),
+    )
+
+
+def _regime_phase(value: Any, *, label: str = "phase") -> str:
+    if value not in {"GENESIS", "RECOVERY", "ROLLOVER", "CONTIGUOUS"}:
+        raise ArtifactContractError(f"{label} is invalid")
+    return str(value)
+
+
+def _regime_segment_ordinals(
+    payload: Mapping[str, Any],
+    *,
+    ordinal_field: str,
+) -> None:
+    segment_index = payload["segment_index"]
+    segment_position = payload["segment_position"]
+    finalized_ordinal = payload[ordinal_field]
+    if (
+        type(segment_index) is not int
+        or type(segment_position) is not int
+        or type(finalized_ordinal) is not int
+        or segment_index < 0
+        or segment_position < 0
+        or segment_position >= _REGIME_CHAIN_SEGMENT_LENGTH
+        or finalized_ordinal < 0
+    ):
+        raise ArtifactContractError(f"regime {ordinal_field} closure mismatch")
+
+
+def _regime_record_commitment(value: Any, *, label: str = "record_commitment") -> None:
+    try:
+        require_sha256(value, label=label)
+    except IdentityContractError as exc:
+        raise ArtifactContractError(str(exc)) from exc
+
+
+def _regime_accumulator(value: Any, *, label: str) -> None:
+    try:
+        require_sha256(value, label=label)
+    except IdentityContractError as exc:
+        raise ArtifactContractError(str(exc)) from exc
+
+
+def _regime_calendar_prefix(value: Any, *, label: str) -> dict[str, Any]:
+    if type(value) is not dict or set(value) != {
+        "prefix_end_session",
+        "prefix_length",
+        "prefix_sha256",
+    }:
+        raise ArtifactContractError(f"{label} shape mismatch")
+    end_session = _canonical_session(
+        value["prefix_end_session"],
+        label=f"{label}.prefix_end_session",
+    )
+    try:
+        require_sha256(value["prefix_sha256"], label=f"{label}.prefix_sha256")
+    except IdentityContractError as exc:
+        raise ArtifactContractError(str(exc)) from exc
+    if type(value["prefix_length"]) is not int or value["prefix_length"] < 1:
+        raise ArtifactContractError(f"{label}.prefix_length must be positive")
+    return {
+        "prefix_end_session": end_session,
+        "prefix_length": value["prefix_length"],
+        "prefix_sha256": value["prefix_sha256"],
+    }
+
+
+def _regime_prior_finality(
+    value: Any,
+    *,
+    phase: str,
+    finalized_evidence_ordinal: int,
+) -> None:
+    keys = {
+        "prior_checkpoint_byte_sha256",
+        "prior_checkpoint_id",
+        "prior_checkpoint_semantic_sha256",
+        "prior_effective_session",
+        "prior_evidence_byte_sha256",
+        "prior_evidence_id",
+        "prior_evidence_semantic_sha256",
+        "prior_finalized_evidence_ordinal",
+        "prior_global_accumulator",
+        "prior_segment_id",
+        "prior_segment_index",
+        "prior_segment_position",
+    }
+    if type(value) is not dict or set(value) != keys:
+        raise ArtifactContractError("prior_finality shape mismatch")
+    prior_values = tuple(value[key] for key in sorted(keys))
+    if finalized_evidence_ordinal == 0:
+        if phase not in {"GENESIS", "RECOVERY"} or any(item is not None for item in prior_values):
+            raise ArtifactContractError("ordinal-zero prior finality must be empty")
+        return
+    if phase == "GENESIS" or any(item is None for item in prior_values):
+        raise ArtifactContractError("non-GENESIS prior finality must be complete")
+    try:
+        require_sha256(
+            value["prior_checkpoint_byte_sha256"],
+            label="prior_checkpoint_byte_sha256",
+        )
+        require_sha256(value["prior_checkpoint_id"], label="prior_checkpoint_id")
+        require_sha256(
+            value["prior_checkpoint_semantic_sha256"],
+            label="prior_checkpoint_semantic_sha256",
+        )
+        require_sha256(
+            value["prior_evidence_byte_sha256"],
+            label="prior_evidence_byte_sha256",
+        )
+        require_sha256(value["prior_evidence_id"], label="prior_evidence_id")
+        require_sha256(
+            value["prior_evidence_semantic_sha256"],
+            label="prior_evidence_semantic_sha256",
+        )
+        require_sha256(value["prior_global_accumulator"], label="prior_global_accumulator")
+        require_sha256(value["prior_segment_id"], label="prior_segment_id")
+    except IdentityContractError as exc:
+        raise ArtifactContractError(str(exc)) from exc
+    if (
+        type(value["prior_finalized_evidence_ordinal"]) is not int
+        or type(value["prior_segment_index"]) is not int
+        or type(value["prior_segment_position"]) is not int
+        or value["prior_finalized_evidence_ordinal"] != finalized_evidence_ordinal - 1
+        or value["prior_segment_index"] < 0
+        or value["prior_segment_position"] < 0
+        or value["prior_segment_position"] >= _REGIME_CHAIN_SEGMENT_LENGTH
+    ):
+        raise ArtifactContractError("prior_finality ordinal mismatch")
+    _canonical_session(value["prior_effective_session"], label="prior_effective_session")
+
+
+def _regime_terminal_common(
+    payload: Mapping[str, Any],
+    *,
+    identity_field: str,
+    terminal_role: str,
+    schema_checked: bool,
+) -> tuple[RegimeTerminalArtifact, str]:
+    result = _common(
+        payload,
+        RegimeTerminalArtifact,
+        formal_research_publication=False,
+        schema_checked=schema_checked,
+    )
+    assert isinstance(result, RegimeTerminalArtifact)
+    _reject_regime_forbidden_keys(payload)
+    _validate_regime_identity(payload, identity_field=identity_field)
+    cutoff = require_utc_timestamp(payload["cutoff"], label="cutoff")
+    created_at = require_utc_timestamp(payload["created_at"], label="created_at")
+    available_at = require_utc_timestamp(payload["available_at"], label="available_at")
+    if (
+        payload["terminal_role"] != terminal_role
+        or created_at != available_at
+        or available_at > cutoff
+    ):
+        raise ArtifactContractError(f"{terminal_role} terminal time or role mismatch")
+    return result, cutoff
+
+
+def _read_regime_typed_ref(
+    value: Any,
+    *,
+    artifact_loader: Callable[[Mapping[str, str]], bytes] | None,
+    strategy_id: str,
+    cutoff: str,
+    label: str,
+    expected_version: str | None = None,
+    recursive_validate: bool = True,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    normalized = _ref(
+        value,
+        strategy_id=strategy_id,
+        cutoff=cutoff,
+        expected_version=expected_version,
+        label=label,
+    )
+    if artifact_loader is None:
+        return normalized, None
+    try:
+        raw = artifact_loader({field: str(item) for field, item in normalized.items()})
+    except Exception as exc:
+        raise ArtifactContractError(f"{label} readback failed") from exc
+    if type(raw) is not bytes or hashlib.sha256(raw).hexdigest() != normalized["byte_sha256"]:
+        raise ArtifactContractError(f"{label} byte SHA mismatch")
+    try:
+        document = load_canonical_resource(raw, label=label)
+        sealed = validate_semantic_sha(document)
+    except CanonicalContractError as exc:
+        raise ArtifactContractError(f"{label} canonical readback failed") from exc
+    if type(sealed) is not dict:
+        raise ArtifactContractError(f"{label} root must be an object")
+    try:
+        from .schema_validation import artifact_identity_field
+
+        identity_field = artifact_identity_field(normalized["artifact_version"])
+    except Exception:
+        identity_field = ""
+    if identity_field:
+        observed_identity = sealed.get(identity_field)
+    else:
+        candidates = [
+            item
+            for key, item in sealed.items()
+            if key.endswith("_id") and item == normalized["artifact_id"]
+        ]
+        observed_identity = candidates[0] if len(candidates) == 1 else None
+    if (
+        sealed.get("version") != normalized["artifact_version"]
+        or sealed.get("strategy_id") != strategy_id
+        or sealed.get("cutoff") != normalized["cutoff"]
+        or sealed.get("semantic_sha256") != normalized["semantic_sha256"]
+        or observed_identity != normalized["artifact_id"]
+    ):
+        raise ArtifactContractError(f"{label} document binding mismatch")
+    if normalized["artifact_version"] in {
+        "myquant.v17.v4.regime-calendar-terminal.v1",
+        "myquant.v17.v4.regime-chain-anchor.v1",
+        "myquant.v17.v4.regime-evidence.v2",
+        "myquant.v17.v4.regime-evidence.v3",
+        "myquant.v17.v4.regime-feature-snapshot.v1",
+        "myquant.v17.v4.regime-market-terminal.v1",
+        "myquant.v17.v4.regime-model-snapshot.v1",
+        "myquant.v17.v4.regime-model-snapshot.v2",
+        "myquant.v17.v4.regime-pit-membership-terminal.v1",
+        "myquant.v17.v4.regime-segment-anchor.v1",
+        "myquant.v17.v4.regime-source-locator-terminal.v1",
+        "myquant.v17.v4.regime-state-checkpoint.v1",
+        "myquant.v17.v4.regime-transition-matrix-snapshot.v1",
+        "myquant.v17.v4.regime-transition-matrix-snapshot.v2",
+    }:
+        validate_typed_artifact(
+            sealed,
+            artifact_loader=artifact_loader if recursive_validate else None,
+        )
+    return normalized, sealed
 
 
 def _cas(
@@ -3417,6 +4002,1097 @@ def validate_regime_evidence(
     return result
 
 
+def validate_regime_calendar_terminal(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+    artifact_loader: Callable[[Mapping[str, str]], bytes] | None = None,
+) -> RegimeTerminalArtifact:
+    del artifact_loader
+    result, _ = _regime_terminal_common(
+        payload,
+        identity_field="calendar_terminal_id",
+        terminal_role="SHANGHAI_OPEN_CALENDAR",
+        schema_checked=schema_checked,
+    )
+    sessions = [
+        _canonical_session(item, label=f"open_sessions[{index}]")
+        for index, item in enumerate(payload["open_sessions"])
+    ]
+    if (
+        sessions != sorted(sessions)
+        or len(sessions) != len(set(sessions))
+        or any(date.fromisoformat(session).weekday() >= 5 for session in sessions)
+    ):
+        raise ArtifactContractError("calendar terminal sessions must be unique ascending weekdays")
+    return result
+
+
+def validate_regime_pit_membership_terminal(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+    artifact_loader: Callable[[Mapping[str, str]], bytes] | None = None,
+) -> RegimeTerminalArtifact:
+    del artifact_loader
+    result, cutoff = _regime_terminal_common(
+        payload,
+        identity_field="pit_membership_terminal_id",
+        terminal_role="ACTIVE_PIT_MEMBERSHIP",
+        schema_checked=schema_checked,
+    )
+    observed = _canonical_session(
+        payload["observed_through_session"],
+        label="observed_through_session",
+    )
+    symbols = payload["active_symbols"]
+    if (
+        observed > cutoff[:10]
+        or symbols != sorted(symbols)
+        or len(symbols) != len(set(symbols))
+        or any(_CN_SYMBOL_RE.fullmatch(symbol) is None for symbol in symbols)
+    ):
+        raise ArtifactContractError("PIT membership terminal scope is noncanonical")
+    return result
+
+
+def validate_regime_market_terminal(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+    artifact_loader: Callable[[Mapping[str, str]], bytes] | None = None,
+) -> RegimeTerminalArtifact:
+    del artifact_loader
+    result, cutoff = _regime_terminal_common(
+        payload,
+        identity_field="market_terminal_id",
+        terminal_role="SEALED_MARKET_SYMBOL_INVENTORY",
+        schema_checked=schema_checked,
+    )
+    observed = _canonical_session(
+        payload["observed_through_session"],
+        label="observed_through_session",
+    )
+    symbols = payload["symbols"]
+    if (
+        observed > cutoff[:10]
+        or symbols != sorted(symbols)
+        or len(symbols) != len(set(symbols))
+        or any(_CN_SYMBOL_RE.fullmatch(symbol) is None for symbol in symbols)
+    ):
+        raise ArtifactContractError("market terminal scope is noncanonical")
+    return result
+
+
+def validate_regime_source_locator_terminal(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+    artifact_loader: Callable[[Mapping[str, str]], bytes] | None = None,
+) -> RegimeTerminalArtifact:
+    result, cutoff = _regime_terminal_common(
+        payload,
+        identity_field="source_locator_terminal_id",
+        terminal_role="REGIME_SOURCE_LOCATOR",
+        schema_checked=schema_checked,
+    )
+    _read_regime_typed_ref(
+        payload["calendar_ref"],
+        artifact_loader=artifact_loader,
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        expected_version="myquant.v17.v4.regime-calendar-terminal.v1",
+        label="calendar_ref",
+    )
+    _read_regime_typed_ref(
+        payload["pit_membership_ref"],
+        artifact_loader=artifact_loader,
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        expected_version="myquant.v17.v4.regime-pit-membership-terminal.v1",
+        label="pit_membership_ref",
+    )
+    market_refs = _refs(
+        payload["market_source_refs"],
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        label="market_source_refs",
+        expected_version="myquant.v17.v4.regime-market-terminal.v1",
+    )
+    if not market_refs:
+        raise ArtifactContractError("source locator terminal requires market_source_refs")
+    for index, reference in enumerate(market_refs):
+        _read_regime_typed_ref(
+            reference,
+            artifact_loader=artifact_loader,
+            strategy_id=result.strategy_id,
+            cutoff=cutoff,
+            expected_version="myquant.v17.v4.regime-market-terminal.v1",
+            label=f"market_source_refs[{index}]",
+        )
+    return result
+
+
+def validate_regime_feature_snapshot(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+    artifact_loader: Callable[[Mapping[str, str]], bytes] | None = None,
+) -> RegimeFeatureSnapshotArtifact:
+    result = _common(
+        payload,
+        RegimeFeatureSnapshotArtifact,
+        formal_research_publication=False,
+        schema_checked=schema_checked,
+    )
+    assert isinstance(result, RegimeFeatureSnapshotArtifact)
+    _reject_regime_forbidden_keys(payload)
+    _regime_shadow_envelope(payload)
+    _validate_regime_identity(payload, identity_field="feature_snapshot_id")
+    cutoff, observed, effective = _regime_snapshot_time_closure(payload)
+    _regime_state_order(payload["state_order"])
+    _regime_probability_mapping(
+        payload["state_likelihoods"],
+        label="state_likelihoods",
+    )
+
+    sessions = [
+        _canonical_session(item, label=f"open_sessions[{index}]")
+        for index, item in enumerate(payload["open_sessions"])
+    ]
+    if sessions != sorted(sessions) or len(sessions) != len(set(sessions)):
+        raise ArtifactContractError("open_sessions must be unique and ascending")
+    if (
+        observed not in sessions
+        or effective not in sessions
+        or sessions.index(effective) != sessions.index(observed) + 1
+    ):
+        raise ArtifactContractError(
+            "effective_session must be the next sealed open session after observation"
+        )
+
+    symbols = payload["full_market_symbols"]
+    if symbols != sorted(symbols) or len(symbols) != len(set(symbols)):
+        raise ArtifactContractError("full_market_symbols must be unique and ASCII ordered")
+    if any(_CN_SYMBOL_RE.fullmatch(symbol) is None for symbol in symbols):
+        raise ArtifactContractError("full_market_symbols contains a noncanonical CN symbol")
+    sample_count = payload["market_sample_count"]
+    pit_count = payload["pit_active_symbol_count"]
+    minimum = payload["minimum_market_sample"]
+    coverage = _decimal12(payload["coverage_ratio"], label="coverage_ratio")
+    if (
+        minimum != 30
+        or sample_count != len(symbols)
+        or pit_count != len(symbols)
+        or sample_count < minimum
+        or coverage != Decimal("1.000000000000")
+        or payload["source_scope"] != "FULL_PIT_MARKET"
+        or payload["scope_kind"] != "FULL_MARKET"
+        or payload["sampled"] is not False
+    ):
+        raise ArtifactContractError("regime feature snapshot is not exact full PIT market scope")
+
+    bounded_unit_fields = (
+        "average_liquidity",
+        "average_volatility",
+        "breadth",
+        "fake_breakout_share",
+        "momentum_share",
+        "pressure_score",
+        "risk_on_score",
+        "volatility_score",
+    )
+    bounded_unit = {field: _decimal12(payload[field], label=field) for field in bounded_unit_fields}
+    if any(value < 0 or value > 1 for value in bounded_unit.values()):
+        raise ArtifactContractError("regime feature unit-interval field is out of range")
+    signed_fields = {
+        field: _decimal12(payload[field], label=field)
+        for field in ("average_return", "macro_score")
+    }
+    if any(value < -1 or value > 1 for value in signed_fields.values()):
+        raise ArtifactContractError("regime feature signed field is out of range")
+    drawdown = _decimal12(payload["median_drawdown"], label="median_drawdown")
+    if drawdown < 0 or drawdown > 1:
+        raise ArtifactContractError("median_drawdown must be in [0, 1]")
+
+    direct_refs = (
+        ("calendar_ref", payload["calendar_ref"]),
+        ("pit_membership_ref", payload["pit_membership_ref"]),
+        ("source_locator_ref", payload["source_locator_ref"]),
+    )
+    for label, reference in direct_refs:
+        _read_regime_typed_ref(
+            reference,
+            artifact_loader=artifact_loader,
+            strategy_id=result.strategy_id,
+            cutoff=cutoff,
+            label=label,
+        )
+    market_refs = _refs(
+        payload["market_source_refs"],
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        label="market_source_refs",
+    )
+    if not market_refs:
+        raise ArtifactContractError("market_source_refs must not be empty")
+    for index, reference in enumerate(market_refs):
+        _read_regime_typed_ref(
+            reference,
+            artifact_loader=artifact_loader,
+            strategy_id=result.strategy_id,
+            cutoff=cutoff,
+            label=f"market_source_refs[{index}]",
+        )
+    return result
+
+
+def validate_regime_transition_matrix_snapshot(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+    artifact_loader: Callable[[Mapping[str, str]], bytes] | None = None,
+) -> RegimeTransitionMatrixSnapshotArtifact:
+    result = _common(
+        payload,
+        RegimeTransitionMatrixSnapshotArtifact,
+        formal_research_publication=False,
+        schema_checked=schema_checked,
+    )
+    assert isinstance(result, RegimeTransitionMatrixSnapshotArtifact)
+    _reject_regime_forbidden_keys(payload)
+    _regime_shadow_envelope(payload)
+    _validate_regime_identity(payload, identity_field="transition_snapshot_id")
+    _regime_snapshot_time_closure(payload)
+    _regime_state_order(payload["state_order"])
+    _regime_policy_ref(payload["inference_policy_ref"], label="inference_policy_ref")
+    if payload["source_evidence_refs"] != []:
+        raise ArtifactContractError("pinned transition snapshot cannot have source evidence")
+    matrix = payload["transition_matrix"]
+    if type(matrix) is not dict or set(matrix) != set(_REGIME_STATE_ORDER):
+        raise ArtifactContractError("transition matrix must contain the exact native state rows")
+    for state in _REGIME_STATE_ORDER:
+        _regime_probability_mapping(matrix[state], label=f"transition_matrix.{state}")
+    if matrix != _REGIME_TRANSITION_MATRIX:
+        raise ArtifactContractError("transition matrix differs from PINNED_NATIVE_DEFAULT_V1")
+    return result
+
+
+def validate_regime_model_snapshot(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+    artifact_loader: Callable[[Mapping[str, str]], bytes] | None = None,
+) -> RegimeModelSnapshotArtifact:
+    result = _common(
+        payload,
+        RegimeModelSnapshotArtifact,
+        formal_research_publication=False,
+        schema_checked=schema_checked,
+    )
+    assert isinstance(result, RegimeModelSnapshotArtifact)
+    _reject_regime_forbidden_keys(payload)
+    _regime_shadow_envelope(payload)
+    _validate_regime_identity(payload, identity_field="model_snapshot_id")
+    cutoff, observed, effective = _regime_snapshot_time_closure(payload)
+    _regime_state_order(payload["state_order"])
+    policy_ref = _regime_policy_ref(
+        payload["inference_policy_ref"],
+        label="inference_policy_ref",
+    )
+    try:
+        require_sha256(
+            payload["model_implementation_sha256"],
+            label="model_implementation_sha256",
+        )
+    except IdentityContractError as exc:
+        raise ArtifactContractError(str(exc)) from exc
+    if (
+        payload["model_id"] != "v17-v4-native-regime-filtered-model"
+        or payload["model_version"] != "PINNED_RULE_BASED_NO_TRAINING_V1"
+        or payload["model_kind"] != "PINNED_RULE_BASED_NO_TRAINING"
+        or payload["formula_version"] != "NATIVE_HEURISTIC_LIKELIHOOD_DECIMAL_V1"
+        or payload["model_training_end_session"] is not None
+        or payload["training_source_refs"] != []
+    ):
+        raise ArtifactContractError("pinned no-training regime model identity mismatch")
+    _, transition = _read_regime_typed_ref(
+        payload["transition_matrix_ref"],
+        artifact_loader=artifact_loader,
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        expected_version="myquant.v17.v4.regime-transition-matrix-snapshot.v1",
+        label="transition_matrix_ref",
+    )
+    predecessor_ref = payload["predecessor_evidence_ref"]
+    predecessor: dict[str, Any] | None = None
+    if predecessor_ref is not None:
+        _, predecessor = _read_regime_typed_ref(
+            predecessor_ref,
+            artifact_loader=artifact_loader,
+            strategy_id=result.strategy_id,
+            cutoff=cutoff,
+            expected_version="myquant.v17.v4.regime-evidence.v2",
+            label="predecessor_evidence_ref",
+        )
+    if transition is not None and (
+        transition["observed_through_session"] != observed
+        or transition["effective_session"] != effective
+        or transition["inference_policy_ref"] != policy_ref
+    ):
+        raise ArtifactContractError("regime model transition binding mismatch")
+    if predecessor is not None and predecessor["effective_session"] != observed:
+        raise ArtifactContractError("regime model predecessor is not contiguous")
+    return result
+
+
+def validate_regime_evidence_v2(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+    artifact_loader: Callable[[Mapping[str, str]], bytes] | None = None,
+) -> RegimeEvidenceV2Artifact:
+    result = _common(
+        payload,
+        RegimeEvidenceV2Artifact,
+        formal_research_publication=False,
+        schema_checked=schema_checked,
+    )
+    assert isinstance(result, RegimeEvidenceV2Artifact)
+    _reject_regime_forbidden_keys(payload)
+    _regime_shadow_envelope(payload)
+    _validate_regime_identity(payload, identity_field="evidence_id")
+    _regime_state_order(payload["state_order"])
+    policy_ref = _regime_policy_ref(
+        payload["inference_policy_ref"],
+        label="inference_policy_ref",
+    )
+    cutoff = require_utc_timestamp(payload["cutoff"], label="cutoff")
+    feature_cutoff = require_utc_timestamp(
+        payload["feature_cutoff"],
+        label="feature_cutoff",
+    )
+    timestamps = {
+        require_utc_timestamp(payload[field], label=field)
+        for field in ("available_at", "computed_at", "created_at", "published_at")
+    }
+    if len(timestamps) != 1 or next(iter(timestamps)) > cutoff or feature_cutoff > cutoff:
+        raise ArtifactContractError("causal regime evidence publication time closure mismatch")
+    observed = _canonical_session(
+        payload["observed_through_session"],
+        label="observed_through_session",
+    )
+    decision = _canonical_session(payload["decision_session"], label="decision_session")
+    effective = _canonical_session(payload["effective_session"], label="effective_session")
+    cutoff_session = (
+        datetime.fromisoformat(cutoff.replace("Z", "+00:00"))
+        .astimezone(_SHANGHAI)
+        .date()
+        .isoformat()
+    )
+    publication_session = (
+        datetime.fromisoformat(next(iter(timestamps)).replace("Z", "+00:00"))
+        .astimezone(_SHANGHAI)
+        .date()
+        .isoformat()
+    )
+    if observed >= decision or decision != effective:
+        raise ArtifactContractError(
+            "causal regime evidence must use prior-session effective-next-session mode"
+        )
+    if cutoff_session != decision or publication_session > decision:
+        raise ArtifactContractError(
+            "causal regime evidence cutoff must be within its effective Shanghai session"
+        )
+    if (
+        payload["publication_phase"] != "PRIOR_SESSION_EFFECTIVE_NEXT_SESSION"
+        or payload["inference_kind"] != "FILTERED_CAUSAL"
+        or payload["smoothing_used"] is not False
+        or payload["same_session_execution_eligible"] is not False
+        or payload["no_retroactive_causal_backfill"] is not True
+        or payload["status"] != "AVAILABLE"
+        or payload["blocker_codes"] != []
+        or payload["scope_kind"] != "FULL_MARKET"
+        or payload["model_training_end_session"] is not None
+    ):
+        raise ArtifactContractError("causal regime evidence mode or status mismatch")
+
+    probabilities = _regime_probability_mapping(
+        payload["state_probabilities"],
+        label="state_probabilities",
+    )
+    expected_hard_state = max(
+        _REGIME_STATE_ORDER,
+        key=lambda state: (probabilities[state], -_REGIME_STATE_ORDER.index(state)),
+    )
+    if (
+        payload["hard_state_derivation"] != "SEALED_ARGMAX_POLICY_V1"
+        or payload["hard_state"] != expected_hard_state
+    ):
+        raise ArtifactContractError("hard_state differs from sealed native-order argmax")
+    coverage = _decimal12(payload["coverage_ratio"], label="coverage_ratio")
+    if (
+        payload["minimum_market_sample"] != 30
+        or payload["market_sample_count"] < payload["minimum_market_sample"]
+        or coverage != Decimal("1.000000000000")
+    ):
+        raise ArtifactContractError("causal regime evidence full-market coverage mismatch")
+    try:
+        require_sha256(
+            payload["model_implementation_sha256"],
+            label="model_implementation_sha256",
+        )
+    except IdentityContractError as exc:
+        raise ArtifactContractError(str(exc)) from exc
+
+    direct_specs = (
+        (
+            "feature_snapshot_ref",
+            "myquant.v17.v4.regime-feature-snapshot.v1",
+        ),
+        (
+            "model_snapshot_ref",
+            "myquant.v17.v4.regime-model-snapshot.v1",
+        ),
+        (
+            "transition_matrix_ref",
+            "myquant.v17.v4.regime-transition-matrix-snapshot.v1",
+        ),
+    )
+    loaded: dict[str, dict[str, Any] | None] = {}
+    for field, version in direct_specs:
+        _, document = _read_regime_typed_ref(
+            payload[field],
+            artifact_loader=artifact_loader,
+            strategy_id=result.strategy_id,
+            cutoff=cutoff,
+            expected_version=version,
+            label=field,
+        )
+        loaded[field] = document
+    _read_regime_typed_ref(
+        payload["scope_ref"],
+        artifact_loader=artifact_loader,
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        label="scope_ref",
+    )
+    source_refs = _refs(
+        payload["source_refs"],
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        label="source_refs",
+    )
+    if not source_refs:
+        raise ArtifactContractError("source_refs must not be empty")
+    for index, reference in enumerate(source_refs):
+        _read_regime_typed_ref(
+            reference,
+            artifact_loader=artifact_loader,
+            strategy_id=result.strategy_id,
+            cutoff=cutoff,
+            label=f"source_refs[{index}]",
+        )
+
+    feature = loaded["feature_snapshot_ref"]
+    model = loaded["model_snapshot_ref"]
+    transition = loaded["transition_matrix_ref"]
+    for label, document in loaded.items():
+        if document is not None and (
+            document["observed_through_session"] != observed
+            or document["effective_session"] != effective
+        ):
+            raise ArtifactContractError(f"{label} session binding mismatch")
+    if feature is not None and (
+        feature["cutoff"] != feature_cutoff
+        or feature["market_sample_count"] != payload["market_sample_count"]
+        or feature["minimum_market_sample"] != payload["minimum_market_sample"]
+        or feature["coverage_ratio"] != payload["coverage_ratio"]
+    ):
+        raise ArtifactContractError("feature snapshot evidence binding mismatch")
+    if transition is not None and transition["inference_policy_ref"] != policy_ref:
+        raise ArtifactContractError("transition inference policy binding mismatch")
+    if model is not None and (
+        model["inference_policy_ref"] != policy_ref
+        or model["transition_matrix_ref"] != payload["transition_matrix_ref"]
+        or model["model_id"] != payload["model_id"]
+        or model["model_version"] != payload["model_version"]
+        or model["model_implementation_sha256"] != payload["model_implementation_sha256"]
+    ):
+        raise ArtifactContractError("model snapshot evidence binding mismatch")
+    if model is not None:
+        predecessor = model["predecessor_evidence_ref"]
+        if payload["lineage_phase"] == "BOOTSTRAP" and predecessor is not None:
+            raise ArtifactContractError("bootstrap regime evidence cannot have a predecessor")
+        if payload["lineage_phase"] == "NORMAL" and predecessor is None:
+            raise ArtifactContractError("normal regime evidence requires a predecessor")
+    return result
+
+
+def validate_regime_transition_matrix_snapshot_v2(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+    artifact_loader: Callable[[Mapping[str, str]], bytes] | None = None,
+) -> RegimeTransitionMatrixSnapshotV2Artifact:
+    del artifact_loader
+    result = _common(
+        payload,
+        RegimeTransitionMatrixSnapshotV2Artifact,
+        formal_research_publication=False,
+        schema_checked=schema_checked,
+    )
+    assert isinstance(result, RegimeTransitionMatrixSnapshotV2Artifact)
+    _reject_regime_forbidden_keys(payload)
+    _regime_shadow_envelope(payload)
+    _validate_regime_identity(payload, identity_field="transition_snapshot_id")
+    _regime_snapshot_time_closure(payload)
+    _regime_state_order(payload["state_order"])
+    _regime_policy_ref(
+        payload["inference_policy_ref"],
+        label="inference_policy_ref",
+        expected=_REGIME_POLICY_REF_V2,
+    )
+    if payload["source_evidence_refs"] != []:
+        raise ArtifactContractError("pinned transition snapshot v2 cannot have source evidence")
+    matrix = payload["transition_matrix"]
+    if type(matrix) is not dict or set(matrix) != set(_REGIME_STATE_ORDER):
+        raise ArtifactContractError("transition matrix must contain the exact native state rows")
+    for state in _REGIME_STATE_ORDER:
+        _regime_probability_mapping(matrix[state], label=f"transition_matrix.{state}")
+    if matrix != _REGIME_TRANSITION_MATRIX:
+        raise ArtifactContractError("transition matrix differs from PINNED_NATIVE_DEFAULT_V1")
+    return result
+
+
+def validate_regime_model_snapshot_v2(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+    artifact_loader: Callable[[Mapping[str, str]], bytes] | None = None,
+) -> RegimeModelSnapshotV2Artifact:
+    result = _common(
+        payload,
+        RegimeModelSnapshotV2Artifact,
+        formal_research_publication=False,
+        schema_checked=schema_checked,
+    )
+    assert isinstance(result, RegimeModelSnapshotV2Artifact)
+    _reject_regime_forbidden_keys(payload)
+    _regime_shadow_envelope(payload)
+    _validate_regime_identity(payload, identity_field="model_snapshot_id")
+    cutoff, observed, effective = _regime_snapshot_time_closure(payload)
+    _regime_state_order(payload["state_order"])
+    policy_ref = _regime_policy_ref(
+        payload["inference_policy_ref"],
+        label="inference_policy_ref",
+        expected=_REGIME_POLICY_REF_V2,
+    )
+    try:
+        require_sha256(payload["model_helper_sha256"], label="model_helper_sha256")
+        require_sha256(payload["producer_sha256"], label="producer_sha256")
+    except IdentityContractError as exc:
+        raise ArtifactContractError(str(exc)) from exc
+    if (
+        payload["model_id"] != "v17-v4-native-regime-filtered-model"
+        or payload["model_version"] != "PINNED_RULE_BASED_NO_TRAINING_V1"
+        or payload["model_kind"] != "PINNED_RULE_BASED_NO_TRAINING"
+        or payload["formula_version"] != "NATIVE_HEURISTIC_LIKELIHOOD_DECIMAL_V1"
+        or payload["model_training_end_session"] is not None
+        or payload["training_source_refs"] != []
+    ):
+        raise ArtifactContractError("pinned no-training regime model v2 identity mismatch")
+    _, transition = _read_regime_typed_ref(
+        payload["transition_matrix_ref"],
+        artifact_loader=artifact_loader,
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        expected_version="myquant.v17.v4.regime-transition-matrix-snapshot.v2",
+        label="transition_matrix_ref",
+    )
+    if transition is not None and (
+        transition["observed_through_session"] != observed
+        or transition["effective_session"] != effective
+        or transition["inference_policy_ref"] != policy_ref
+    ):
+        raise ArtifactContractError("regime model v2 transition binding mismatch")
+    return result
+
+
+def validate_regime_chain_anchor(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+    artifact_loader: Callable[[Mapping[str, str]], bytes] | None = None,
+) -> RegimeChainAnchorArtifact:
+    result = _common(
+        payload,
+        RegimeChainAnchorArtifact,
+        formal_research_publication=False,
+        schema_checked=schema_checked,
+    )
+    assert isinstance(result, RegimeChainAnchorArtifact)
+    _reject_regime_forbidden_keys(payload)
+    _regime_shadow_envelope(payload)
+    _validate_regime_identity(payload, identity_field="chain_anchor_id")
+    cutoff = require_utc_timestamp(payload["cutoff"], label="cutoff")
+    if require_utc_timestamp(payload["created_at"], label="created_at") > cutoff:
+        raise ArtifactContractError("regime chain anchor created_at is after cutoff")
+    _regime_state_order(payload["state_order"])
+    _regime_record_commitment(payload["chain_id"], label="chain_id")
+    _regime_audit_limits(payload["audit_limits"])
+    _regime_accumulator(payload["global_seed"], label="global_seed")
+    _regime_probability_mapping(payload["bootstrap_prior"], label="bootstrap_prior")
+    prefix = _regime_calendar_prefix(payload["calendar_prefix"], label="calendar_prefix")
+    policy_ref = _regime_policy_ref(
+        payload["inference_policy_ref"],
+        label="inference_policy_ref",
+        expected=_REGIME_POLICY_REF_V2,
+    )
+    first_eligible = _canonical_session(
+        payload["first_eligible_session"],
+        label="first_eligible_session",
+    )
+    observed = _canonical_session(
+        payload["bootstrap_observed_through_session"],
+        label="bootstrap_observed_through_session",
+    )
+    if (
+        payload["phase"] != "GENESIS"
+        or observed >= first_eligible
+        or prefix["prefix_end_session"] != first_eligible
+    ):
+        raise ArtifactContractError("regime chain anchor bootstrap phase mismatch")
+    loaded: dict[str, dict[str, Any] | None] = {}
+    for field, version in (
+        ("model_snapshot_ref", "myquant.v17.v4.regime-model-snapshot.v2"),
+        (
+            "transition_matrix_ref",
+            "myquant.v17.v4.regime-transition-matrix-snapshot.v2",
+        ),
+    ):
+        _, document = _read_regime_typed_ref(
+            payload[field],
+            artifact_loader=artifact_loader,
+            strategy_id=result.strategy_id,
+            cutoff=cutoff,
+            expected_version=version,
+            label=field,
+        )
+        loaded[field] = document
+    for label, document in loaded.items():
+        if document is not None and (
+            document["observed_through_session"] != observed
+            or document["effective_session"] != first_eligible
+            or document["inference_policy_ref"] != policy_ref
+        ):
+            raise ArtifactContractError(f"{label} chain anchor binding mismatch")
+    return result
+
+
+def validate_regime_segment_anchor(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+    artifact_loader: Callable[[Mapping[str, str]], bytes] | None = None,
+) -> RegimeSegmentAnchorArtifact:
+    result = _common(
+        payload,
+        RegimeSegmentAnchorArtifact,
+        formal_research_publication=False,
+        schema_checked=schema_checked,
+    )
+    assert isinstance(result, RegimeSegmentAnchorArtifact)
+    _reject_regime_forbidden_keys(payload)
+    _regime_shadow_envelope(payload)
+    _validate_regime_identity(payload, identity_field="segment_anchor_id")
+    cutoff = require_utc_timestamp(payload["cutoff"], label="cutoff")
+    if require_utc_timestamp(payload["created_at"], label="created_at") > cutoff:
+        raise ArtifactContractError("regime segment anchor created_at is after cutoff")
+    _regime_state_order(payload["state_order"])
+    _regime_record_commitment(payload["chain_id"], label="chain_id")
+    _regime_record_commitment(payload["segment_id"], label="segment_id")
+    _regime_policy_ref(
+        payload["inference_policy_ref"],
+        label="inference_policy_ref",
+        expected=_REGIME_POLICY_REF_V2,
+    )
+    phase = _regime_phase(payload["phase"])
+    _regime_segment_ordinals(payload, ordinal_field="finalized_evidence_ordinal")
+    _regime_record_commitment(payload["record_commitment"])
+    _regime_accumulator(payload["segment_accumulator"], label="segment_accumulator")
+    _regime_accumulator(payload["global_accumulator"], label="global_accumulator")
+    prefix = _regime_calendar_prefix(payload["calendar_prefix"], label="calendar_prefix")
+    missing = payload["missing_sessions"]
+    if (
+        type(missing) is not list
+        or len(missing) > _REGIME_MAX_RECOVERY_SESSIONS
+        or [
+            _canonical_session(item, label=f"missing_sessions[{index}]")
+            for index, item in enumerate(missing)
+        ]
+        != missing
+        or missing != sorted(missing)
+    ):
+        raise ArtifactContractError("missing_sessions shape mismatch")
+    _regime_prior_finality(
+        payload["prior_finality"],
+        phase=phase,
+        finalized_evidence_ordinal=payload["finalized_evidence_ordinal"],
+    )
+    calendar = _regime_calendar_binding(
+        payload["calendar_binding"],
+        artifact_loader=artifact_loader,
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+    )
+    _, chain = _read_regime_typed_ref(
+        payload["chain_anchor_ref"],
+        artifact_loader=artifact_loader,
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        expected_version="myquant.v17.v4.regime-chain-anchor.v1",
+        label="chain_anchor_ref",
+    )
+    if chain is not None and (
+        chain["chain_id"] != payload["chain_id"]
+        or chain["first_eligible_session"] > calendar["decision_session"]
+    ):
+        raise ArtifactContractError("segment chain binding mismatch")
+    if prefix["prefix_end_session"] != calendar["effective_session"]:
+        raise ArtifactContractError("segment calendar prefix end mismatch")
+    return result
+
+
+def validate_regime_state_checkpoint(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+    artifact_loader: Callable[[Mapping[str, str]], bytes] | None = None,
+) -> RegimeStateCheckpointArtifact:
+    result = _common(
+        payload,
+        RegimeStateCheckpointArtifact,
+        formal_research_publication=False,
+        schema_checked=schema_checked,
+    )
+    assert isinstance(result, RegimeStateCheckpointArtifact)
+    _reject_regime_forbidden_keys(payload)
+    _regime_shadow_envelope(payload)
+    _validate_regime_identity(payload, identity_field="checkpoint_id")
+    cutoff = require_utc_timestamp(payload["cutoff"], label="cutoff")
+    if require_utc_timestamp(payload["created_at"], label="created_at") > cutoff:
+        raise ArtifactContractError("regime checkpoint created_at is after cutoff")
+    _regime_state_order(payload["state_order"])
+    _regime_record_commitment(payload["chain_id"], label="chain_id")
+    _regime_record_commitment(payload["segment_id"], label="segment_id")
+    _regime_policy_ref(
+        payload["inference_policy_ref"],
+        label="inference_policy_ref",
+        expected=_REGIME_POLICY_REF_V2,
+    )
+    phase = _regime_phase(payload["phase"])
+    _regime_segment_ordinals(payload, ordinal_field="finalized_evidence_ordinal")
+    _regime_record_commitment(payload["record_commitment"])
+    _regime_accumulator(payload["segment_accumulator"], label="segment_accumulator")
+    _regime_accumulator(payload["global_accumulator"], label="global_accumulator")
+    prefix = _regime_calendar_prefix(payload["calendar_prefix"], label="calendar_prefix")
+    missing = payload["missing_sessions"]
+    if (
+        type(missing) is not list
+        or len(missing) > _REGIME_MAX_RECOVERY_SESSIONS
+        or [
+            _canonical_session(item, label=f"missing_sessions[{index}]")
+            for index, item in enumerate(missing)
+        ]
+        != missing
+        or missing != sorted(missing)
+    ):
+        raise ArtifactContractError("missing_sessions shape mismatch")
+    _regime_prior_finality(
+        payload["prior_finality"],
+        phase=phase,
+        finalized_evidence_ordinal=payload["finalized_evidence_ordinal"],
+    )
+    probabilities = _regime_probability_mapping(
+        payload["state_probabilities"],
+        label="state_probabilities",
+    )
+    if payload["hard_state_derivation"] != "SEALED_ARGMAX_POLICY_V1" or payload[
+        "hard_state"
+    ] != _regime_argmax_state(probabilities):
+        raise ArtifactContractError("checkpoint hard_state differs from sealed argmax")
+    calendar = _regime_calendar_binding(
+        payload["calendar_binding"],
+        artifact_loader=artifact_loader,
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+    )
+    direct_versions = (
+        ("chain_anchor_ref", "myquant.v17.v4.regime-chain-anchor.v1"),
+        ("feature_snapshot_ref", "myquant.v17.v4.regime-feature-snapshot.v1"),
+        ("model_snapshot_ref", "myquant.v17.v4.regime-model-snapshot.v2"),
+        ("segment_anchor_ref", "myquant.v17.v4.regime-segment-anchor.v1"),
+        (
+            "transition_matrix_ref",
+            "myquant.v17.v4.regime-transition-matrix-snapshot.v2",
+        ),
+    )
+    loaded: dict[str, dict[str, Any] | None] = {}
+    for field, version in direct_versions:
+        _, document = _read_regime_typed_ref(
+            payload[field],
+            artifact_loader=artifact_loader,
+            strategy_id=result.strategy_id,
+            cutoff=cutoff,
+            expected_version=version,
+            label=field,
+        )
+        loaded[field] = document
+    segment = loaded["segment_anchor_ref"]
+    if segment is not None and (
+        segment["chain_id"] != payload["chain_id"]
+        or segment["segment_id"] != payload["segment_id"]
+        or segment["segment_index"] != payload["segment_index"]
+        or segment["segment_position"] != payload["segment_position"]
+        or segment["finalized_evidence_ordinal"] != payload["finalized_evidence_ordinal"]
+        or segment["calendar_binding"] != calendar
+    ):
+        raise ArtifactContractError("checkpoint segment binding mismatch")
+    if prefix["prefix_end_session"] != calendar["effective_session"]:
+        raise ArtifactContractError("checkpoint calendar prefix end mismatch")
+    for label in ("feature_snapshot_ref", "model_snapshot_ref", "transition_matrix_ref"):
+        document = loaded[label]
+        if document is not None and (
+            document["observed_through_session"] != calendar["observed_through_session"]
+            or document["effective_session"] != calendar["effective_session"]
+        ):
+            raise ArtifactContractError(f"{label} checkpoint session mismatch")
+    return result
+
+
+def validate_regime_evidence_v3(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+    artifact_loader: Callable[[Mapping[str, str]], bytes] | None = None,
+) -> RegimeEvidenceV3Artifact:
+    result = _common(
+        payload,
+        RegimeEvidenceV3Artifact,
+        formal_research_publication=False,
+        schema_checked=schema_checked,
+    )
+    assert isinstance(result, RegimeEvidenceV3Artifact)
+    _reject_regime_forbidden_keys(payload)
+    _regime_shadow_envelope(payload)
+    _validate_regime_identity(payload, identity_field="evidence_id")
+    _regime_state_order(payload["state_order"])
+    _regime_record_commitment(payload["chain_id"], label="chain_id")
+    _regime_record_commitment(payload["segment_id"], label="segment_id")
+    _regime_record_commitment(payload["record_commitment"])
+    _regime_accumulator(payload["segment_accumulator"], label="segment_accumulator")
+    _regime_accumulator(payload["global_accumulator"], label="global_accumulator")
+    prefix = _regime_calendar_prefix(payload["calendar_prefix"], label="calendar_prefix")
+    missing = payload["missing_sessions"]
+    if (
+        type(missing) is not list
+        or len(missing) > _REGIME_MAX_RECOVERY_SESSIONS
+        or [
+            _canonical_session(item, label=f"missing_sessions[{index}]")
+            for index, item in enumerate(missing)
+        ]
+        != missing
+        or missing != sorted(missing)
+    ):
+        raise ArtifactContractError("missing_sessions shape mismatch")
+    _regime_policy_ref(
+        payload["inference_policy_ref"],
+        label="inference_policy_ref",
+        expected=_REGIME_POLICY_REF_V2,
+    )
+    cutoff = require_utc_timestamp(payload["cutoff"], label="cutoff")
+    feature_cutoff = require_utc_timestamp(payload["feature_cutoff"], label="feature_cutoff")
+    timestamps = {
+        require_utc_timestamp(payload[field], label=field)
+        for field in ("available_at", "computed_at", "created_at", "published_at")
+    }
+    if len(timestamps) != 1 or next(iter(timestamps)) > cutoff or feature_cutoff > cutoff:
+        raise ArtifactContractError("regime evidence v3 publication time closure mismatch")
+    calendar = _regime_calendar_binding(
+        payload["calendar_binding"],
+        artifact_loader=artifact_loader,
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        observed=payload["observed_through_session"],
+        decision=payload["decision_session"],
+        effective=payload["effective_session"],
+    )
+    cutoff_session = (
+        datetime.fromisoformat(cutoff.replace("Z", "+00:00"))
+        .astimezone(_SHANGHAI)
+        .date()
+        .isoformat()
+    )
+    publication_session = (
+        datetime.fromisoformat(next(iter(timestamps)).replace("Z", "+00:00"))
+        .astimezone(_SHANGHAI)
+        .date()
+        .isoformat()
+    )
+    if (
+        cutoff_session != calendar["decision_session"]
+        or publication_session > calendar["decision_session"]
+        or prefix["prefix_end_session"] != calendar["effective_session"]
+    ):
+        raise ArtifactContractError("regime evidence v3 cutoff must bind the decision session")
+    if (
+        payload["publication_phase"] != "PRIOR_SESSION_EFFECTIVE_NEXT_SESSION"
+        or payload["inference_kind"] != "FILTERED_CAUSAL"
+        or payload["smoothing_used"] is not False
+        or payload["same_session_execution_eligible"] is not False
+        or payload["no_retroactive_causal_backfill"] is not True
+        or payload["status"] != "AVAILABLE"
+        or payload["blocker_codes"] != []
+        or payload["scope_kind"] != "FULL_MARKET"
+    ):
+        raise ArtifactContractError("regime evidence v3 mode or status mismatch")
+    phase = _regime_phase(payload["phase"])
+    _regime_segment_ordinals(payload, ordinal_field="finalized_evidence_ordinal")
+    _regime_prior_finality(
+        payload["prior_finality"],
+        phase=phase,
+        finalized_evidence_ordinal=payload["finalized_evidence_ordinal"],
+    )
+    probabilities = _regime_probability_mapping(
+        payload["state_probabilities"],
+        label="state_probabilities",
+    )
+    if payload["hard_state_derivation"] != "SEALED_ARGMAX_POLICY_V1" or payload[
+        "hard_state"
+    ] != _regime_argmax_state(probabilities):
+        raise ArtifactContractError("evidence v3 hard_state differs from sealed argmax")
+    coverage = _decimal12(payload["coverage_ratio"], label="coverage_ratio")
+    if (
+        payload["minimum_market_sample"] != 30
+        or payload["market_sample_count"] < payload["minimum_market_sample"]
+        or coverage != Decimal("1.000000000000")
+    ):
+        raise ArtifactContractError("regime evidence v3 full-market coverage mismatch")
+    loaded: dict[str, dict[str, Any] | None] = {}
+    traversed_versions = {
+        "chain_anchor_ref": "myquant.v17.v4.regime-chain-anchor.v1",
+        "current_checkpoint_ref": "myquant.v17.v4.regime-state-checkpoint.v1",
+        "segment_anchor_ref": "myquant.v17.v4.regime-segment-anchor.v1",
+    }
+    for field, expected_version in traversed_versions.items():
+        _, document = _read_regime_typed_ref(
+            payload[field],
+            artifact_loader=artifact_loader,
+            strategy_id=result.strategy_id,
+            cutoff=cutoff,
+            expected_version=expected_version,
+            label=field,
+            recursive_validate=False,
+        )
+        loaded[field] = document
+    for field, expected_version in (
+        ("feature_snapshot_ref", "myquant.v17.v4.regime-feature-snapshot.v1"),
+        ("model_snapshot_ref", "myquant.v17.v4.regime-model-snapshot.v2"),
+        ("transition_matrix_ref", "myquant.v17.v4.regime-transition-matrix-snapshot.v2"),
+    ):
+        _, document = _read_regime_typed_ref(
+            payload[field],
+            artifact_loader=artifact_loader,
+            strategy_id=result.strategy_id,
+            cutoff=cutoff,
+            expected_version=expected_version,
+            label=field,
+        )
+        loaded[field] = document
+    _, scope_document = _read_regime_typed_ref(
+        payload["scope_ref"],
+        artifact_loader=artifact_loader,
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        label="scope_ref",
+    )
+    loaded["scope_ref"] = scope_document
+    source_refs = _refs(
+        payload["source_refs"],
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        label="source_refs",
+    )
+    direct_ref_values = [
+        _ref(
+            payload[field],
+            strategy_id=result.strategy_id,
+            cutoff=cutoff,
+            label=field,
+        )
+        for field in _REGIME_V3_DIRECT_REF_FIELDS
+    ]
+    expected_direct_refs = sorted(
+        direct_ref_values,
+        key=lambda row: (row["relative_path"], row["byte_sha256"], row["artifact_id"]),
+    )
+    if source_refs != expected_direct_refs:
+        raise ArtifactContractError("regime evidence v3 source_refs must equal direct closure refs")
+    checkpoint = loaded["current_checkpoint_ref"]
+    if checkpoint is not None:
+        fields = (
+            "calendar_binding",
+            "chain_anchor_ref",
+            "feature_snapshot_ref",
+            "finalized_evidence_ordinal",
+            "hard_state",
+            "model_snapshot_ref",
+            "phase",
+            "prior_finality",
+            "record_commitment",
+            "segment_anchor_ref",
+            "segment_index",
+            "segment_position",
+            "state_probabilities",
+            "transition_matrix_ref",
+        )
+        if any(checkpoint[field] != payload[field] for field in fields):
+            raise ArtifactContractError("regime evidence v3 checkpoint binding mismatch")
+    feature = loaded["feature_snapshot_ref"]
+    if feature is not None and (
+        feature["observed_through_session"] != payload["observed_through_session"]
+        or feature["effective_session"] != payload["effective_session"]
+        or feature["cutoff"] != payload["feature_cutoff"]
+        or feature["coverage_ratio"] != payload["coverage_ratio"]
+        or feature["market_sample_count"] != payload["market_sample_count"]
+        or feature["minimum_market_sample"] != payload["minimum_market_sample"]
+        or feature["scope_kind"] != payload["scope_kind"]
+        or feature["pit_membership_ref"] != payload["scope_ref"]
+        or feature["state_order"] != payload["state_order"]
+    ):
+        raise ArtifactContractError("regime evidence v3 feature binding mismatch")
+    model = loaded["model_snapshot_ref"]
+    if model is not None and (
+        model["observed_through_session"] != payload["observed_through_session"]
+        or model["effective_session"] != payload["effective_session"]
+        or model["transition_matrix_ref"] != payload["transition_matrix_ref"]
+        or model["inference_policy_ref"] != payload["inference_policy_ref"]
+        or model["state_order"] != payload["state_order"]
+    ):
+        raise ArtifactContractError("regime evidence v3 model binding mismatch")
+    transition = loaded["transition_matrix_ref"]
+    if transition is not None and (
+        transition["observed_through_session"] != payload["observed_through_session"]
+        or transition["effective_session"] != payload["effective_session"]
+        or transition["inference_policy_ref"] != payload["inference_policy_ref"]
+        or transition["state_order"] != payload["state_order"]
+    ):
+        raise ArtifactContractError("regime evidence v3 transition binding mismatch")
+    del feature_cutoff
+    return result
+
+
 def validate_portfolio_output(
     payload: Mapping[str, Any],
     *,
@@ -3827,12 +5503,33 @@ _VALIDATORS: Final[Mapping[str, Callable[..., ValidatedArtifact]]] = {
     "myquant.v17.v4.portfolio-overlay.v1": validate_portfolio_overlay,
     "myquant.v17.v4.portfolio-risk-policy.v1": (validate_portfolio_risk_policy),
     "myquant.v17.v4.pretrade-permissions.v1": (validate_pretrade_permissions),
+    "myquant.v17.v4.regime-calendar-terminal.v1": validate_regime_calendar_terminal,
+    "myquant.v17.v4.regime-chain-anchor.v1": validate_regime_chain_anchor,
     "myquant.v17.v4.regime-evidence.v1": validate_regime_evidence,
+    "myquant.v17.v4.regime-evidence.v2": validate_regime_evidence_v2,
+    "myquant.v17.v4.regime-evidence.v3": validate_regime_evidence_v3,
+    "myquant.v17.v4.regime-feature-snapshot.v1": validate_regime_feature_snapshot,
+    "myquant.v17.v4.regime-market-terminal.v1": validate_regime_market_terminal,
+    "myquant.v17.v4.regime-model-snapshot.v1": validate_regime_model_snapshot,
+    "myquant.v17.v4.regime-model-snapshot.v2": validate_regime_model_snapshot_v2,
+    "myquant.v17.v4.regime-pit-membership-terminal.v1": (validate_regime_pit_membership_terminal),
+    "myquant.v17.v4.regime-segment-anchor.v1": validate_regime_segment_anchor,
+    "myquant.v17.v4.regime-source-locator-terminal.v1": (validate_regime_source_locator_terminal),
+    "myquant.v17.v4.regime-state-checkpoint.v1": validate_regime_state_checkpoint,
+    "myquant.v17.v4.regime-transition-matrix-snapshot.v1": (
+        validate_regime_transition_matrix_snapshot
+    ),
+    "myquant.v17.v4.regime-transition-matrix-snapshot.v2": (
+        validate_regime_transition_matrix_snapshot_v2
+    ),
     "myquant.v17.v4.research-factor-shadow-assertion.v1": (
         validate_research_factor_shadow_assertion
     ),
     "myquant.v17.v4.research-factor-shadow-assertion.v2": (validate_research_shadow_artifact),
     "myquant.v17.v4.research-factor-input-bundle.v1": (validate_research_shadow_artifact),
+    "myquant.v17.v4.forward-factor-input-bundle.v1": (validate_research_shadow_artifact),
+    "myquant.v17.v4.forward-source-locator.v1": (validate_research_shadow_artifact),
+    "myquant.v17.v4.forward-source-slice-manifest.v1": (validate_research_shadow_artifact),
     "myquant.v17.v4.research-fundamental-branch-output.v2": (validate_research_shadow_artifact),
     "myquant.v17.v4.research-initial-pool-output.v2": (validate_research_shadow_artifact),
     "myquant.v17.v4.research-quant-branch-output.v1": (validate_research_quant_branch_output),
@@ -3879,6 +5576,20 @@ def validate_typed_artifact(
     if version in {
         "myquant.v17.v4.calibration-receipt.v1",
         "myquant.v17.v4.fusion-promotion-receipt.v1",
+        "myquant.v17.v4.regime-calendar-terminal.v1",
+        "myquant.v17.v4.regime-chain-anchor.v1",
+        "myquant.v17.v4.regime-evidence.v2",
+        "myquant.v17.v4.regime-evidence.v3",
+        "myquant.v17.v4.regime-feature-snapshot.v1",
+        "myquant.v17.v4.regime-market-terminal.v1",
+        "myquant.v17.v4.regime-model-snapshot.v1",
+        "myquant.v17.v4.regime-model-snapshot.v2",
+        "myquant.v17.v4.regime-pit-membership-terminal.v1",
+        "myquant.v17.v4.regime-segment-anchor.v1",
+        "myquant.v17.v4.regime-source-locator-terminal.v1",
+        "myquant.v17.v4.regime-state-checkpoint.v1",
+        "myquant.v17.v4.regime-transition-matrix-snapshot.v1",
+        "myquant.v17.v4.regime-transition-matrix-snapshot.v2",
     }:
         return validator(
             payload,
@@ -3926,7 +5637,18 @@ __all__ = [
     "PortfolioOverlayArtifact",
     "PortfolioRiskPolicyArtifact",
     "PretradePermissionsArtifact",
+    "RegimeChainAnchorArtifact",
     "RegimeEvidenceArtifact",
+    "RegimeEvidenceV2Artifact",
+    "RegimeEvidenceV3Artifact",
+    "RegimeFeatureSnapshotArtifact",
+    "RegimeModelSnapshotArtifact",
+    "RegimeModelSnapshotV2Artifact",
+    "RegimeSegmentAnchorArtifact",
+    "RegimeStateCheckpointArtifact",
+    "RegimeTerminalArtifact",
+    "RegimeTransitionMatrixSnapshotArtifact",
+    "RegimeTransitionMatrixSnapshotV2Artifact",
     "ResearchFactorShadowAssertionArtifact",
     "ResearchQuantBranchOutputArtifact",
     "ShadowReadinessArtifact",
@@ -3976,7 +5698,21 @@ __all__ = [
     "validate_portfolio_overlay",
     "validate_portfolio_risk_policy",
     "validate_pretrade_permissions",
+    "validate_regime_chain_anchor",
     "validate_regime_evidence",
+    "validate_regime_evidence_v2",
+    "validate_regime_evidence_v3",
+    "validate_regime_calendar_terminal",
+    "validate_regime_feature_snapshot",
+    "validate_regime_market_terminal",
+    "validate_regime_model_snapshot",
+    "validate_regime_model_snapshot_v2",
+    "validate_regime_pit_membership_terminal",
+    "validate_regime_segment_anchor",
+    "validate_regime_source_locator_terminal",
+    "validate_regime_state_checkpoint",
+    "validate_regime_transition_matrix_snapshot",
+    "validate_regime_transition_matrix_snapshot_v2",
     "validate_research_factor_shadow_assertion",
     "validate_research_quant_branch_output",
     "validate_shadow_readiness",
@@ -3990,4 +5726,5 @@ __all__ = [
     "validate_pit_generation_catalog",
     "validate_typed_artifact",
     "validate_validation_receipt",
+    "regime_artifact_identity",
 ]

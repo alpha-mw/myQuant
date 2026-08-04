@@ -64,6 +64,74 @@ classification may route to an already-authorized market, Fundamental, or
 Macro maintenance workflow, followed by strict storage validation. Missing
 forward history or Deep assessment bytes are not canonical-data gaps.
 
+## Replay causal Regime Evidence v2
+
+The v2 contract remains valid, but new public v2 publication is disabled
+because its recursive predecessor chain is not deployable. The retained
+`regime-evidence-build` command preserves its argument surface, then
+immediately exits `2` without reading inputs, scanning, invoking a provider,
+calling the v2 or v3 producer, or writing any artifact. Its response contains:
+
+```text
+status = REGIME_EVIDENCE_V2_CHAIN_NON_DEPLOYABLE
+requested_version = myquant.v17.v4.regime-evidence.v2
+deployment_status = CONTRACT_VALIDATED_NOT_DEPLOYABLE
+replacement_command = regime-evidence-v3-build
+artifact_created = false
+```
+
+Use `regime-evidence-v3-build` for every new Regime Evidence publication.
+There is no automatic v2-to-v3 conversion and no historical backfill. The
+Python v2 builder is retained only for legacy artifact validation and isolated
+contract/fixture tests; it is not an operational publication entrypoint.
+
+Read one existing artifact by exact path and expected SHA:
+
+```bash
+quant-investor-v17-v4 regime-evidence-status \
+  --workspace-root /absolute/path/to/myQuant \
+  --artifact-path data/private/v17_v4_sources/regime_evidence/<strategy-id>/<effective-session>/regime_evidence.v2.json \
+  --expected-sha256 <sha256>
+```
+
+Status never scans a directory or pointer and never applies new-publication
+wall-clock freshness. It validates the artifact, recursively replays its
+bounded closure, verifies the sealed posterior and hard state, and reports the
+same all-false authority boundary. The reader cannot reclassify the hard state
+or compute a smoothed posterior.
+
+The exact formulas, Decimal-12 `ROUND_HALF_EVEN` policy, largest-remainder
+normalization, native state order, closure limits, 45-case acceptance matrix,
+and rollback semantics are specified in
+`docs/architecture/v17_v4_causal_regime_evidence.md`.
+
+## Build the real Forward Evidence source snapshot
+
+After the canonical close is fully sealed, bind the exact bytes that were
+audited. Do not reuse a SHA after any pointer or strategy-universe file
+changes:
+
+```bash
+quant-investor-v17-v4 build-source-snapshot \
+  --workspace-root /absolute/path/to/myQuant \
+  --strategy-id cn-aggressive-tech-manufacturing \
+  --decision-session <YYYY-MM-DD> \
+  --cutoff <UTC-second-timestamp> \
+  --market-pointer-sha256 <sha256> \
+  --fundamental-pointer-sha256 <sha256> \
+  --factor-set-pointer-sha256 <sha256> \
+  --strategy-universe-path <full_metrics.parquet> \
+  --strategy-universe-sha256 <sha256> \
+  --strategy-universe-manifest-path <breadth.json> \
+  --strategy-universe-manifest-sha256 <sha256>
+```
+
+Exit `0` and `status=READY` mean that `source_locator.json` was validated,
+written last, and read back. Exit `2` with
+`status=TRUE_CURRENT_CANONICAL_INPUT_GAP` means no completion locator was
+published. The command is offline and has no Factor Governance, activation,
+selector, provider, broker, execution, order, or trade authority.
+
 Inspect the current monthly-rotating set and the additive Deep/Shadow v3
 surfaces with explicit paths and hashes:
 
@@ -327,3 +395,47 @@ to one successfully closed `FORWARD_EVIDENCE` session and does not imply
 production/default activation. The complete scoring, tier, label,
 de-duplication, and rollback policy is documented in
 `docs/architecture/v17_v4_forward_evidence_runtime.md`.
+
+## 6. Build or replay bounded Regime Evidence v3
+
+Regime Evidence v3 is a research-only successor to the frozen v2 producer.
+It retains filtered-causal prior-session/next-session inference, but replaces
+recursive predecessor evidence with an immutable state checkpoint, 64-record
+segments, and domain-separated hash accumulators.
+
+The v2 command names remain available for compatibility:
+
+```text
+regime-evidence-build   # always blocked; creates nothing
+regime-evidence-status  # historical exact-path status/replay remains supported
+```
+
+V3 is the only version allowed for new publication and uses version-explicit
+commands:
+
+```text
+regime-evidence-v3-build
+regime-evidence-v3-status
+regime-chain-v3-audit
+```
+
+Every input is supplied by exact path and byte SHA. The commands never scan a
+directory, choose a `latest` artifact, invoke a provider, import v2 posterior
+state, or write a V5 artifact. Non-genesis publication requires the explicit
+prior finalized v3 evidence, its exact checkpoint, and the fixed chain anchor.
+An orphan checkpoint is not a valid predecessor.
+
+When a publication was missed, the current build records the exact ordered
+missing Shanghai open sessions, performs transition-only propagation for
+those sessions, and opens a `RECOVERY` segment. It does not create the missing
+historical evidence and does not invent missing likelihoods. Recovery is
+limited to 260 open sessions.
+
+Do not invoke the v3 producer in a real strategy workspace during Sprint
+1E-0A. Current-data inspection is read-only. The first real publication
+requires a separate deployment work package with a complete feature, model,
+transition, calendar, PIT, market, and locator closure.
+
+The exact commitment formulas, crash behavior, calendar-prefix rule, replay
+boundary, and audit budgets are specified in
+`docs/architecture/v17_v4_regime_checkpoint_chain.md`.
