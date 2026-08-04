@@ -16,6 +16,7 @@ from typing import Final, Mapping
 class RunProfile(str, Enum):
     EXPLORE = "EXPLORE"
     FORWARD_EVIDENCE = "FORWARD_EVIDENCE"
+    PROVISIONAL_FORWARD_EVIDENCE = "PROVISIONAL_FORWARD_EVIDENCE"
     RELEASE_CANDIDATE = "RELEASE_CANDIDATE"
 
 
@@ -120,6 +121,11 @@ PROFILE_DEFINITIONS: Final[Mapping[RunProfile, ProfileDefinition]] = MappingProx
                     "holdings",
                 }
             ),
+        ),
+        RunProfile.PROVISIONAL_FORWARD_EVIDENCE: ProfileDefinition(
+            profile=RunProfile.PROVISIONAL_FORWARD_EVIDENCE,
+            required_stages=frozenset(),
+            optional_stages=frozenset(),
         ),
         RunProfile.RELEASE_CANDIDATE: ProfileDefinition(
             profile=RunProfile.RELEASE_CANDIDATE,

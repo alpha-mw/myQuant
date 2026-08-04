@@ -60,6 +60,14 @@
   它不开放 run、schedule、模型、
   provider、LLM、Factor Governance writer、portfolio、selector、formal、
   canary、promotion、execution、broker、order 或 trade surface。
+- V17 v4 provisional 入口：`quant-investor-v17-v4
+  run-provisional-forward --workspace-root ... --request-path ...
+  --request-sha256 ...`。该命令只接受单一不可变 request，创建 run-scoped
+  provisional identity、Quant observation、三个独立 variant、pending
+  forward labels、limitation/stage receipts 和 manifest-last readback。它允许
+  replayable research evaluation，但不是 Source Truth、正式激活、晋升、
+  production governance、selector 或执行入口；全局状态仍为 `INACTIVE`，
+  默认协议仍为 `V15_DEFAULT`。
 - V17 v4 因果 Regime Evidence 入口：
   `quant-investor-v17-v4 regime-evidence-build` 与
   `quant-investor-v17-v4 regime-evidence-status`。V2 contract、validator 和

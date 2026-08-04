@@ -371,6 +371,7 @@ def _wire(*, package_assets: int | None = None) -> dict[str, Any]:
         "default_protocol_state": "V15_DEFAULT",
         "formal_activation_eligible": False,
         "global_activation_state": "INACTIVE",
+        "research_runtime_available": True,
         "run_state": "INACTIVE",
     }
     if package_assets is not None:

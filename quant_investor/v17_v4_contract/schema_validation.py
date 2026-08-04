@@ -236,6 +236,22 @@ _ARTIFACT_REGISTRY: Final = {
         "schemas/portfolio_risk_policy.v1.schema.json",
         "policy_id",
     ),
+    "myquant.v17.v4.provisional-forward-request.v1": (
+        "schemas/provisional_forward_request.v1.schema.json",
+        "request_id",
+    ),
+    "myquant.v17.v4.provisional-forward-input.v1": (
+        "schemas/provisional_forward_input.v1.schema.json",
+        "artifact_id",
+    ),
+    "myquant.v17.v4.provisional-forward-artifact.v1": (
+        "schemas/provisional_forward_artifact.v1.schema.json",
+        "artifact_id",
+    ),
+    "myquant.v17.v4.provisional-forward-run-manifest.v1": (
+        "schemas/provisional_forward_run_manifest.v1.schema.json",
+        "manifest_id",
+    ),
     "myquant.v17.v4.pretrade-permissions.v1": (
         "schemas/pretrade_permissions.v1.schema.json",
         "permissions_id",

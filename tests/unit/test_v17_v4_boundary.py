@@ -6,7 +6,6 @@ from pathlib import Path
 from quant_investor.v17_v4_runtime.authority import authority_envelope
 from quant_investor.v17_v4_runtime.cli import main
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -26,10 +25,12 @@ def test_v17_v4_scaffold_has_no_authority() -> None:
 def test_v17_v4_cli_is_explicit_and_v15_default_is_unchanged() -> None:
     pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert 'quant-investor = "quant_investor.cli.main:main"' in pyproject
-    assert 'quant-investor-v17-v4 = "quant_investor.v17_v4_runtime.cli:main"' in pyproject
-    assert 'default="v15"' in (
-        REPO_ROOT / "quant_investor" / "cli" / "main.py"
-    ).read_text(encoding="utf-8")
+    assert (
+        'quant-investor-v17-v4 = "quant_investor.v17_v4_runtime.cli_provisional:main"' in pyproject
+    )
+    assert 'default="v15"' in (REPO_ROOT / "quant_investor" / "cli" / "main.py").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_v17_v4_verify_is_no_write_and_all_side_effects_are_false(
@@ -40,6 +41,7 @@ def test_v17_v4_verify_is_no_write_and_all_side_effects_are_false(
     assert payload["status"] == "PUBLIC_SURFACES_AVAILABLE_NOT_DEFAULT"
     assert payload["package_verified"] is True
     assert payload["package_asset_count"] > 0
+    assert payload["research_runtime_available"] is True
     for field in (
         "provider_calls",
         "llm_control_calls",

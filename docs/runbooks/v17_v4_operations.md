@@ -1,5 +1,33 @@
 # V17 v4 Shadow Operations
 
+## Provisional Forward Evidence
+
+Use the provisional lane only with one pre-sealed request:
+
+```bash
+quant-investor-v17-v4 run-provisional-forward \
+  --workspace-root /absolute/workspace \
+  --request-path data/private/explicit-request.json \
+  --request-sha256 <exact-sha256>
+```
+
+The command accepts no profile, session, cutoff, variant, factor, universe,
+neutralizer, provider, or output override. Those facts must already be sealed
+inside the request. Inputs are read by explicit path/SHA only; there is no
+`latest` discovery, glob, provider, stale, or inferred fallback.
+
+Artifacts are written under
+`results/v17_v4_shadow/provisional_forward/<strategy>/<request-id>/`. Quant is
+published before optional contexts, each stage has an immutable readback
+receipt, and the run manifest is last. An optional downstream failure may
+leave a valid Quant observation and stage receipt without a final manifest;
+operators must not delete or reinterpret those upstream artifacts.
+
+`PROVISIONAL_FORWARD_EVIDENCE_ACTIVE` is a single-run research state. The
+global state remains `INACTIVE`, the default remains `V15_DEFAULT`, and all
+production/governance/selector/execution authorities remain closed. See
+`docs/architecture/v17_v4_provisional_forward_evidence.md`.
+
 V17 v4 is available as an explicit, research-only Shadow lane. V15 remains
 the production/default protocol. None of the commands below calls a provider,
 LLM, broker, order, execution, or trade API.
