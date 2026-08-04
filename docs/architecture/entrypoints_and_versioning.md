@@ -135,6 +135,16 @@
 - Factor Governance：`v4`，使用版本中立的 `results/factor_governance/`
 - Dashboard：Contract v3
 
+## Sanitized Daily Research Loop
+
+`quant-investor-v17-v4 research-daily-run` 是 Forward Research Release 上的
+additive research-only 入口。它只接受显式 `--workspace-root`、
+`--request-path` 和 `--request-sha256`，复用既有 provisional forward
+producer，并将 daily receipt、research memory 和 experiment registry 写入
+immutable Shadow research root。它不接受 `latest`、provider、factor 或
+universe 选择参数，也不引入 Source Truth/Authority/Security Master lineage。
+完整边界见 `docs/architecture/v17_v4_sanitized_daily_research_loop.md`。
+
 当前 production/default 协议继续使用：
 
 - `ARCHITECTURE_VERSION = "15.0.0-stable"`

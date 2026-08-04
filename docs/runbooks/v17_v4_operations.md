@@ -467,3 +467,24 @@ transition, calendar, PIT, market, and locator closure.
 The exact commitment formulas, crash behavior, calendar-prefix rule, replay
 boundary, and audit budgets are specified in
 `docs/architecture/v17_v4_regime_checkpoint_chain.md`.
+
+## 7. Run the sanitized daily research loop
+
+After sealing one valid provisional request, run the daily loop with only its
+explicit path and byte SHA:
+
+```bash
+quant-investor-v17-v4 research-daily-run \
+  --workspace-root /absolute/path/to/myQuant \
+  --request-path data/private/v17_v4_runs/provisional/<request>.json \
+  --request-sha256 <sha256>
+```
+
+Outputs are append-only beneath
+`results/v17_v4_shadow/daily_research/<strategy_id>/<request_id>/`. There is no
+pointer or directory-discovery interface. `RUN_SUCCESS` requires the complete
+provisional manifest; `RUN_PARTIAL` preserves already sealed forward refs;
+`RUN_BLOCKED` records no production authority. Do not treat pending labels,
+memory entries, or experiment entries as performance, governance, portfolio,
+or trading evidence. Provider, selector, broker, order, execution, and trade
+permissions remain disabled.

@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CONTRACT = ROOT / "quant_investor/v17_v4_contract"
 RUNTIME = ROOT / "quant_investor/v17_v4_runtime"
 QUANT_INVESTOR = ROOT / "quant_investor"
+RESEARCH = QUANT_INVESTOR / "research"
 NO_AUTHORITY = {
     "broker": False,
     "execution": False,
@@ -56,6 +57,7 @@ def main() -> None:
     forward_source_paths = [
         QUANT_INVESTOR / "factors/forward_evaluator.py",
         *sorted((QUANT_INVESTOR / "industry").glob("*.py")),
+        *sorted(RESEARCH.rglob("*.py")),
         *sorted((RUNTIME / "themes").glob("*.py")),
     ]
     if any(not path.is_file() for path in forward_source_paths):

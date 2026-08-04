@@ -20,6 +20,10 @@ from .resources import PackageResourceError, load_packaged_json
 PROTOCOL_VERSION: Final = "myquant.v17.v4"
 _DRAFT: Final = "https://json-schema.org/draft/2020-12/schema"
 _ARTIFACT_REGISTRY: Final = {
+    "myquant.v17.v4.daily-research-receipt.v1": (
+        "schemas/daily_research_receipt.v1.schema.json",
+        "receipt_id",
+    ),
     "myquant.v17.v4.branch-output.v1": (
         "schemas/branch_output.v1.schema.json",
         "output_id",
@@ -327,6 +331,14 @@ _ARTIFACT_REGISTRY: Final = {
     "myquant.v17.v4.research-factor-input-bundle.v1": (
         "schemas/research_factor_input_bundle.v1.schema.json",
         "bundle_id",
+    ),
+    "myquant.v17.v4.research-memory-entry.v1": (
+        "schemas/research_memory_entry.v1.schema.json",
+        "entry_id",
+    ),
+    "myquant.v17.v4.research-experiment-registry.v1": (
+        "schemas/research_experiment_registry.v1.schema.json",
+        "registry_id",
     ),
     "myquant.v17.v4.research-fundamental-branch-output.v2": (
         "schemas/research_fundamental_branch_output.v2.schema.json",

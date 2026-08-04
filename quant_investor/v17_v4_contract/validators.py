@@ -1653,6 +1653,7 @@ def validate_forward_runtime_source_manifest(
         allowed = type(path) is str and (
             path == "factors/forward_evaluator.py"
             or path.startswith("industry/")
+            or path.startswith("research/")
             or path.startswith("v17_v4_runtime/themes/")
         )
         if not allowed or not path.endswith(".py") or (previous is not None and path <= previous):
@@ -5506,6 +5507,7 @@ _VALIDATORS: Final[Mapping[str, Callable[..., ValidatedArtifact]]] = {
     "myquant.v17.v4.provisional-forward-input.v1": (validate_research_shadow_artifact),
     "myquant.v17.v4.provisional-forward-artifact.v1": (validate_research_shadow_artifact),
     "myquant.v17.v4.provisional-forward-run-manifest.v1": (validate_research_shadow_artifact),
+    "myquant.v17.v4.daily-research-receipt.v1": (validate_research_shadow_artifact),
     "myquant.v17.v4.pretrade-permissions.v1": (validate_pretrade_permissions),
     "myquant.v17.v4.regime-calendar-terminal.v1": validate_regime_calendar_terminal,
     "myquant.v17.v4.regime-chain-anchor.v1": validate_regime_chain_anchor,
@@ -5531,6 +5533,8 @@ _VALIDATORS: Final[Mapping[str, Callable[..., ValidatedArtifact]]] = {
     ),
     "myquant.v17.v4.research-factor-shadow-assertion.v2": (validate_research_shadow_artifact),
     "myquant.v17.v4.research-factor-input-bundle.v1": (validate_research_shadow_artifact),
+    "myquant.v17.v4.research-memory-entry.v1": (validate_research_shadow_artifact),
+    "myquant.v17.v4.research-experiment-registry.v1": (validate_research_shadow_artifact),
     "myquant.v17.v4.forward-factor-input-bundle.v1": (validate_research_shadow_artifact),
     "myquant.v17.v4.forward-source-locator.v1": (validate_research_shadow_artifact),
     "myquant.v17.v4.forward-source-slice-manifest.v1": (validate_research_shadow_artifact),

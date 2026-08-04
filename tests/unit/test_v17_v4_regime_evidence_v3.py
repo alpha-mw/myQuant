@@ -183,7 +183,7 @@ def test_additive_contract_keeps_v1_v2_and_policy_v1_bytes() -> None:
     assert _sha((root / "schemas/regime_evidence.v1.schema.json").read_bytes()) == _V1_SCHEMA_SHA
     assert _sha((root / "schemas/regime_evidence.v2.schema.json").read_bytes()) == _V2_SCHEMA_SHA
     assert _sha((root / "resources/regime_inference_policy.v1.json").read_bytes()) == _POLICY_V1_SHA
-    assert len(verify_package()) == 114
+    assert len(verify_package()) == 117
     assert len(verify_runtime_build()) == 34
 
 

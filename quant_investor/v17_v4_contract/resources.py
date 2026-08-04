@@ -18,7 +18,7 @@ PROTOCOL_VERSION: Final = "myquant.v17.v4"
 PACKAGE_MANIFEST_PATH: Final = "resources/package_manifest.v1.json"
 RUNTIME_BUILD_MANIFEST_PATH: Final = "resources/runtime_build_manifest.v1.json"
 FORWARD_RUNTIME_SOURCE_MANIFEST_PATH: Final = "resources/forward_runtime_source_manifest.v1.json"
-PACKAGE_MANIFEST_SHA256: Final = "a603b5f3e5f012548e3c3a224ba32ffc62b072d6555849887369f48f45012449"
+PACKAGE_MANIFEST_SHA256: Final = "726d7b0386aba1ccbabf924d7729c598e37f76d49f80fc2f43f91c546c773909"
 _PACKAGE_ROOT: Final = Path(__file__).resolve().parent
 _NO_AUTHORITY: Final = {
     "broker": False,
@@ -294,6 +294,7 @@ def _forward_runtime_rows(
         allowed = type(relative_path) is str and (
             relative_path == "factors/forward_evaluator.py"
             or relative_path.startswith("industry/")
+            or relative_path.startswith("research/")
             or relative_path.startswith("v17_v4_runtime/themes/")
         )
         if (
@@ -331,6 +332,7 @@ def verify_forward_runtime_sources(
     ]
     for directory in ("industry", "v17_v4_runtime/themes"):
         discovered_paths.extend(sorted((quant_investor_root / directory).glob("*.py")))
+    discovered_paths.extend(sorted((quant_investor_root / "research").rglob("*.py")))
     discovered = sorted(
         path.relative_to(quant_investor_root).as_posix()
         for path in discovered_paths
