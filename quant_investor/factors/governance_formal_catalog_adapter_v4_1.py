@@ -832,9 +832,9 @@ def _validate_mapping_proof(
         "catalog_new_candidate_count": len(expected_new_names),
         "catalog_total_candidate_count": len(formal_candidates),
     }
-    for field, expected in counts.items():
+    for field, expected_count in counts.items():
         observed = _nonnegative_int(payload[field], f"mapping_proof.{field}")
-        if observed != expected:
+        if observed != expected_count:
             raise FactorGovernanceFormalCatalogAdapterV4_1Error(
                 f"mapping proof count drift: {field}"
             )
@@ -848,9 +848,9 @@ def _validate_mapping_proof(
         "formal_admission_authority": False,
         "production_apply_enabled": False,
     }
-    for field, expected in expected_constants.items():
-        if payload[field] != expected or (
-            type(expected) is bool and type(payload[field]) is not bool
+    for field, expected_constant in expected_constants.items():
+        if payload[field] != expected_constant or (
+            type(expected_constant) is bool and type(payload[field]) is not bool
         ):
             raise FactorGovernanceFormalCatalogAdapterV4_1Error(
                 f"mapping proof non-executable contract drift: {field}"

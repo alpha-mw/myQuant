@@ -1550,7 +1550,7 @@ def validate_readback_report_v4_1(
         )
     _validate_self_hash(payload, "report_semantic_sha256", "readback report")
     expected = build_readback_report_v4_1(
-        run_id=payload.get("run_id"),
+        run_id=payload["run_id"],
         artifacts=artifacts,
         artifact_bindings=artifact_bindings,
     )
@@ -1629,7 +1629,7 @@ def build_private_bundle_contract_v4_1(
     ) -> Mapping[str, Mapping[str, Any]]:
         normalized = validate_bundle_values_v4_1(values)
         report = normalized[READBACK_FILENAME]
-        bindings = report.get("artifact_bindings")
+        bindings: Any = report.get("artifact_bindings")
         validate_readback_report_v4_1(
             report,
             artifacts={key: normalized[key] for key in BUNDLE_INPUT_FILENAMES},

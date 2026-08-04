@@ -60,7 +60,7 @@ ORCHESTRATION_SCHEMA_VERSION = (
 AQUANT_GIT_TOP = "/Users/maxwell/mySpace"
 AQUANT_COMMIT = "4424dcecc384f614b0e9fd5e36cf094e9244bad5"
 
-SOURCE_BINDINGS = (
+SOURCE_BINDINGS: tuple[dict[str, Any], ...] = (
     {
         "order": 1,
         "git_tree_path": (
@@ -852,6 +852,7 @@ def _validate_selector_intent(
         if not isinstance(value, ast.Constant) or value.value != 90:
             raise _error("_DEFAULT_LOOKBACK_DAYS must be exact integer 90")
     elif selector_id == "earnings_class":
+        assert isinstance(selected, ast.AST)
         age_defaults = [
             node.args[2].value
             for node in ast.walk(selected)
@@ -864,6 +865,7 @@ def _validate_selector_intent(
         if age_defaults.count(60) != 1:
             raise _error("EarningsEventDrift must bind exactly one default 60")
     elif selector_id == "roe_class":
+        assert isinstance(selected, ast.AST)
         annual = [
             node
             for node in ast.walk(selected)
@@ -895,6 +897,7 @@ def _validate_selector_intent(
         if actual != expected:
             raise _error("alpha_value_book_to_price alias/expression mismatch")
     elif selector_id == "industry_class":
+        assert isinstance(selected, ast.AST)
         defaults = [
             node.args[2].value
             for node in ast.walk(selected)
@@ -968,7 +971,7 @@ def _selector_bindings_from_blobs(
     return bindings
 
 
-_CANDIDATE_SPECS = (
+_CANDIDATE_SPECS: tuple[dict[str, Any], ...] = (
     {
         "order": 1,
         "name": "event_guidance_revision_90d",
@@ -2942,7 +2945,7 @@ def build_preregistration_discovery_cycle_v4_3(
 ) -> dict[str, Any]:
     """Build and validate the pure v4.3 DISCOVERY orchestration."""
 
-    kwargs = {
+    kwargs: dict[str, Any] = {
         "predecessor_state": predecessor_state,
         "predecessor_byte_sha256": predecessor_byte_sha256,
         "expected_predecessor_byte_sha256": expected_predecessor_byte_sha256,

@@ -1525,7 +1525,7 @@ def build_private_bundle_contract_v4_1(
             values[PROOF_FILENAME]
         )
         report = copy.deepcopy(dict(values[READBACK_FILENAME]))
-        bindings = report.get("artifact_bindings")
+        bindings: Any = report.get("artifact_bindings")
         validate_readback_report_v4_1(
             report,
             artifacts={PROOF_FILENAME: proof},

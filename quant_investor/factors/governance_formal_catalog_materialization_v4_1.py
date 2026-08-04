@@ -901,7 +901,7 @@ def classify_normalized_ast_occurrences_v4_1(
         )
 
     indexed, indexes = _indexed_nodes(tree)
-    all_identifiers = [
+    all_identifiers: list[dict[str, Any]] = [
         {
             "identifier": str(node["identifier"]),
             "node_path": path,

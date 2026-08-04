@@ -152,8 +152,8 @@ def _valid_csvs() -> tuple[str, str, str]:
         [
             {
                 "date": "2026-03-18",
-                "ticker": "688525.SH",
-                "name": "佰维存储",
+                "ticker": "SYNTHETIC.A",
+                "name": "Synthetic Position",
                 "weight": "0.1",
             }
         ],
@@ -375,7 +375,7 @@ def test_dashboard_export_check_rejects_v3_generated_table_tampering(tmp_path):
             contract["industries"] = [
                 {
                     "date": "2026-03-18",
-                    "ticker": "000001.SZ",
+                    "ticker": "SYNTHETIC.B",
                     "industry": None,
                     "industry_source": None,
                     "industry_as_of": None,

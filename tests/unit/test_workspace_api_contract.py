@@ -521,10 +521,10 @@ def test_delete_run_cleans_trade_records_and_workspace_learning(workspace_client
 def test_settings_patch_persists_kimi_api_key(workspace_client: TestClient, tmp_path, monkeypatch):
     """PATCH /api/settings/ with kimi_api_key writes to .env and os.environ."""
     import os
-    from web.routers import settings as settings_mod
+    from web.services import settings_service
 
     env_file = tmp_path / ".env"
-    monkeypatch.setattr(settings_mod, "_ENV_PATH", env_file)
+    monkeypatch.setattr(settings_service, "ENV_FILE", env_file)
     monkeypatch.delenv("KIMI_API_KEY", raising=False)
 
     resp = workspace_client.patch(
@@ -547,11 +547,11 @@ def test_settings_patch_persists_kimi_api_key(workspace_client: TestClient, tmp_
 def test_settings_patch_updates_existing_env_line(workspace_client: TestClient, tmp_path, monkeypatch):
     """PATCH /api/settings/ updates an existing key in .env without duplicating it."""
     import os
-    from web.routers import settings as settings_mod
+    from web.services import settings_service
 
     env_file = tmp_path / ".env"
     env_file.write_text("# comment\nKIMI_API_KEY=old-value\nOTHER=x\n", encoding="utf-8")
-    monkeypatch.setattr(settings_mod, "_ENV_PATH", env_file)
+    monkeypatch.setattr(settings_service, "ENV_FILE", env_file)
 
     workspace_client.patch("/api/settings/", json={"kimi_api_key": "new-value"})
 
@@ -685,3 +685,70 @@ def test_recall_context_regression_deterministic_chain(workspace_client: TestCli
         recall_context={"conviction": "buy", "top_picks": [{"symbol": "AAPL"}]},
     )
     assert branch_with_ctx.recall_context["conviction"] == "buy"
+
+
+def test_settings_patch_rejects_newline_injection(
+    workspace_client: TestClient, tmp_path, monkeypatch
+):
+    """A newline in a credential must not append extra .env assignments.
+
+    Without this guard a single field can define WORKSPACE_AUTH_TOKEN, which
+    turns the settings endpoint into a privilege-persistence primitive.
+    """
+    from web.services import settings_service
+
+    env_file = tmp_path / ".env"
+    env_file.write_text("OTHER=x\n", encoding="utf-8")
+    monkeypatch.setattr(settings_service, "ENV_FILE", env_file)
+
+    resp = workspace_client.patch(
+        "/api/settings/",
+        json={"tushare_token": "abc\nWORKSPACE_AUTH_TOKEN=pwned"},
+    )
+
+    assert resp.status_code == 422
+    assert "newline" in resp.json()["detail"]
+    assert "WORKSPACE_AUTH_TOKEN" not in env_file.read_text()
+
+
+def test_settings_patch_ignores_process_cwd(
+    workspace_client: TestClient, tmp_path, monkeypatch
+):
+    """Secrets go to the project .env regardless of where uvicorn was started."""
+    from web.services import settings_service
+
+    env_file = tmp_path / "project" / ".env"
+    env_file.parent.mkdir()
+    monkeypatch.setattr(settings_service, "ENV_FILE", env_file)
+
+    stray_cwd = tmp_path / "elsewhere"
+    stray_cwd.mkdir()
+    monkeypatch.chdir(stray_cwd)
+
+    resp = workspace_client.patch(
+        "/api/settings/", json={"kimi_api_key": "cwd-independent"}
+    )
+
+    assert resp.status_code == 200
+    assert "cwd-independent" in env_file.read_text()
+    assert not (stray_cwd / ".env").exists()
+
+
+def test_settings_patch_keeps_env_file_private(
+    workspace_client: TestClient, tmp_path, monkeypatch
+):
+    """The persisted .env must not be group/world readable."""
+    import stat as stat_module
+
+    from web.services import settings_service
+
+    env_file = tmp_path / ".env"
+    monkeypatch.setattr(settings_service, "ENV_FILE", env_file)
+
+    resp = workspace_client.patch(
+        "/api/settings/", json={"deepseek_api_key": "secret-value"}
+    )
+
+    assert resp.status_code == 200
+    mode = stat_module.S_IMODE(env_file.stat().st_mode)
+    assert mode & 0o077 == 0, oct(mode)

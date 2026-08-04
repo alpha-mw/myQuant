@@ -4,6 +4,9 @@ import ast
 import copy
 import hashlib
 import inspect
+import math
+import random
+import struct
 
 import numpy as np
 import pandas as pd
@@ -976,3 +979,93 @@ def test_price_volume_consistency_uses_physical_volume_without_rescaling() -> No
         "pv_price_volume_consistency_20d"
     ]
     assert _bits_equal(baseline, observed)
+
+
+def _fma_grid() -> list[tuple[float, float, float]]:
+    """Edge values plus a deterministic pseudo-random spread of bit patterns."""
+
+    special = (
+        0.0,
+        -0.0,
+        1.0,
+        -1.0,
+        0.5,
+        -0.5,
+        2.0,
+        3.0,
+        7.0,
+        0.1,
+        -0.1,
+        1e16,
+        -1e16,
+        1e308,
+        -1e308,
+        5e-324,
+        -5e-324,
+        2.2250738585072014e-308,
+        math.inf,
+        -math.inf,
+        math.nan,
+    )
+    cases = [(x, y, z) for x in special for y in special for z in special]
+    rng = random.Random(20260804)
+    for _ in range(20000):
+        cases.append(
+            (
+                rng.uniform(-1e6, 1e6),
+                rng.uniform(-1e6, 1e6),
+                rng.uniform(-1e6, 1e6),
+            )
+        )
+    for _ in range(20000):
+        cases.append(
+            tuple(  # type: ignore[arg-type]
+                struct.unpack(">d", rng.randbytes(8))[0] for _ in range(3)
+            )
+        )
+    return cases
+
+
+def _fma_outcome(function, x: float, y: float, z: float):
+    try:
+        return ("value", struct.pack(">d", function(x, y, z)))
+    except Exception as exc:  # noqa: BLE001 - exception type is the contract
+        return (type(exc).__name__, str(exc))
+
+
+@pytest.mark.skipif(
+    not hasattr(math, "fma"),
+    reason="no interpreter-provided math.fma to compare the fallback against",
+)
+def test_fma_fallback_is_bit_identical_to_math_fma() -> None:
+    """The 3.10-3.12 fallback must not perturb a single receipt bit.
+
+    ``math.fma`` is 3.13+, so on every Python version this project claims to
+    support the fallback is what actually runs.  Rounding twice would change
+    the rolling variance recurrence and therefore every downstream hash.
+    """
+
+    for x, y, z in _fma_grid():
+        reference = _fma_outcome(math.fma, x, y, z)
+        observed = _fma_outcome(evaluator._fma_exact, x, y, z)
+        if reference[0] == "value" and observed[0] == "value":
+            reference_value = struct.unpack(">d", reference[1])[0]
+            observed_value = struct.unpack(">d", observed[1])[0]
+            if math.isnan(reference_value) and math.isnan(observed_value):
+                continue
+        assert observed == reference, (x, y, z)
+
+
+def test_fma_fallback_rounds_once() -> None:
+    """A case where the fused result differs from ``x * y + z``."""
+
+    x = 1.0 + 2.0**-52
+    y = 1.0 - 2.0**-52
+    z = -1.0
+    assert x * y + z == 0.0
+    assert evaluator._fma_exact(x, y, z) == -(2.0**-104)
+
+
+def test_fma_dispatch_prefers_the_interpreter_primitive() -> None:
+    expected = getattr(math, "fma", evaluator._fma_exact)
+    assert evaluator._fma is expected

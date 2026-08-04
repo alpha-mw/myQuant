@@ -680,7 +680,7 @@ FIELD_SEMANTICS = (
     },
 )
 
-_SOURCE_DEFINITION_BASE = (
+_SOURCE_DEFINITION_BASE: tuple[dict[str, Any], ...] = (
     {
         "order": 1,
         "name": "alpha_range_position_momentum_20d",
@@ -4543,7 +4543,7 @@ def _validate_context_free_two_pass_claims_v4_4(
 
 
 def _validate_context_free_fixed_claims_v4_4(
-    filename: str, payload: Mapping[str, Any]
+    filename: str, payload: dict[str, Any]
 ) -> None:
     if filename in {
         INPUT_RECEIPT_FILENAME,

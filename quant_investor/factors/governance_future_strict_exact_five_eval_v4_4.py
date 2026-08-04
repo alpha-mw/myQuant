@@ -22,6 +22,7 @@ import math
 import struct
 from dataclasses import dataclass
 from datetime import date, datetime
+from fractions import Fraction
 from types import MappingProxyType
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -37,6 +38,63 @@ PROTOCOL_VERSION = "v4"
 EVIDENCE_CONTRACT_VERSION = "v4.4"
 HALO = 60
 OUTPUT_BLOCK = 128
+
+
+def _fma_exact(x: float, y: float, z: float) -> float:
+    """Portable ``math.fma``: ``x * y + z`` under a single rounding.
+
+    ``math.fma`` only exists on CPython 3.13+, but this package supports
+    3.10+.  The fused contract is reproduced bit-for-bit by evaluating the
+    product-sum exactly in rational arithmetic and rounding once at the end.
+    Rounding twice -- plain ``x * y + z`` -- would perturb the rolling
+    variance recurrence below and therefore change published receipts, so
+    the exact path is the only admissible fallback.
+    """
+
+    x = float(x)
+    y = float(y)
+    z = float(z)
+    if math.isnan(x) or math.isnan(y) or math.isnan(z):
+        return math.nan
+    if math.isinf(x) or math.isinf(y):
+        if x == 0.0 or y == 0.0:
+            raise ValueError("invalid operation in fma")
+        product_sign = math.copysign(1.0, x) * math.copysign(1.0, y)
+        if math.isinf(z) and math.copysign(1.0, z) != product_sign:
+            raise ValueError("invalid operation in fma")
+        return math.copysign(math.inf, product_sign)
+    if math.isinf(z):
+        return z
+    exact = Fraction(x) * Fraction(y) + Fraction(z)
+    if exact == 0:
+        # Fraction cannot represent signed zero.  IEEE round-to-nearest
+        # yields -0.0 only when the product and the addend are both -0.0;
+        # every genuine cancellation returns +0.0.
+        product_sign = math.copysign(1.0, x) * math.copysign(1.0, y)
+        product_is_zero = x == 0.0 or y == 0.0
+        if (
+            product_is_zero
+            and z == 0.0
+            and product_sign < 0.0
+            and math.copysign(1.0, z) < 0.0
+        ):
+            return -0.0
+        return 0.0
+    # ``math.fma`` reports a non-representable finite result rather than
+    # saturating to infinity; mirror that -- including the message -- so
+    # callers cannot diverge by interpreter version.
+    try:
+        result = float(exact)
+    except OverflowError as exc:
+        raise OverflowError("overflow in fma") from exc
+    if math.isinf(result):
+        raise OverflowError("overflow in fma")
+    return result
+
+
+# Fast path where the interpreter provides the primitive; the exact fallback
+# above is bit-identical and is what runs on 3.10-3.12.
+_fma = getattr(math, "fma", _fma_exact)
 
 INPUT_FIELDS = ("raw_close", "raw_open", "vol", "adj_close")
 _GOLDEN_OPERATOR_PROGRAM_SET = strict_contract.validate_operator_program_set_v4_4(
@@ -1154,7 +1212,7 @@ def _evaluate_numpy_validated_operator_program_v4_4(
                                     running_mean - total / observation_count
                                 )
                                 squared_deviations = np.float64(
-                                    math.fma(
+                                    _fma(
                                         -(removed - previous_mean),
                                         removed - running_mean,
                                         squared_deviations,
@@ -1185,7 +1243,7 @@ def _evaluate_numpy_validated_operator_program_v4_4(
                             running_mean + total / observation_count
                         )
                         squared_deviations = np.float64(
-                            math.fma(
+                            _fma(
                                 added - previous_mean,
                                 added - running_mean,
                                 squared_deviations,
@@ -1215,7 +1273,7 @@ def _evaluate_numpy_validated_operator_program_v4_4(
                             running_mean + total / observation_count
                         )
                         squared_deviations = np.float64(
-                            math.fma(
+                            _fma(
                                 added - previous_mean,
                                 added - running_mean,
                                 squared_deviations,

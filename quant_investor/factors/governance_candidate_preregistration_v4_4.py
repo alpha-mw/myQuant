@@ -108,7 +108,7 @@ EXPECTED_PRIOR_DIAGNOSTIC_BINDINGS = (
     },
 )
 
-EXPECTED_CANDIDATE_ROWS = (
+EXPECTED_CANDIDATE_ROWS: tuple[dict[str, Any], ...] = (
     {
         "order": 1,
         "name": "alpha_range_position_momentum_20d",

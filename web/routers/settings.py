@@ -7,7 +7,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from web.models.research_models import LLMModelOption, LLMModelsResponse
 from web.models.settings_models import (
@@ -19,6 +19,7 @@ from web.models.settings_models import (
     WorkspaceDatabaseSummary,
 )
 from web.services.run_history_store import history_store
+from web.services.settings_service import update_env_file
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -49,9 +50,6 @@ _CREDENTIAL_FIELD_MAP: list[tuple[str, str]] = [
     ("dashscope_api_key",  "DASHSCOPE_API_KEY"),
 ]
 
-_ENV_PATH = Path(".env")
-
-
 def _mask(value: str) -> str:
     if not value:
         return ""
@@ -60,30 +58,20 @@ def _mask(value: str) -> str:
     return value[:4] + "****" + value[-4:]
 
 
-def _persist_to_env(updates: dict[str, str]) -> None:
-    """Write key=value pairs to repo-root .env, creating the file if absent."""
-    if not updates:
-        return
+def _reject_unsafe_env_value(env_key: str, value: str) -> str:
+    """Reject values that would not survive a round-trip through ``.env``.
 
-    # Read existing lines preserving order/comments
-    lines: list[str] = []
-    if _ENV_PATH.exists():
-        lines = _ENV_PATH.read_text(encoding="utf-8").splitlines()
+    A newline lets a single field append arbitrary additional assignments --
+    including ``WORKSPACE_AUTH_TOKEN`` -- so a malformed credential is
+    refused outright rather than silently stripped and persisted.
+    """
 
-    existing_keys: dict[str, int] = {}  # key → line index
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped and not stripped.startswith("#") and "=" in stripped:
-            k = stripped.split("=", 1)[0].strip()
-            existing_keys[k] = i
-
-    for env_key, value in updates.items():
-        if env_key in existing_keys:
-            lines[existing_keys[env_key]] = f"{env_key}={value}"
-        else:
-            lines.append(f"{env_key}={value}")
-
-    _ENV_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    if any(character in value for character in "\r\n\x00"):
+        raise HTTPException(
+            status_code=422,
+            detail=f"{env_key} must not contain newline or null characters",
+        )
+    return value
 
 
 def _file_summary(path: Path) -> DatabaseFileSummary:
@@ -215,8 +203,7 @@ async def update_settings(request: SettingsUpdateRequest):
     for field_name, env_key in _CREDENTIAL_FIELD_MAP:
         value = getattr(request, field_name, None)
         if value is not None:
-            os.environ[env_key] = value
-            env_writes[env_key] = value
+            env_writes[env_key] = _reject_unsafe_env_value(env_key, value)
             updated.append(env_key)
 
     # Numeric / string config fields
@@ -229,11 +216,13 @@ async def update_settings(request: SettingsUpdateRequest):
     ]:
         value = getattr(request, field_name, None)
         if value is not None:
-            str_value = str(value)
-            os.environ[env_key] = str_value
-            env_writes[env_key] = str_value
+            env_writes[env_key] = _reject_unsafe_env_value(env_key, str(value))
             updated.append(env_key)
 
-    _persist_to_env(env_writes)
+    if env_writes:
+        # Delegates to the atomic, 0600, PROJECT_ROOT-anchored writer.  It also
+        # updates os.environ, so nothing is exported before the values have
+        # been validated and durably persisted.
+        update_env_file(env_writes)
 
     return {"ok": True, "updated": updated}

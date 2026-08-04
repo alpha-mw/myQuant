@@ -141,7 +141,7 @@ def _screening_is_valid(summary: Any, screening_sha256: Any) -> bool:
         return False
     if not _is_sha256(summary.get("screening_evidence_sha256")):
         return False
-    counts = (
+    counts: tuple[Any, ...] = (
         summary.get("candidate_count"),
         summary.get("evaluated_count"),
         summary.get("bh_pass_count"),
@@ -149,7 +149,12 @@ def _screening_is_valid(summary: Any, screening_sha256: Any) -> bool:
     )
     if any(type(value) is not int or value < 0 for value in counts):
         return False
-    candidate_count, evaluated_count, bh_pass_count, compute_failed_count = counts
+    # The guard above proves every entry is a non-negative int; the int()
+    # calls are identity at runtime and carry that proof to the type checker.
+    candidate_count = int(counts[0])
+    evaluated_count = int(counts[1])
+    bh_pass_count = int(counts[2])
+    compute_failed_count = int(counts[3])
     if evaluated_count + compute_failed_count != candidate_count:
         return False
     if bh_pass_count > evaluated_count:

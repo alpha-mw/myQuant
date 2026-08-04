@@ -129,7 +129,7 @@ PROTECTED_BINDING_RELATIVE_PATHS_V4_3 = (
 )
 
 REPOSITORY_ROOT_V4_3 = Path("/Users/maxwell/mySpace/myQuant")
-V4_2_LOCKED_FILES_V4_3 = (
+V4_2_LOCKED_FILES_V4_3: tuple[dict[str, Any], ...] = (
     {
         "order": 1,
         "lock_role": "pure_contract",
