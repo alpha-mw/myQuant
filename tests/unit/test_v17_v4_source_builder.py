@@ -86,9 +86,7 @@ def _copy_factor_set(workspace: Path) -> str:
             "byte_sha256": hashlib.sha256(audit_path.encode()).hexdigest(),
             "cutoff": "2026-07-28T08:00:00Z",
             "relative_path": audit_path,
-            "semantic_sha256": hashlib.sha256(
-                f"{audit_path}:semantic".encode()
-            ).hexdigest(),
+            "semantic_sha256": hashlib.sha256(f"{audit_path}:semantic".encode()).hexdigest(),
             "strategy_id": STRATEGY_ID,
         },
         previous_factor_set_ref=None,

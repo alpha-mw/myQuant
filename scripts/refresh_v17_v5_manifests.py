@@ -168,7 +168,19 @@ def main() -> None:
         "V4_COMPATIBILITY_POLICY_V2_SEMANTIC_SHA256",
         compatibility_v2_payload["semantic_sha256"],
     )
-    compatibility = resources_dir / "v4_compatibility_policy.v3.json"
+    compatibility_v3 = resources_dir / "v4_compatibility_policy.v3.json"
+    compatibility_v3_payload = json.loads(compatibility_v3.read_bytes())
+    source = _replace_digest(
+        source,
+        "V4_COMPATIBILITY_POLICY_V3_BYTE_SHA256",
+        _sha(compatibility_v3),
+    )
+    source = _replace_digest(
+        source,
+        "V4_COMPATIBILITY_POLICY_V3_SEMANTIC_SHA256",
+        compatibility_v3_payload["semantic_sha256"],
+    )
+    compatibility = resources_dir / "v4_compatibility_policy.v4.json"
     compatibility_payload = json.loads(compatibility.read_bytes())
     source = _replace_digest(
         source,
@@ -251,6 +263,7 @@ def main() -> None:
             {
                 "adapter_policy_byte_sha256": _sha(adapter),
                 "compatibility_policy_byte_sha256": _sha(compatibility),
+                "compatibility_policy_v3_byte_sha256": _sha(compatibility_v3),
                 "compatibility_policy_v2_byte_sha256": _sha(compatibility_v2),
                 "compatibility_policy_v1_byte_sha256": _sha(compatibility_v1),
                 "factor_regime_diagnostic_policy_byte_sha256": _sha(regime_policy),

@@ -12,6 +12,7 @@ from quant_investor.v17_v5_contract import (
     load_compatibility_policy,
     load_compatibility_policy_v1,
     load_compatibility_policy_v2,
+    load_compatibility_policy_v3,
     verify_predecessor,
 )
 from quant_investor.v17_v5_contract.resources import (
@@ -40,7 +41,7 @@ def _git_bytes(commit: str, relative_path: str) -> bytes:
 
 
 def test_git_object_pin_verifies_every_v4_asset_and_runtime_source() -> None:
-    assert V4_SOURCE_GIT_COMMIT == "73c5b6eea6c60d9a31865e176646687ffeee9d6a"
+    assert V4_SOURCE_GIT_COMMIT == "6a2fa23dec68d87eb686464a86d8ba8997416310"
     package_raw = _git_bytes(V4_SOURCE_GIT_COMMIT, PACKAGE_MANIFEST_PATH)
     runtime_raw = _git_bytes(V4_SOURCE_GIT_COMMIT, RUNTIME_MANIFEST_PATH)
     assert hashlib.sha256(package_raw).hexdigest() == V4_PACKAGE_MANIFEST_SHA256
@@ -48,8 +49,8 @@ def test_git_object_pin_verifies_every_v4_asset_and_runtime_source() -> None:
 
     package = json.loads(package_raw)
     runtime = json.loads(runtime_raw)
-    assert len(package["assets"]) + 1 == 109
-    assert len(runtime["sources"]) == 32
+    assert len(package["assets"]) + 1 == 114
+    assert len(runtime["sources"]) == 34
     for row in package["assets"]:
         path = f"quant_investor/v17_v4_contract/{row['relative_path']}"
         assert (
@@ -62,7 +63,7 @@ def test_git_object_pin_verifies_every_v4_asset_and_runtime_source() -> None:
         )
 
 
-def test_exact_merge_parent_and_v4_subtrees_preserve_sprint1e0a1_identity() -> None:
+def test_historical_merge_parent_and_current_v4_subtrees_preserve_identities() -> None:
     parents = subprocess.run(
         ["git", "show", "-s", "--format=%P", "0a43f354e848290adaaf2400194c07851a57a6cb"],
         cwd=ROOT,
@@ -72,7 +73,7 @@ def test_exact_merge_parent_and_v4_subtrees_preserve_sprint1e0a1_identity() -> N
     ).stdout.strip()
     assert parents.split() == [
         "3045f316cc8a085378011073a90b0f684957a0bf",
-        V4_SOURCE_GIT_COMMIT,
+        "73c5b6eea6c60d9a31865e176646687ffeee9d6a",
     ]
     for subtree in ("v17_v4_contract", "v17_v4_runtime"):
         source_tree = subprocess.run(
@@ -92,12 +93,17 @@ def test_exact_merge_parent_and_v4_subtrees_preserve_sprint1e0a1_identity() -> N
         assert current_tree == source_tree
 
 
-def test_active_v3_and_explicit_legacy_v1_v2_loaders_do_not_fallback() -> None:
+def test_active_v4_and_explicit_legacy_v1_v2_v3_loaders_do_not_fallback() -> None:
     active = load_compatibility_policy()
+    legacy_v3 = load_compatibility_policy_v3()
     legacy_v2 = load_compatibility_policy_v2()
     legacy = load_compatibility_policy_v1()
-    assert active["version"] == "myquant.v17.v5.v4-compatibility-policy.v3"
+    assert active["version"] == "myquant.v17.v5.v4-compatibility-policy.v4"
     assert active["predecessor"]["source_git_commit"] == V4_SOURCE_GIT_COMMIT
+    assert legacy_v3["version"] == "myquant.v17.v5.v4-compatibility-policy.v3"
+    assert (
+        legacy_v3["predecessor"]["source_git_commit"] == "73c5b6eea6c60d9a31865e176646687ffeee9d6a"
+    )
     assert legacy_v2["version"] == "myquant.v17.v5.v4-compatibility-policy.v2"
     assert (
         legacy_v2["predecessor"]["source_git_commit"] == "1da7ffb636a3254940525d746549d15e827f06ba"
@@ -125,16 +131,17 @@ def test_runtime_predecessor_verify_is_package_safe_without_git(tmp_path: Path) 
     result = verify_predecessor(package_root=quant_root / "v17_v5_contract")
 
     assert result["source_git_commit"] == V4_SOURCE_GIT_COMMIT
-    assert result["package_asset_count"] == 109
-    assert result["runtime_source_count"] == 32
+    assert result["package_asset_count"] == 114
+    assert result["runtime_source_count"] == 34
 
 
-def test_missing_active_v3_policy_does_not_fall_back_to_valid_v1_v2(tmp_path: Path) -> None:
+def test_missing_active_v4_policy_does_not_fall_back_to_valid_v1_v2_v3(tmp_path: Path) -> None:
     target = tmp_path / "v17_v5_contract"
     shutil.copytree(ROOT / "quant_investor/v17_v5_contract", target)
-    (target / "resources/v4_compatibility_policy.v3.json").unlink()
+    (target / "resources/v4_compatibility_policy.v4.json").unlink()
     assert (target / "resources/v4_compatibility_policy.v1.json").exists()
     assert (target / "resources/v4_compatibility_policy.v2.json").exists()
+    assert (target / "resources/v4_compatibility_policy.v3.json").exists()
 
     with pytest.raises(PackageResourceError):
         load_active_policy(package_root=target)

@@ -41,8 +41,8 @@
   `SPRINT1E0B_BOUNDED_REGIME_EVIDENCE_ADAPTER_AVAILABLE_NOT_OPERATIONAL`。它使用独立
   `myquant.v17.v5` 协议和
   `quant_investor.v17_v5_contract` / `quant_investor.v17_v5_runtime`
-  包，只读验证 pin 至
-  `73c5b6eea6c60d9a31865e176646687ffeee9d6a` 的 v4 predecessor 和显式
+  包，只读验证 Release-RC-1 additive v4 predecessor pin
+  `6a2fa23dec68d87eb686464a86d8ba8997416310` 和显式
   allowlist dependency closure，
   并提供纯内存、描述性、无文件写入的 V4 evidence adapter、Factor
   maturity/RankIC/coverage/replay、lifecycle 与 origin-regime diagnostic
@@ -121,9 +121,10 @@
   `docs/architecture/v17_v4_regime_checkpoint_chain.md`。
 - V17 Investment Intelligence successor：`myquant.v17.v5`。当前建立
   research-only 契约、封闭 package/runtime manifest、永久 false authority
-  和 v4 immutable artifact 只读兼容边界；Sprint 1E-0B 将 predecessor pin 更新
-  到 V4 bounded regime evidence commit
-  `73c5b6eea6c60d9a31865e176646687ffeee9d6a`，但它仍不是 v4 artifact 的
+  和 v4 immutable artifact 只读兼容边界；Release-RC-1 通过新的 v4
+  compatibility-policy/predecessor-binding v4 pin 到
+  `6a2fa23dec68d87eb686464a86d8ba8997416310`。历史 v1/v2/v3 policy 和
+  binding identity 保持不变；该更新仍不是 v4 artifact 的
   重标，也未进入 operational runtime。后续 Sprint 必须逐阶段验收，且真实
   统计结论受成熟 forward-origin 门禁约束。
 - Additive Regime

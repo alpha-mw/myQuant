@@ -30,13 +30,15 @@ All authority fields are false.
 
 - the V5 package and runtime manifests;
 - V5 Regime diagnostic policies v1, v2, and v3;
-- the exact worktree-colocated V4 predecessor
-  `73c5b6eea6c60d9a31865e176646687ffeee9d6a`;
+- the exact Release-RC-1 worktree-colocated V4 predecessor
+  `6a2fa23dec68d87eb686464a86d8ba8997416310`;
 - all V4 package assets and runtime sources;
 - the V3 schema, V2 inference policy, V3 producer source, and V2 public
   publication block.
 
-V5 does not copy or modify V4 files and has no fallback to an older pin.
+V5 does not copy or modify V4 files and has no fallback to an older pin. The
+v1/v2/v3 compatibility policies and predecessor-binding schemas remain explicit
+historical identities; v4 is additive and active for this release candidate.
 
 ## Current unavailable mode
 

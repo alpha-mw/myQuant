@@ -57,6 +57,10 @@ _ARTIFACT_REGISTRY: Final = {
         "schemas/v4_predecessor_binding.v3.schema.json",
         "binding_id",
     ),
+    "myquant.v17.v5.v4-predecessor-binding.v4": (
+        "schemas/v4_predecessor_binding.v4.schema.json",
+        "binding_id",
+    ),
 }
 
 

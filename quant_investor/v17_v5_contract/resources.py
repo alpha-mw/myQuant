@@ -45,8 +45,12 @@ from .validators import (
     V4_COMPATIBILITY_POLICY_V1_VERSION,
     V4_COMPATIBILITY_POLICY_V2_ID,
     V4_COMPATIBILITY_POLICY_V2_VERSION,
+    V4_COMPATIBILITY_POLICY_V3_ID,
+    V4_COMPATIBILITY_POLICY_V3_VERSION,
+    V4_COMPATIBILITY_POLICY_VERSION,
     V4_FACTOR_EVIDENCE_ADAPTER_POLICY_ID,
     V4_FACTOR_EVIDENCE_ADAPTER_POLICY_VERSION,
+    V4_V2_PUBLICATION_BLOCK_CLI_SHA256,
 )
 
 PROTOCOL_VERSION: Final = "myquant.v17.v5"
@@ -54,7 +58,8 @@ PACKAGE_MANIFEST_PATH: Final = "resources/package_manifest.v1.json"
 RUNTIME_BUILD_MANIFEST_PATH: Final = "resources/runtime_build_manifest.v1.json"
 COMPATIBILITY_POLICY_V1_PATH: Final = "resources/v4_compatibility_policy.v1.json"
 COMPATIBILITY_POLICY_V2_PATH: Final = "resources/v4_compatibility_policy.v2.json"
-COMPATIBILITY_POLICY_PATH: Final = "resources/v4_compatibility_policy.v3.json"
+COMPATIBILITY_POLICY_V3_PATH: Final = "resources/v4_compatibility_policy.v3.json"
+COMPATIBILITY_POLICY_PATH: Final = "resources/v4_compatibility_policy.v4.json"
 FACTOR_DIAGNOSTIC_POLICY_PATH: Final = "resources/factor_diagnostic_policy.v1.json"
 FACTOR_REGIME_DIAGNOSTIC_POLICY_V1_PATH: Final = "resources/factor_regime_diagnostic_policy.v1.json"
 FACTOR_REGIME_DIAGNOSTIC_POLICY_V2_PATH: Final = "resources/factor_regime_diagnostic_policy.v2.json"
@@ -62,7 +67,7 @@ FACTOR_REGIME_DIAGNOSTIC_POLICY_PATH: Final = "resources/factor_regime_diagnosti
 V4_FACTOR_EVIDENCE_ADAPTER_POLICY_PATH: Final = (
     "resources/v4_factor_evidence_adapter_policy.v1.json"
 )
-PACKAGE_MANIFEST_SHA256: Final = "13fbd48b07821057bb2470d4995bd8f79b3841f7720d1f97d80e6fec62b018a4"
+PACKAGE_MANIFEST_SHA256: Final = "c26de7e7348e3a1b56258203260bea90e04e8be7ec65fdce1b87407fe099318b"
 _PACKAGE_ROOT: Final = Path(__file__).resolve().parent
 
 
@@ -419,6 +424,18 @@ def load_compatibility_policy_v2(
     )
 
 
+def load_compatibility_policy_v3(
+    *,
+    package_root: Path | None = None,
+) -> dict[str, Any]:
+    return _load_compatibility_policy(
+        package_root=package_root,
+        relative_path=COMPATIBILITY_POLICY_V3_PATH,
+        expected_version=V4_COMPATIBILITY_POLICY_V3_VERSION,
+        expected_artifact_id=V4_COMPATIBILITY_POLICY_V3_ID,
+    )
+
+
 def load_compatibility_policy(
     *,
     package_root: Path | None = None,
@@ -426,7 +443,7 @@ def load_compatibility_policy(
     return _load_compatibility_policy(
         package_root=package_root,
         relative_path=COMPATIBILITY_POLICY_PATH,
-        expected_version="myquant.v17.v5.v4-compatibility-policy.v3",
+        expected_version=V4_COMPATIBILITY_POLICY_VERSION,
         expected_artifact_id=V4_COMPATIBILITY_POLICY_ID,
     )
 
@@ -941,13 +958,13 @@ def verify_predecessor(
     cli_raw = (workspace_root / "quant_investor/v17_v4_runtime/cli.py").read_bytes()
     cli_sha = hashlib.sha256(cli_raw).hexdigest()
     if (
-        len(v4_assets) != 109
-        or len(v4_sources) != 32
+        len(v4_assets) != 114
+        or len(v4_sources) != 34
         or evidence_schema_sha != "429c9ed6f664ae70f0a34d92e0a94bc10293291217d58eb22f2fb2e36e83ab80"
         or inference_policy_sha
         != "46733a14377476c43ed230f9167dd786795c9b01159755cf91f358d07d44a3c1"
         or producer_sha != "b9819326d32df1f094ecc5954f3664c36f060d9e5e3044adaaf17c4abb8b4180"
-        or cli_sha != "015f0a05e03ae3864d8f8935f7260a42aa01531f9dd133bef1527d69a5adadc3"
+        or cli_sha != V4_V2_PUBLICATION_BLOCK_CLI_SHA256
         or b"REGIME_EVIDENCE_V2_CHAIN_NON_DEPLOYABLE" not in cli_raw
     ):
         raise PackageResourceError("pinned V17 v4 bounded-regime predecessor drift")
@@ -970,6 +987,7 @@ def verify_predecessor(
 __all__ = [
     "COMPATIBILITY_POLICY_PATH",
     "COMPATIBILITY_POLICY_V2_PATH",
+    "COMPATIBILITY_POLICY_V3_PATH",
     "FACTOR_DIAGNOSTIC_POLICY_PATH",
     "FACTOR_REGIME_DIAGNOSTIC_POLICY_PATH",
     "FACTOR_REGIME_DIAGNOSTIC_POLICY_V1_PATH",
@@ -981,6 +999,7 @@ __all__ = [
     "load_compatibility_policy",
     "load_compatibility_policy_v1",
     "load_compatibility_policy_v2",
+    "load_compatibility_policy_v3",
     "load_factor_diagnostic_policy",
     "load_factor_regime_diagnostic_policy",
     "load_factor_regime_diagnostic_policy_v1",

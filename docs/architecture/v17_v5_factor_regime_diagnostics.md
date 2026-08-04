@@ -18,13 +18,13 @@ Regime checkpoints.
 The active `WORKTREE_COLOCATED_PREDECESSOR` is the exact V4 commit:
 
 ```text
-73c5b6eea6c60d9a31865e176646687ffeee9d6a
+6a2fa23dec68d87eb686464a86d8ba8997416310
 ```
 
-It is preserved as the second parent of the local integration merge. V5 verifies
-the integrated V4 package manifest, runtime manifest, V3 schema, V2 inference
-policy, V3 producer source, and the V2 publication block. No V4 source is copied
-or rewritten by V5.
+The earlier `73c5b6e...` bounded-regime binding remains available as immutable
+v3 history. The additive v4 binding verifies the integrated V4 package manifest,
+runtime manifest, V3 schema, V2 inference policy, V3 producer source, and the V2
+publication block. No V4 source is copied or rewritten by V5.
 
 | Source | Integrity | Conditioning |
 |---|---:|---:|

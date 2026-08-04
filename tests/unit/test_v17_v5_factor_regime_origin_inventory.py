@@ -92,7 +92,7 @@ def _regime(
         regime_state=state,
         scope_kind="FULL_MARKET",
         smoothing_used=False,
-        source_commit="73c5b6eea6c60d9a31865e176646687ffeee9d6a",
+        source_commit="6a2fa23dec68d87eb686464a86d8ba8997416310",
         source_version="myquant.v17.v4.regime-evidence.v3",
         state_order=["趋势上涨", "震荡低波", "震荡高波", "趋势下跌", "未知"],
         state_probabilities={

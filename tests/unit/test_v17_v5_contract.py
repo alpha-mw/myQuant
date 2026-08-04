@@ -42,7 +42,7 @@ def _predecessor_binding() -> dict[str, Any]:
                 "artifact_id": policy["artifact_id"],
                 "byte_sha256": hashlib.sha256(policy_raw).hexdigest(),
                 "relative_path": (
-                    "quant_investor/v17_v5_contract/" "resources/v4_compatibility_policy.v3.json"
+                    "quant_investor/v17_v5_contract/" "resources/v4_compatibility_policy.v4.json"
                 ),
                 "semantic_sha256": policy["semantic_sha256"],
                 "version": policy["version"],
@@ -52,7 +52,7 @@ def _predecessor_binding() -> dict[str, Any]:
             "regime_evidence_v3_schema_sha256": V4_REGIME_EVIDENCE_V3_SCHEMA_SHA256,
             "regime_inference_policy_v2_sha256": V4_REGIME_INFERENCE_POLICY_V2_SHA256,
             "source_git_commit": predecessor["source_git_commit"],
-            "source_package_asset_count": 109,
+            "source_package_asset_count": 114,
             "source_package_manifest_byte_sha256": (predecessor["package_manifest_byte_sha256"]),
             "source_package_manifest_relative_path": (
                 predecessor["package_manifest_relative_path"]
@@ -62,10 +62,10 @@ def _predecessor_binding() -> dict[str, Any]:
             "source_runtime_manifest_relative_path": (
                 predecessor["runtime_manifest_relative_path"]
             ),
-            "source_runtime_source_count": 32,
+            "source_runtime_source_count": 34,
             "v2_cli_source_sha256": V4_V2_PUBLICATION_BLOCK_CLI_SHA256,
             "v2_publication_status": "REGIME_EVIDENCE_V2_CHAIN_NON_DEPLOYABLE",
-            "version": "myquant.v17.v5.v4-predecessor-binding.v3",
+            "version": "myquant.v17.v5.v4-predecessor-binding.v4",
         }
     )
 
@@ -75,7 +75,7 @@ def test_v5_package_runtime_and_predecessor_are_closed() -> None:
     runtime = verify_runtime_build()
     predecessor = verify_predecessor()
 
-    assert len(package) == 22
+    assert len(package) == 24
     assert set(runtime) == {
         "v17_v5_runtime/__init__.py",
         "v17_v5_runtime/authority.py",
@@ -90,19 +90,19 @@ def test_v5_package_runtime_and_predecessor_are_closed() -> None:
         "v17_v5_runtime/v4_regime_adapter.py",
     }
     assert predecessor == {
-        "package_asset_count": 109,
+        "package_asset_count": 114,
         "package_manifest_byte_sha256": (
-            "270c863fdcc2b092265444db9cc2fac9e3e19e1ef5fb2a36ddde6b47e443a1ff"
+            "a603b5f3e5f012548e3c3a224ba32ffc62b072d6555849887369f48f45012449"
         ),
         "protocol_version": "myquant.v17.v4",
         "regime_evidence_v3_runtime_sha256": V4_REGIME_EVIDENCE_V3_RUNTIME_SHA256,
         "regime_evidence_v3_schema_sha256": V4_REGIME_EVIDENCE_V3_SCHEMA_SHA256,
         "regime_inference_policy_v2_sha256": V4_REGIME_INFERENCE_POLICY_V2_SHA256,
         "runtime_manifest_byte_sha256": (
-            "7c7dc183a419623542fb1d8b95d092283c948c46a804eedd8424f931645f3a28"
+            "9f3e6ebc2bc9283b5d81113630d2dad68eef6bec0eddd0fcd28077a5153edfbe"
         ),
-        "runtime_source_count": 32,
-        "source_git_commit": "73c5b6eea6c60d9a31865e176646687ffeee9d6a",
+        "runtime_source_count": 34,
+        "source_git_commit": "6a2fa23dec68d87eb686464a86d8ba8997416310",
         "status": "PINNED_AND_VERIFIED",
         "v2_cli_source_sha256": V4_V2_PUBLICATION_BLOCK_CLI_SHA256,
         "v2_publication_status": "REGIME_EVIDENCE_V2_CHAIN_NON_DEPLOYABLE",
@@ -171,7 +171,7 @@ def test_v4_predecessor_binding_rejects_compatibility_policy_version_drift() -> 
         validate_artifact(seal_semantic(artifact))
 
 
-def test_compatibility_policy_is_exact_sprint1e0b_allowlist() -> None:
+def test_compatibility_policy_is_exact_release_rc_1_allowlist() -> None:
     policy = load_compatibility_policy()
 
     assert [row["version"] for row in policy["allowed_artifacts"]] == [
@@ -213,6 +213,9 @@ def test_compatibility_policy_is_exact_sprint1e0b_allowlist() -> None:
         "myquant.v17.v4.regime-evidence.v3",
     ]
     assert policy["forbidden_import_prefixes"] == ["quant_investor.v17_v4_runtime"]
+    assert (
+        "quant_investor.v17_v4_runtime.provisional_forward" in policy["forbidden_v4_writer_modules"]
+    )
     assert all(value is False for value in policy["authority"].values())
 
 

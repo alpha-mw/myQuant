@@ -322,7 +322,7 @@ def test_cli_exact_finalized_v3_reports_metadata_without_persisting(
     assert payload["regime_finalized"] is True
     assert payload["continuity_kind"] == "CONTIGUOUS"
     assert payload["regime_conditioning_eligibility"] is True
-    assert payload["predecessor_source_commit"] == ("73c5b6eea6c60d9a31865e176646687ffeee9d6a")
+    assert payload["predecessor_source_commit"] == ("6a2fa23dec68d87eb686464a86d8ba8997416310")
     assert payload["diagnostic"]["limitation_codes"] == ["V4_FACTOR_EVIDENCE_UNAVAILABLE"]
     assert _tree(tmp_path) == before
 

@@ -79,7 +79,7 @@ leaves. Raw upstream `source_refs` are terminal provenance bindings; the
 adapter does not dereference them or treat them as statistical observations.
 Unknown versions, partial refs, hidden refs and undeclared edges fail closed.
 
-## Predecessor identity
+## Historical Sprint 1E-0B predecessor identity
 
 The Sprint 1E-0B compatibility policy fixes:
 
@@ -96,6 +96,23 @@ The predecessor mechanism is `WORKTREE_COLOCATED_PREDECESSOR`. V5 keeps the
 exact V4 commit as a merge parent, verifies the colocated V4
 package/runtime manifests, and does not hand-copy or reinterpret V4 producer
 files.
+
+## Release-RC-1 additive predecessor identity
+
+Release-RC-1 leaves the historical v1/v2/v3 policy and binding bytes intact and
+adds active v4 identities pinned to the Provisional Forward Runtime integration:
+
+```text
+source commit:
+  6a2fa23dec68d87eb686464a86d8ba8997416310
+V17 v4 package manifest:
+  a603b5f3e5f012548e3c3a224ba32ffc62b072d6555849887369f48f45012449
+V17 v4 runtime manifest:
+  9f3e6ebc2bc9283b5d81113630d2dad68eef6bec0eddd0fcd28077a5153edfbe
+```
+
+The V5 adapter remains read-only. Provisional Forward is explicitly included in
+the forbidden V4 writer module inventory and is not made a V5 diagnostic root.
 
 V5 output can never present a v4 artifact as a v5 artifact. Future v5 receipts
 must preserve the source protocol, source version, relative path, byte SHA-256,

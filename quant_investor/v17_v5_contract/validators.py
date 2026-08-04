@@ -34,7 +34,8 @@ NO_AUTHORITY: Final = {
 }
 PREDECESSOR_BINDING_V1_VERSION: Final = "myquant.v17.v5.v4-predecessor-binding.v1"
 PREDECESSOR_BINDING_V2_VERSION: Final = "myquant.v17.v5.v4-predecessor-binding.v2"
-PREDECESSOR_BINDING_VERSION: Final = "myquant.v17.v5.v4-predecessor-binding.v3"
+PREDECESSOR_BINDING_V3_VERSION: Final = "myquant.v17.v5.v4-predecessor-binding.v3"
+PREDECESSOR_BINDING_VERSION: Final = "myquant.v17.v5.v4-predecessor-binding.v4"
 FACTOR_DIAGNOSTIC_VERSION: Final = "myquant.v17.v5.factor-diagnostic.v1"
 FACTOR_LIFECYCLE_DIAGNOSTIC_VERSION: Final = "myquant.v17.v5.factor-lifecycle-diagnostic.v1"
 FACTOR_REGIME_ORIGIN_INVENTORY_V1_VERSION: Final = (
@@ -124,16 +125,27 @@ V4_COMPATIBILITY_POLICY_V2_BYTE_SHA256: Final = (
 V4_COMPATIBILITY_POLICY_V2_SEMANTIC_SHA256: Final = (
     "0581fbd43bb77d63362a60b12734e3acd43e5aeac00e072a4be9b0681a077995"
 )
-V4_COMPATIBILITY_POLICY_ID: Final = "v17.v4.compatibility.policy.sprint1e0b"
-V4_COMPATIBILITY_POLICY_VERSION: Final = "myquant.v17.v5.v4-compatibility-policy.v3"
-V4_COMPATIBILITY_POLICY_PATH: Final = (
+V4_COMPATIBILITY_POLICY_V3_ID: Final = "v17.v4.compatibility.policy.sprint1e0b"
+V4_COMPATIBILITY_POLICY_V3_VERSION: Final = "myquant.v17.v5.v4-compatibility-policy.v3"
+V4_COMPATIBILITY_POLICY_V3_PATH: Final = (
     "quant_investor/v17_v5_contract/resources/v4_compatibility_policy.v3.json"
 )
-V4_COMPATIBILITY_POLICY_BYTE_SHA256: Final = (
+V4_COMPATIBILITY_POLICY_V3_BYTE_SHA256: Final = (
     "c61b3bc188d3dc8b23f531855a0399b5523cade4eea62d12034cb0ae68f7637f"
 )
-V4_COMPATIBILITY_POLICY_SEMANTIC_SHA256: Final = (
+V4_COMPATIBILITY_POLICY_V3_SEMANTIC_SHA256: Final = (
     "bd8b77337eb90e9310792bdd4dbd28f6c8d0623a804c76ec74fd50084efca966"
+)
+V4_COMPATIBILITY_POLICY_ID: Final = "v17.v4.compatibility.policy.release-rc-1"
+V4_COMPATIBILITY_POLICY_VERSION: Final = "myquant.v17.v5.v4-compatibility-policy.v4"
+V4_COMPATIBILITY_POLICY_PATH: Final = (
+    "quant_investor/v17_v5_contract/resources/v4_compatibility_policy.v4.json"
+)
+V4_COMPATIBILITY_POLICY_BYTE_SHA256: Final = (
+    "39b506d3950f2b8f36b422752f5317373fb7a221ae1950bb971d92e10b7342ca"
+)
+V4_COMPATIBILITY_POLICY_SEMANTIC_SHA256: Final = (
+    "46835a7582e0ecd44622cef4487955365ac5723dba37fb14c756ed88558cfb40"
 )
 V4_FACTOR_EVIDENCE_ADAPTER_POLICY_ID: Final = "v17.v5.v4.factor.evidence.adapter.policy.sprint1a"
 V4_FACTOR_EVIDENCE_ADAPTER_POLICY_VERSION: Final = (
@@ -148,11 +160,18 @@ V4_FACTOR_EVIDENCE_ADAPTER_POLICY_BYTE_SHA256: Final = (
 V4_FACTOR_EVIDENCE_ADAPTER_POLICY_SEMANTIC_SHA256: Final = (
     "463cd280d80ebb7914bca720d1b585380638b59863a48bec7a4f5615cdf8e225"
 )
-V4_SOURCE_GIT_COMMIT: Final = "73c5b6eea6c60d9a31865e176646687ffeee9d6a"
+V4_SOURCE_GIT_COMMIT: Final = "6a2fa23dec68d87eb686464a86d8ba8997416310"
 V4_PACKAGE_MANIFEST_SHA256: Final = (
-    "270c863fdcc2b092265444db9cc2fac9e3e19e1ef5fb2a36ddde6b47e443a1ff"
+    "a603b5f3e5f012548e3c3a224ba32ffc62b072d6555849887369f48f45012449"
 )
 V4_RUNTIME_MANIFEST_SHA256: Final = (
+    "9f3e6ebc2bc9283b5d81113630d2dad68eef6bec0eddd0fcd28077a5153edfbe"
+)
+V4_V3_SOURCE_GIT_COMMIT: Final = "73c5b6eea6c60d9a31865e176646687ffeee9d6a"
+V4_V3_PACKAGE_MANIFEST_SHA256: Final = (
+    "270c863fdcc2b092265444db9cc2fac9e3e19e1ef5fb2a36ddde6b47e443a1ff"
+)
+V4_V3_RUNTIME_MANIFEST_SHA256: Final = (
     "7c7dc183a419623542fb1d8b95d092283c948c46a804eedd8424f931645f3a28"
 )
 V4_REGIME_EVIDENCE_V3_SCHEMA_SHA256: Final = (
@@ -165,6 +184,9 @@ V4_REGIME_EVIDENCE_V3_RUNTIME_SHA256: Final = (
     "b9819326d32df1f094ecc5954f3664c36f060d9e5e3044adaaf17c4abb8b4180"
 )
 V4_V2_PUBLICATION_BLOCK_CLI_SHA256: Final = (
+    "fc185ce2a6cd214e5ef1f2e9c8e8fc19e17a8d8cebd9c175a85a132001e8980f"
+)
+V4_V3_PUBLICATION_BLOCK_CLI_SHA256: Final = (
     "015f0a05e03ae3864d8f8935f7260a42aa01531f9dd133bef1527d69a5adadc3"
 )
 
@@ -929,6 +951,14 @@ def _validate_predecessor_binding(payload: Mapping[str, Any]) -> dict[str, Any]:
             "semantic_sha256": V4_COMPATIBILITY_POLICY_V2_SEMANTIC_SHA256,
             "version": V4_COMPATIBILITY_POLICY_V2_VERSION,
         }
+    elif document["version"] == PREDECESSOR_BINDING_V3_VERSION:
+        expected_policy_ref = {
+            "artifact_id": V4_COMPATIBILITY_POLICY_V3_ID,
+            "byte_sha256": V4_COMPATIBILITY_POLICY_V3_BYTE_SHA256,
+            "relative_path": V4_COMPATIBILITY_POLICY_V3_PATH,
+            "semantic_sha256": V4_COMPATIBILITY_POLICY_V3_SEMANTIC_SHA256,
+            "version": V4_COMPATIBILITY_POLICY_V3_VERSION,
+        }
     else:
         expected_policy_ref = {
             "artifact_id": V4_COMPATIBILITY_POLICY_ID,
@@ -959,6 +989,12 @@ def _validate_predecessor_binding(payload: Mapping[str, Any]) -> dict[str, Any]:
                 "a7d27d0d16153d5b55558cd608a9155dd3b968d2721135ba77d777d409a7e63c"
             ),
         }
+    elif document["version"] == PREDECESSOR_BINDING_V3_VERSION:
+        expected_source = {
+            "source_git_commit": V4_V3_SOURCE_GIT_COMMIT,
+            "source_package_manifest_byte_sha256": V4_V3_PACKAGE_MANIFEST_SHA256,
+            "source_runtime_manifest_byte_sha256": V4_V3_RUNTIME_MANIFEST_SHA256,
+        }
     else:
         expected_source = {
             "source_git_commit": V4_SOURCE_GIT_COMMIT,
@@ -975,7 +1011,7 @@ def _validate_predecessor_binding(payload: Mapping[str, Any]) -> dict[str, Any]:
         != expected_source["source_runtime_manifest_byte_sha256"]
     ):
         raise ArtifactContractError("V17 v4 predecessor binding identity mismatch")
-    if document["version"] == PREDECESSOR_BINDING_VERSION:
+    if document["version"] in {PREDECESSOR_BINDING_V3_VERSION, PREDECESSOR_BINDING_VERSION}:
         try:
             for field in (
                 "regime_evidence_v3_runtime_sha256",
@@ -985,17 +1021,19 @@ def _validate_predecessor_binding(payload: Mapping[str, Any]) -> dict[str, Any]:
             ):
                 require_sha256(document[field], label=field)
         except (IdentityContractError, KeyError, TypeError) as exc:
-            raise ArtifactContractError("V17 v4 predecessor v3 binding is invalid") from exc
+            raise ArtifactContractError("V17 v4 predecessor bounded binding is invalid") from exc
+        is_v3 = document["version"] == PREDECESSOR_BINDING_V3_VERSION
         if (
-            document["source_package_asset_count"] != 109
-            or document["source_runtime_source_count"] != 32
+            document["source_package_asset_count"] != (109 if is_v3 else 114)
+            or document["source_runtime_source_count"] != (32 if is_v3 else 34)
             or document["regime_evidence_v3_schema_sha256"] != V4_REGIME_EVIDENCE_V3_SCHEMA_SHA256
             or document["regime_inference_policy_v2_sha256"] != V4_REGIME_INFERENCE_POLICY_V2_SHA256
             or document["regime_evidence_v3_runtime_sha256"] != V4_REGIME_EVIDENCE_V3_RUNTIME_SHA256
-            or document["v2_cli_source_sha256"] != V4_V2_PUBLICATION_BLOCK_CLI_SHA256
+            or document["v2_cli_source_sha256"]
+            != (V4_V3_PUBLICATION_BLOCK_CLI_SHA256 if is_v3 else V4_V2_PUBLICATION_BLOCK_CLI_SHA256)
             or document["v2_publication_status"] != "REGIME_EVIDENCE_V2_CHAIN_NON_DEPLOYABLE"
         ):
-            raise ArtifactContractError("V17 v4 predecessor v3 metadata mismatch")
+            raise ArtifactContractError("V17 v4 predecessor bounded metadata mismatch")
     return document
 
 
@@ -1011,6 +1049,7 @@ def validate_typed_artifact(
     if payload.get("version") in {
         PREDECESSOR_BINDING_V1_VERSION,
         PREDECESSOR_BINDING_V2_VERSION,
+        PREDECESSOR_BINDING_V3_VERSION,
         PREDECESSOR_BINDING_VERSION,
     }:
         return _validate_predecessor_binding(payload)
@@ -1063,6 +1102,7 @@ __all__ = [
     "NO_AUTHORITY",
     "PREDECESSOR_BINDING_V1_VERSION",
     "PREDECESSOR_BINDING_V2_VERSION",
+    "PREDECESSOR_BINDING_V3_VERSION",
     "PREDECESSOR_BINDING_VERSION",
     "REGIME_CONDITIONED_FACTOR_DIAGNOSTIC_V1_VERSION",
     "REGIME_CONDITIONED_FACTOR_DIAGNOSTIC_V2_VERSION",
@@ -1081,6 +1121,11 @@ __all__ = [
     "V4_COMPATIBILITY_POLICY_V2_PATH",
     "V4_COMPATIBILITY_POLICY_V2_SEMANTIC_SHA256",
     "V4_COMPATIBILITY_POLICY_V2_VERSION",
+    "V4_COMPATIBILITY_POLICY_V3_BYTE_SHA256",
+    "V4_COMPATIBILITY_POLICY_V3_ID",
+    "V4_COMPATIBILITY_POLICY_V3_PATH",
+    "V4_COMPATIBILITY_POLICY_V3_SEMANTIC_SHA256",
+    "V4_COMPATIBILITY_POLICY_V3_VERSION",
     "V4_COMPATIBILITY_POLICY_VERSION",
     "V4_FACTOR_EVIDENCE_ADAPTER_POLICY_BYTE_SHA256",
     "V4_FACTOR_EVIDENCE_ADAPTER_POLICY_ID",
