@@ -224,7 +224,15 @@ def test_dispatch_routes_price_volume_to_the_price_volume_builder():
 
 
 def test_dispatch_computes_a_pinned_formulaic_signal_end_to_end():
-    """momentum_120 blended with momentum_60 residualized against the pin."""
+    """momentum_120 blended with momentum_60 residualized against the pin.
+
+    Uses the *real* price_volume builder rather than a stub. An earlier version
+    of this test stubbed it, which hid a bug where the baseline candidate was
+    constructed without a family and `compute_price_volume_signal` then refused
+    a factor name it fully supports.
+    """
+
+    from scripts.mine_quant_branch_factors import compute_price_volume_signal
 
     context = _panel_context()
     candidate = _build(
@@ -240,10 +248,30 @@ def test_dispatch_computes_a_pinned_formulaic_signal_end_to_end():
         )
     )
 
-    signal = _dispatch(candidate, context)
+    signal = _dispatch(candidate, context, builder=compute_price_volume_signal)
 
     assert signal.shape == context.adj_close.shape
     assert signal.notna().to_numpy().sum() > 0
+
+
+def test_the_pinned_baseline_resolves_its_factor_family():
+    """Regression: the baseline candidate must carry a usable family."""
+
+    from scripts.mine_quant_branch_factors import compute_price_volume_signal
+    from quant_investor.factors.residual_baseline import validate_residual_baseline
+
+    context = _panel_context()
+
+    composite = factor_health_automation._pinned_baseline_composite(
+        validate_residual_baseline(_BASELINE),
+        context,
+        MiningCandidate,
+        compute_price_volume_signal,
+    )
+
+    assert composite.shape == context.adj_close.shape
+    assert composite.notna().to_numpy().sum() > 0
+    assert composite.max().max() <= 1.0 and composite.min().min() >= -1.0
 
 
 def test_dispatch_fails_closed_when_aquant_inputs_are_unavailable():

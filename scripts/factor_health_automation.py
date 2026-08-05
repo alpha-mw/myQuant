@@ -1010,13 +1010,17 @@ def _pinned_baseline_composite(
     composite: pd.DataFrame | None = None
     total_weight = 0.0
     for item in baseline["factors"]:
-        candidate = candidate_type(
-            name=item["name"],
-            family="",
-            category="",
-            implementation=item["implementation"],
-            description="",
-            window=_first_window_from_name(item["implementation"].split(":", 1)[1]),
+        # Go through the same record->candidate path as every other factor.
+        # Building a bare candidate here skipped the family derivation, and
+        # `compute_price_volume_signal` dispatches on family, so the baseline
+        # raised "unsupported price/volume candidate" for a name it supports.
+        candidate = _mining_candidate_from_record(
+            FactorRecord(
+                name=item["name"],
+                implementation=item["implementation"],
+                category="residual_baseline",
+            ),
+            candidate_type,
         )
         raw = signal_builder(candidate, context)
         signed = float(item["weight"]) * (1.0 if float(item["direction"]) >= 0 else -1.0)
