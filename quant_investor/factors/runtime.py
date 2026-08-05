@@ -30,6 +30,22 @@ DEFAULT_REGISTRY_PATH = (
 )
 PRODUCTION_RUNTIME_MODE = "production"
 REPORT_ONLY_SHADOW_RUNTIME_MODE = "report_only_shadow"
+
+# Implementation prefixes the production runtime is allowed to evaluate. This is
+# the single source of truth: the production evaluation loop, the generic
+# dispatcher, and the mining pipeline's promotion gate all read it, so a factor
+# can never be promoted to a state the runtime would refuse to execute.
+PRODUCTION_IMPLEMENTATION_PREFIXES: tuple[str, ...] = (
+    "price_volume:",
+    "aquant_expression:",
+)
+
+
+def is_production_allowlisted_implementation(implementation: object) -> bool:
+    """Whether the production runtime may evaluate this implementation."""
+
+    text = str(implementation or "").strip()
+    return any(text.startswith(prefix) for prefix in PRODUCTION_IMPLEMENTATION_PREFIXES)
 PRODUCTION_RUNTIME_INPUT_SCHEMA_VERSION = "quant-production-runtime-input.v1"
 PRODUCTION_RUNTIME_OUTPUT_SCHEMA_VERSION = "quant-production-runtime-output.v1"
 PRODUCTION_EVALUATION_CONTEXT_SCHEMA_VERSION = (
@@ -2062,7 +2078,7 @@ class MinedFactorScorer:
                 blocked = self._blocked_runtime_status(runtime_status, blocker)
                 return self._empty_score(symbols, skipped=skipped, runtime_status=blocked)
             implementation = str(factor.implementation or "").strip()
-            if not implementation.startswith("price_volume:"):
+            if not is_production_allowlisted_implementation(implementation):
                 blocker = f"factor_implementation_not_allowlisted:{factor.name}"
                 blocked = self._blocked_runtime_status(runtime_status, blocker)
                 return self._empty_score(symbols, skipped=skipped, runtime_status=blocked)
@@ -2072,22 +2088,27 @@ class MinedFactorScorer:
                 blocked = self._blocked_runtime_status(runtime_status, blocker)
                 return self._empty_score(symbols, skipped=skipped, runtime_status=blocked)
             try:
-                if prepared is None:
-                    from quant_investor.factors.price_volume import (
-                        prepare_price_volume_frames,
-                    )
+                if implementation.startswith("price_volume:"):
+                    if prepared is None:
+                        from quant_investor.factors.price_volume import (
+                            prepare_price_volume_frames,
+                        )
 
-                    prepared = prepare_price_volume_frames(
+                        prepared = prepare_price_volume_frames(
+                            valid_frames,
+                            include_amihud_base=include_amihud_base,
+                            lookback_rows=required_lookback,
+                        )
+                    raw = self._price_volume_factor(
+                        implementation_name,
                         valid_frames,
-                        include_amihud_base=include_amihud_base,
-                        lookback_rows=required_lookback,
+                        prepared_frames=prepared,
+                        factor_cache=factor_cache,
                     )
-                raw = self._price_volume_factor(
-                    implementation_name,
-                    valid_frames,
-                    prepared_frames=prepared,
-                    factor_cache=factor_cache,
-                )
+                else:
+                    # Allowlisted non-price_volume implementations do not share
+                    # the prepared-frame cache; they resolve their own inputs.
+                    raw = self._compute_factor(factor, valid_frames)
             except Exception as exc:
                 blocker = f"factor_compute_error:{factor.name}:{exc}"
                 blocked = self._blocked_runtime_status(runtime_status, blocker)
@@ -2230,7 +2251,7 @@ class MinedFactorScorer:
         impl = str(factor.implementation or "").strip()
         if (
             self.runtime_mode == PRODUCTION_RUNTIME_MODE
-            and not impl.startswith("price_volume:")
+            and not is_production_allowlisted_implementation(impl)
         ):
             raise ValueError(f"production implementation is not allowlisted: {impl}")
         if impl == "alpha158.FactorEngineer.cross_sectional_score":
