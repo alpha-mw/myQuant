@@ -46,10 +46,21 @@ class OpenSessionCalendar:
     calendar_sha256: str
     snapshot_id: str
     excluded_sessions: tuple[str, ...]
+    session_breadth: dict[str, int]
+    min_symbols_per_session: int
 
     @property
     def open_session_dates(self) -> list[str]:
         return list(self.payload["open_session_dates"])
+
+    def thin_sessions(self, *, min_symbols: int) -> list[str]:
+        """Sessions in the calendar whose cross-section is below `min_symbols`."""
+
+        return [
+            session
+            for session in self.open_session_dates
+            if self.session_breadth.get(session, 0) < min_symbols
+        ]
 
 
 def _file_sha256(path: Path) -> str:
@@ -107,8 +118,20 @@ def build_open_session_calendar_v4(
     *,
     market: str = "CN",
     data_root: str | Path = "data",
+    min_symbols_per_session: int = 0,
 ) -> OpenSessionCalendar:
-    """Cut a v4 open-session calendar from the active strict Parquet snapshot."""
+    """Cut a v4 open-session calendar from the active strict Parquet snapshot.
+
+    `min_symbols_per_session` guards against a hazard the v4 contract does not
+    cover: `validate_open_session_calendar_v4` checks structure only — real
+    dates, no weekends, sorted, distinct — and says nothing about whether a
+    session has a cross-section. The current CN snapshot reports 1,795 sessions
+    but only 858 carry 1,000+ symbols; the rest are backed by about two. A
+    cohort cut over those would satisfy maturity arithmetic while resting on an
+    empty cross-section, so callers building maturity evidence should pass a
+    threshold. The default stays 0 to keep the calendar a faithful record of
+    what the snapshot observed.
+    """
 
     store = MarketDataStore(market=market, data_root=data_root)
     root = Path(data_root)
@@ -133,16 +156,22 @@ def build_open_session_calendar_v4(
     if not table_root.exists():
         raise OpenSessionCalendarError(f"missing snapshot table root: {table_root}")
 
-    observed: set[str] = set()
+    if min_symbols_per_session < 0:
+        raise ValueError("min_symbols_per_session must not be negative")
+
+    breadth: dict[str, set[str]] = {}
     unparsable = 0
     for part in glob.glob(str(table_root / "**" / "*.parquet"), recursive=True):
-        column = pq.read_table(part, columns=["trade_date"])["trade_date"]
-        for raw in pc.unique(column).to_pylist():
+        table = pq.read_table(part, columns=["trade_date", "ts_code"])
+        for raw, symbol in zip(
+            table["trade_date"].to_pylist(), table["ts_code"].to_pylist()
+        ):
             session = _iso_session(raw)
             if session is None:
                 unparsable += 1
             else:
-                observed.add(session)
+                breadth.setdefault(session, set()).add(str(symbol))
+    observed = set(breadth)
     if unparsable:
         raise OpenSessionCalendarError(
             f"{unparsable} observed trade_date value(s) are not calendar dates"
@@ -155,8 +184,15 @@ def build_open_session_calendar_v4(
     # rather than inherit a 1970 session.
     floor = store.first_plausible_session()
     floor_iso = f"{floor[0:4]}-{floor[4:6]}-{floor[6:8]}"
-    excluded = tuple(sorted(item for item in observed if item < floor_iso))
-    sessions = sorted(item for item in observed if item >= floor_iso)
+    session_breadth = {session: len(symbols) for session, symbols in breadth.items()}
+    excluded_implausible = {item for item in observed if item < floor_iso}
+    excluded_thin = {
+        item
+        for item in observed - excluded_implausible
+        if session_breadth[item] < min_symbols_per_session
+    }
+    excluded = tuple(sorted(excluded_implausible | excluded_thin))
+    sessions = sorted(observed - excluded_implausible - excluded_thin)
     weekend = [item for item in sessions if date.fromisoformat(item).weekday() >= 5]
     if weekend:
         raise OpenSessionCalendarError(
@@ -180,6 +216,8 @@ def build_open_session_calendar_v4(
         calendar_sha256=validated["calendar_sha256"],
         snapshot_id=snapshot_id,
         excluded_sessions=excluded,
+        session_breadth=session_breadth,
+        min_symbols_per_session=min_symbols_per_session,
     )
 
 

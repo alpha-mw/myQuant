@@ -182,6 +182,72 @@ def test_cohorts_are_consecutive_non_overlapping_and_newest_aligned(tmp_path):
         assert cohort["calendar_sha256"] == calendar.calendar_sha256
 
 
+def _write_snapshot_with_breadth(root: Path, breadth: dict[str, int], snapshot_id="20260804T000000Z"):
+    """Snapshot where each session carries a controlled number of symbols."""
+
+    rows = []
+    for session, count in breadth.items():
+        for index in range(count):
+            rows.append({"ts_code": f"{index:06d}.SZ", "trade_date": session, "close": 1.0})
+    market = root / "parquet" / "cn"
+    table = market / "_snapshots" / snapshot_id / "table" / "bars"
+    table.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(rows).to_parquet(table / "part.parquet", index=False)
+    manifest = market / "_snapshots" / f"{snapshot_id}.json"
+    manifest.write_text(json.dumps({"snapshot_id": snapshot_id}), encoding="utf-8")
+    (market / "_latest.json").write_text(
+        json.dumps({"snapshot_id": snapshot_id, "manifest_path": f"_snapshots/{snapshot_id}.json"}),
+        encoding="utf-8",
+    )
+
+
+def test_calendar_records_per_session_breadth(tmp_path):
+    _write_snapshot_with_breadth(tmp_path, {"20260105": 3, "20260106": 40})
+
+    calendar = build_open_session_calendar_v4(data_root=tmp_path)
+
+    assert calendar.session_breadth == {"2026-01-05": 3, "2026-01-06": 40}
+
+
+def test_faithful_calendar_keeps_thin_sessions_by_default(tmp_path):
+    """The default must record what the snapshot observed, not a filtered view."""
+
+    _write_snapshot_with_breadth(tmp_path, {"20260105": 2, "20260106": 40})
+
+    calendar = build_open_session_calendar_v4(data_root=tmp_path)
+
+    assert calendar.open_session_dates == ["2026-01-05", "2026-01-06"]
+    assert calendar.thin_sessions(min_symbols=10) == ["2026-01-05"]
+
+
+def test_breadth_threshold_excludes_empty_cross_sections(tmp_path):
+    """Structurally valid sessions with ~2 symbols would make maturity vacuous."""
+
+    _write_snapshot_with_breadth(tmp_path, {"20260105": 2, "20260106": 40, "20260107": 41})
+
+    calendar = build_open_session_calendar_v4(data_root=tmp_path, min_symbols_per_session=10)
+
+    assert calendar.open_session_dates == ["2026-01-06", "2026-01-07"]
+    assert "2026-01-05" in calendar.excluded_sessions
+    assert calendar.min_symbols_per_session == 10
+
+
+def test_breadth_threshold_changes_the_calendar_identity(tmp_path):
+    _write_snapshot_with_breadth(tmp_path, {"20260105": 2, "20260106": 40})
+
+    faithful = build_open_session_calendar_v4(data_root=tmp_path)
+    filtered = build_open_session_calendar_v4(data_root=tmp_path, min_symbols_per_session=10)
+
+    assert faithful.calendar_sha256 != filtered.calendar_sha256
+
+
+def test_negative_breadth_threshold_is_rejected(tmp_path):
+    _write_snapshot_with_breadth(tmp_path, {"20260105": 4})
+
+    with pytest.raises(ValueError, match="must not be negative"):
+        build_open_session_calendar_v4(data_root=tmp_path, min_symbols_per_session=-1)
+
+
 def test_cohorts_are_empty_when_history_is_short(tmp_path):
     _write_snapshot(tmp_path, _weekday_sessions(29))
     calendar = build_open_session_calendar_v4(data_root=tmp_path)
