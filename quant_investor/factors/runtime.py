@@ -46,6 +46,43 @@ def is_production_allowlisted_implementation(implementation: object) -> bool:
 
     text = str(implementation or "").strip()
     return any(text.startswith(prefix) for prefix in PRODUCTION_IMPLEMENTATION_PREFIXES)
+
+
+# Formulaic mining derives a `<primitive>_resid_existing` variant of every
+# primitive by regressing it on the *current* production composite, which
+# `compute_existing_composite` builds from `registry.selectable_factors()`. A
+# factor whose params reference one of those is defined in terms of the
+# production set it is about to join, so promoting anything silently rewrites
+# it, its recorded gate evidence describes a baseline that no longer exists,
+# and its canonical replay cannot be reproduced from market data alone. Worse,
+# the residualizer maps an unavailable baseline to `signal * nan` rather than
+# raising, so the failure would reach production as a silently empty signal.
+PRODUCTION_SET_DEPENDENT_PRIMITIVE_SUFFIX = "_resid_existing"
+_FORMULA_PRIMITIVE_PARAM_KEYS: tuple[str, ...] = ("left", "right")
+
+
+def production_set_dependent_primitives(factor: Any) -> tuple[str, ...]:
+    """Primitives in ``factor``'s params whose values depend on the live set.
+
+    Returned sorted and de-duplicated so the blocker message is stable. This is
+    deliberately separate from the implementation allowlist: that asks whether
+    the runtime *can* execute something, this asks whether the result is
+    reproducible.
+    """
+
+    params = (getattr(factor, "metadata", None) or {}).get("params")
+    if not isinstance(params, Mapping):
+        return ()
+    offending = {
+        text
+        for key in _FORMULA_PRIMITIVE_PARAM_KEYS
+        if (text := str(params.get(key) or "").strip()).endswith(
+            PRODUCTION_SET_DEPENDENT_PRIMITIVE_SUFFIX
+        )
+    }
+    return tuple(sorted(offending))
+
+
 PRODUCTION_RUNTIME_INPUT_SCHEMA_VERSION = "quant-production-runtime-input.v1"
 PRODUCTION_RUNTIME_OUTPUT_SCHEMA_VERSION = "quant-production-runtime-output.v1"
 PRODUCTION_EVALUATION_CONTEXT_SCHEMA_VERSION = (
@@ -2249,11 +2286,14 @@ class MinedFactorScorer:
         frames: Mapping[str, pd.DataFrame],
     ) -> pd.Series:
         impl = str(factor.implementation or "").strip()
-        if (
-            self.runtime_mode == PRODUCTION_RUNTIME_MODE
-            and not is_production_allowlisted_implementation(impl)
-        ):
-            raise ValueError(f"production implementation is not allowlisted: {impl}")
+        if self.runtime_mode == PRODUCTION_RUNTIME_MODE:
+            if not is_production_allowlisted_implementation(impl):
+                raise ValueError(f"production implementation is not allowlisted: {impl}")
+            if dependent := production_set_dependent_primitives(factor):
+                raise ValueError(
+                    f"factor definition depends on the production set: {factor.name} "
+                    f"references {', '.join(dependent)}"
+                )
         if impl == "alpha158.FactorEngineer.cross_sectional_score":
             return self._alpha158_cross_sectional(frames)
         if impl.startswith("alpha_mining.FactorLibrary:"):
