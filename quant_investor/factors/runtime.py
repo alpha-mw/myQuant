@@ -38,6 +38,28 @@ REPORT_ONLY_SHADOW_RUNTIME_MODE = "report_only_shadow"
 PRODUCTION_IMPLEMENTATION_PREFIXES: tuple[str, ...] = (
     "price_volume:",
     "aquant_expression:",
+    # Admitted only in pinned form: `production_set_dependent_primitives` still
+    # refuses any `research_formula:` factor that residualizes against the live
+    # production set, so this prefix alone does not make one runnable.
+    "research_formula:",
+)
+
+# Formulaic primitives production can resolve deterministically. Mining derives
+# many more, including every `_resid_existing` variant; production admits only
+# what it can recompute from market data plus a pinned baseline.
+_FORMULA_MOMENTUM_PRIMITIVES: dict[str, int] = {
+    "momentum_60": 60,
+    "momentum_90": 90,
+    "momentum_120": 120,
+}
+_FORMULA_FUNDAMENTAL_PRIMITIVES: frozenset[str] = frozenset(
+    {
+        "fcf_to_price",
+        "fin_debt_to_assets",
+        "fin_net_profit_yoy",
+        "fin_ocf_to_profit",
+        "fin_roe",
+    }
 )
 
 
@@ -2302,6 +2324,8 @@ class MinedFactorScorer:
             return self._price_volume_factor(impl.split(":", 1)[1], frames)
         if impl.startswith("aquant_expression:"):
             return self._aquant_expression_factor(factor, impl.split(":", 1)[1], frames)
+        if impl.startswith("research_formula:"):
+            return self._research_formula_factor(factor, impl.split(":", 1)[1], frames)
         if impl.startswith("builtin:"):
             if self.runtime_mode == REPORT_ONLY_SHADOW_RUNTIME_MODE:
                 return self._builtin_factor(impl.split(":", 1)[1], frames)
@@ -2371,6 +2395,104 @@ class MinedFactorScorer:
             pit_series_path=pit_series_path,
             fundamental_mart_root=fundamental_mart_root,
             allow_legacy_fundamental_fallback=allow_legacy_fundamental_fallback,
+        )
+
+    def _formula_primitive(
+        self,
+        primitive: Any,
+        factor: FactorRecord,
+        frames: Mapping[str, pd.DataFrame],
+    ) -> pd.Series:
+        """Resolve one formulaic primitive to its latest cross-section.
+
+        Momentum matches mining's `close.div(close.shift(w)).sub(1)` and the
+        fundamental fields are read through the same A_quant inputs mining uses,
+        so a pinned production value equals the mined one.
+        """
+
+        name = str(primitive or "").strip()
+        if window := _FORMULA_MOMENTUM_PRIMITIVES.get(name):
+            return self._price_volume_factor(f"pv_momentum_{window}d", frames)
+        if name in _FORMULA_FUNDAMENTAL_PRIMITIVES:
+            from quant_investor.factors.aquant_expression import (
+                compute_aquant_expression_factor,
+            )
+
+            metadata = factor.metadata or {}
+            return compute_aquant_expression_factor(
+                name,
+                frames,
+                expression=name,
+                metadata_dir=metadata.get("metadata_dir"),
+                pit_series_path=metadata.get("pit_series_path"),
+                fundamental_mart_root=metadata.get("fundamental_mart_root"),
+                allow_legacy_fundamental_fallback=metadata.get(
+                    "allow_legacy_fundamental_fallback"
+                ),
+            )
+        raise ValueError(f"unsupported formulaic primitive: {primitive}")
+
+    def _research_formula_factor(
+        self,
+        factor: FactorRecord,
+        name: str,
+        frames: Mapping[str, pd.DataFrame],
+    ) -> pd.Series:
+        """Blend two ranked primitives, residualizing the right against a pin.
+
+        The unpinned form -- residualizing against whatever is currently in
+        production -- is refused before this runs, because its value depends on
+        the set it is joining and so cannot be replayed.
+        """
+
+        from quant_investor.factors.residual_baseline import (
+            build_baseline_composite,
+            cross_sectional_residual,
+            cs_rank_pct,
+            validate_residual_baseline,
+        )
+
+        if str(name).strip() != "rank_blend":
+            raise ValueError(f"unsupported research_formula implementation: {name}")
+
+        params = (factor.metadata or {}).get("params")
+        if not isinstance(params, Mapping):
+            raise ValueError(f"research_formula factor has no params: {factor.name}")
+
+        raw_weight = params.get("left_weight")
+        try:
+            left_weight = float(raw_weight)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"research_formula left_weight is not a number: {raw_weight!r}"
+            ) from None
+        if not math.isfinite(left_weight) or not 0.0 <= left_weight <= 1.0:
+            raise ValueError(f"research_formula left_weight out of range: {left_weight}")
+
+        baseline_spec = params.get("residualize_right_against")
+        if baseline_spec is None:
+            raise ValueError(
+                f"research_formula factor needs a pinned residual baseline: "
+                f"{factor.name}"
+            )
+        baseline = validate_residual_baseline(baseline_spec)
+
+        left = self._formula_primitive(params.get("left"), factor, frames)
+        right = self._formula_primitive(params.get("right"), factor, frames)
+
+        # `validate_residual_baseline` has already restricted these to
+        # `price_volume:`, which is what makes a pin self-contained.
+        baseline_values = {
+            item["name"]: self._price_volume_factor(
+                item["implementation"].split(":", 1)[1], frames
+            )
+            for item in baseline["factors"]
+        }
+
+        composite = build_baseline_composite(baseline, baseline_values)
+        residual = cross_sectional_residual(right, composite)
+        return cs_rank_pct(left).mul(left_weight) + cs_rank_pct(residual).mul(
+            1.0 - left_weight
         )
 
     @staticmethod

@@ -96,9 +96,16 @@ def validate_residual_baseline(spec: Mapping[str, Any]) -> dict[str, Any]:
         item = _normalized_factor(raw)
         if not item["name"]:
             raise ResidualBaselineError("residual baseline factor is missing a name")
-        if not is_production_allowlisted_implementation(item["implementation"]):
+        # Deliberately narrower than the production allowlist. A baseline entry
+        # carries only a name and an implementation id, so anything needing a
+        # further binding -- an A_quant expression, or another formulaic factor's
+        # own pinned baseline -- could not be recomputed from the spec alone.
+        # Requiring `price_volume:` keeps a pin self-contained, and rules out
+        # the nested-baseline recursion outright.
+        if not item["implementation"].startswith("price_volume:"):
             raise ResidualBaselineError(
-                f"residual baseline implementation is not allowlisted: "
+                f"residual baseline supports price_volume factors only, so this "
+                f"implementation is not allowlisted as a baseline: "
                 f"{item['name']}:{item['implementation']}"
             )
         if not np.isfinite(item["weight"]) or abs(item["weight"]) <= 1e-15:
@@ -134,6 +141,51 @@ def rank_normalize(values: pd.Series) -> pd.Series:
 
     numeric = pd.to_numeric(values, errors="coerce").replace([np.inf, -np.inf], np.nan)
     return numeric.rank(pct=True).mul(2.0).sub(1.0)
+
+
+def cs_rank_pct(values: pd.Series) -> pd.Series:
+    """Percentile-rank a cross-section into (0, 1], preserving NaN.
+
+    Mirrors mining's `_cs_rank`. This is deliberately *not* `rank_normalize`:
+    the rank blend uses a bare pct rank while the baseline composite uses the
+    [-1, 1] mapping, and conflating them would shift every blended value.
+    """
+
+    numeric = pd.to_numeric(values, errors="coerce").replace([np.inf, -np.inf], np.nan)
+    return numeric.rank(pct=True)
+
+
+def build_baseline_composite(
+    baseline: Mapping[str, Any],
+    factor_values: Mapping[str, pd.Series],
+) -> pd.Series:
+    """Combine a validated baseline's factors into one cross-sectional vector.
+
+    Mirrors `compute_existing_composite`: rank-normalize each factor, treat a
+    missing rank as neutral, weight by signed weight, divide by total absolute
+    weight, and clip to [-1, 1].
+    """
+
+    factors = baseline["factors"]
+    composite: pd.Series | None = None
+    total_weight = 0.0
+    for item in factors:
+        name = item["name"]
+        raw = factor_values.get(name)
+        if raw is None:
+            raise ResidualBaselineError(
+                f"residual baseline factor produced no values: {name}"
+            )
+        signed = float(item["weight"]) * (1.0 if float(item["direction"]) >= 0 else -1.0)
+        contribution = rank_normalize(raw).fillna(0.0).mul(signed)
+        composite = contribution if composite is None else composite.add(
+            contribution, fill_value=0.0
+        )
+        total_weight += abs(float(item["weight"]))
+
+    if composite is None or total_weight <= 1e-12:
+        raise ResidualBaselineError("residual baseline has zero total weight")
+    return composite.div(total_weight).clip(-1.0, 1.0)
 
 
 def cross_sectional_residual(

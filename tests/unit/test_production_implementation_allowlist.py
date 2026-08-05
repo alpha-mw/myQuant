@@ -62,7 +62,13 @@ def _record(implementation: str) -> FactorRecord:
 
 @pytest.mark.parametrize(
     "implementation",
-    ["price_volume:pv_low_dollar_volume_5d", "aquant_expression:fund_fin_net_profit_yoy"],
+    [
+        "price_volume:pv_low_dollar_volume_5d",
+        "aquant_expression:fund_fin_net_profit_yoy",
+        # Admitted, but only reachable with a pinned residual baseline -- see
+        # tests/unit/test_research_formula_runtime.py.
+        "research_formula:rank_blend",
+    ],
 )
 def test_allowlisted_prefixes(implementation):
     assert is_production_allowlisted_implementation(implementation) is True
@@ -71,7 +77,6 @@ def test_allowlisted_prefixes(implementation):
 @pytest.mark.parametrize(
     "implementation",
     [
-        "research_formula:rank_blend",  # not in the dispatcher at all
         "builtin:something",
         "alpha158.FactorEngineer.cross_sectional_score",
         "alpha_mining.FactorLibrary:whatever",
@@ -90,7 +95,8 @@ def test_allowlist_is_a_prefix_match_not_a_substring_match():
 def test_constant_is_the_single_source_of_truth():
     assert "price_volume:" in PRODUCTION_IMPLEMENTATION_PREFIXES
     assert "aquant_expression:" in PRODUCTION_IMPLEMENTATION_PREFIXES
-    assert "research_formula:" not in PRODUCTION_IMPLEMENTATION_PREFIXES
+    assert "research_formula:" in PRODUCTION_IMPLEMENTATION_PREFIXES
+    assert "builtin:" not in PRODUCTION_IMPLEMENTATION_PREFIXES
 
 
 def test_aquant_expression_is_no_longer_refused_by_production_mode():
@@ -106,10 +112,18 @@ def test_aquant_expression_is_no_longer_refused_by_production_mode():
         pass  # any downstream data error is fine; the gate is what we assert
 
 
-def test_research_formula_still_fails_closed_in_production():
+def test_research_formula_passes_the_allowlist_but_not_the_baseline_gate():
+    """Admitting the prefix must not by itself make an unpinned factor runnable.
+
+    The allowlist governs executability; reproducibility is a separate gate. A
+    `research_formula:` factor with no pinned residual baseline still fails
+    closed, just with a more specific message than before.
+    """
+
     scorer = MinedFactorScorer(runtime_mode=PRODUCTION_RUNTIME_MODE)
 
-    with pytest.raises(ValueError, match="not allowlisted"):
+    assert is_production_allowlisted_implementation("research_formula:rank_blend")
+    with pytest.raises(ValueError, match="params|residual baseline"):
         scorer._compute_factor(_record("research_formula:rank_blend"), _frames())
 
 

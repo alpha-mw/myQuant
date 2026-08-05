@@ -24,7 +24,9 @@ from quant_investor.factors.residual_baseline import (
     RESIDUAL_BASELINE_SCHEMA_VERSION,
     ResidualBaselineError,
     baseline_sha256,
+    build_baseline_composite,
     cross_sectional_residual,
+    cs_rank_pct,
     rank_normalize,
     validate_residual_baseline,
 )
@@ -117,11 +119,39 @@ def test_rejects_an_empty_baseline():
         validate_residual_baseline(_spec(factors=[]))
 
 
-def test_rejects_a_baseline_factor_production_cannot_execute():
-    factors = [{"name": "f", "implementation": "research_formula:rank_blend", "weight": 0.2, "direction": 1.0}]
+@pytest.mark.parametrize(
+    "implementation",
+    [
+        "builtin:whatever",
+        # Allowlisted for production scoring, but not self-contained enough to
+        # be a baseline: the v1 spec carries no expression binding.
+        "aquant_expression:fund_fin_net_profit_yoy",
+        # Would otherwise allow a baseline to depend on a factor that has its
+        # own pinned baseline.
+        "research_formula:rank_blend",
+    ],
+)
+def test_rejects_a_baseline_factor_that_is_not_self_contained(implementation):
+    factors = [{"name": "f", "implementation": implementation, "weight": 0.2, "direction": 1.0}]
 
-    with pytest.raises(ResidualBaselineError, match="not allowlisted"):
+    with pytest.raises(ResidualBaselineError, match="not allowlisted as a baseline"):
         validate_residual_baseline(_spec(factors=factors))
+
+
+def test_baseline_validation_is_narrower_than_the_production_allowlist():
+    """Executable in production does not imply usable as a pin."""
+
+    from quant_investor.factors.runtime import is_production_allowlisted_implementation
+
+    assert is_production_allowlisted_implementation("aquant_expression:x") is True
+    with pytest.raises(ResidualBaselineError, match="not allowlisted as a baseline"):
+        validate_residual_baseline(
+            _spec(
+                factors=[
+                    {"name": "f", "implementation": "aquant_expression:x", "weight": 0.2, "direction": 1.0}
+                ]
+            )
+        )
 
 
 def test_rejects_a_zero_weight_baseline():
@@ -166,6 +196,90 @@ def test_rank_normalize_keeps_nan_as_nan():
     values = pd.Series({"a": 1.0, "b": np.nan, "c": 3.0})
 
     assert bool(pd.isna(rank_normalize(values)["b"]))
+
+
+def test_cs_rank_pct_matches_the_mining_blend_convention():
+    """`_cs_rank` is a bare pct rank in (0, 1], not the [-1, 1] mapping.
+
+    The blend and the baseline composite deliberately use different rank
+    conventions; conflating them would silently shift every blended value.
+    """
+
+    values = pd.Series({"a": 1.0, "b": 2.0, "c": 3.0, "d": 4.0})
+
+    ranked = cs_rank_pct(values)
+
+    assert ranked.min() > 0.0 and ranked.max() == pytest.approx(1.0)
+    assert ranked["a"] == pytest.approx(0.25)
+    assert ranked["d"] == pytest.approx(1.0)
+
+
+# --- baseline composite -----------------------------------------------------
+
+
+def test_single_factor_composite_is_that_factor_rank_normalized():
+    """Our pinned case: one factor, so the weight divides straight back out."""
+
+    baseline = validate_residual_baseline(_spec())
+    raw = pd.Series({f"s{i}": float(i) for i in range(10)})
+
+    composite = build_baseline_composite(baseline, {"pv_low_dollar_volume_5d": raw})
+
+    assert np.allclose(composite.to_numpy(), rank_normalize(raw).to_numpy())
+
+
+def test_composite_weights_and_normalizes_by_total_abs_weight():
+    factors = [
+        {"name": "a", "implementation": "price_volume:a", "weight": 0.3, "direction": 1.0},
+        {"name": "b", "implementation": "price_volume:b", "weight": 0.1, "direction": 1.0},
+    ]
+    baseline = validate_residual_baseline(_spec(factors=factors))
+    up = pd.Series({f"s{i}": float(i) for i in range(10)})
+    down = pd.Series({f"s{i}": float(-i) for i in range(10)})
+
+    composite = build_baseline_composite(baseline, {"a": up, "b": down})
+    expected = (
+        rank_normalize(up).mul(0.3) + rank_normalize(down).mul(0.1)
+    ).div(0.4)
+
+    assert np.allclose(composite.to_numpy(), expected.to_numpy())
+
+
+def test_composite_applies_negative_direction():
+    factors = [{**_MINING_TIME_BASELINE[0], "direction": -1.0}]
+    baseline = validate_residual_baseline(_spec(factors=factors))
+    raw = pd.Series({f"s{i}": float(i) for i in range(10)})
+
+    composite = build_baseline_composite(baseline, {"pv_low_dollar_volume_5d": raw})
+
+    assert np.allclose(composite.to_numpy(), -rank_normalize(raw).to_numpy())
+
+
+def test_composite_is_clipped_to_the_unit_interval():
+    baseline = validate_residual_baseline(_spec())
+    raw = pd.Series({f"s{i}": float(i) for i in range(50)})
+
+    composite = build_baseline_composite(baseline, {"pv_low_dollar_volume_5d": raw})
+
+    assert composite.min() >= -1.0 and composite.max() <= 1.0
+
+
+def test_composite_treats_missing_ranks_as_neutral_like_the_mining_path():
+    """`compute_existing_composite` does `.fillna(0.0)` before weighting."""
+
+    baseline = validate_residual_baseline(_spec())
+    raw = pd.Series({"a": 1.0, "b": np.nan, "c": 3.0})
+
+    composite = build_baseline_composite(baseline, {"pv_low_dollar_volume_5d": raw})
+
+    assert float(composite["b"]) == pytest.approx(0.0)
+
+
+def test_composite_fails_closed_when_a_baseline_factor_is_missing():
+    baseline = validate_residual_baseline(_spec())
+
+    with pytest.raises(ResidualBaselineError, match="pv_low_dollar_volume_5d"):
+        build_baseline_composite(baseline, {})
 
 
 # --- cross-sectional residual ----------------------------------------------
