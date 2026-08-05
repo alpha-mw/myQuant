@@ -68,6 +68,16 @@
   replayable research evaluation，但不是 Source Truth、正式激活、晋升、
   production governance、selector 或执行入口；全局状态仍为 `INACTIVE`，
   默认协议仍为 `V15_DEFAULT`。
+- V17 R2.2 Forward Research Evaluator 入口：`quant-investor-v17-v4
+  research-evaluate --workspace-root ... --request-path ...
+  --request-sha256 ...`。公开脚本由 I0 wrapper 路由；除该命令外的 argv 原样
+  延迟委托给既有 V4 dispatcher。`research-evaluate` 只读取 filename/id/SHA
+  绑定的 canonical request 和其中显式列出的 V4/I0 exact refs，重新验证完整
+  Session/Run/Observation/Label/Evaluation closure，并将内容寻址的 Factor、
+  Variant、Hypothesis、Calibration、Regime、Memory proposal 和主 Evaluation
+  Receipt 作为一个 canonical JSON envelope 输出到 stdout。它不扫描 `latest`，
+  不调用 provider，不写结果或 memory，不修改 posterior、factor weight、
+  governance、selector 或 portfolio；V15 仍为默认且 V17 全局仍为 `INACTIVE`。
 - V17 v4 因果 Regime Evidence 入口：
   `quant-investor-v17-v4 regime-evidence-build` 与
   `quant-investor-v17-v4 regime-evidence-status`。V2 contract、validator 和

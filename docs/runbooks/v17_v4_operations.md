@@ -1,5 +1,33 @@
 # V17 v4 Shadow Operations
 
+## Research-only forward evaluation
+
+Evaluate an explicitly sealed I0 request only after its V4 forward labels have
+matured:
+
+```bash
+quant-investor-v17-v4 research-evaluate \
+  --workspace-root /absolute/path/to/myQuant \
+  --request-path data/private/research_intelligence/evaluation_requests/forward-evaluation-request-<sha256>.json \
+  --request-sha256 <exact-byte-sha256>
+```
+
+The request must enumerate every origin and bind its Session path/SHA, Factor
+Observation refs, one matured Label ref, optional V4 Evaluation Receipt refs,
+and the complete recursive closure. Hypothesis, Evidence, Regime and memory
+inputs use exact five-field refs beneath
+`data/private/research_intelligence/evaluation_inputs/`. Missing, future,
+conflicting or unused refs block the complete request; there is no `latest`,
+glob, provider or inferred fallback.
+
+Success prints one canonical, self-contained evaluation envelope to stdout and
+writes nothing. The memory portion is an append proposal rather than a writer.
+The result is diagnostic only: `research_only=true`, `production=false`,
+`default_protocol_state=V15_DEFAULT`, `global_activation_state=INACTIVE`, and
+broker/execution/order/trade remain false. See
+`docs/architecture/v17_r22_forward_research_evaluator.md` for the request,
+metric and receipt contracts.
+
 ## Provisional Forward Evidence
 
 Use the provisional lane only with one pre-sealed request:

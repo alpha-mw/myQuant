@@ -3,6 +3,7 @@
 from .ai import build_ai_draft
 from .forward_adapter import (
     build_observation_evidence_bundle,
+    replay_forward_evaluation_inputs,
     validate_observation_evidence_bundle,
 )
 from .forward_evaluator import ForwardEvidenceEvaluator
@@ -13,6 +14,7 @@ __all__ = [
     "build_evidence",
     "build_observation_evidence_bundle",
     "ForwardEvidenceEvaluator",
+    "replay_forward_evaluation_inputs",
     "validate_evidence",
     "validate_evidence_set",
     "validate_observation_evidence_bundle",

@@ -185,12 +185,23 @@ class ExactArtifactReader:
         if type(workspace_root) is not str or not os.path.isabs(workspace_root):
             raise IntelligenceContractError("workspace_root must be absolute")
         root_path = Path(workspace_root)
-        root_lstat = root_path.lstat()
+        try:
+            root_lstat = root_path.lstat()
+        except OSError as exc:
+            raise IntelligenceContractError("workspace_root cannot be inspected") from exc
         if stat.S_ISLNK(root_lstat.st_mode) or not stat.S_ISDIR(root_lstat.st_mode):
             raise IntelligenceContractError("workspace_root must be a real directory")
         self._root = workspace_root
         self._owner = os.geteuid()
         self._total_bytes = 0
+        self._cache: dict[tuple[str, str], bytes] = {}
+        self._path_hashes: dict[str, str] = {}
+
+    @property
+    def total_bytes(self) -> int:
+        """Return unique verified bytes admitted by this reader."""
+
+        return self._total_bytes
 
     def _validate_stat(self, observed: os.stat_result, *, directory: bool) -> None:
         expected_kind = stat.S_ISDIR if directory else stat.S_ISREG
@@ -232,6 +243,13 @@ class ExactArtifactReader:
     def read(self, relative_path: str, expected_sha256: str) -> bytes:
         path = safe_path(relative_path, label="relative_path")
         expected = sha256(expected_sha256, label="expected_sha256")
+        prior = self._path_hashes.setdefault(path, expected)
+        if prior != expected:
+            raise IntelligenceContractError("same path declares different byte SHAs")
+        cache_key = (path, expected)
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
         parts = path.split("/")
         if len(parts) > MAX_PATH_PARTS:
             raise IntelligenceContractError("governed path exceeds component limit")
@@ -271,6 +289,7 @@ class ExactArtifactReader:
                 raise IntelligenceContractError("artifact path identity drifted during read")
             if hashlib.sha256(raw).hexdigest() != expected:
                 raise IntelligenceContractError("artifact byte SHA mismatch")
+            self._cache[cache_key] = raw
             return raw
         except OSError as exc:
             raise IntelligenceContractError("governed artifact read failed") from exc
@@ -613,6 +632,7 @@ def build_observation_evidence_bundle(
     as_of: str,
     label_refs: Sequence[Mapping[str, Any]] = (),
     evaluation_refs: Sequence[Mapping[str, Any]] = (),
+    reader: ExactArtifactReader | None = None,
 ) -> dict[str, Any]:
     """Bind explicitly supplied typed artifacts to one exact V4 session/run closure."""
 
@@ -625,9 +645,9 @@ def build_observation_evidence_bundle(
         evaluation_refs=evaluation_refs,
     )
 
-    reader = ExactArtifactReader(workspace_root)
+    artifact_reader = ExactArtifactReader(workspace_root) if reader is None else reader
     session, _ = _load_document(
-        reader,
+        artifact_reader,
         relative_path=session_path,
         byte_sha256=session_sha,
         expected_version=SESSION_VERSION,
@@ -644,7 +664,7 @@ def build_observation_evidence_bundle(
         "strategy_id": str(session["strategy_id"]),
     }
     run, run_ref = _load_ref(
-        reader,
+        artifact_reader,
         session["observation_run_ref"],
         expected_versions=(RUN_VERSION,),
     )
@@ -658,9 +678,9 @@ def build_observation_evidence_bundle(
     if run.get("cutoff") > cutoff or run.get("recorded_at") > cutoff:
         raise IntelligenceContractError("run is not available at the intelligence cutoff")
 
-    observation_documents = _load_observations(reader, observations, run=run)
+    observation_documents = _load_observations(artifact_reader, observations, run=run)
     label_documents = _load_labels(
-        reader,
+        artifact_reader,
         labels,
         run=run,
         run_ref=run_ref,
@@ -668,7 +688,7 @@ def build_observation_evidence_bundle(
     )
     supplied_labels = {_ref_key(reference): reference for reference in labels}
     evaluation_documents = _load_evaluations(
-        reader,
+        artifact_reader,
         evaluations,
         run=run,
         run_ref=run_ref,
@@ -676,7 +696,7 @@ def build_observation_evidence_bundle(
         supplied_labels=supplied_labels,
     )
     verified_closure = _verify_closure(
-        reader,
+        artifact_reader,
         roots=[
             session,
             run,
@@ -807,6 +827,81 @@ def validate_observation_evidence_bundle(
     return row
 
 
+def replay_forward_evaluation_inputs(
+    *,
+    workspace_root: str,
+    session_relative_path: str,
+    session_byte_sha256: str,
+    observation_refs: Sequence[Mapping[str, Any]],
+    closure_refs: Sequence[Mapping[str, Any]],
+    as_of: str,
+    label_refs: Sequence[Mapping[str, Any]] = (),
+    evaluation_refs: Sequence[Mapping[str, Any]] = (),
+    reader: ExactArtifactReader | None = None,
+) -> dict[str, Any]:
+    """Replay one origin and return its bundle plus typed validated documents.
+
+    The same descriptor-relative reader may be shared across origins.  Its
+    content cache makes repeated exact refs count once against the global byte
+    budget while preserving the first verified snapshot for deterministic
+    evaluation.
+    """
+
+    artifact_reader = ExactArtifactReader(workspace_root) if reader is None else reader
+    bundle = build_observation_evidence_bundle(
+        workspace_root=workspace_root,
+        session_relative_path=session_relative_path,
+        session_byte_sha256=session_byte_sha256,
+        observation_refs=observation_refs,
+        closure_refs=closure_refs,
+        as_of=as_of,
+        label_refs=label_refs,
+        evaluation_refs=evaluation_refs,
+        reader=artifact_reader,
+    )
+    observations, labels, evaluations = _normalize_supplied_refs(
+        observation_refs=observation_refs,
+        label_refs=label_refs,
+        evaluation_refs=evaluation_refs,
+    )
+    session, _ = _load_document(
+        artifact_reader,
+        relative_path=session_relative_path,
+        byte_sha256=session_byte_sha256,
+        expected_version=SESSION_VERSION,
+    )
+    run, run_ref = _load_ref(
+        artifact_reader,
+        session["observation_run_ref"],
+        expected_versions=(RUN_VERSION,),
+    )
+    observation_documents = _load_observations(artifact_reader, observations, run=run)
+    label_documents = _load_labels(
+        artifact_reader,
+        labels,
+        run=run,
+        run_ref=run_ref,
+        as_of=as_of,
+    )
+    label_map = {_ref_key(reference): reference for reference in labels}
+    evaluation_documents = _load_evaluations(
+        artifact_reader,
+        evaluations,
+        run=run,
+        run_ref=run_ref,
+        as_of=as_of,
+        supplied_labels=label_map,
+    )
+    return {
+        "bundle": bundle,
+        "evaluation_documents": evaluation_documents,
+        "label_documents": label_documents,
+        "observation_documents": observation_documents,
+        "run": run,
+        "session": session,
+    }
+
+
 __all__ = [
     "BUNDLE_VERSION",
     "EVALUATION_VERSION",
@@ -816,5 +911,6 @@ __all__ = [
     "RUN_VERSION",
     "SESSION_VERSION",
     "build_observation_evidence_bundle",
+    "replay_forward_evaluation_inputs",
     "validate_observation_evidence_bundle",
 ]

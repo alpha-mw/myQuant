@@ -8,6 +8,8 @@ is `./run_web.sh`; the Python CLI entrypoint is `quant-investor`.
 
 - [Entrypoints and Versioning](architecture/entrypoints_and_versioning.md)
 - [Research Pipeline and Protocols](architecture/research_pipeline_and_protocols.md)
+- [V17 I0 Investment Intelligence](architecture/v17_i0_investment_intelligence.md)
+- [V17 R2.2 Forward Research Evaluator](architecture/v17_r22_forward_research_evaluator.md)
 
 ## Modules
 

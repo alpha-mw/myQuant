@@ -73,9 +73,7 @@ def test_v5_cli_only_adds_read_only_surfaces_and_writes_nothing(
     assert scripts["quant-investor"] == "quant_investor.cli.main:main"
     assert scripts["quant-investor-v17-v2"] == "quant_investor.v17_v2_runtime.cli:main"
     assert scripts["quant-investor-v17-v3"] == "quant_investor.v17_v3_runtime.cli:main"
-    assert scripts["quant-investor-v17-v4"] == (
-        "quant_investor.v17_v4_runtime.cli_provisional:main"
-    )
+    assert scripts["quant-investor-v17-v4"] == ("quant_investor.intelligence.evaluator.cli:main")
     assert scripts["quant-investor-v17-v5"] == "quant_investor.v17_v5_runtime.cli:main"
     monkeypatch.chdir(tmp_path)
     before = _tree(tmp_path)

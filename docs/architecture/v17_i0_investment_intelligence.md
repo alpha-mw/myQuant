@@ -8,10 +8,10 @@ or modify the V4 observation runtime, the V5 baseline, the current research CLI,
 public Python/Web surfaces, factor governance, portfolio construction or any
 execution surface.
 
-The package root is `quant_investor/intelligence`. Its only external code
-dependency is the read-only V4 canonical/schema contract. There is no provider,
-model, broker, order, trade, selector, portfolio or filesystem writer in the
-package.
+The package root is `quant_investor/intelligence`. Its cross-layer dependencies
+are limited to read-only V4 canonical/schema and typed artifact validators.
+There is no provider, model, broker, order, trade, selector, portfolio or
+filesystem writer in the package.
 
 ## Runtime flow
 
@@ -160,7 +160,7 @@ non-authorizing runtime payload: exact refs encoded inside that JSON string are
 not admitted as evidence. I0 accepts typed Observation, Label and Evaluation
 artifacts only through their separately supplied and version-validated refs.
 
-## AI boundary and R2.2 seam
+## AI boundary and R2.2 evaluator
 
 I0 provides only a pure wrapper for externally supplied AI drafts. Allowed kinds
 are extraction, summary, hypothesis draft and contrary-evidence draft. Every
@@ -169,8 +169,39 @@ validation rejects posterior, likelihood, weight, governance, portfolio,
 selector, provider, broker, execution, order and trade control fields. I0 does
 not import or invoke a model/provider.
 
-`ForwardEvidenceEvaluator` is a Protocol-only seam for Sprint R2.2. I0 does not
-implement or register an evaluator and does not change the current runtime.
+Sprint R2.2 implements the Protocol seam as an additive, offline evaluator in
+`quant_investor/intelligence/evaluator`. It accepts one canonical, content-bound
+request by exact relative path and byte SHA. That request binds every V4
+Session, Run, typed Factor Observation, matured Label, Evaluation Receipt,
+recursive closure ref, hypothesis, evidence item, evaluation policy and memory
+tip. The evaluator reruns the I0 exact adapter; it never discovers a `latest`
+artifact and never reads a provider.
+
+The result is a self-contained
+`myquant.v17.research-intelligence.forward-evaluation-envelope.v1`. Its primary
+artifact is the immutable
+`myquant.v17.research-intelligence.forward-evaluation-receipt.v1`; factor,
+variant, hypothesis, calibration, regime and append-only memory proposal
+receipts are embedded and content addressed independently. The CLI is:
+
+```bash
+quant-investor-v17-v4 research-evaluate \
+  --workspace-root /absolute/path/to/myQuant \
+  --request-path data/private/research_intelligence/evaluation_requests/forward-evaluation-request-<sha256>.json \
+  --request-sha256 <exact-byte-sha256>
+```
+
+All non-`research-evaluate` arguments are delegated unchanged to the existing
+V4 dispatcher. The new command prints exactly one canonical JSON envelope and
+writes no result file. Evaluation may propose memory suffix entries, but the
+caller owns persistence and compare-and-swap of the expected tip.
+
+R2.2 computes research diagnostics only. It cannot change factor weights,
+Bayesian posteriors, factor governance, selectors, portfolio state or any
+production/runtime route. Post-hoc policy conclusions are downgraded, failed
+hypotheses remain in memory as `FAILED_CASE`, and regime evaluation consumes
+only the state selected by the causal I0 one-step filter; it performs no
+backward smoothing.
 
 ## Authority and verification
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from quant_investor.intelligence.evaluator.cli import main as public_v4_main
 from quant_investor.v17_v4_runtime.authority import authority_envelope
 from quant_investor.v17_v4_runtime.cli import main
 
@@ -25,12 +26,17 @@ def test_v17_v4_scaffold_has_no_authority() -> None:
 def test_v17_v4_cli_is_explicit_and_v15_default_is_unchanged() -> None:
     pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert 'quant-investor = "quant_investor.cli.main:main"' in pyproject
-    assert (
-        'quant-investor-v17-v4 = "quant_investor.v17_v4_runtime.cli_provisional:main"' in pyproject
-    )
+    assert 'quant-investor-v17-v4 = "quant_investor.intelligence.evaluator.cli:main"' in pyproject
     assert 'default="v15"' in (REPO_ROOT / "quant_investor" / "cli" / "main.py").read_text(
         encoding="utf-8"
     )
+
+
+def test_v17_v4_wrapper_preserves_legacy_verify_behavior(capsys) -> None:
+    assert public_v4_main(["verify"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "PUBLIC_SURFACES_AVAILABLE_NOT_DEFAULT"
+    assert payload["package_verified"] is True
 
 
 def test_v17_v4_verify_is_no_write_and_all_side_effects_are_false(
