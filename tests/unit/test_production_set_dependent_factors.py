@@ -190,6 +190,45 @@ def test_shadow_mode_still_evaluates_them():
         pass
 
 
+def test_a_pinned_baseline_is_not_refused():
+    """The escape hatch: `residual_baseline` freezes the mutable input.
+
+    Same arithmetic, but the baseline is named and content-hashed instead of
+    read from `registry.selectable_factors()`, so the value is reproducible
+    from market data plus the spec. Only the unpinned `_resid_existing`
+    reference is a blocker.
+    """
+
+    from quant_investor.factors.residual_baseline import (
+        RESIDUAL_BASELINE_SCHEMA_VERSION,
+        baseline_sha256,
+    )
+
+    factors = [
+        {
+            "name": "pv_low_dollar_volume_5d",
+            "implementation": "price_volume:pv_low_dollar_volume_5d",
+            "weight": 0.05,
+            "direction": 1.0,
+        }
+    ]
+    record = _record(
+        "price_volume:pv_low_dollar_volume_5d",
+        {
+            "left": "momentum_120",
+            "right": "fin_net_profit_yoy",
+            "left_weight": 0.25,
+            "residualize_right_against": {
+                "schema_version": RESIDUAL_BASELINE_SCHEMA_VERSION,
+                "factors": factors,
+                "baseline_sha256": baseline_sha256(factors),
+            },
+        },
+    )
+
+    assert production_set_dependent_primitives(record) == ()
+
+
 def test_clean_factors_still_pass_the_gate():
     scorer = MinedFactorScorer(runtime_mode=PRODUCTION_RUNTIME_MODE)
 
