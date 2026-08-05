@@ -7,6 +7,7 @@ import argparse
 import ast
 import hashlib
 import json
+import math
 import re
 import sys
 from dataclasses import dataclass
@@ -40,11 +41,29 @@ from quant_investor.factors.governance_protocol_v3 import (  # noqa: E402
     FORWARD_PRODUCTION_APPLY_BLOCKER,
     benjamini_hochberg_by_family,
 )
+from quant_investor.factors.exposure_maps import (  # noqa: E402
+    GOVERNED_EXPOSURE_SOURCE,
+    GOVERNED_SIZE_POLICY,
+    clamp_analysis_start_to_exposure,
+    governed_exposure_date_bounds,
+)
+from quant_investor.factors.trial_correction import (  # noqa: E402
+    DEFAULT_DSR_FLOOR,
+    DEFAULT_PBO_CEILING,
+    HARVEY_LIU_ZHU_T_HURDLE,
+    TRIAL_CORRECTION_SCHEMA,
+    deflated_sharpe_ratio,
+    effective_trial_count,
+    expected_max_sharpe_under_null,
+    nonoverlap_t_statistic,
+    probability_of_backtest_overfitting,
+)
 from scripts.retest_aquant_alpha_mix_8gate import (  # noqa: E402
     _failed_gate_ids,
     _json_default,
     _matrix_from_frames,
     _passed_gate_ids,
+    _rank_ic_series,
     _safe_float,
     RetestContext,
     build_context,
@@ -55,6 +74,20 @@ from scripts.retest_aquant_alpha_mix_8gate import (  # noqa: E402
 
 DEFAULT_UNIVERSES = ("full_a",)
 DEFAULT_REGISTRY_PATH = "quant_investor/factor_registry/mined_factors.json"
+
+# The governed generation is the intended exposure source; the legacy hybrid
+# raw-table source is still accepted for roots that predate the generation
+# pointer.  Both are strict Parquet and both are hash-bound.
+_ACCEPTED_EXPOSURE_SOURCES = (
+    GOVERNED_EXPOSURE_SOURCE,
+    "strict_parquet_hybrid_market_cap_exposure",
+)
+# Time blocks for the CSCV overfitting pass; must be even for balanced splits.
+TRIAL_CORRECTION_BLOCK_COUNT = 10
+_ACCEPTED_EXPOSURE_SIZE_POLICIES = (
+    GOVERNED_SIZE_POLICY,
+    "same_trade_date_total_mv_then_asof_total_share_times_close",
+)
 
 
 @dataclass(frozen=True)
@@ -426,6 +459,16 @@ def _restrict_context_from_start(
         ],
         existing_composite=existing,
         existing_blocker=context.existing_blocker,
+        # Gate 2 and Gate 6 both read these; dropping them here silently scored
+        # every narrowed candidate as if no exposure evidence existed.
+        sector_by_symbol=dict(context.sector_by_symbol),
+        size_bucket_by_symbol=dict(context.size_bucket_by_symbol),
+        size_bucket_by_date=(
+            context.size_bucket_by_date.reindex(dates)
+            if not context.size_bucket_by_date.empty
+            else context.size_bucket_by_date
+        ),
+        exposure_metadata=dict(context.exposure_metadata),
     )
 
 
@@ -1345,6 +1388,192 @@ def _set_parameter_stability(results: list[dict[str, Any]]) -> None:
         item["summary"] = review.summary
 
 
+def build_trial_correction_evidence(
+    results: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Measure the selection bias this run introduced by searching at all.
+
+    The trial count is every candidate the run scored, and the trial Sharpe
+    spread is how widely their ICIRs varied - together they say how high a
+    worthless candidate could have climbed by luck alone.  PBO is computed
+    across the whole candidate set from per-block IC, so it is a property of the
+    run, not of any one factor.
+    """
+
+    icirs = [
+        _safe_float(dict(item.get("metrics", {}) or {}).get("icir"))
+        for item in results
+    ]
+    finite = [value for value in icirs if math.isfinite(value)]
+    trial_sharpe_std = (
+        float(np.std(finite, ddof=1)) if len(finite) > 1 else 0.0
+    )
+    # Seventy smoothing variants of one idea are one hypothesis, not seventy.
+    trials = effective_trial_count(
+        {
+            str(item.get("name", "")): item.get("_ic_series")
+            for item in results
+            if isinstance(item.get("_ic_series"), pd.Series)
+        }
+    )
+    effective_trials = int(trials["effective_trial_count"])
+    block_frame = _block_performance_frame(results)
+    pbo = probability_of_backtest_overfitting(block_frame)
+    return {
+        "schema": TRIAL_CORRECTION_SCHEMA,
+        "trial_count": len(results),
+        "effective_trial_count": effective_trials,
+        "trial_cluster_count": int(trials["cluster_count"]),
+        "trial_cluster_floor": float(trials["correlation_floor"]),
+        "largest_trial_cluster_size": int(trials["largest_cluster_size"]),
+        "trial_sharpe_std": trial_sharpe_std,
+        "expected_max_sharpe_under_null": expected_max_sharpe_under_null(
+            trial_sharpe_std=trial_sharpe_std, trial_count=effective_trials
+        ),
+        "dsr_floor": DEFAULT_DSR_FLOOR,
+        "t_hurdle": HARVEY_LIU_ZHU_T_HURDLE,
+        "pbo_ceiling": DEFAULT_PBO_CEILING,
+        "pbo": pbo["pbo"],
+        "pbo_split_count": pbo["split_count"],
+        "pbo_config_count": pbo["config_count"],
+        "pbo_block_count": pbo["block_count"],
+        "pbo_median_oos_rank": pbo["median_oos_rank"],
+    }
+
+
+def _block_performance_frame(
+    results: Sequence[Mapping[str, Any]],
+    *,
+    block_count: int = TRIAL_CORRECTION_BLOCK_COUNT,
+) -> pd.DataFrame:
+    """One mean IC per (time block, candidate), for the CSCV pass."""
+
+    columns: dict[str, list[float]] = {}
+    for item in results:
+        series = item.get("_ic_series")
+        if not isinstance(series, pd.Series) or series.empty:
+            continue
+        ordered = series.dropna().sort_index()
+        if len(ordered) < block_count:
+            continue
+        blocks = np.array_split(ordered.to_numpy(dtype=float), block_count)
+        columns[str(item.get("name", ""))] = [
+            float(np.mean(block)) if len(block) else float("nan")
+            for block in blocks
+        ]
+    if not columns:
+        return pd.DataFrame()
+    return pd.DataFrame(columns)
+
+
+def _set_trial_correction(
+    results: list[dict[str, Any]],
+    evidence: Mapping[str, Any],
+) -> None:
+    """Attach per-candidate trial-corrected evidence and drop the IC series.
+
+    This does not re-run the eight gates: it is an additional bar on top of
+    them, never a way around one.
+    """
+
+    trial_count = int(evidence.get("trial_count", 0) or 0)
+    effective_trials = int(
+        evidence.get("effective_trial_count", trial_count) or trial_count
+    )
+    trial_sharpe_std = _safe_float(evidence.get("trial_sharpe_std"))
+    for item in results:
+        series = item.pop("_ic_series", None)
+        metrics = dict(item.get("metrics", {}) or {})
+        if isinstance(series, pd.Series) and not series.empty:
+            clean = series.dropna()
+            t_stat, p_value, cohort_count = nonoverlap_t_statistic(clean)
+            observed_sharpe = _safe_float(metrics.get("icir"))
+            dsr = deflated_sharpe_ratio(
+                observed_sharpe=observed_sharpe,
+                trial_sharpe_std=trial_sharpe_std,
+                trial_count=effective_trials,
+                sample_size=len(clean),
+                skew=float(clean.skew()) if len(clean) > 2 else 0.0,
+                kurtosis=(
+                    float(clean.kurtosis()) + 3.0 if len(clean) > 3 else 3.0
+                ),
+            )
+        else:
+            t_stat, p_value, cohort_count = 0.0, 1.0, 0
+            dsr = 0.0
+        harvey_liu_zhu_passed = bool(abs(t_stat) >= HARVEY_LIU_ZHU_T_HURDLE)
+        dsr_passed = bool(dsr >= DEFAULT_DSR_FLOOR)
+        pbo_passed = bool(
+            _safe_float(evidence.get("pbo"), 1.0) <= DEFAULT_PBO_CEILING
+        )
+        metrics.update(
+            {
+                "trial_count": trial_count,
+                "effective_trial_count": effective_trials,
+                "trial_sharpe_std": trial_sharpe_std,
+                "nonoverlap_t_stat": t_stat,
+                "nonoverlap_p_value": p_value,
+                "nonoverlap_cohort_count": cohort_count,
+                "harvey_liu_zhu_passed": harvey_liu_zhu_passed,
+                "deflated_sharpe_ratio": dsr,
+                "deflated_sharpe_passed": dsr_passed,
+                "run_pbo": _safe_float(evidence.get("pbo"), 1.0),
+                "run_pbo_passed": pbo_passed,
+                "trial_corrected_passed": bool(
+                    harvey_liu_zhu_passed and dsr_passed and pbo_passed
+                ),
+            }
+        )
+        item["metrics"] = metrics
+
+
+def qualified_candidates(
+    results: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Candidates that clear the eight gates *and* the trial correction.
+
+    The gate review answers whether a candidate is any good.  The trial
+    correction answers a different question - whether this run searched hard
+    enough that the leader could look this good by luck - and a candidate has to
+    survive both.  It is strictly an extra bar: nothing here can qualify a
+    candidate the gates rejected.
+    """
+
+    return [
+        dict(item)
+        for item in results
+        if item.get("decision") == "production_candidate"
+        and dict(item.get("metrics", {}) or {}).get("trial_corrected_passed")
+        is True
+    ]
+
+
+def rank_candidates(
+    results: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Order candidates by gate score, then by what they add to the pool.
+
+    Standalone ICIR ranked a reparameterised copy of an existing production
+    factor above a weaker but genuinely independent one, which is how the
+    2026-08-01 run filled its shortlist with near-duplicates.  The residualised
+    ICIR leads instead; standalone ICIR only breaks ties between candidates that
+    add the same amount.
+    """
+
+    return sorted(
+        (dict(item) for item in results),
+        key=lambda item: (
+            int(item.get("gates_passed", 0)),
+            _safe_float(dict(item.get("metrics", {})).get("pool_residual_icir")),
+            _safe_float(dict(item.get("metrics", {})).get("icir")),
+            _safe_float(
+                dict(item.get("metrics", {})).get("master_return_delta")
+            ),
+        ),
+        reverse=True,
+    )
+
+
 def _set_family_fdr(results: list[dict[str, Any]]) -> None:
     """Attach family-scoped BH evidence from the actually computed RankIC p-value."""
 
@@ -1722,15 +1951,13 @@ def _production_market_evidence_blocker(
     )
     if exposure.get("status") != "ready":
         return "factor_exposure_evidence_not_ready"
-    if exposure.get("source") != "strict_parquet_hybrid_market_cap_exposure":
+    if exposure.get("source") not in _ACCEPTED_EXPOSURE_SOURCES:
         return "factor_exposure_source_not_strict_parquet"
     if float(exposure.get("coverage_ratio", 0.0) or 0.0) < 0.95:
         return "factor_exposure_coverage_below_95pct"
     if exposure.get("catalog_validated") is not True:
         return "factor_exposure_catalog_not_validated"
-    if exposure.get("size_policy") != (
-        "same_trade_date_total_mv_then_asof_total_share_times_close"
-    ):
+    if exposure.get("size_policy") not in _ACCEPTED_EXPOSURE_SIZE_POLICIES:
         return "factor_exposure_size_policy_mismatch"
     if float(exposure.get("evaluation_date_coverage_ratio", 0.0) or 0.0) < 0.95:
         return "factor_exposure_date_coverage_below_95pct"
@@ -1740,7 +1967,11 @@ def _production_market_evidence_blocker(
         return "factor_exposure_combined_size_coverage_below_95pct"
     if float(exposure.get("pit_size_pair_coverage_ratio", 0.0) or 0.0) < 0.60:
         return "factor_exposure_exact_pit_size_coverage_below_60pct"
-    if float(exposure.get("reconstructed_size_pair_ratio", 1.0) or 1.0) > 0.35:
+    # 0.0 reconstruction is the best possible result, so this one cannot use the
+    # ``value or default`` guard the ratios above use: a legitimate zero is
+    # falsy and would be read as complete reconstruction.
+    reconstructed = exposure.get("reconstructed_size_pair_ratio")
+    if reconstructed is None or float(reconstructed) > 0.35:
         return "factor_exposure_reconstruction_above_35pct"
     if exposure.get("share_reference_covers_evaluation_end") is not True:
         return "factor_exposure_share_reference_stale_for_evaluation"
@@ -2025,6 +2256,21 @@ def run_mining(args: argparse.Namespace) -> dict[str, Any]:
         analysis_start_date=str(args.analysis_start_date),
         min_price_coverage=float(args.min_analysis_price_coverage),
     )
+    exposure_start, _exposure_end = governed_exposure_date_bounds(
+        Path(args.fundamental_mart_root).expanduser()
+    )
+    exposure_clamped_start = clamp_analysis_start_to_exposure(
+        resolved_analysis_start, exposure_start
+    )
+    analysis_start_clamped_to_exposure = (
+        exposure_clamped_start != resolved_analysis_start
+    )
+    if analysis_start_clamped_to_exposure:
+        context, resolved_analysis_start = restrict_context_to_analysis_window(
+            full_context,
+            analysis_start_date=exposure_clamped_start,
+            min_price_coverage=float(args.min_analysis_price_coverage),
+        )
     exposure_dates = sorted(
         set(context.rebalance_dates) | set(context.biweekly_dates)
     )
@@ -2049,6 +2295,12 @@ def run_mining(args: argparse.Namespace) -> dict[str, Any]:
         evaluation_dates=exposure_dates,
         close_by_date=close_by_date,
     )
+    # Per-candidate maturity contexts are derived from ``full_context``, so it
+    # needs the same exposure or those candidates lose Gate 2 and Gate 6.
+    full_context.sector_by_symbol = dict(context.sector_by_symbol)
+    full_context.size_bucket_by_symbol = dict(context.size_bucket_by_symbol)
+    full_context.size_bucket_by_date = context.size_bucket_by_date
+    full_context.exposure_metadata = dict(context.exposure_metadata)
     expression_inputs = None
     candidates: list[MiningCandidate] = []
     if args.include_price_volume:
@@ -2099,7 +2351,15 @@ def run_mining(args: argparse.Namespace) -> dict[str, Any]:
                 decision_cost_bps=float(args.decision_cost_bps),
                 incremental_sleeve=float(args.incremental_sleeve_weight),
             )
+            # Kept out of ``metrics`` so nothing unserialisable reaches the
+            # report; the trial-correction pass consumes and drops it.
+            candidate_ic_series = _rank_ic_series(
+                signal,
+                metrics_context.forward_return,
+                metrics_context.rebalance_dates,
+            )
         except Exception as exc:
+            candidate_ic_series = pd.Series(dtype=float)
             blockers.append(f"candidate_compute_error:{exc}")
             metrics = {
                 "no_future_leakage": True,
@@ -2142,29 +2402,22 @@ def run_mining(args: argparse.Namespace) -> dict[str, Any]:
             }
         blockers.extend(str(item) for item in metrics.get("blockers", []))
         review = evaluate_with_myquant_gate(candidate.name, metrics)
-        results.append(
-            _candidate_result(
-                candidate,
-                metrics,
-                review,
-                blockers,
-                effective_analysis_start_date=effective_start,
-            )
+        result = _candidate_result(
+            candidate,
+            metrics,
+            review,
+            blockers,
+            effective_analysis_start_date=effective_start,
         )
+        result["_ic_series"] = candidate_ic_series
+        results.append(result)
 
     _set_parameter_stability(results)
     _set_family_fdr(results)
-    results.sort(
-        key=lambda item: (
-            int(item.get("gates_passed", 0)),
-            _safe_float(item.get("metrics", {}).get("icir")),
-            _safe_float(item.get("metrics", {}).get("master_return_delta")),
-        ),
-        reverse=True,
-    )
-    qualified = [
-        item for item in results if item["decision"] == "production_candidate"
-    ]
+    trial_correction = build_trial_correction_evidence(results)
+    _set_trial_correction(results, trial_correction)
+    results = rank_candidates(results)
+    qualified = qualified_candidates(results)
     candidates_by_name = {
         candidate.name: candidate for candidate in candidates
     }
@@ -2237,8 +2490,17 @@ def run_mining(args: argparse.Namespace) -> dict[str, Any]:
         "loaded_symbol_count": len(full_context.frames),
         "horizon_days": int(args.horizon_days),
         "warmup_days": int(args.warmup_days),
+        "trial_correction": dict(trial_correction),
         "analysis_start_date": str(args.analysis_start_date),
         "resolved_analysis_start_date": resolved_analysis_start,
+        "analysis_start_clamped_to_exposure": (
+            analysis_start_clamped_to_exposure
+        ),
+        "exposure_coverage_start_date": (
+            exposure_start.strftime("%Y-%m-%d")
+            if exposure_start is not None
+            else ""
+        ),
         "candidate_maturity_start": bool(args.candidate_maturity_start),
         "min_candidate_signal_coverage": float(
             args.min_candidate_signal_coverage
@@ -2345,6 +2607,23 @@ def write_outputs(output_dir: Path, payload: Mapping[str, Any]) -> None:
                 "mean_rankic": metrics.get("mean_rankic"),
                 "positive_ic_ratio": metrics.get("positive_ic_ratio"),
                 "neutralized_icir": metrics.get("neutralized_icir"),
+                "pool_residual_mean_rankic": metrics.get(
+                    "pool_residual_mean_rankic"
+                ),
+                "pool_residual_icir": metrics.get("pool_residual_icir"),
+                "pool_residual_retention": metrics.get(
+                    "pool_residual_retention"
+                ),
+                "pool_residual_oos_positive_ratio": metrics.get(
+                    "pool_residual_oos_positive_ratio"
+                ),
+                "oos_positive_ratio": metrics.get("oos_positive_ratio"),
+                "nonoverlap_t_stat": metrics.get("nonoverlap_t_stat"),
+                "harvey_liu_zhu_passed": metrics.get("harvey_liu_zhu_passed"),
+                "deflated_sharpe_ratio": metrics.get("deflated_sharpe_ratio"),
+                "trial_corrected_passed": metrics.get(
+                    "trial_corrected_passed"
+                ),
                 "existing_factor_corr": metrics.get("existing_factor_corr"),
                 "master_return_delta": metrics.get("master_return_delta"),
                 "sharpe_delta": metrics.get("sharpe_delta"),
@@ -2384,6 +2663,17 @@ def render_markdown_report(payload: Mapping[str, Any]) -> str:
             f"{payload.get('resolved_analysis_start_date') or 'full'}"
         ),
         f"- Registry write: {payload.get('registry_write')}",
+        (
+            "- Trial correction: "
+            f"{_safe_float(dict(payload.get('trial_correction', {})).get('trial_count')):.0f} trials "
+            f"({_safe_float(dict(payload.get('trial_correction', {})).get('effective_trial_count')):.0f} effective), "
+            f"trial ICIR sd "
+            f"{_safe_float(dict(payload.get('trial_correction', {})).get('trial_sharpe_std')):.3f}, "
+            f"expected best-of-N ICIR under null "
+            f"{_safe_float(dict(payload.get('trial_correction', {})).get('expected_max_sharpe_under_null')):.3f}, "
+            f"PBO "
+            f"{_safe_float(dict(payload.get('trial_correction', {})).get('pbo'), 1.0):.3f}"
+        ),
         (
             "- Candidate maturity start: "
             f"{payload.get('candidate_maturity_start')} "

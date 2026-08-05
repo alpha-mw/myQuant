@@ -25,11 +25,25 @@ from quant_investor.factors.aquant_expression import (  # noqa: E402
     build_aquant_expression_inputs,
     evaluate_aquant_expression,
 )
+from quant_investor.factors.exposure_maps import (  # noqa: E402
+    GOVERNED_EXPOSURE_SOURCE,
+    GOVERNED_SIZE_POLICY,
+    load_governed_exposure_maps,
+)
 from quant_investor.factors.governance import (  # noqa: E402
     FactorGateEvaluator,
     FactorLifecycleState,
     FactorRecord,
     GateResult,
+)
+from quant_investor.factors.incremental_alpha import (  # noqa: E402
+    NO_POOL_EVIDENCE_SOURCE,
+    POOL_RESIDUAL_EVIDENCE_SOURCE,
+    residualize_against_pool,
+)
+from quant_investor.factors.purged_cv import (  # noqa: E402
+    build_cpcv_splits,
+    cpcv_path_evidence,
 )
 from quant_investor.factors.pit_fundamentals import (  # noqa: E402
     DEFAULT_FUNDAMENTAL_MART_ROOT,
@@ -58,6 +72,13 @@ DEFAULT_AQUANT_AUDIT_DIR = Path(
     )
 )
 DEFAULT_UNIVERSES = ("hs300", "zz500", "zz1000")
+# Below this share of the raw ICIR, sector/size demeaning has taken the factor
+# apart and what is left is a style bet rather than stock selection.
+NEUTRALIZED_ICIR_RETENTION_FLOOR = 0.50
+# Gate 7 requires at least a 30-session purge and exactly a 30-session embargo,
+# which is also the forward-return horizon the labels are built on.
+CPCV_PURGE_DAYS = 30
+CPCV_EMBARGO_DAYS = 30
 
 
 @dataclass(frozen=True)
@@ -403,6 +424,38 @@ def _rank_ic_series(signal: pd.DataFrame, returns: pd.DataFrame, dates: Sequence
     return pd.Series(values, dtype=float).replace([np.inf, -np.inf], np.nan).dropna()
 
 
+def _cpcv_evidence_for(
+    ics: pd.Series,
+    context: RetestContext,
+) -> dict[str, Any]:
+    """Return CPCV path evidence, or the empty evidence when it cannot run."""
+
+    sessions = (
+        pd.DatetimeIndex(context.adj_close.index)
+        if not context.adj_close.empty
+        else pd.DatetimeIndex([])
+    )
+    try:
+        splits = build_cpcv_splits(
+            list(sessions),
+            purge_days=CPCV_PURGE_DAYS,
+            embargo_days=CPCV_EMBARGO_DAYS,
+        )
+    except ValueError:
+        return cpcv_path_evidence(
+            pd.Series(dtype=float),
+            (),
+            purge_days=CPCV_PURGE_DAYS,
+            embargo_days=CPCV_EMBARGO_DAYS,
+        )
+    return cpcv_path_evidence(
+        ics,
+        splits,
+        purge_days=CPCV_PURGE_DAYS,
+        embargo_days=CPCV_EMBARGO_DAYS,
+    )
+
+
 def _icir(ics: pd.Series) -> float:
     if len(ics) < 3:
         return 0.0
@@ -678,9 +731,35 @@ def candidate_metrics(
         signal, context.existing_composite, dates
     )
 
-    # These chronological slices are diagnostic only.  This function neither
-    # preregisters a factor nor executes a purged/embargoed v13 control-chain
-    # replay, so they must not be represented as true OOS evidence.
+    raw_icir = _icir(ics)
+
+    # What the candidate adds once the production pool is projected out of it.
+    # A reparameterised copy of something already held residualises to noise,
+    # however good its standalone IC looks.
+    pool_residual_ics = _rank_ic_series(
+        residualize_against_pool(signal, context.existing_composite, dates),
+        context.forward_return,
+        dates,
+    )
+    pool_residual_icir = _icir(pool_residual_ics)
+    pool_residual_mean_rankic = (
+        float(pool_residual_ics.mean()) if not pool_residual_ics.empty else 0.0
+    )
+    pool_residual_retention = (
+        float(abs(pool_residual_icir) / abs(raw_icir))
+        if abs(raw_icir) > 1e-12
+        else 0.0
+    )
+    pool_residual_cpcv = _cpcv_evidence_for(pool_residual_ics, context)
+
+    # Combinatorial purged cross-validation over the session calendar: blocks
+    # and the purge/embargo around them are counted in sessions, so the 30-day
+    # purge and embargo Gate 7 demands are literal.  Each path then keeps
+    # whichever month-end RankIC observations fall inside its test blocks.
+    cpcv_evidence = _cpcv_evidence_for(ics, context)
+
+    # The contiguous thirds below leak across the 30-session label window in
+    # both directions, so they stay diagnostic only.
     fold_positive: list[bool] = []
     if len(ics) >= 3:
         for fold in np.array_split(ics.sort_index(), 3):
@@ -741,6 +820,28 @@ def candidate_metrics(
         if direction_observations
         else 0.0
     )
+    exposure_ready = (
+        str(dict(context.exposure_metadata or {}).get("status", "")) == "ready"
+    )
+    raw_neutralized_icir = _icir(neutral_ics)
+    neutralized_icir = raw_neutralized_icir if exposure_ready else 0.0
+    neutralization_evidence_source = (
+        "governed_exposure_sector_size_demean"
+        if exposure_ready
+        else "exposure_not_ready"
+    )
+    neutralized_icir_retention = (
+        float(abs(raw_neutralized_icir) / abs(raw_icir))
+        if exposure_ready and abs(raw_icir) > 1e-12
+        else 0.0
+    )
+    # A factor is pure style exposure when demeaning inside sector x size
+    # buckets flips its direction or eats most of its ICIR.
+    style_exposure_only = not (
+        exposure_ready
+        and raw_neutralized_icir * raw_icir > 0.0
+        and neutralized_icir_retention >= NEUTRALIZED_ICIR_RETENTION_FLOOR
+    )
     metrics: dict[str, Any] = {
         # The legacy retest does not emit the versioned PIT/tradability audit
         # needed to prove these hard gates.  Unknown evidence is a failure, not
@@ -776,22 +877,53 @@ def candidate_metrics(
         "execution_realism": False,
         "slippage_evidence_source": "not_evaluated",
         "capacity_pressure": _capacity_pressure(signal, context.amount, dates),
-        "neutralized_icir": 0.0,
-        "diagnostic_universe_neutralized_icir": _icir(neutral_ics),
+        # Gate 6 reads real neutralization evidence only when the governed
+        # exposure maps behind it are ready; otherwise the sector/size demean
+        # was a no-op and claiming an alpha survived it would be a fiction.
+        "neutralized_icir": neutralized_icir,
+        "diagnostic_universe_neutralized_icir": raw_neutralized_icir,
+        "neutralization_evidence_source": neutralization_evidence_source,
+        "neutralized_icir_retention": neutralized_icir_retention,
         "existing_factor_corr": existing_corr,
-        "style_exposure_only": True,
-        "oos_positive_ratio": 0.0,
+        "style_exposure_only": style_exposure_only,
+        "oos_positive_ratio": float(cpcv_evidence["positive_path_ratio"]),
         "diagnostic_contiguous_fold_positive_ratio": (
             float(np.mean(fold_positive)) if fold_positive else 0.0
         ),
-        "walk_forward_purged": False,
-        "walk_forward_purge_days": 0,
-        "walk_forward_embargo_days": 0,
-        "walk_forward_fold_count": 0,
-        "walk_forward_evidence_hash": "",
-        "walk_forward_evidence_source": "contiguous_fold_diagnostic_only",
+        "walk_forward_purged": bool(cpcv_evidence["path_count"] > 0),
+        "walk_forward_purge_days": float(cpcv_evidence["purge_days"]),
+        "walk_forward_embargo_days": float(cpcv_evidence["embargo_days"]),
+        "walk_forward_fold_count": float(cpcv_evidence["path_count"]),
+        "walk_forward_evidence_hash": str(cpcv_evidence["evidence_hash"]),
+        "walk_forward_evidence_source": (
+            "cpcv_purged_embargoed"
+            if cpcv_evidence["path_count"] > 0
+            else "cpcv_unavailable"
+        ),
+        # Set-level evidence: the candidate measured against what the pool
+        # already holds, which is what admission should actually rank on.
+        "pool_residual_mean_rankic": pool_residual_mean_rankic,
+        "pool_residual_icir": pool_residual_icir,
+        "pool_residual_retention": pool_residual_retention,
+        "pool_residual_oos_positive_ratio": float(
+            pool_residual_cpcv["positive_path_ratio"]
+        ),
+        "pool_residual_cpcv_mean_path_ic": float(
+            pool_residual_cpcv["mean_path_ic"]
+        ),
+        "incremental_alpha_evidence_source": (
+            POOL_RESIDUAL_EVIDENCE_SOURCE
+            if context.existing_composite is not None
+            else NO_POOL_EVIDENCE_SOURCE
+        ),
+        "cpcv_mean_path_ic": float(cpcv_evidence["mean_path_ic"]),
+        "cpcv_path_ic_std": float(cpcv_evidence["path_ic_std"]),
+        "cpcv_min_path_ic": float(cpcv_evidence["min_path_ic"]),
+        # Parameter sensitivity compares a candidate against its neighbours in
+        # the same family, which only the miner can see.  It stays fail-closed
+        # here and is filled in by the run-level pass.
         "parameter_stability": False,
-        "date_range_robustness": False,
+        "date_range_robustness": bool(cpcv_evidence["date_range_robustness"]),
         "rebalance_frequency_robustness": bool(not biweekly_ics.empty and float(biweekly_ics.mean()) > 0.0),
         "universe_robustness": bool(
             universe_ic and sum(1 for value in universe_ic.values() if value > 0.0) / len(universe_ic) >= 2 / 3
@@ -894,6 +1026,48 @@ def _runtime_smoke(
 
 
 def load_fundamental_exposure_maps(
+    *,
+    mart_root: str | Path,
+    symbols: Sequence[str],
+    as_of: pd.Timestamp | None,
+    evaluation_dates: Sequence[pd.Timestamp] = (),
+    close_by_date: pd.DataFrame | None = None,
+) -> tuple[
+    dict[str, str],
+    dict[str, str],
+    pd.DataFrame,
+    dict[str, Any],
+]:
+    """Prefer the governed generation; fall back to the legacy raw tables.
+
+    The legacy hybrid source is kept only so a root that predates the
+    fundamental generation pointer still resolves.  When both are unavailable
+    the governed blocker is the one worth reporting, because it names the
+    source the pipeline is supposed to be reading.
+    """
+
+    governed = load_governed_exposure_maps(
+        mart_root=mart_root,
+        symbols=symbols,
+        as_of=as_of,
+        evaluation_dates=evaluation_dates,
+        close_by_date=close_by_date,
+    )
+    if governed[3].get("status") == "ready":
+        return governed
+    legacy = _load_legacy_hybrid_exposure_maps(
+        mart_root=mart_root,
+        symbols=symbols,
+        as_of=as_of,
+        evaluation_dates=evaluation_dates,
+        close_by_date=close_by_date,
+    )
+    if legacy[3].get("status") == "ready":
+        return legacy
+    return governed
+
+
+def _load_legacy_hybrid_exposure_maps(
     *,
     mart_root: str | Path,
     symbols: Sequence[str],
