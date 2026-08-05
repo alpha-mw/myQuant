@@ -55,15 +55,13 @@ FORWARD_FUSION_ROOT: Final = PurePosixPath("results/v17_v4_shadow/forward_fusion
 NO_AUTHORITY: Final = {
     "broker": False,
     "execution": False,
-    "formal_research_publication": False,
+    "mainline_authority": False,
     "order": False,
-    "research_runtime_default": False,
+    "production": False,
+    "research_only": True,
     "trade": False,
 }
 _INELIGIBLE: Final = {
-    "canary_evidence_eligible": False,
-    "formal_activation_eligible": False,
-    "formal_research_publication_eligible": False,
     "performance_evidence_eligible": False,
     "promotion_eligible": False,
     "shadow_only": True,
@@ -207,9 +205,6 @@ def _policy(document: Mapping[str, Any]) -> dict[str, Any]:
         _blocked("policy_semantic_sha")
     required = {
         "authority": NO_AUTHORITY,
-        "canary_evidence_eligible": False,
-        "formal_activation_eligible": False,
-        "formal_research_publication_eligible": False,
         "fundamental_weight": "0.5",
         "performance_evidence_eligible": False,
         "promotion_eligible": False,
@@ -313,12 +308,9 @@ def build_shadow_fusion_policy(
     return seal_semantic(
         {
             "authority": dict(NO_AUTHORITY),
-            "canary_evidence_eligible": False,
             "created_at": timestamp,
             "cutoff": timestamp,
             "effective_from_session": effective,
-            "formal_activation_eligible": False,
-            "formal_research_publication_eligible": False,
             "fundamental_weight": _decimal_text(FUNDAMENTAL_WEIGHT),
             "performance_evidence_eligible": False,
             "policy_id": policy,
@@ -418,12 +410,9 @@ def build_forward_fusion_top24(
     return seal_semantic(
         {
             "authority": dict(NO_AUTHORITY),
-            "canary_evidence_eligible": False,
             "cutoff": timestamp,
             "decision_session": session,
             "factor_set_byte_sha256": factor_sha,
-            "formal_activation_eligible": False,
-            "formal_research_publication_eligible": False,
             "fundamental_available_count": len(fundamental),
             "fundamental_unavailable_count": len(pool) - len(fundamental),
             "input_bundle_sha256": bundle_sha,
@@ -515,7 +504,6 @@ def build_shadow_fusion_observation(
     return seal_semantic(
         {
             "authority": dict(NO_AUTHORITY),
-            "canary_evidence_eligible": False,
             "created_at": created,
             "cutoff": cutoff_at,
             "decision_session": session,
@@ -524,8 +512,6 @@ def build_shadow_fusion_observation(
                 policy_semantic_sha256=policy_sha,
             ),
             "factor_set_byte_sha256": factor_sha,
-            "formal_activation_eligible": False,
-            "formal_research_publication_eligible": False,
             "fusion_top24_ref": fusion_ref,
             "input_bundle_sha256": bundle_sha,
             "observation_id": expected_id,
@@ -737,13 +723,10 @@ def build_shadow_fusion_matured_label(
     return seal_semantic(
         {
             "authority": dict(NO_AUTHORITY),
-            "canary_evidence_eligible": False,
             "close_bundle_sha256": close_bundle_sha,
             "cutoff": matured,
             "evidence_group_sha256": prediction["evidence_group_sha256"],
             "factor_set_byte_sha256": prediction["factor_set_byte_sha256"],
-            "formal_activation_eligible": False,
-            "formal_research_publication_eligible": False,
             "horizon_sessions": horizon_sessions,
             "label_end_session": end_session,
             "label_id": f"shadow-fusion-label-{label_identity_sha}",

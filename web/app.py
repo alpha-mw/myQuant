@@ -64,15 +64,13 @@ def create_app(frontend_dist: Path | None = None) -> FastAPI:
     )
 
     # Register routers
-    from web.api.analysis import router as analysis_router
     from web.api.data import router as data_router
-    from web.api.portfolio import router as portfolio_router
     from web.api.settings import router as settings_router
+    from web.routers.research import router as research_router
 
-    app.include_router(analysis_router, prefix="/api/v1")
     app.include_router(data_router, prefix="/api/v1")
-    app.include_router(portfolio_router, prefix="/api/v1")
     app.include_router(settings_router, prefix="/api/v1")
+    app.include_router(research_router)
 
     # Health check
     @app.get("/api/v1/health")

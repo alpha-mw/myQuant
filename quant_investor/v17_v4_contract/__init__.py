@@ -1,9 +1,4 @@
-"""Offline contracts for the ``myquant.v17.v4`` research successor.
-
-This scaffold distinguishes formal-research publication from selection as the
-default research runtime.  It grants neither authority at import time and
-permanently grants no execution, broker, order, or trade authority.
-"""
+"""Offline research-only contracts for ``myquant.v17.v4``."""
 
 from __future__ import annotations
 
@@ -25,8 +20,9 @@ from .schema_validation import (
 )
 
 PROTOCOL_VERSION = "myquant.v17.v4"
-FORMAL_RESEARCH_PUBLICATION_AUTHORITY = False
-RESEARCH_RUNTIME_DEFAULT = False
+RESEARCH_ONLY = True
+MAINLINE_AUTHORITY = False
+PRODUCTION_AUTHORITY = False
 EXECUTION_AUTHORITY = False
 BROKER_AUTHORITY = False
 ORDER_AUTHORITY = False
@@ -35,10 +31,11 @@ TRADE_AUTHORITY = False
 __all__ = [
     "BROKER_AUTHORITY",
     "EXECUTION_AUTHORITY",
-    "FORMAL_RESEARCH_PUBLICATION_AUTHORITY",
+    "MAINLINE_AUTHORITY",
     "ORDER_AUTHORITY",
     "PROTOCOL_VERSION",
-    "RESEARCH_RUNTIME_DEFAULT",
+    "PRODUCTION_AUTHORITY",
+    "RESEARCH_ONLY",
     "TRADE_AUTHORITY",
     "artifact_identity_field",
     "canonical_bytes",

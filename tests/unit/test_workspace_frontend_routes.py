@@ -15,8 +15,6 @@ def test_workspace_frontend_routes_only_expose_new_information_architecture():
     assert 'path="/"' in source
     assert 'Navigate to="/research" replace' in source
     assert 'path="/research"' in source
-    assert 'path="/history"' in source
-    assert 'path="/history/:jobId"' in source
     assert 'path="/settings"' in source
 
     for removed_route in [
@@ -26,6 +24,7 @@ def test_workspace_frontend_routes_only_expose_new_information_architecture():
         "/analysis",
         "/data",
         "/regime",
+        "/history",
     ]:
         assert f'path="{removed_route}"' not in source
 

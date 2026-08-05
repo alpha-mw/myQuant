@@ -66,9 +66,10 @@ MODULE_ORDER: Final = (
 NO_AUTHORITY: Final = {
     "broker": False,
     "execution": False,
-    "formal_research_publication": False,
+    "mainline_authority": False,
     "order": False,
-    "research_runtime_default": False,
+    "production": False,
+    "research_only": True,
     "trade": False,
 }
 
@@ -560,11 +561,8 @@ def compile_deep_v3(
             "assessment_manifest_ref": manifest_ref,
             "authority": dict(NO_AUTHORITY),
             "bundle_id": bundle_id,
-            "canary_evidence_eligible": False,
             "created_at": created,
             "cutoff": manifest["cutoff"],
-            "formal_activation_eligible": False,
-            "formal_research_publication_eligible": False,
             "fusion_top24_ref": dict(manifest["fusion_top24_ref"]),
             "performance_evidence_eligible": False,
             "policy_promotion_eligible": False,
@@ -604,10 +602,7 @@ def compile_deep_v3(
     return {
         "authority": dict(NO_AUTHORITY),
         "bundle_ref": bundle_ref,
-        "canary_evidence_eligible": False,
         "created": write_result.created,
-        "formal_activation_eligible": False,
-        "formal_research_publication_eligible": False,
         "performance_evidence_eligible": False,
         "policy_promotion_eligible": False,
         "promotion_eligible": False,

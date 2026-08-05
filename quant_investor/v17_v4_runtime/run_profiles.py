@@ -1,8 +1,7 @@
 """Closed run-profile definitions for V17 v4 forward evidence.
 
 The profiles in this module are research orchestration profiles only.  They do
-not select the package default, authorize a provider, or grant formal,
-canary, broker, order, execution, or trade authority.
+not grant mainline, provider, broker, order, execution, or trade authority.
 """
 
 from __future__ import annotations
@@ -16,7 +15,6 @@ from typing import Final, Mapping
 class RunProfile(str, Enum):
     EXPLORE = "EXPLORE"
     FORWARD_EVIDENCE = "FORWARD_EVIDENCE"
-    RELEASE_CANDIDATE = "RELEASE_CANDIDATE"
 
 
 class LifecycleLabel(str, Enum):
@@ -67,7 +65,6 @@ class ProfileDefinition:
     profile: RunProfile
     required_stages: frozenset[str]
     optional_stages: frozenset[str]
-    delegates_to_strict_v3: bool = False
 
     @property
     def stages(self) -> tuple[str, ...]:
@@ -120,12 +117,6 @@ PROFILE_DEFINITIONS: Final[Mapping[RunProfile, ProfileDefinition]] = MappingProx
                     "holdings",
                 }
             ),
-        ),
-        RunProfile.RELEASE_CANDIDATE: ProfileDefinition(
-            profile=RunProfile.RELEASE_CANDIDATE,
-            required_stages=frozenset(),
-            optional_stages=frozenset(),
-            delegates_to_strict_v3=True,
         ),
     }
 )

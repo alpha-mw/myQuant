@@ -92,37 +92,13 @@ class MarketDataStore:
                 isinstance(required_tables, list)
                 and "macro_daily" in required_tables
             )
-            catalog_schema_version = str(
-                catalog_payload.get("schema_version") or ""
-            )
-            if macro_declared and catalog_schema_version == "strict-parquet-catalog.v1":
-                from quant_investor.market.macro_mart import (
-                    MacroMartPromotionError,
-                    read_macro_mart,
-                )
-
-                try:
-                    _frame, macro_generation = read_macro_mart(
-                        data_root=self.reader.parquet_market_root / "macro_daily"
-                    )
-                except (MacroMartPromotionError, OSError, ValueError) as exc:
-                    detail = str(exc) or "macro_catalog_generation_invalid"
-                    if detail == "macro_generation_manifest_schema_invalid":
-                        blockers.append("macro_v15_generation_unavailable")
-                    blockers.append(detail)
-            elif (
-                macro_declared
-                and catalog_schema_version == "myquant-cn-clean-catalog.v1"
-            ):
+            if macro_declared:
+                blockers.append("macro_table_protocol_unavailable")
                 macro_generation = {
-                    "status": "legacy_catalog_entry_not_v15_generation",
-                    "catalog_schema_version": catalog_schema_version,
+                    "status": "protocol_unavailable",
                     "production_eligible": False,
-                    "branch_readiness": "blocked",
-                    "blockers": ["macro_v15_generation_unavailable"],
+                    "blockers": ["macro_table_protocol_unavailable"],
                 }
-            elif macro_declared:
-                blockers.append("macro_catalog_schema_invalid")
         blockers = list(dict.fromkeys(blockers))
         status = "passed" if gate.get("healthy") and not blockers else "failed"
         coverage: dict[str, Any] = {}

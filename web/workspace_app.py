@@ -11,14 +11,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
 from quant_investor.env_loading import load_env_file
-from quant_investor.versioning import ARCHITECTURE_VERSION
 from web.config import CORS_ORIGINS, PROJECT_ROOT, workspace_auth_token
 from web.api.data import router as data_router
-from web.routers import presets, research, settings, universe, v17_v4_research
-from web.services.run_history_store import history_store
+from web.routers import research, settings, universe
 
 
-WORKSPACE_API_VERSION = ARCHITECTURE_VERSION.split("-", 1)[0]
+WORKSPACE_API_VERSION = "myquant.v17.v4"
 
 FRONTEND_STATIC_EXTENSIONS = {
     ".css",
@@ -64,7 +62,6 @@ def _serve_frontend_asset(
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     load_env_file(PROJECT_ROOT / ".env")
-    history_store.init_db()
     yield
 
 
@@ -124,10 +121,8 @@ def create_app(
             return await call_next(request)
 
     app.include_router(research.router)
-    app.include_router(presets.router)
     app.include_router(settings.router)
     app.include_router(universe.router)
-    app.include_router(v17_v4_research.router)
     app.include_router(data_router, prefix="/api")
 
     @app.get("/api/health")

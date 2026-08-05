@@ -1,0 +1,238 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://myquant.local/schema/dashboard_contract.v5.schema.json",
+  "title": "myQuant V17 Mainline Dashboard Contract v5",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "input_schema_id",
+    "runtime_state",
+    "strategy_id",
+    "blockers",
+    "active_pointer_ref",
+    "public_run"
+  ],
+  "properties": {
+    "schema_version": {"const": "dashboard_contract.v5"},
+    "input_schema_id": {"const": "myquant.v17.v4.mainline-public-run.v1"},
+    "runtime_state": {
+      "enum": ["ACTIVE", "V17_MAINLINE_UNINITIALIZED", "BLOCKED"]
+    },
+    "strategy_id": {
+      "oneOf": [
+        {"$ref": "#/$defs/identifier"},
+        {"type": "null"}
+      ]
+    },
+    "blockers": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "active_pointer_ref": {
+      "oneOf": [
+        {"$ref": "#/$defs/mainlineActivePointerRef"},
+        {"type": "null"}
+      ]
+    },
+    "public_run": {
+      "oneOf": [
+        {"$ref": "#/$defs/mainlinePublicRun"},
+        {"type": "null"}
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"runtime_state": {"const": "ACTIVE"}}},
+      "then": {
+        "properties": {
+          "strategy_id": {"$ref": "#/$defs/identifier"},
+          "blockers": {"maxItems": 0},
+          "active_pointer_ref": {"$ref": "#/$defs/mainlineActivePointerRef"},
+          "public_run": {"$ref": "#/$defs/mainlinePublicRun"}
+        }
+      },
+      "else": {
+        "properties": {
+          "strategy_id": {"type": "null"},
+          "blockers": {"minItems": 1},
+          "active_pointer_ref": {"type": "null"},
+          "public_run": {"type": "null"}
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "identifier": {
+      "type": "string",
+      "maxLength": 80,
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
+    "unitDecimal": {
+      "type": "string",
+      "pattern": "^(?:0(?:\\.[0-9]+)?|1(?:\\.0+)?)$"
+    },
+    "artifactRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_id", "relative_path", "byte_sha256"],
+      "properties": {
+        "schema_id": {
+          "type": "string",
+          "pattern": "^myquant\\.v17\\.v4\\.[a-z0-9-]+\\.v[0-9]+$"
+        },
+        "relative_path": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$"
+        },
+        "byte_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "mainlineActivePointerRef": {
+      "allOf": [
+        {"$ref": "#/$defs/artifactRef"},
+        {"properties": {
+          "schema_id": {"const": "myquant.v17.v4.mainline-active-pointer.v1"},
+          "relative_path": {"pattern": "^results/v17_mainline/strategies/[a-z0-9-]+/_active\\.json$"}
+        }}
+      ]
+    },
+    "mainlineRunRef": {
+      "allOf": [
+        {"$ref": "#/$defs/artifactRef"},
+        {"properties": {
+          "schema_id": {"const": "myquant.v17.v4.mainline-run.v1"},
+          "relative_path": {"pattern": "^results/v17_mainline/strategies/[a-z0-9-]+/runs/[a-z0-9-]+/run\\.json$"}
+        }}
+      ]
+    },
+    "formalOutputRef": {
+      "allOf": [
+        {"$ref": "#/$defs/artifactRef"},
+        {"properties": {
+          "schema_id": {"const": "myquant.v17.v4.formal-output.v1"},
+          "relative_path": {"pattern": "^results/v17_v4_formal_research/"}
+        }}
+      ]
+    },
+    "portfolioOutputRef": {
+      "allOf": [
+        {"$ref": "#/$defs/artifactRef"},
+        {"properties": {
+          "schema_id": {"const": "myquant.v17.v4.portfolio-output.v1"},
+          "relative_path": {"pattern": "^results/v17_v4_formal_research/"}
+        }}
+      ]
+    },
+    "sourceClosureRef": {
+      "allOf": [
+        {"$ref": "#/$defs/artifactRef"},
+        {"properties": {
+          "schema_id": {"const": "myquant.v17.v4.pit-generation-catalog.v1"},
+          "relative_path": {"pattern": "^data/private/v17_v4_sources/"}
+        }}
+      ]
+    },
+    "authorityFlags": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "broker_calls",
+        "execution_calls",
+        "llm_control_calls",
+        "order_calls",
+        "provider_calls",
+        "selector_writes",
+        "trade_calls"
+      ],
+      "properties": {
+        "broker_calls": {"const": false},
+        "execution_calls": {"const": false},
+        "llm_control_calls": {"const": false},
+        "order_calls": {"const": false},
+        "provider_calls": {"const": false},
+        "selector_writes": {"const": false},
+        "trade_calls": {"const": false}
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["symbol", "lane", "current_target", "final_target"],
+      "properties": {
+        "symbol": {
+          "type": "string",
+          "pattern": "^[0-9]{6}\\.(?:SH|SZ|BJ)$"
+        },
+        "lane": {
+          "enum": ["REVIEW_ONLY_HOLDING", "SELECTION_POOL"]
+        },
+        "current_target": {"$ref": "#/$defs/unitDecimal"},
+        "final_target": {"$ref": "#/$defs/unitDecimal"}
+      }
+    },
+    "mainlinePublicRun": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_id",
+        "protocol",
+        "canonical_strategy_id",
+        "run_id",
+        "state",
+        "market",
+        "capability",
+        "authority_source",
+        "authority_flags",
+        "read_only",
+        "selector_used",
+        "fallback_used",
+        "active_pointer_ref",
+        "mainline_run_ref",
+        "formal_output_ref",
+        "portfolio_output_ref",
+        "source_closure_ref",
+        "cash_weight",
+        "gross_weight",
+        "targets",
+        "semantic_sha256"
+      ],
+      "properties": {
+        "schema_id": {"const": "myquant.v17.v4.mainline-public-run.v1"},
+        "protocol": {"const": "myquant.v17.v4"},
+        "canonical_strategy_id": {"$ref": "#/$defs/identifier"},
+        "run_id": {"$ref": "#/$defs/identifier"},
+        "state": {"const": "ACTIVE"},
+        "market": {"const": "CN_A_SHARE"},
+        "capability": {"const": "RESEARCH_PORTFOLIO"},
+        "authority_source": {"const": "FORMAL_V17_V4"},
+        "authority_flags": {"$ref": "#/$defs/authorityFlags"},
+        "read_only": {"const": true},
+        "selector_used": {"const": false},
+        "fallback_used": {"const": false},
+        "active_pointer_ref": {"$ref": "#/$defs/mainlineActivePointerRef"},
+        "mainline_run_ref": {"$ref": "#/$defs/mainlineRunRef"},
+        "formal_output_ref": {"$ref": "#/$defs/formalOutputRef"},
+        "portfolio_output_ref": {"$ref": "#/$defs/portfolioOutputRef"},
+        "source_closure_ref": {"$ref": "#/$defs/sourceClosureRef"},
+        "cash_weight": {"$ref": "#/$defs/unitDecimal"},
+        "gross_weight": {"$ref": "#/$defs/unitDecimal"},
+        "targets": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 524,
+          "items": {"$ref": "#/$defs/target"},
+          "uniqueItems": true,
+          "x-ordering": "symbol ASCII strictly ascending"
+        },
+        "semantic_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  }
+}

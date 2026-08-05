@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "quant-investor"
 version = "17.0.0"
-description = "V16 retirement release with the fail-closed V15 production/default protocol"
+description = "V17 v4 single-mainline research runtime with fail-closed active-pointer routing"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
@@ -68,8 +68,6 @@ Repository = "https://github.com/alpha-mw/myQuant"
 
 [project.scripts]
 quant-investor = "quant_investor.cli.main:main"
-quant-investor-v17-v2 = "quant_investor.v17_v2_runtime.cli:main"
-quant-investor-v17-v3 = "quant_investor.v17_v3_runtime.cli:main"
 quant-investor-v17-v4 = "quant_investor.v17_v4_runtime.cli:main"
 app = "web.main:app"
 

@@ -1,18 +1,12 @@
-import { ChartNoAxesCombined, History, Settings2, ShieldCheck, Workflow } from 'lucide-react'
+import { ChartNoAxesCombined, Settings2, ShieldCheck, Workflow } from 'lucide-react'
 import { Link, NavLink } from 'react-router-dom'
 
 const NAV_ITEMS = [
   {
     to: '/research',
     label: 'Research Workspace',
-    description: 'Run the mainline research flow and review live output.',
+    description: 'Read the governed active V17 research portfolio.',
     icon: ChartNoAxesCombined,
-  },
-  {
-    to: '/history',
-    label: 'Run History',
-    description: 'Inspect completed runs, failures, and saved reports.',
-    icon: History,
   },
   {
     to: '/settings',
@@ -33,11 +27,11 @@ export function Sidebar() {
           <p className="text-[11px] uppercase tracking-[0.28em] text-teal-300/70">Quant Investor</p>
           <h1 className="mt-2 font-serif text-2xl text-white">myQuant Workspace</h1>
           <p className="mt-2 max-w-56 text-sm leading-6 text-slate-400">
-            Single-mainline research, deterministic portfolio construction, and report review.
+            Exact-pointer V17 research portfolio readout with fail-closed provenance.
           </p>
         </Link>
         <span className="rounded-full border border-amber-300/20 bg-amber-300/10 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-amber-100">
-          v12
+          V17
         </span>
       </div>
 
@@ -51,7 +45,7 @@ export function Sidebar() {
             <NavLink
               key={item.to}
               to={item.to}
-              end={item.to !== '/history'}
+              end
               className={({ isActive }) =>
                 `group flex min-w-[15rem] items-start gap-3 rounded-3xl border px-4 py-4 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300 lg:min-w-0 ${
                   isActive
@@ -80,19 +74,12 @@ export function Sidebar() {
           Governance
         </div>
         <p className="mt-3 text-sm leading-6 text-slate-300">
-          Research Agents feed structured evidence into
-          {' '}
-          <span className="text-white">RiskGuard</span>,
-          {' '}
-          <span className="text-white">ICCoordinator</span>,
-          {' '}
-          <span className="text-white">PortfolioConstructor</span>, and a read-only
-          {' '}
-          <span className="text-white">NarratorAgent</span>.
+          One canonical active pointer closes the V17 run, formal output,
+          portfolio output, and source evidence by exact bytes.
         </p>
         <div className="mt-4 inline-flex items-center gap-2 rounded-full border border-emerald-400/20 bg-emerald-400/10 px-3 py-1 text-xs text-emerald-200">
           <ShieldCheck size={14} aria-hidden="true" />
-          Risk veto remains authoritative
+          Read only · no fallback
         </div>
       </div>
     </aside>

@@ -41,16 +41,13 @@ SHANGHAI: Final = ZoneInfo("Asia/Shanghai")
 NO_AUTHORITY: Final = {
     "broker": False,
     "execution": False,
-    "formal_research_publication": False,
+    "mainline_authority": False,
     "order": False,
-    "research_runtime_default": False,
+    "production": False,
+    "research_only": True,
     "trade": False,
 }
 _DISABLED: Final = {
-    "canary_evidence_eligible": False,
-    "formal_activation_eligible": False,
-    "formal_research_publication_eligible": False,
-    "production_default_eligible": False,
     "promotion_eligible": False,
     "provider_authority": False,
     "provider_invoked": False,

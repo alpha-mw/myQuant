@@ -121,7 +121,7 @@ export default function SettingsPage() {
         </div>
         <h1 className="mt-3 text-2xl font-semibold text-white">Configure the Workspace</h1>
         <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
-          Manage provider credentials, default research parameters, and the persistence layer used by the research workspace.
+          Inspect version-neutral credentials and local data configuration. V17 research results remain exact-pointer, read-only views.
         </p>
       </header>
 
@@ -386,7 +386,7 @@ function DatabaseTab({ settings }: { settings: SettingsResponse }) {
       <div className="max-w-3xl">
         <h2 className="text-lg font-semibold text-white">Database Health</h2>
         <p className="mt-2 text-sm leading-6 text-slate-400">
-          The workspace persists run history, presets, and pending trade ideas in a dedicated SQLite database while market data remains in the stock DB path below.
+          The workspace database shown here is version-neutral operational storage. The V17 research page does not scan or migrate historical jobs.
         </p>
       </div>
 

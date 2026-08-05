@@ -1,33 +1,24 @@
 # Documentation Index
 
-Current documentation describes the single mainline, the research pipeline, and
-the live workspace modules. The repository launcher for the research workspace
-is `./run_web.sh`; the Python CLI entrypoint is `quant-investor`.
+V17 v4 is the repository's only supported decision mainline. These pages
+describe the active-pointer contract, operator workflow, strict data boundary,
+and the separate Shadow forward-evidence lane.
 
-## Architecture
+## Start here
 
-- [Entrypoints and Versioning](architecture/entrypoints_and_versioning.md)
-- [Research Pipeline and Protocols](architecture/research_pipeline_and_protocols.md)
+- [V17 v4 mainline contract](architecture/v17_v4_production_research_contract.md)
+- [V17 v4 operations](runbooks/v17_v4_operations.md)
+- [Entrypoints and versioning](architecture/entrypoints_and_versioning.md)
+- [Forward-evidence runtime](architecture/v17_v4_forward_evidence_runtime.md)
 
-## Modules
+## Supporting contracts
 
-- [Module Map](modules/module_map.md)
-- [Macro Risk Reference](modules/macro_risk_reference.md)
-- [Macro v2 Observer](modules/macro_v2_observer.md)
+- [Research pipeline and protocols](architecture/research_pipeline_and_protocols.md)
+- [Factor Governance v4](factor_governance_v4.md)
+- [Module map](modules/module_map.md)
+- [Macro risk reference](modules/macro_risk_reference.md)
 
-## Runtime Notes
-
-- [v15 Operations](runbooks/v15_operations.md) is the current no-Theme DAG and
-  schedule contract. The v14 and v13 runbooks are retained only as historical
-  evidence.
-
-- `quant-investor research run` executes the current single mainline.
-- `quant-investor market maintain --staged` runs bounded CN staged maintenance:
-  it validates Parquet canonical health, fills only target-date gaps in limited
-  batches, and writes progress artifacts without blocking formal review.
-- `quant-investor market maintain` without `--staged` preserves the legacy
-  maintenance path for explicit full refresh work.
-- `quant-investor market download` is a compatibility alias for the maintenance
-  path.
-- `quant-investor web` serves the FastAPI research workspace backend and the
-  React/Vite research workspace frontend boundary.
+Public result commands resolve one exact strategy pointer below
+`results/v17_mainline/`. They never scan result directories or substitute a
+Shadow session. Missing authority is an unavailable result, not permission to
+create one.

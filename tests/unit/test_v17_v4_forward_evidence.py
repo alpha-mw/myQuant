@@ -26,9 +26,10 @@ STRATEGY_ID = "synthetic-core"
 NO_AUTHORITY = {
     "broker": False,
     "execution": False,
-    "formal_research_publication": False,
+    "mainline_authority": False,
     "order": False,
-    "research_runtime_default": False,
+    "production": False,
+    "research_only": True,
     "trade": False,
 }
 
@@ -176,11 +177,10 @@ def test_forward_evidence_success_is_exact_and_idempotent(tmp_path: Path):
     )
 
     assert first["created"] is True
-    assert first["global_activation_state"] == "INACTIVE"
     assert first["run_state"] == "FORWARD_EVIDENCE_ACTIVE"
-    assert first["research_runtime_default"] is False
-    assert first["formal_activation_eligible"] is False
-    assert first["authority"] is False
+    assert first["research_only"] is True
+    assert first["mainline_authority"] is False
+    assert first["authority"] == NO_AUTHORITY
     assert all(value is False for value in first["side_effects"].values())
     assert first["lifecycle_labels"] == [
         "SOURCE_SNAPSHOT",
@@ -250,7 +250,6 @@ def test_crash_after_output_leaves_orphan_and_retry_does_not_reexecute(
         stage_callbacks=_callbacks(calls),
     )
 
-    assert result["global_activation_state"] == "INACTIVE"
     assert result["run_state"] == "FORWARD_EVIDENCE_ACTIVE"
     assert calls["quant"] == 1
 
@@ -293,7 +292,6 @@ def test_provided_invalid_optional_stage_blocks_entire_run(tmp_path: Path):
         )
 
     assert caught.value.exit_code == 2
-    assert caught.value.global_activation_state == "INACTIVE"
     assert caught.value.run_state == "BLOCKED"
     request_id = published["request_id"]
     session = (
@@ -354,33 +352,7 @@ def test_explore_succeeds_without_forward_only_stages(tmp_path: Path):
         stage_callbacks=callbacks,
     )
 
-    assert result["global_activation_state"] == "INACTIVE"
     assert result["run_state"] == "EXPLORE_COMPLETE"
-
-
-def test_release_candidate_requires_strict_v3_delegate(tmp_path: Path):
-    published = _publish(tmp_path, "RELEASE_CANDIDATE")
-
-    with pytest.raises(
-        ForwardEvidenceError,
-        match="release_candidate_delegate_absent",
-    ):
-        run_forward(
-            tmp_path,
-            request_path=published["request_path"],
-            request_sha256=published["request_sha256"],
-        )
-
-    delegated = run_forward(
-        tmp_path,
-        request_path=published["request_path"],
-        request_sha256=published["request_sha256"],
-        release_candidate_delegate=lambda _context: {"strict_v3": True},
-    )
-    assert delegated["delegated_to_strict_v3"] is True
-    assert delegated["authority"] is False
-    assert delegated["global_activation_state"] == "INACTIVE"
-    assert delegated["run_state"] == "BLOCKED"
 
 
 def _write_stage_input(
@@ -467,21 +439,18 @@ def test_request_driven_stage_inputs_succeed_without_callbacks(
         request_sha256=published["request_sha256"],
     )
 
-    assert result["global_activation_state"] == "INACTIVE"
     assert result["run_state"] == "FORWARD_EVIDENCE_ACTIVE"
     run = _load(tmp_path, result["run_ref"]["relative_path"])
     assert run["execution_outcome"] == "SUCCEEDED"
     assert run["completeness"] == "COMPLETE"
-    assert run["global_activation_state"] == "INACTIVE"
     assert run["run_state"] == "FORWARD_EVIDENCE_ACTIVE"
-    assert run["research_runtime_default"] is False
-    assert run["formal_activation_eligible"] is False
+    assert run["research_only"] is True
+    assert run["mainline_authority"] is False
     assert run["broker"] is False
     assert run["execution"] is False
     assert run["order"] is False
     assert run["trade"] is False
     session = _load(tmp_path, result["session_ref"]["relative_path"])
-    assert session["global_activation_state"] == "INACTIVE"
     assert session["run_state"] == "FORWARD_EVIDENCE_ACTIVE"
     assert result["session_ref"]["relative_path"].startswith(
         "results/v17_v4_shadow/forward_evidence/" f"strategies/{STRATEGY_ID}/sessions/{SESSION}/"

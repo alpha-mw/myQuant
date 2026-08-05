@@ -29,6 +29,15 @@ from quant_investor.v17_v4_runtime.security_directory import SourceAdmissionErro
 CUTOFF = "2026-07-27T08:00:00Z"
 START = "2026-07-18"
 END = "2026-07-19"
+NO_AUTHORITY = {
+    "broker": False,
+    "execution": False,
+    "mainline_authority": False,
+    "order": False,
+    "production": False,
+    "research_only": True,
+    "trade": False,
+}
 
 
 def _rows() -> dict[str, list[dict[str, Any]]]:
@@ -248,7 +257,7 @@ def test_catalog_and_pointer_are_typed_sealed_and_non_authorizing() -> None:
     )
     assert pointer["version"] == POINTER_VERSION
     assert pointer["state"] == "PIT_CATALOG_ACTIVE"
-    assert not any(pointer["authority"].values())
+    assert pointer["authority"] == NO_AUTHORITY
     validate_artifact(pointer)
 
 

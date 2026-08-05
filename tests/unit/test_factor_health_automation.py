@@ -114,27 +114,17 @@ def test_runtime_smoke_reads_parquet_serving_without_csv_dependency(
     tmp_path,
 ):
     _write_parquet_fixture(tmp_path)
-    captured = {}
-
-    def fake_build_quant_branch_result(*, frames):
-        captured["symbols"] = sorted(frames)
-        return SimpleNamespace(
-            metadata={
-                "factor_mode": "governed_mined_factors",
-                "mined_factor_runtime": {
-                    "factor_count": 14,
-                    "coverage_rate": 1.0,
-                },
-            },
-            symbol_scores={symbol: 0.1 for symbol in frames},
-        )
-
-    from quant_investor.market.dag import packets
+    from quant_investor.factors.runtime import MinedFactorRegistry
 
     monkeypatch.setattr(
-        packets,
-        "_build_quant_branch_result",
-        fake_build_quant_branch_result,
+        MinedFactorRegistry,
+        "load_production",
+        classmethod(
+            lambda cls: SimpleNamespace(
+                metadata={},
+                selectable_manifest=lambda: {"production_factor_count": 14},
+            )
+        ),
     )
 
     legacy_csv = tmp_path / "clean" / "cn_daily" / "hs300"
@@ -152,11 +142,9 @@ def test_runtime_smoke_reads_parquet_serving_without_csv_dependency(
         mode_policy="strict",
     )
 
-    assert captured["symbols"] == ["000001.SZ", "000002.SZ"]
     assert smoke["data_source"] == "parquet_canonical"
-    assert smoke["factor_mode"] == "governed_mined_factors"
+    assert smoke["factor_mode"] == "production_registry_preflight"
     assert smoke["factor_count"] == 14
-    assert smoke["coverage_rate"] == 1.0
     assert smoke["symbols_loaded"] == 2
     assert smoke["snapshot_id"] == "snap-001"
     assert smoke["latest_complete_trade_date"] == "20260103"

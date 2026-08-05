@@ -1,40 +1,6 @@
-"""
-Quant-Investor 官方 Python 入口。
-"""
+"""Quant-Investor V17-only public Python API."""
 
-from quant_investor._sourceless import install_sourceless_finder
+from quant_investor.pipeline import QuantInvestor
+from quant_investor.v17_mainline import MainlineStore, V17MainlineError
 
-install_sourceless_finder()
-
-from quant_investor.branch_contracts import (
-    BranchResult,
-    CalibratedBranchSignal,
-    CorporateDocumentSnapshot,
-    DebateVerdict,
-    EvidencePacket,
-    ForecastSnapshot,
-    FundamentalSnapshot,
-    ManagementSnapshot,
-    OwnershipSnapshot,
-    PortfolioStrategy,
-    ResearchPipelineResult,
-    UnifiedDataBundle,
-)
-from quant_investor.pipeline import QuantInvestor, QuantInvestorPipelineResult
-
-__all__ = [
-    "QuantInvestor",
-    "QuantInvestorPipelineResult",
-    "UnifiedDataBundle",
-    "BranchResult",
-    "CalibratedBranchSignal",
-    "EvidencePacket",
-    "DebateVerdict",
-    "FundamentalSnapshot",
-    "ForecastSnapshot",
-    "ManagementSnapshot",
-    "OwnershipSnapshot",
-    "CorporateDocumentSnapshot",
-    "PortfolioStrategy",
-    "ResearchPipelineResult",
-]
+__all__ = ["MainlineStore", "QuantInvestor", "V17MainlineError"]

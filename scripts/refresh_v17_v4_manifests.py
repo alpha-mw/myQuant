@@ -20,9 +20,10 @@ QUANT_INVESTOR = ROOT / "quant_investor"
 NO_AUTHORITY = {
     "broker": False,
     "execution": False,
-    "formal_research_publication": False,
+    "mainline_authority": False,
     "order": False,
-    "research_runtime_default": False,
+    "production": False,
+    "research_only": True,
     "trade": False,
 }
 

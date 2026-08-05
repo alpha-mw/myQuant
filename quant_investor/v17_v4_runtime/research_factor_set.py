@@ -54,9 +54,10 @@ GATE_ORDER: Final = tuple(GATE_WEIGHTS)
 NO_AUTHORITY: Final = {
     "broker": False,
     "execution": False,
-    "formal_research_publication": False,
+    "mainline_authority": False,
     "order": False,
-    "research_runtime_default": False,
+    "production": False,
+    "research_only": True,
     "trade": False,
 }
 SHANGHAI_TIMEZONE: Final = ZoneInfo("Asia/Shanghai")
@@ -114,7 +115,6 @@ _FACTOR_KEYS: Final = {
 _FACTOR_SET_KEYS: Final = {
     "audit_session",
     "authority",
-    "canary_evidence_eligible",
     "candidate_catalog_sha256",
     "catalog_resource_sha256",
     "cutoff",
@@ -122,7 +122,6 @@ _FACTOR_SET_KEYS: Final = {
     "eligible_distinct_slot_count",
     "eligible_factor_count",
     "factor_set_id",
-    "formal_activation_eligible",
     "implementation_resource_sha256",
     "monthly_audit_ref",
     "performance_evidence_eligible",
@@ -140,11 +139,9 @@ _FACTOR_SET_KEYS: Final = {
 _FACTOR_SET_OPTIONAL_KEYS: Final = {"published_at"}
 _POINTER_KEYS: Final = {
     "authority",
-    "canary_evidence_eligible",
     "cutoff",
     "effective_from_session",
     "factor_set_ref",
-    "formal_activation_eligible",
     "performance_evidence_eligible",
     "pointer_id",
     "previous_pointer_sha256",
@@ -167,12 +164,10 @@ _SLICE_KEYS: Final = {
 _INPUT_BUNDLE_KEYS: Final = {
     "authority",
     "bundle_id",
-    "canary_evidence_eligible",
     "cutoff",
     "decision_session",
     "factor_set_ref",
     "field_slices",
-    "formal_activation_eligible",
     "performance_evidence_eligible",
     "protocol_version",
     "required_fields",
@@ -705,7 +700,6 @@ def build_research_shadow_factor_set(
         {
             "audit_session": audit,
             "authority": dict(NO_AUTHORITY),
-            "canary_evidence_eligible": False,
             "candidate_catalog_sha256": CANDIDATE_CATALOG_SHA256,
             "catalog_resource_sha256": CATALOG_RESOURCE_SHA256,
             "cutoff": cutoff_value,
@@ -718,7 +712,6 @@ def build_research_shadow_factor_set(
             "eligible_distinct_slot_count": len(by_slot),
             "eligible_factor_count": len(eligible),
             "factor_set_id": set_id,
-            "formal_activation_eligible": False,
             "implementation_resource_sha256": (IMPLEMENTATION_RESOURCE_SHA256),
             "monthly_audit_ref": audit_ref,
             "performance_evidence_eligible": False,
@@ -784,8 +777,6 @@ def validate_research_shadow_factor_set(
         or document["protocol_version"] != PROTOCOL_VERSION
         or document["authority"] != NO_AUTHORITY
         or document["shadow_only"] is not True
-        or document["formal_activation_eligible"] is not False
-        or document["canary_evidence_eligible"] is not False
         or document["performance_evidence_eligible"] is not False
     ):
         raise _blocked("factor_set_authority")
@@ -893,11 +884,9 @@ def _pointer_document(
 ) -> dict[str, Any]:
     payload = {
         "authority": dict(NO_AUTHORITY),
-        "canary_evidence_eligible": False,
         "cutoff": str(factor_set["cutoff"]),
         "effective_from_session": str(factor_set["effective_from_session"]),
         "factor_set_ref": dict(factor_set_ref),
-        "formal_activation_eligible": False,
         "performance_evidence_eligible": False,
         "pointer_id": ("research-factor-set:" + str(factor_set["factor_set_id"])),
         "previous_pointer_sha256": expected_pointer_sha256,
@@ -926,8 +915,6 @@ def validate_research_shadow_factor_set_pointer(
         or document["protocol_version"] != PROTOCOL_VERSION
         or document["authority"] != NO_AUTHORITY
         or document["shadow_only"] is not True
-        or document["formal_activation_eligible"] is not False
-        or document["canary_evidence_eligible"] is not False
         or document["performance_evidence_eligible"] is not False
     ):
         raise _blocked("factor_set_pointer_authority")
@@ -1034,12 +1021,10 @@ def build_research_factor_input_bundle(
         {
             "authority": dict(NO_AUTHORITY),
             "bundle_id": _identifier(bundle_id, label="bundle_id"),
-            "canary_evidence_eligible": False,
             "cutoff": cutoff_value,
             "decision_session": session,
             "factor_set_ref": expected_set_ref,
             "field_slices": slices,
-            "formal_activation_eligible": False,
             "performance_evidence_eligible": False,
             "protocol_version": PROTOCOL_VERSION,
             "required_fields": required,
@@ -1114,8 +1099,6 @@ def validate_research_factor_input_bundle(
         or document["protocol_version"] != PROTOCOL_VERSION
         or document["authority"] != NO_AUTHORITY
         or document["shadow_only"] is not True
-        or document["formal_activation_eligible"] is not False
-        or document["canary_evidence_eligible"] is not False
         or document["performance_evidence_eligible"] is not False
     ):
         raise _blocked("input_bundle_authority")

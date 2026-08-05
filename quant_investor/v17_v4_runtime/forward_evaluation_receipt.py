@@ -40,10 +40,6 @@ RECEIPT_TYPES: Final = (
 )
 METRIC_STATES: Final = ("COMPLETE", "UNAVAILABLE")
 _DISABLED: Final = {
-    "canary_evidence_eligible": False,
-    "formal_activation_eligible": False,
-    "formal_research_publication_eligible": False,
-    "production_default_eligible": False,
     "promotion_eligible": False,
     "provider_authority": False,
     "provider_invoked": False,

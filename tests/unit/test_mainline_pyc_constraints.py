@@ -23,8 +23,8 @@ def test_quant_investor_pyc_files_have_source_peers():
 
 def test_promoted_mainline_paths_do_not_use_shadowed_pyc_wrappers():
     mainline_paths = [
-        PACKAGE_ROOT / "agent_protocol.py",
-        PACKAGE_ROOT / "branch_contracts.py",
+        PACKAGE_ROOT / "v17_mainline" / "runtime.py",
+        PACKAGE_ROOT / "v17_mainline" / "storage.py",
         PACKAGE_ROOT / "pipeline" / "mainline.py",
     ]
 

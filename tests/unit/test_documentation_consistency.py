@@ -78,10 +78,11 @@ def test_workspace_docs_point_to_live_workspace_modules_and_launcher():
     entrypoints = _read(ROOT / "docs" / "architecture" / "entrypoints_and_versioning.md")
     module_map = _read(ROOT / "docs" / "modules" / "module_map.md")
 
-    assert "./run_web.sh" in readme
-    assert "./run_web.sh" in docs_index
-    assert "./run_web.sh" in entrypoints
+    assert "quant-investor research run" in readme
+    assert "V17 v4 mainline" in docs_index
+    assert "myquant.v17.v4" in entrypoints
+    assert "v17_mainline" in module_map
     assert "placeholder" not in readme
     assert "placeholder" not in module_map
-    assert "FastAPI research workspace backend" in readme
-    assert "React/Vite research workspace frontend" in readme
+    assert "read-only public run" in readme
+    assert "portfolio_dashboard" in module_map

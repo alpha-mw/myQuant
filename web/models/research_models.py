@@ -1,75 +1,65 @@
-"""Pydantic models for the research workspace API."""
+"""Strict DTO for the public V17 research surface."""
 
 from __future__ import annotations
 
-from typing import Any, Literal, Optional
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
-
-from quant_investor.config import config
-from web.request_contract import reject_intelligence_named_keys
+from pydantic import BaseModel, ConfigDict
 
 
-class ResearchRunRequest(BaseModel):
-    """Maps 1:1 to QuantInvestor.__init__ parameters."""
-
+class V17ArtifactRef(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    stock_pool: list[str] = Field(min_length=1)
-    market: Literal["CN", "US"] = "CN"
-    capital: float = 1_000_000.0
-    risk_level: str = "中等"
-    lookback_years: float = 1.0
-    kline_backend: str = "hybrid"
-    enable_kline: bool = True
-    enable_agent_layer: bool = True
-    review_model_priority: list[str] = Field(default_factory=list)
-    agent_model: str = ""
-    agent_fallback_model: str = ""
-    master_model: str = ""
-    master_fallback_model: str = ""
-    agent_timeout: float = config.DEFAULT_AGENT_TIMEOUT_SECONDS
-    master_timeout: float = config.DEFAULT_MASTER_TIMEOUT_SECONDS
-    preset_id: Optional[str] = None
-    # Stock-pool selection metadata (advisory, resolved server-side before run)
-    stock_input_mode: Literal["custom", "universe", "multi"] = "custom"
-    universe_keys: list[str] = Field(default_factory=list)
-    universe_operation: Literal["replace", "merge"] = "replace"
-
-    @model_validator(mode="before")
-    @classmethod
-    def reject_retired_intelligence_keys(cls, value: Any) -> Any:
-        reject_intelligence_named_keys(value)
-        return value
+    schema_id: str
+    relative_path: str
+    byte_sha256: str
 
 
-class ResearchJobResponse(BaseModel):
-    job_id: str
-    status: str = "queued"
-    created_at: str = ""
-    progress_pct: float = 0.0
-    error: Optional[str] = None
-    result_summary: Optional[dict[str, Any]] = None
+class V17AuthorityFlags(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    broker_calls: Literal[False]
+    execution_calls: Literal[False]
+    llm_control_calls: Literal[False]
+    order_calls: Literal[False]
+    provider_calls: Literal[False]
+    selector_writes: Literal[False]
+    trade_calls: Literal[False]
 
 
-class ResearchReportResponse(BaseModel):
-    markdown: str = ""
+class V17Target(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    symbol: str
+    current_target: str
+    final_target: str
+    lane: Literal["SELECTION_POOL", "REVIEW_ONLY_HOLDING"]
 
 
-class ResearchHistoryItem(BaseModel):
-    job_id: str
-    created_at: str
-    status: str
-    market: str = "CN"
-    stock_pool: list[str] = Field(default_factory=list)
-    total_time: Optional[float] = None
-    risk_level: str = "中等"
-    preset_id: Optional[str] = None
+class V17MainlinePublicRun(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
-
-class ResearchHistoryResponse(BaseModel):
-    items: list[ResearchHistoryItem] = Field(default_factory=list)
-    total: int = 0
+    schema_id: Literal["myquant.v17.v4.mainline-public-run.v1"]
+    protocol: Literal["myquant.v17.v4"]
+    canonical_strategy_id: str
+    run_id: str
+    state: Literal["ACTIVE"]
+    market: Literal["CN_A_SHARE"]
+    capability: Literal["RESEARCH_PORTFOLIO"]
+    authority_source: Literal["FORMAL_V17_V4"]
+    authority_flags: V17AuthorityFlags
+    read_only: Literal[True]
+    selector_used: Literal[False]
+    fallback_used: Literal[False]
+    active_pointer_ref: V17ArtifactRef
+    mainline_run_ref: V17ArtifactRef
+    formal_output_ref: V17ArtifactRef
+    portfolio_output_ref: V17ArtifactRef
+    source_closure_ref: V17ArtifactRef
+    cash_weight: str
+    gross_weight: str
+    targets: list[V17Target]
+    semantic_sha256: str
 
 
 class LLMModelOption(BaseModel):
@@ -82,46 +72,14 @@ class LLMModelOption(BaseModel):
 
 
 class LLMModelsResponse(BaseModel):
-    models: list[LLMModelOption] = Field(default_factory=list)
+    models: list[LLMModelOption]
 
 
-class PresetCreateRequest(BaseModel):
-    name: str
-    description: str = ""
-    config: ResearchRunRequest
-
-
-class PresetUpdateRequest(BaseModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
-    config: Optional[ResearchRunRequest] = None
-
-
-class PresetResponse(BaseModel):
-    preset_id: str
-    name: str
-    description: str = ""
-    config: dict[str, Any] = Field(default_factory=dict)
-    created_at: str = ""
-    updated_at: str = ""
-
-
-class PresetListResponse(BaseModel):
-    presets: list[PresetResponse] = Field(default_factory=list)
-
-
-class RecentRunSummary(BaseModel):
-    job_id: str
-    created_at: str
-    market: str
-    stock_pool: list[str] = Field(default_factory=list)
-    status: str
-    total_time: Optional[float] = None
-    recall_context: dict[str, Any] = Field(default_factory=dict)
-    selection_meta: dict[str, Any] = Field(default_factory=dict)
-
-
-class StartupContextResponse(BaseModel):
-    recent_runs: list[RecentRunSummary] = Field(default_factory=list)
-    suggested_trades: list[dict[str, Any]] = Field(default_factory=list)
-    recall_summary: dict[str, Any] = Field(default_factory=dict)
+__all__ = [
+    "LLMModelOption",
+    "LLMModelsResponse",
+    "V17ArtifactRef",
+    "V17AuthorityFlags",
+    "V17MainlinePublicRun",
+    "V17Target",
+]

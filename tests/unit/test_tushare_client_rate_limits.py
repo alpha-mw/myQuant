@@ -6,7 +6,6 @@ import pandas as pd
 import pytest
 
 from quant_investor.data._tushare_client import TushareClientPool
-from quant_investor.data.sources.tushare_cn import TushareDataSource
 
 
 def _fresh_pool(monkeypatch) -> TushareClientPool:
@@ -94,57 +93,3 @@ def test_permission_failure_opens_endpoint_circuit(monkeypatch):
         pool.query("report_rc", ts_code="000001.SZ")
 
     assert attempts["count"] == 1
-
-
-def test_earnings_forecast_snapshot_falls_back_after_report_rc_permission_error(monkeypatch):
-    source = TushareDataSource()
-    calls: list[tuple[str, dict[str, object]]] = []
-
-    class FakeClient:
-        available = True
-
-        def query(self, api_name: str, **kwargs):
-            calls.append((api_name, kwargs))
-            if api_name == "report_rc":
-                raise RuntimeError("403 permission denied")
-            return pd.DataFrame(
-                [
-                    {
-                        "net_profit_min": 120.0,
-                        "net_profit_max": 180.0,
-                        "last_parent_net": 100.0,
-                    }
-                ]
-            )
-
-    source._client = FakeClient()
-
-    snapshot = source.get_earnings_forecast_snapshot("000001.SZ", "2026-03-26")
-
-    assert calls[0][0] == "report_rc"
-    assert calls[0][1]["wait_on_quota"] is True
-    assert calls[1][0] == "forecast"
-    assert snapshot.available is True
-    assert snapshot.source == "tushare_forecast"
-
-
-def test_daily_basic_records_circuit_open_as_degraded_metadata():
-    source = TushareDataSource()
-
-    class FakeClient:
-        available = True
-
-        def query(self, api_name: str, **kwargs):
-            raise RuntimeError(
-                "Tushare circuit open for daily_basic 59.0s: "
-                "read timed out via 127.0.0.1:6152"
-            )
-
-    source._client = FakeClient()
-
-    payload = source.get_daily_basic("000001.SZ", "20260522")
-
-    assert payload == {}
-    assert source.last_daily_basic_status == "circuit_open"
-    assert source.last_daily_basic_source == "tushare_daily_basic"
-    assert "127.0.0.1:6152" in source.last_daily_basic_reason

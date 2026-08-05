@@ -17,8 +17,8 @@ from quant_investor.v17_v4_runtime.pit_catalog import (
 )
 from quant_investor.v17_v4_runtime.source_storage import (
     EMPTY_SHA256,
-    FORMAL_RESEARCH_ROOT,
     PIT_CATALOG_POINTER,
+    SHADOW_ROOT,
     SOURCE_ROOT,
     GovernedStore,
     SourceCASMismatch,
@@ -218,27 +218,21 @@ def test_large_source_sha_readback_is_streamed_beyond_json_read_limit(
 def test_governed_store_is_fixed_to_v4_roots_and_source_store_stays_narrow(
     tmp_path: Path,
 ) -> None:
-    formal_path = (
-        FORMAL_RESEARCH_ROOT
-        / "strategies/quant-first/intents/activation-1.json"
-    )
+    research_path = SHADOW_ROOT / "forward_evidence/strategies/quant-first/run.json"
     source_store = SourceStore(tmp_path)
     with pytest.raises(SourceStorageSecurityError):
-        source_store.write_exact_once(formal_path, b"intent\n")
+        source_store.write_exact_once(research_path, b"research\n")
 
     governed = GovernedStore(tmp_path)
-    result = governed.write_exact_once(formal_path, b"intent\n")
+    result = governed.write_exact_once(research_path, b"research\n")
     assert result.created is True
-    assert governed.read(formal_path) == b"intent\n"
-    assert stat.S_IMODE((tmp_path / formal_path).stat().st_mode) == 0o600
-    assert stat.S_IMODE(
-        (tmp_path / FORMAL_RESEARCH_ROOT).stat().st_mode
-    ) == 0o700
+    assert governed.read(research_path) == b"research\n"
+    assert stat.S_IMODE((tmp_path / research_path).stat().st_mode) == 0o600
+    assert stat.S_IMODE((tmp_path / SHADOW_ROOT).stat().st_mode) == 0o700
 
     for forbidden in (
-        "results/research_runtime_control/default_protocol.json",
-        "results/v16/formal.json",
-        "results/v17_v3_formal_research/formal.json",
+        "results/research_runtime_control/runtime.json",
+        "results/retired/runtime.json",
         "outside.json",
     ):
         with pytest.raises(SourceStorageSecurityError):

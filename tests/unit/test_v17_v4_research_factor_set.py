@@ -142,14 +142,13 @@ def test_selection_is_bounded_deterministic_and_effective_next_open() -> None:
     assert factor_set["authority"] == {
         "broker": False,
         "execution": False,
-        "formal_research_publication": False,
+        "mainline_authority": False,
         "order": False,
-        "research_runtime_default": False,
+        "production": False,
+        "research_only": True,
         "trade": False,
     }
     assert factor_set["shadow_only"] is True
-    assert factor_set["formal_activation_eligible"] is False
-    assert factor_set["canary_evidence_eligible"] is False
     assert factor_set["performance_evidence_eligible"] is False
 
 

@@ -4,8 +4,6 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AppShell } from './layouts/AppShell'
 
 const ResearchPage = lazy(() => import('./pages/ResearchPage').then((mod) => ({ default: mod.ResearchPage })))
-const HistoryPage = lazy(() => import('./pages/HistoryPage').then((mod) => ({ default: mod.HistoryPage })))
-const RunDetailPage = lazy(() => import('./pages/RunDetailPage').then((mod) => ({ default: mod.RunDetailPage })))
 const SettingsPage = lazy(() => import('./pages/SettingsPage'))
 
 const queryClient = new QueryClient({
@@ -26,8 +24,6 @@ export default function App() {
           <Route path="/" element={<Navigate to="/research" replace />} />
           <Route element={<AppShell />}>
             <Route path="/research" element={<RouteView><ResearchPage /></RouteView>} />
-            <Route path="/history" element={<RouteView><HistoryPage /></RouteView>} />
-            <Route path="/history/:jobId" element={<RouteView><RunDetailPage /></RouteView>} />
             <Route path="/settings" element={<RouteView><SettingsPage /></RouteView>} />
             <Route path="*" element={<NotFound />} />
           </Route>

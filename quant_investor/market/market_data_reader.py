@@ -13,14 +13,13 @@ from typing import Any, Iterable, Mapping, Sequence
 
 import pandas as pd
 
-from quant_investor.agent_protocol import DataQualityIssue
 from quant_investor.market.cn_nontrading_evidence import (
     validate_bak_daily_nontrading_evidence,
 )
 from quant_investor.market.cn_terminal_delisting_evidence import (
     validate_terminal_delisting_evidence,
 )
-from quant_investor.market.read_result import MarketDataReadResult
+from quant_investor.market.read_result import DataQualityIssue, MarketDataReadResult
 
 
 class MarketDataUnavailableError(RuntimeError):

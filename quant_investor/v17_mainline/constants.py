@@ -1,0 +1,75 @@
+"""Frozen identifiers and authority boundaries for the V17-only mainline."""
+
+from __future__ import annotations
+
+from enum import Enum
+from typing import Final
+
+PROTOCOL: Final = "myquant.v17.v4"
+MAINLINE_RUN_SCHEMA_ID: Final = "myquant.v17.v4.mainline-run.v1"
+ACTIVE_POINTER_SCHEMA_ID: Final = "myquant.v17.v4.mainline-active-pointer.v1"
+PUBLIC_RUN_SCHEMA_ID: Final = "myquant.v17.v4.mainline-public-run.v1"
+
+FORMAL_OUTPUT_SCHEMA_ID: Final = "myquant.v17.v4.formal-output.v1"
+PORTFOLIO_OUTPUT_SCHEMA_ID: Final = "myquant.v17.v4.portfolio-output.v1"
+SOURCE_CLOSURE_SCHEMA_ID: Final = "myquant.v17.v4.pit-generation-catalog.v1"
+
+MAINLINE_ROOT: Final = "results/v17_mainline"
+FORMAL_ROOT: Final = "results/v17_v4_formal_research"
+SOURCE_ROOT: Final = "data/private/v17_v4_sources"
+
+SUPPORTED_MARKET: Final = "CN_A_SHARE"
+SUPPORTED_CAPABILITY: Final = "RESEARCH_PORTFOLIO"
+AUTHORITY_SOURCE: Final = "FORMAL_V17_V4"
+EMPTY_SHA256: Final = "EMPTY"
+
+UNINITIALIZED_STATE: Final = "V17_MAINLINE_UNINITIALIZED"
+ACTIVE_STATE: Final = "ACTIVE"
+BLOCKED_PREFIX: Final = "V17_MAINLINE_BLOCKED:"
+
+AUTHORITY_FLAGS: Final = {
+    "broker_calls": False,
+    "execution_calls": False,
+    "llm_control_calls": False,
+    "order_calls": False,
+    "provider_calls": False,
+    "selector_writes": False,
+    "trade_calls": False,
+}
+
+
+class MainlineBlocker(str, Enum):
+    ACTIVE_POINTER_ABSENT = "ACTIVE_POINTER_ABSENT"
+    ACTIVE_POINTER_INVALID = "ACTIVE_POINTER_INVALID"
+    ACTIVE_POINTER_SHA_MISMATCH = "ACTIVE_POINTER_SHA_MISMATCH"
+    ACTIVE_RUN_MISSING = "ACTIVE_RUN_MISSING"
+    ACTIVE_RUN_INVALID = "ACTIVE_RUN_INVALID"
+    ACTIVE_RUN_SHA_MISMATCH = "ACTIVE_RUN_SHA_MISMATCH"
+    FORMAL_OUTPUT_INVALID = "FORMAL_OUTPUT_INVALID"
+    PORTFOLIO_OUTPUT_INVALID = "PORTFOLIO_OUTPUT_INVALID"
+    SOURCE_CLOSURE_INVALID = "SOURCE_CLOSURE_INVALID"
+    SHADOW_AUTHORITY_FORBIDDEN = "SHADOW_AUTHORITY_FORBIDDEN"
+    UNSUPPORTED_MARKET = "UNSUPPORTED_MARKET"
+    UNSUPPORTED_CAPABILITY = "UNSUPPORTED_CAPABILITY"
+    STORAGE_SECURITY_VIOLATION = "STORAGE_SECURITY_VIOLATION"
+
+
+__all__ = [
+    "ACTIVE_POINTER_SCHEMA_ID",
+    "ACTIVE_STATE",
+    "AUTHORITY_FLAGS",
+    "AUTHORITY_SOURCE",
+    "BLOCKED_PREFIX",
+    "EMPTY_SHA256",
+    "FORMAL_OUTPUT_SCHEMA_ID",
+    "MAINLINE_ROOT",
+    "MAINLINE_RUN_SCHEMA_ID",
+    "MainlineBlocker",
+    "PORTFOLIO_OUTPUT_SCHEMA_ID",
+    "PROTOCOL",
+    "PUBLIC_RUN_SCHEMA_ID",
+    "SOURCE_CLOSURE_SCHEMA_ID",
+    "SUPPORTED_CAPABILITY",
+    "SUPPORTED_MARKET",
+    "UNINITIALIZED_STATE",
+]

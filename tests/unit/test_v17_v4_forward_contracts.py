@@ -32,9 +32,10 @@ SESSION = "2026-07-29"
 NO_AUTHORITY = {
     "broker": False,
     "execution": False,
-    "formal_research_publication": False,
+    "mainline_authority": False,
     "order": False,
-    "research_runtime_default": False,
+    "production": False,
+    "research_only": True,
     "trade": False,
 }
 FORWARD_SCHEMAS = {
@@ -366,11 +367,8 @@ def test_origin_inventory_rejects_duplicate_conflict_as_unpublishable() -> None:
     inventory = seal_semantic(
         {
             "authority": dict(NO_AUTHORITY),
-            "canary_evidence_eligible": False,
             "cutoff": CUTOFF,
             "decision_session": SESSION,
-            "formal_activation_eligible": False,
-            "formal_research_publication_eligible": False,
             "inventory_id": "forward.origin.inventory.1",
             "origins": [
                 {
@@ -407,7 +405,6 @@ def test_origin_inventory_rejects_duplicate_conflict_as_unpublishable() -> None:
                     "origin": SESSION,
                 }
             ],
-            "production_default_eligible": False,
             "promotion_eligible": False,
             "protocol_version": "myquant.v17.v4",
             "provider_authority": False,

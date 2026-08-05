@@ -5,9 +5,9 @@ from typing import Iterable, Literal
 
 import pandas as pd
 
-from quant_investor.agent_protocol import DataQualityIssue
 from quant_investor.market.cn_resolver import CNUniverseResolver
 from quant_investor.market.market_data_reader import MarketDataReader, MarketDataUnavailableError
+from quant_investor.market.read_result import DataQualityIssue
 
 CNSymbolLocalStatus = Literal[
     "up_to_date",

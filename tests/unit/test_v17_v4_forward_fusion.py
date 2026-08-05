@@ -39,9 +39,10 @@ SHA_C = "3" * 64
 NO_AUTHORITY = {
     "broker": False,
     "execution": False,
-    "formal_research_publication": False,
+    "mainline_authority": False,
     "order": False,
-    "research_runtime_default": False,
+    "production": False,
+    "research_only": True,
     "trade": False,
 }
 
@@ -192,9 +193,6 @@ def test_zero_history_policy_is_exact_and_schema_valid() -> None:
     assert policy["fundamental_weight"] == "0.5"
     assert policy["authority"] == NO_AUTHORITY
     for field in (
-        "canary_evidence_eligible",
-        "formal_activation_eligible",
-        "formal_research_publication_eligible",
         "performance_evidence_eligible",
         "promotion_eligible",
     ):
@@ -326,7 +324,7 @@ def test_observation_identity_binds_all_prediction_dimensions() -> None:
 def test_fusion_golden_replay_bytes_are_stable() -> None:
     raw = canonical_resource_bytes(_fusion())
     assert hashlib.sha256(raw).hexdigest() == (
-        "26bd161124a556247cf857e8b69a5523f8f3d184fddbb3cc6a84ce1967cd44f2"
+        "057dcd8f8c0c261f76215e8fdb0374b8d4f26bedd48827da7b2778b927d1f3d5"
     )
     assert raw == canonical_resource_bytes(_fusion())
 

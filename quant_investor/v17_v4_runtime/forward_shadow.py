@@ -57,9 +57,10 @@ FUSION_STATE: Final = "UNCALIBRATED_FORWARD_ACCUMULATING"
 NO_AUTHORITY: Final = {
     "broker": False,
     "execution": False,
-    "formal_research_publication": False,
+    "mainline_authority": False,
     "order": False,
-    "research_runtime_default": False,
+    "production": False,
+    "research_only": True,
     "trade": False,
 }
 FORWARD_ONLY_VERSIONS: Final = frozenset(
@@ -182,13 +183,10 @@ def _forward_flags(document: Mapping[str, Any]) -> None:
     if (
         document.get("authority") != NO_AUTHORITY
         or document.get("shadow_only") is not True
-        or document.get("formal_activation_eligible") is not False
-        or document.get("canary_evidence_eligible") is not False
         or document.get("performance_evidence_eligible") is not False
     ):
         _blocked("authority_or_eligibility")
     for field in (
-        "formal_research_publication_eligible",
         "policy_promotion_eligible",
         "promotion_eligible",
     ):
@@ -298,13 +296,10 @@ def build_shadow_readiness_v2(
         {
             "authority": dict(NO_AUTHORITY),
             "blocker_codes": blockers,
-            "canary_evidence_eligible": False,
             "created_at": created,
             "cutoff": cutoff_value,
             "decision_session": session,
             "factor_refs_present": factor_refs_present,
-            "formal_activation_eligible": False,
-            "formal_research_publication_eligible": False,
             "model_output_present": False,
             "performance_evidence_eligible": False,
             "policy_promotion_eligible": False,
@@ -571,7 +566,6 @@ def publish_forward_shadow(
         {
             "assertion_scope": FACTOR_ASSERTION_SCOPE,
             "authority": dict(NO_AUTHORITY),
-            "canary_evidence_eligible": False,
             "created_at": created,
             "cutoff": cutoff_value,
             "decision_session": session,
@@ -580,8 +574,6 @@ def publish_forward_shadow(
             "factor_selection_policy_sha256": policy_sha,
             "factor_set_pointer_ref": refs["factor_pointer"],
             "factor_set_ref": refs["factor_set"],
-            "formal_activation_eligible": False,
-            "formal_research_publication_eligible": False,
             "operator_asserted": True,
             "override_id": assertion_id,
             "performance_evidence_eligible": False,
@@ -607,7 +599,6 @@ def publish_forward_shadow(
     run = seal_semantic(
         {
             "authority": dict(NO_AUTHORITY),
-            "canary_evidence_eligible": False,
             "created_at": created,
             "cutoff": cutoff_value,
             "decision_session": session,
@@ -615,7 +606,6 @@ def publish_forward_shadow(
             "factor_evidence_mode": FACTOR_EVIDENCE_MODE,
             "factor_set_pointer_ref": refs["factor_pointer"],
             "factor_set_ref": refs["factor_set"],
-            "formal_activation_eligible": False,
             "fundamental_branch_ref": refs["fundamental"],
             "fusion_observation_ref": refs["observation"],
             "fusion_state": FUSION_STATE,
@@ -659,14 +649,12 @@ def publish_forward_shadow(
     session_document = seal_semantic(
         {
             "authority": dict(NO_AUTHORITY),
-            "canary_evidence_eligible": False,
             "created_at": created,
             "cutoff": cutoff_value,
             "decision_session": session,
             "factor_evidence_mode": FACTOR_EVIDENCE_MODE,
             "factor_set_pointer_ref": refs["factor_pointer"],
             "factor_set_ref": refs["factor_set"],
-            "formal_activation_eligible": False,
             "performance_evidence_eligible": False,
             "policy_promotion_eligible": False,
             "protocol_version": PROTOCOL_VERSION,

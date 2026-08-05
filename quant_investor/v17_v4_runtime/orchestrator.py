@@ -4,13 +4,11 @@ from __future__ import annotations
 
 from .forward_evidence import (
     Completeness,
-    DEFAULT_PROTOCOL_STATE,
     DISK_FREE_FLOOR_BYTES,
     ExecutionOutcome,
     FORWARD_EVIDENCE_ROOT,
     FORWARD_REQUEST_ROOT,
     ForwardEvidenceError,
-    GLOBAL_ACTIVATION_STATE,
     MAX_ARTIFACT_BYTES,
     NO_SIDE_EFFECT_FLAGS,
     RUN_STATE_BLOCKED,
@@ -27,13 +25,11 @@ from .run_profiles import LifecycleLabel, RunProfile
 
 __all__ = [
     "Completeness",
-    "DEFAULT_PROTOCOL_STATE",
     "DISK_FREE_FLOOR_BYTES",
     "ExecutionOutcome",
     "FORWARD_EVIDENCE_ROOT",
     "FORWARD_REQUEST_ROOT",
     "ForwardEvidenceError",
-    "GLOBAL_ACTIVATION_STATE",
     "LifecycleLabel",
     "MAX_ARTIFACT_BYTES",
     "NO_SIDE_EFFECT_FLAGS",

@@ -1,7 +1,7 @@
 # FactorGovernanceProtocol v4 research scaffold
 
 FactorGovernanceProtocol v4 is a research-only shadow contract. It does not
-replace the current v15 FactorGovernance v3 runtime, change an activation
+replace the V17 v4 mainline runtime, change its active
 pointer, write `mined_factors.json`, append a production WAL, or authorize new
 risk. v2 and v3 evidence remain historical/current evidence in their own
 contracts and are never auto-upgraded to v4.
@@ -22,7 +22,7 @@ The target production set has exactly ten healthy factors.
 returns `new_risk_authorized=false` and
 `production_apply_enabled=false`. Any production activation must fail closed unless a
 separate production workflow verifies the same-day hash-bound receipt and all
-other production gates. The v15 default remains authoritative.
+other production gates. The V17 v4 mainline active pointer remains authoritative.
 
 For exactly five normalized factors, the 20% per-factor cap means every factor
 must have exactly 20% absolute weight. The 35% family cap therefore forbids two
@@ -174,20 +174,18 @@ v4-only. Local readback accepts one explicit absolute regular file, owned by
 the current user, mode `0600`, with canonical JSON bytes and no
 scan/latest/fallback behavior.
 
-## WAL, CAS, rollback, and receipt
+## WAL, CAS, and receipt
 
 `build_factor_v4_transaction_plan` produces an inert plan with four independent
 bindings:
 
 - an append-only WAL blueprint containing before/after registry byte hashes;
 - a CAS blueprint comparing the exact expected registry SHA before any swap;
-- an inverse rollback blueprint that compares the proposed SHA and restores
-  the exact before-registry and factor-set hashes;
 - a separately authorized activation-receipt requirement.
 
 The plan carries `plan_only=true`, `registry_mutation_performed=false`, and
-`production_apply_enabled=false`. The WAL is `planned_not_written`, CAS is
-`planned_not_attempted`, and inverse rollback is `planned_not_applied`.
+`production_apply_enabled=false`. The WAL is `planned_not_written` and CAS is
+`planned_not_attempted`.
 Building or validating the plan performs none of those operations.
 
 `FactorV4ShadowTransactionStore` is the separately testable research store.
@@ -197,9 +195,7 @@ activation pointer. Under an independent file lock it can initialize a v4
 shadow registry, append and fsync a 0600 WAL intent, write a 0600 inverse
 manifest containing the exact before bytes, CAS the exact expected shadow
 registry SHA through an atomic replace, read back the result, append a commit
-record, and write a 0600 shadow receipt. Rollback requires a separate scope,
-CAS-compares the post-transaction SHA, restores the exact before bytes, appends
-rollback WAL records, and replaces the shadow receipt with a revocation.
+record, and write a 0600 shadow receipt.
 
 The store's receipt schema is
 `factor-governance-shadow-activation-receipt.v4`; it explicitly carries
@@ -685,7 +681,7 @@ preregistration, admission, or activation evidence.
 
 The monthly review may also publish a separate V17 research-only factor set.
 This is not the Factor v4 production active set and has no production, formal,
-canary, selector, V15, broker, order, execution, or trade authority.
+mainline activation, broker, order, execution, or trade authority.
 
 Selection is deterministic over the exact literature-incubator catalog:
 

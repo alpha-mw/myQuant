@@ -9,6 +9,7 @@ import pytest
 from quant_investor.v17_v4_contract import canonical_resource_bytes
 from quant_investor.v17_v4_runtime.factor_observation import (
     LABEL_HORIZONS,
+    NO_AUTHORITY,
     FactorObservationError,
     build_factor_forward_label,
     build_factor_observation,
@@ -374,7 +375,7 @@ def test_evaluation_receipts_are_sealed_and_have_no_authority(
         )
         == receipt
     )
-    assert not any(receipt["authority"].values())
+    assert receipt["authority"] == NO_AUTHORITY
     assert receipt["shadow_only"] is True
     assert receipt["promotion_eligible"] is False
 

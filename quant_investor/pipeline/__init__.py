@@ -1,6 +1,5 @@
-"""Public pipeline entrypoints."""
+"""V17-only public pipeline facade."""
 
 from quant_investor.pipeline.mainline import QuantInvestor
-from quant_investor.pipeline.result_types import QuantInvestorPipelineResult
 
-__all__ = ["QuantInvestor", "QuantInvestorPipelineResult"]
+__all__ = ["QuantInvestor"]

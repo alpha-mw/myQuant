@@ -3,445 +3,123 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>myQuant Dashboard v3</title>
-    <link rel="stylesheet" href="styles.css?v=20260623" />
+    <title>myQuant V17 Mainline Dashboard v5</title>
+    <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
     <div class="app-shell">
       <header class="page-header">
-        <div class="title-lockup">
-          <div class="brand-row">
-            <span class="brand-mark" aria-hidden="true">
-              <svg viewBox="0 0 24 24" focusable="false">
-                <rect x="3" y="12" width="4" height="8" rx="1"></rect>
-                <rect x="10" y="7" width="4" height="13" rx="1"></rect>
-                <rect x="17" y="3" width="4" height="17" rx="1"></rect>
-              </svg>
-            </span>
-            <h1>myQuant Dashboard v3</h1>
-          </div>
-          <p>本地静态组合、纪律、行业、Factor 与数据审计 <span id="dataModeLabel">（示例数据）</span></p>
+        <div>
+          <p class="eyebrow">V17 · SINGLE STRATEGY · READ ONLY</p>
+          <h1>myQuant Mainline Dashboard</h1>
+          <p class="subtitle">只展示经 active pointer 解析并严格闭合的 V17 主线 public run。</p>
         </div>
-        <div class="header-status">
-          <span id="dataStatus" class="status-pill sample">当前使用 sample data</span>
-        </div>
+        <span id="runtimeStatus" class="status-pill blocked">V17_MAINLINE_UNINITIALIZED</span>
       </header>
 
-      <div id="messagePanel" class="message-panel" aria-live="polite"></div>
-
-      <details class="control-band control-drawer">
-        <summary>数据、Benchmark 与高级筛选</summary>
-        <section aria-label="Dashboard controls">
-        <div class="control-grid">
-          <label class="file-control upload-tile">
-            <input id="navUpload" type="file" accept=".csv,text/csv" />
-            <span class="control-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24"><path d="M12 16V4"></path><path d="M7 9l5-5 5 5"></path><path d="M5 20h14"></path></svg>
-            </span>
-            <span class="upload-copy">
-              <strong>上传 NAV CSV</strong>
-              <small id="navUploadName">nav_sample.csv</small>
-            </span>
-          </label>
-          <label class="file-control upload-tile">
-            <input id="positionsUpload" type="file" accept=".csv,text/csv" />
-            <span class="control-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24"><path d="M12 16V4"></path><path d="M7 9l5-5 5 5"></path><path d="M5 20h14"></path></svg>
-            </span>
-            <span class="upload-copy">
-              <strong>上传 Positions CSV</strong>
-              <small id="positionsUploadName">positions_sample.csv</small>
-            </span>
-          </label>
-          <label class="file-control upload-tile">
-            <input id="tradesUpload" type="file" accept=".csv,text/csv" />
-            <span class="control-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24"><path d="M12 16V4"></path><path d="M7 9l5-5 5 5"></path><path d="M5 20h14"></path></svg>
-            </span>
-            <span class="upload-copy">
-              <strong>上传 Trades CSV</strong>
-              <small id="tradesUploadName">trades_sample.csv</small>
-            </span>
-          </label>
-          <button id="resetButton" class="button secondary" type="button">
-            <span class="button-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24"><path d="M20 7v5h-5"></path><path d="M19 12a7 7 0 1 1-2-5"></path></svg>
-            </span>
-            重置为示例数据
-          </button>
-          <span class="control-divider" aria-hidden="true"></span>
-          <label class="field-control">
-            <span>开始日期</span>
-            <input id="startDate" type="date" />
-          </label>
-          <label class="field-control">
-            <span>结束日期</span>
-            <input id="endDate" type="date" />
-          </label>
-          <label class="field-control">
-            <span>主基准</span>
-            <select id="benchmarkSelect">
-              <option value="">无 benchmark</option>
-            </select>
-          </label>
-          <button id="exportButton" class="button primary" type="button">
-            <span class="button-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24"><path d="M12 4v12"></path><path d="M7 11l5 5 5-5"></path><path d="M5 20h14"></path></svg>
-            </span>
-            导出指标 CSV
-          </button>
-        </div>
-        <div class="benchmark-control-panel" aria-label="Benchmark comparison controls">
-          <label class="field-control benchmark-multiselect">
-            <span>多 benchmark 对比</span>
-            <select id="benchmarkMultiSelect" multiple size="4" aria-label="多 benchmark 对比"></select>
-          </label>
-          <div class="benchmark-actions">
-            <button id="selectAllBenchmarks" class="button ghost" type="button">全选 benchmark</button>
-            <button id="clearBenchmarks" class="button ghost" type="button">清空 benchmark</button>
-          </div>
-          <label class="check-control">
-            <input id="showPortfolioCurve" type="checkbox" checked />
-            <span>展示组合曲线</span>
-          </label>
-          <label class="check-control">
-            <input id="showExcessCurve" type="checkbox" checked />
-            <span>展示超额曲线</span>
-          </label>
-          <span id="benchmarkCrowdingWarning" class="control-warning hidden">benchmark 较多，图表可能较拥挤</span>
-        </div>
-        <div class="control-meta">
-          <span id="dateStatus" class="status-note">日期区间：-</span>
-          <span id="sampleRiskTag" class="sample-mark">示例数据不代表真实业绩；sample benchmark 为模拟数据，仅用于演示，不代表真实指数</span>
-        </div>
-        </section>
-      </details>
-
-      <nav class="section-tabs" aria-label="Dashboard sections">
-        <a class="section-tab active" href="#overviewSection" data-workspace-tab="overview">今日总览</a>
-        <a class="section-tab" href="#holdingsSection" data-workspace-tab="holdings">持仓与纪律</a>
-        <a class="section-tab" href="#tradesSection" data-workspace-tab="trades">交易与决策</a>
-        <a class="section-tab" href="#factorSection" data-workspace-tab="factor">Factor</a>
-        <a class="section-tab" href="#benchmarkSection" data-workspace-tab="audit">归因与数据审计</a>
-      </nav>
-
       <main>
-        <section class="dashboard-section" id="overviewSection" data-workspace="overview">
-          <div class="section-heading">
+        <section class="state-grid" aria-label="Mainline state">
+          <article class="state-card primary-card">
+            <span>Canonical strategy</span>
+            <strong id="strategyId">—</strong>
+          </article>
+          <article class="state-card">
+            <span>Run</span>
+            <strong id="runId">—</strong>
+          </article>
+          <article class="state-card">
+            <span>Gross weight</span>
+            <strong id="grossWeight">—</strong>
+          </article>
+          <article class="state-card">
+            <span>Cash weight</span>
+            <strong id="cashWeight">—</strong>
+          </article>
+          <article class="state-card">
+            <span>Targets</span>
+            <strong id="targetCount">—</strong>
+          </article>
+        </section>
+
+        <section id="blockerPanel" class="panel blocker-panel" hidden>
+          <div class="panel-heading">
             <div>
-              <h2>1. 业绩总览</h2>
-              <p>核心收益、风险与相对基准表现。</p>
+              <p class="eyebrow">FAIL CLOSED</p>
+              <h2>主线数据不可用</h2>
             </div>
-            <span id="overviewPeriod" class="section-period">期间：-</span>
           </div>
-          <div id="kpiGrid" class="kpi-grid"></div>
-          <div class="overview-cockpit">
-            <article class="insight-card panel">
-              <div class="panel-kicker">Portfolio Lens</div>
-              <h3 id="performanceHeadline">等待数据加载</h3>
-              <p id="performanceNarrative">载入 NAV、持仓和交易后，这里会显示组合收益、回撤、集中度和交易数据状态。</p>
-              <div id="quickStats" class="quick-stat-grid"></div>
-            </article>
-            <article class="panel chart-panel focus-panel">
-              <div class="panel-head">
-                <div>
-                  <h3 id="overviewFocusTitle">组合净值 vs 基准净值</h3>
-                  <p id="overviewFocusSubtitle">趋势、相对表现和主要风险状态</p>
-                </div>
-                <div class="segmented-control" id="overviewLensTabs" aria-label="Overview chart selector">
-                  <button class="active" type="button" data-lens="nav">净值</button>
-                  <button type="button" data-lens="excess">超额</button>
-                  <button type="button" data-lens="drawdown">回撤</button>
-                  <button type="button" data-lens="vol">波动</button>
-                </div>
-              </div>
-              <div id="overviewFocusChart" class="chart hero-chart"></div>
-            </article>
-          </div>
-          <article class="panel table-panel overview-discipline">
-            <div class="panel-head">
+          <ul id="blockerList" class="blocker-list"></ul>
+        </section>
+
+        <section id="emptyState" class="panel empty-state">
+          <h2>没有可展示的主线组合</h2>
+          <p id="emptyStateText">Dashboard 等待单策略 active pointer。</p>
+        </section>
+
+        <div id="activeContent" hidden>
+          <section class="panel contract-strip" aria-label="Contract identity">
+            <div><span>Input schema</span><code id="inputSchema">—</code></div>
+            <div><span>Protocol</span><code id="protocolValue">—</code></div>
+            <div><span>Market</span><code id="marketValue">—</code></div>
+            <div><span>Capability</span><code id="capabilityValue">—</code></div>
+            <div><span>Authority source</span><code id="authoritySource">—</code></div>
+            <div><span>Semantic SHA-256</span><code id="semanticHash">—</code></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-heading">
               <div>
-                <h3>持仓纪律快照</h3>
-                <p>NAV 权重、股票袖套权重、动作、止损止盈和 quote age 分列。</p>
+                <p class="eyebrow">PORTFOLIO</p>
+                <h2>目标权重</h2>
               </div>
+              <p>股票代码按 ASCII 严格升序，权重为 public run 原值。</p>
             </div>
-            <div id="overviewHoldingsTable" class="table-wrap"></div>
-          </article>
-          <div class="chart-grid three support-grid">
-            <article class="panel chart-panel">
-              <h3>组合净值 vs 多 benchmark 净值</h3>
-              <div id="navChart" class="chart"></div>
-            </article>
-            <article class="panel chart-panel">
-              <h3>相对主基准超额收益曲线</h3>
-              <div id="excessChart" class="chart"></div>
-            </article>
-            <article class="panel chart-panel">
-              <h3>多 benchmark 回撤对比</h3>
-              <div id="drawdownChart" class="chart"></div>
-            </article>
-          </div>
-          <article class="panel table-panel">
-            <div class="panel-head">
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Symbol</th><th>Lane</th><th class="numeric">Current</th><th class="numeric">Final</th></tr></thead>
+                <tbody id="targetRows"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-heading">
               <div>
-                <h3>多 benchmark 指标对比表</h3>
-                <p>Name / Return / Risk / Correlation / Beta / Tracking Error / IR</p>
+                <p class="eyebrow">SOURCE CLOSURE</p>
+                <h2>不可变引用</h2>
               </div>
+              <p>每一项均绑定 schema、相对路径与 exact-byte SHA-256。</p>
             </div>
-            <div id="overviewBenchmarkTable" class="table-wrap"></div>
-          </article>
-        </section>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Artifact</th><th>Schema</th><th>Path</th><th>Byte SHA-256</th></tr></thead>
+                <tbody id="referenceRows"></tbody>
+              </table>
+            </div>
+          </section>
 
-        <section class="dashboard-section" id="benchmarkSection" data-workspace="audit" hidden>
-          <div class="section-heading">
-            <div>
-              <h2>6. 归因与数据审计</h2>
-              <p>as-of 分层、来源 SHA、阻断项、归因勾稽和 benchmark provenance。</p>
-            </div>
-          </div>
-          <div id="asOfMatrix" class="audit-grid"></div>
-          <article class="panel table-panel">
-            <h3>来源与 SHA</h3>
-            <div id="sourceAuditTable" class="table-wrap"></div>
-          </article>
-          <article class="panel table-panel">
-            <h3>每日归因勾稽（1bp tolerance）</h3>
-            <div id="reconciliationTable" class="table-wrap"></div>
-          </article>
-          <div class="chart-grid two">
-            <article class="panel chart-panel">
-              <h3>多 benchmark normalized NAV chart</h3>
-              <div id="benchmarkNavComparisonChart" class="chart"></div>
-            </article>
-            <article class="panel chart-panel">
-              <h3>多 benchmark drawdown chart</h3>
-              <div id="benchmarkDrawdownComparisonChart" class="chart"></div>
-            </article>
-            <article class="panel chart-panel">
-              <h3>benchmark return / risk scatter</h3>
-              <div id="benchmarkRiskReturnScatter" class="chart"></div>
-            </article>
-            <article class="panel chart-panel">
-              <h3>benchmark correlation heatmap</h3>
-              <div id="benchmarkCorrelationHeatmap" class="correlation-heatmap"></div>
-            </article>
-          </div>
-          <article class="panel table-panel">
-            <div class="panel-head">
+          <section class="panel">
+            <div class="panel-heading">
               <div>
-                <h3>excess return table</h3>
-                <p>相对每个 benchmark 的累计超额、年化超额、tracking error、information ratio、beta 和 correlation。</p>
+                <p class="eyebrow">READ ONLY</p>
+                <h2>权限边界</h2>
               </div>
-              <div class="sort-control" aria-label="Benchmark table sorting">
-                <button type="button" data-benchmark-sort="totalReturn">Total Return</button>
-                <button type="button" data-benchmark-sort="maxDrawdown">Max Drawdown</button>
-                <button type="button" data-benchmark-sort="informationRatio">Information Ratio</button>
-              </div>
+              <p>所有外部调用、写选择器和交易能力必须关闭。</p>
             </div>
-            <div id="benchmarkExcessTable" class="table-wrap"></div>
-          </article>
-        </section>
-
-        <section class="dashboard-section" id="monthlySection" data-workspace="audit" hidden>
-          <div class="section-heading">
-            <div>
-              <h2>3. 月度表现</h2>
-              <p>按月份聚合 portfolio_return，观察季节性与极端月份。</p>
+            <div class="table-wrap compact-table">
+              <table>
+                <thead><tr><th>Capability flag</th><th>State</th></tr></thead>
+                <tbody id="authorityRows"></tbody>
+              </table>
             </div>
-            <span id="monthlyPeriod" class="section-period">期间：-</span>
-          </div>
-          <div class="chart-grid monthly-layout">
-            <article class="panel chart-panel wide">
-              <h3>月度收益热力图</h3>
-              <div id="monthlyHeatmap" class="chart heatmap-chart"></div>
-            </article>
-            <article class="panel chart-panel">
-              <h3>月度收益柱状图</h3>
-              <div id="monthlyBarChart" class="chart compact-chart"></div>
-            </article>
-            <article class="panel list-panel">
-              <h3>月度表现统计</h3>
-              <div id="bestWorstMonths"></div>
-            </article>
-          </div>
-        </section>
-
-        <section class="dashboard-section" id="attributionSection" data-workspace="audit" hidden>
-          <div class="section-heading">
-            <div>
-              <h2>归因覆盖审计</h2>
-              <p>逐个有效 NAV return 日核对 position contribution、明确 cash/fee residual 和 1bp 残差。</p>
-            </div>
-          </div>
-          <div id="attributionCoverageSummary" class="audit-grid"></div>
-          <article class="panel table-panel">
-            <h3>未覆盖或未勾稽日期</h3>
-            <div id="attributionExceptionsTable" class="table-wrap"></div>
-          </article>
-          <div class="chart-grid two hidden" aria-hidden="true">
-            <article class="panel chart-panel">
-              <h3>个股贡献 Top 10</h3>
-              <div id="topContributionChart" class="chart"></div>
-            </article>
-            <article class="panel chart-panel">
-              <h3>个股贡献 Bottom 10</h3>
-              <div id="bottomContributionChart" class="chart"></div>
-            </article>
-            <article class="panel chart-panel">
-              <h3>Industry contribution</h3>
-              <div id="industryContributionChart" class="chart"></div>
-            </article>
-            <article class="panel chart-panel">
-              <h3>Sector contribution</h3>
-              <div id="sectorContributionChart" class="chart"></div>
-            </article>
-          </div>
-          <article class="panel chart-panel hidden" aria-hidden="true">
-            <h3>contribution vs average weight scatter</h3>
-            <div id="scatterChart" class="chart"></div>
-          </article>
-        </section>
-
-        <section class="dashboard-section" id="riskSection" data-workspace="holdings" hidden>
-          <div class="section-heading">
-            <div>
-              <h2>5. 风险与暴露</h2>
-              <p>滚动波动、beta、行业暴露与集中度。</p>
-            </div>
-          </div>
-          <div class="chart-grid two">
-            <article class="panel chart-panel">
-              <h3>Rolling 20D volatility</h3>
-              <div id="rollingVolChart" class="chart"></div>
-            </article>
-            <article class="panel chart-panel">
-              <h3>Rolling 60D beta</h3>
-              <div id="rollingBetaChart" class="chart"></div>
-            </article>
-            <article class="panel chart-panel">
-              <h3>当前 industry weight</h3>
-              <div id="currentIndustryWeightChart" class="chart"></div>
-            </article>
-            <article class="panel chart-panel">
-              <h3>Top holdings weight</h3>
-              <div id="topHoldingsWeightChart" class="chart"></div>
-            </article>
-          </div>
-          <article class="panel chart-panel">
-            <h3>Concentration trend：top 5 weight / top 10 weight / HHI</h3>
-            <div id="concentrationChart" class="chart"></div>
-          </article>
-        </section>
-
-        <section class="dashboard-section" id="holdingsSection" data-workspace="holdings" hidden>
-          <div class="section-heading">
-            <div>
-              <h2>2. 持仓与纪律</h2>
-              <p>NAV 暴露与股票袖套权重分列，聚焦动作、止损止盈、quote age 和风险状态。</p>
-            </div>
-          </div>
-          <article class="panel table-panel">
-            <div class="panel-head">
-              <h3>当前持仓 Top 20</h3>
-              <label class="table-search">
-                <span>搜索</span>
-                <input id="holdingsSearch" type="search" placeholder="ticker / name / industry / sector" data-filter-table="holdingsTable" />
-              </label>
-            </div>
-            <div id="holdingsTable" class="table-wrap"></div>
-            <button id="toggleHoldingsRows" class="button ghost table-toggle hidden" type="button" aria-expanded="false">显示全部</button>
-          </article>
-          <div class="chart-grid two hidden" aria-hidden="true">
-            <article class="panel chart-panel">
-              <h3>Industry weight trend</h3>
-              <div id="industryWeightTrendChart" class="chart"></div>
-            </article>
-            <article class="panel chart-panel">
-              <h3>Sector weight trend</h3>
-              <div id="sectorWeightTrendChart" class="chart"></div>
-            </article>
-            <article class="panel chart-panel">
-              <h3>Market value by industry</h3>
-              <div id="marketValueIndustryChart" class="chart"></div>
-            </article>
-            <article class="panel chart-panel">
-              <h3>当前 industry weight 明细</h3>
-              <div id="industryWeightTable" class="table-wrap compact"></div>
-            </article>
-          </div>
-        </section>
-
-        <section class="dashboard-section" id="factorSection" data-workspace="factor" hidden>
-          <div class="section-heading">
-            <div>
-              <h2>5. Factor</h2>
-              <p>生产、shadow、blocked、challenger、transition 与 protocol readback。</p>
-            </div>
-          </div>
-          <article class="panel table-panel">
-            <h3>Factor Governance Protocol v3</h3>
-            <div id="factorProtocolSummary" class="table-wrap"></div>
-            <div id="factorStateTable" class="table-wrap"></div>
-          </article>
-        </section>
-
-        <section class="dashboard-section" id="tradesSection" data-workspace="trades" hidden>
-          <div class="section-heading">
-            <div>
-              <h2>3. 交易与决策账本</h2>
-              <p>recommendation → decision → order → fill → ledger delta；未知费用保持 unknown。</p>
-            </div>
-          </div>
-          <div id="tradeSummary" class="trade-summary"></div>
-          <p class="metric-note">交易胜率基于 FIFO 平仓交易；业绩总览中的日净值胜率基于每日 portfolio_nav 正收益天数。</p>
-          <article class="panel table-panel">
-            <div class="panel-head">
-              <h3>最近 20 笔交易</h3>
-              <label class="table-search">
-                <span>搜索</span>
-                <input id="tradesSearch" type="search" placeholder="ticker / reason / industry" data-filter-table="tradesTable" />
-              </label>
-            </div>
-            <div id="tradesTable" class="table-wrap"></div>
-            <button id="toggleTradesRows" class="button ghost table-toggle hidden" type="button" aria-expanded="false">显示全部</button>
-          </article>
-          <article class="panel table-panel">
-            <div class="panel-head">
-              <h3>FIFO 已平仓交易</h3>
-              <label class="table-search">
-                <span>搜索</span>
-                <input id="closedTradesSearch" type="search" placeholder="ticker / warning" data-filter-table="closedTradesTable" />
-              </label>
-            </div>
-            <div id="closedTradesTable" class="table-wrap"></div>
-            <button id="toggleClosedTradesRows" class="button ghost table-toggle hidden" type="button" aria-expanded="false">显示全部</button>
-          </article>
-          <div class="chart-grid three">
-            <article class="panel chart-panel">
-              <h3>Buy / Sell 分布</h3>
-              <div id="sideChart" class="chart"></div>
-            </article>
-            <article class="panel chart-panel">
-              <h3>交易金额 by industry</h3>
-              <div id="tradeIndustryChart" class="chart"></div>
-            </article>
-            <article class="panel chart-panel">
-              <h3>交易原因 reason 分布</h3>
-              <div id="reasonChart" class="chart"></div>
-            </article>
-          </div>
-        </section>
+          </section>
+        </div>
       </main>
     </div>
 
-    <div id="chartTooltip" class="chart-tooltip" role="status"></div>
-
-    <script src="private/dashboard_snapshot.v3.js"></script>
-    <script src="js/generated_records.js?v=20260717-history-loader"></script>
-    <script src="js/data.js"></script>
-    <script src="js/metrics.js"></script>
-    <script src="js/charts.js"></script>
-    <script src="js/ui.js"></script>
-    <script src="app.js?v=20260717-history-filter"></script>
+    <script src="private/mainline_public_run.js"></script>
+    <script src="js/mainline_input.js"></script>
+    <script src="js/dashboard_contract_v5.js"></script>
+    <script src="app.js"></script>
   </body>
 </html>

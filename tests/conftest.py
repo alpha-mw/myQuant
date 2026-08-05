@@ -5,8 +5,6 @@ Quant-Investor 测试套件
 import pytest
 from pathlib import Path
 
-from quant_investor.llm_gateway import LLMCallError, LLMClient
-
 PROJECT_ROOT = Path(__file__).parent.parent
 
 # 测试配置
@@ -20,19 +18,6 @@ def test_db_path(tmp_path_factory):
     """临时测试数据库"""
     return tmp_path_factory.mktemp("test_db") / "test_stock.db"
 
-
-@pytest.fixture(autouse=True)
-def allow_local_llm_in_tests(monkeypatch):
-    """Keep unit tests independent from a developer's local Codex-handoff .env."""
-    monkeypatch.setenv("MYQUANT_ENABLE_LOCAL_LLM", "true")
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-deepseek-key")
-    monkeypatch.setenv("KIMI_API_KEY", "test-kimi-key")
-    monkeypatch.setenv("DASHSCOPE_API_KEY", "test-dashscope-key")
-
-    async def _blocked_http_post(self, url, headers, body):  # type: ignore[no-untyped-def]
-        raise LLMCallError("unexpected live LLM transport in offline test suite")
-
-    monkeypatch.setattr(LLMClient, "_http_post", _blocked_http_post)
 
 @pytest.fixture
 def sample_stock_data():

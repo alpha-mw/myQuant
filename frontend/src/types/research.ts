@@ -1,68 +1,46 @@
-export interface ResearchRunRequest {
-  stock_pool: string[]
-  market: 'CN' | 'US'
-  capital: number
-  risk_level: string
-  lookback_years: number
-  kline_backend: string
-  enable_kline: boolean
-  enable_agent_layer: boolean
-  review_model_priority: string[]
-  agent_model: string
-  agent_fallback_model: string
-  master_model: string
-  master_fallback_model: string
-  agent_timeout: number
-  master_timeout: number
-  preset_id?: string
-  // Stock-pool selection metadata
-  stock_input_mode?: 'custom' | 'universe' | 'multi'
-  universe_keys?: string[]
-  universe_operation?: 'replace' | 'merge'
+export interface V17ArtifactRef {
+  schema_id: string
+  relative_path: string
+  byte_sha256: string
 }
 
-export interface ResearchJobResponse {
-  job_id: string
-  status: 'queued' | 'running' | 'completed' | 'failed'
-  created_at: string
-  progress_pct: number
-  error?: string
-  result_summary?: Record<string, unknown>
+export interface V17AuthorityFlags {
+  broker_calls: false
+  execution_calls: false
+  llm_control_calls: false
+  order_calls: false
+  provider_calls: false
+  selector_writes: false
+  trade_calls: false
 }
 
-export interface ResearchHistoryItem {
-  job_id: string
-  created_at: string
-  status: string
-  market: string
-  stock_pool: string[]
-  total_time?: number
-  risk_level: string
-  preset_id?: string
+export interface V17Target {
+  symbol: string
+  current_target: string
+  final_target: string
+  lane: 'SELECTION_POOL' | 'REVIEW_ONLY_HOLDING'
 }
 
-export interface ResearchHistoryResponse {
-  items: ResearchHistoryItem[]
-  total: number
-}
-
-export interface ResearchReportResponse {
-  markdown: string
-}
-
-export interface RecentRunSummary {
-  job_id: string
-  created_at: string
-  market: string
-  stock_pool: string[]
-  status: string
-  total_time?: number
-  recall_context: Record<string, unknown>
-  selection_meta: Record<string, unknown>
-}
-
-export interface StartupContextResponse {
-  recent_runs: RecentRunSummary[]
-  suggested_trades: Record<string, unknown>[]
-  recall_summary: Record<string, unknown>
+export interface V17MainlinePublicRun {
+  schema_id: 'myquant.v17.v4.mainline-public-run.v1'
+  protocol: 'myquant.v17.v4'
+  canonical_strategy_id: string
+  run_id: string
+  state: 'ACTIVE'
+  market: 'CN_A_SHARE'
+  capability: 'RESEARCH_PORTFOLIO'
+  authority_source: 'FORMAL_V17_V4'
+  authority_flags: V17AuthorityFlags
+  read_only: true
+  selector_used: false
+  fallback_used: false
+  active_pointer_ref: V17ArtifactRef
+  mainline_run_ref: V17ArtifactRef
+  formal_output_ref: V17ArtifactRef
+  portfolio_output_ref: V17ArtifactRef
+  source_closure_ref: V17ArtifactRef
+  cash_weight: string
+  gross_weight: string
+  targets: V17Target[]
+  semantic_sha256: string
 }

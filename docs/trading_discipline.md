@@ -44,7 +44,7 @@ Before any new-risk action can be filled, all of the following must pass:
 - candidate state progression and persistence gates pass;
 - score-gap and hysteresis gates pass;
 - portfolio count, turnover, and cooldown gates pass;
-- Parquet, v14 DAG, factor, and evidence gates pass;
+- Parquet, V17 v4 DAG, Factor, and evidence gates pass;
 - realtime quote gate passes for every buy and sell leg;
 - artifacts are written and the manifest marks the trade as filled.
 
@@ -85,7 +85,7 @@ as `buy_now`, `add_now`, `switch_now`, or any paired replacement buy.
 
 Sell timing is an independent portfolio-return decision. A sell does not need a
 replacement candidate when the action only reduces risk; cash is a valid
-position when no v14-complete candidate passes the new-risk gates.
+position when no V17 v4-complete candidate passes the new-risk gates.
 
 Trailing profit protection is a primary review tool for profitable holdings.
 Every formal review must compute a moving take-profit status when enough local

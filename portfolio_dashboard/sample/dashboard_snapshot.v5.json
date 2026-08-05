@@ -1,0 +1,9 @@
+{
+  "schema_version": "dashboard_contract.v5",
+  "input_schema_id": "myquant.v17.v4.mainline-public-run.v1",
+  "runtime_state": "V17_MAINLINE_UNINITIALIZED",
+  "strategy_id": null,
+  "blockers": ["mainline_active_pointer_missing"],
+  "active_pointer_ref": null,
+  "public_run": null
+}

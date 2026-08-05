@@ -39,9 +39,10 @@ SYMBOLS = ("000001.SZ", "000002.SZ", "000003.SZ", "000004.SZ")
 NO_AUTHORITY = {
     "broker": False,
     "execution": False,
-    "formal_research_publication": False,
+    "mainline_authority": False,
     "order": False,
-    "research_runtime_default": False,
+    "production": False,
+    "research_only": True,
     "trade": False,
 }
 
@@ -224,10 +225,9 @@ def test_quant_can_run_independently() -> None:
 def test_fundamental_missing_does_not_block(tmp_path: Path) -> None:
     result = _run(tmp_path)
 
-    assert result["global_activation_state"] == "INACTIVE"
     assert result["run_state"] == "FORWARD_EVIDENCE_ACTIVE"
-    assert result["research_runtime_default"] is False
-    assert result["formal_activation_eligible"] is False
+    assert result["research_only"] is True
+    assert result["mainline_authority"] is False
     fundamental = next(
         row for row in _stage_receipts(tmp_path, result) if row["stage_id"] == "fundamental"
     )
@@ -238,7 +238,6 @@ def test_fundamental_missing_does_not_block(tmp_path: Path) -> None:
 def test_deep_missing_does_not_block_observation(tmp_path: Path) -> None:
     result = _run(tmp_path)
 
-    assert result["global_activation_state"] == "INACTIVE"
     assert result["run_state"] == "FORWARD_EVIDENCE_ACTIVE"
     stages = {row["stage_id"]: row for row in _stage_receipts(tmp_path, result)}
     assert stages["deep"]["completeness"] == "UNAVAILABLE"

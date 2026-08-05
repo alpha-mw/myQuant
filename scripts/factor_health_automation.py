@@ -991,7 +991,7 @@ def build_runtime_smoke(
         "data_root": str(data_root),
     }
     try:
-        from quant_investor.market.dag.packets import _build_quant_branch_result
+        from quant_investor.factors.runtime import MinedFactorRegistry
         from quant_investor.market.market_data_reader import (
             MarketDataReader,
             MarketDataUnavailableError,
@@ -1095,31 +1095,20 @@ def build_runtime_smoke(
             "symbols_loaded": 0,
             "error": "no Parquet serving frames loaded from strict MarketDataReader",
         }
-    try:
-        result = _build_quant_branch_result(frames=frames)
-        runtime = result.metadata.get("mined_factor_runtime", {}) or {}
-        return {
-            **base,
-            **_snapshot_smoke_fields(snapshot),
-            "factor_mode": result.metadata.get("factor_mode", ""),
-            "factor_count": runtime.get("factor_count", 0),
-            "coverage_rate": runtime.get("coverage_rate", 0.0),
-            "symbols": len(result.symbol_scores),
-            "symbols_requested": symbols_requested,
-            "symbols_loaded": len(frames),
-        }
-    except Exception as exc:
-        return {
-            **base,
-            **_snapshot_smoke_fields(snapshot),
-            "factor_mode": "error",
-            "factor_count": 0,
-            "coverage_rate": 0.0,
-            "symbols": len(frames),
-            "symbols_requested": symbols_requested,
-            "symbols_loaded": len(frames),
-            "error": str(exc),
-        }
+    registry = MinedFactorRegistry.load_production()
+    manifest = registry.selectable_manifest()
+    load_error = str(registry.metadata.get("strict_load_error") or "")
+    return {
+        **base,
+        **_snapshot_smoke_fields(snapshot),
+        "factor_mode": "production_registry_preflight",
+        "factor_count": int(manifest["production_factor_count"]),
+        "coverage_rate": len(frames) / max(symbols_requested, 1),
+        "symbols": len(frames),
+        "symbols_requested": symbols_requested,
+        "symbols_loaded": len(frames),
+        "error": load_error,
+    }
 
 
 def _snapshot_smoke_fields(snapshot: Mapping[str, Any]) -> dict[str, Any]:

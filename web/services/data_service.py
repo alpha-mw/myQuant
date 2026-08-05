@@ -1715,62 +1715,8 @@ def _availability(
 
 
 def _load_recent_analysis_context(limit: int = 120) -> tuple[set[str], list[dict[str, Any]]]:
-    if not os.path.exists(APP_DB_PATH):
-        return set(), []
-
-    conn = sqlite3.connect(APP_DB_PATH)
-    conn.row_factory = sqlite3.Row
-    try:
-        rows = conn.execute(
-            """
-            SELECT analysis_id, created_at, result_json
-            FROM analysis_sessions
-            ORDER BY created_at DESC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
-    except sqlite3.OperationalError:
-        conn.close()
-        return set(), []
-    conn.close()
-
-    symbols: set[str] = set()
-    watch_candidates: list[dict[str, Any]] = []
-    for row in rows:
-        result = _safe_json_loads(row["result_json"])
-        if not isinstance(result, dict):
-            continue
-        candidate_symbols = [
-            str(item).upper()
-            for item in result.get("candidate_symbols", [])
-            if str(item).strip()
-        ]
-        symbols.update(candidate_symbols)
-        request = result.get("request", {})
-        symbols.update(
-            str(item).upper()
-            for item in request.get("targets", request.get("stocks", []))
-            if str(item).strip()
-        )
-        if candidate_symbols:
-            watch_candidates.append(
-                {
-                    "symbol": candidate_symbols[0],
-                    "title": f"{request.get('preset', 'quick_scan')} · {request.get('mode', 'single')}",
-                    "created_at": str(row["created_at"]),
-                    "summary": str(result.get("final_decision", "")) or "最近分析中进入候选池。",
-                }
-            )
-
-    deduped_candidates: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for item in watch_candidates:
-        if item["symbol"] in seen:
-            continue
-        seen.add(item["symbol"])
-        deduped_candidates.append(item)
-    return symbols, deduped_candidates[:8]
+    del limit
+    return set(), []
 
 
 def _build_completeness(
@@ -2467,9 +2413,7 @@ def get_stock_dossier(ts_code: str) -> dict | None:
 
     competitors = get_competitors(ts_code, limit=8)
 
-    from web.services import analysis_service
-
-    analysis_history = analysis_service.get_stock_analysis_mentions(ts_code, limit=8)
+    analysis_history: list[dict[str, Any]] = []
     recent_symbols, _ = _load_recent_analysis_context(limit=120)
 
     stock = _apply_research_flags(

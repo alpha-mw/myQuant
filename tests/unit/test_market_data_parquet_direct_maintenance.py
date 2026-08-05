@@ -891,7 +891,7 @@ def test_upsert_bars_postcommit_does_not_depend_on_stale_macro_generation(
         ),
         target_trade_date="20260316",
         source="unit-test-macro-cutover",
-        snapshot_id="bars-before-macro-v15",
+        snapshot_id="bars-before-retired-macro",
         expected_latest_pointer_sha256=pointer_sha256,
         metadata={
             "status": "OK",
@@ -905,7 +905,7 @@ def test_upsert_bars_postcommit_does_not_depend_on_stale_macro_generation(
         },
     )
 
-    assert result["snapshot_id"] == "bars-before-macro-v15"
+    assert result["snapshot_id"] == "bars-before-retired-macro"
     pointer = json.loads(latest_path.read_text(encoding="utf-8"))
     assert pointer["latest_complete_trade_date"] == "20260316"
 

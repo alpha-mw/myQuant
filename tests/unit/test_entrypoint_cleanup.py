@@ -18,26 +18,20 @@ def _mainline_exports(module) -> set[str]:
 
 def test_public_entrypoints_only_expose_single_mainline():
     assert quant_investor.QuantInvestor is pipeline.QuantInvestor
-    assert _mainline_exports(quant_investor) == {
-        "QuantInvestor",
-        "QuantInvestorPipelineResult",
-    }
-    assert set(pipeline.__all__) == {
-        "QuantInvestor",
-        "QuantInvestorPipelineResult",
-    }
+    assert _mainline_exports(quant_investor) == {"QuantInvestor"}
+    assert set(pipeline.__all__) == {"QuantInvestor"}
 
     package_unexpected = [
         name
         for name in dir(quant_investor)
         if name.startswith("QuantInvestor")
-        and name not in {"QuantInvestor", "QuantInvestorPipelineResult"}
+        and name != "QuantInvestor"
     ]
     pipeline_unexpected = [
         name
         for name in dir(pipeline)
         if name.startswith("QuantInvestor")
-        and name not in {"QuantInvestor", "QuantInvestorPipelineResult"}
+        and name != "QuantInvestor"
     ]
 
     assert package_unexpected == []
@@ -47,7 +41,7 @@ def test_public_entrypoints_only_expose_single_mainline():
 def test_cli_research_run_has_no_architecture_switch():
     cli_main = importlib.import_module("quant_investor.cli.main")
     parser = cli_main._build_parser()
-    args = parser.parse_args(["research", "run", "--stocks", "000001.SZ"])
+    args = parser.parse_args(["research", "run", "--strategy-id", "cn-mainline"])
     research_action = next(
         action
         for action in parser._actions

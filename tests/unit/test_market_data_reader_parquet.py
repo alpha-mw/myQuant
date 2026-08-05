@@ -13,7 +13,6 @@ from quant_investor.market.market_data_reader import (
     MarketDataReader,
     MarketDataUnavailableError,
 )
-from quant_investor.market.backtest import _load_market_frame
 from quant_investor.market.market_data_store import MarketDataStore
 from quant_investor.market.pit_universe import (
     LIST_STATUS_DELISTED,
@@ -1008,18 +1007,3 @@ def test_market_data_store_validate_latest_rejects_incomplete_snapshot(tmp_path:
     failed = store.validate_latest()
     assert failed["status"] == "failed"
     assert any("manifest" in blocker for blocker in failed["blockers"])
-
-
-def test_market_backtest_loads_cn_frame_from_parquet_serving(tmp_path: Path) -> None:
-    _write_parquet_fixture(tmp_path)
-
-    frame = _load_market_frame(
-        "CN",
-        ["hs300"],
-        data_dir=str(tmp_path),
-        sample_size=1,
-    )
-
-    assert frame["symbol"].unique().tolist() == ["000001.SZ"]
-    assert set(["date", "close", "forward_ret_1d", "factor_score"]).issubset(frame.columns)
-    assert len(frame) == 2

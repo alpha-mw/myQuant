@@ -1589,17 +1589,6 @@ def test_full_a_resolver_uses_fixed_directory_priority(tmp_path):
     assert snapshot["physical_directories_used_for_full_a"] == [str(tmp_path / "hs300"), str(tmp_path / "zz500"), str(tmp_path / "other")]
 
 
-def test_get_all_local_symbols_full_a_uses_existing_directories_only(tmp_path):
-    from quant_investor.market.analyze import get_all_local_symbols
-
-    for category, symbol in [("hs300", "000001.SZ"), ("zz500", "000002.SZ"), ("other", "600001.SH")]:
-        _write_cn_parquet_row(tmp_path, symbol, "2026-03-16")
-
-    assert not (tmp_path / "full_a").exists()
-    symbols = get_all_local_symbols("full_a", market="CN", data_dir=str(tmp_path))
-    assert symbols == ["000001.SZ", "000002.SZ", "600001.SH"]
-
-
 def test_get_all_components_falls_back_to_local_universe(monkeypatch):
     module = importlib.import_module("quant_investor.fetch_cn_index_components")
     monkeypatch.setattr(module, "fetch_full_a", lambda _pro: [])

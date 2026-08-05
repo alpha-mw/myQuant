@@ -5,28 +5,22 @@ PYTHON_BIN="${PYTHON:-python3}"
 
 echo "Running staged upgrade focused tests..."
 "$PYTHON_BIN" -m pytest \
-  tests/unit/test_phase1_contracts.py \
-  tests/unit/test_bayesian_outcome_ledger.py \
-  tests/unit/test_bayesian_calibration_v2.py \
-  tests/unit/test_bayesian_posterior_overlay.py \
-  tests/unit/test_data_quality_contract.py \
-  tests/unit/test_risk_tensor.py \
-  tests/unit/test_portfolio_optimizer.py \
-  tests/unit/test_observability.py \
-  tests/unit/test_bayesian_posterior.py \
-  tests/unit/test_version_naming_consistency.py \
+  tests/unit/test_v17_mainline_runtime.py \
+  tests/unit/test_v17_public_python.py \
+  tests/unit/test_v17_public_cli.py \
+  tests/unit/test_v17_public_web.py \
+  tests/unit/test_v17_v4_forward_evidence.py \
+  tests/unit/test_market_data_parquet_direct_maintenance.py \
+  tests/unit/test_fundamental_generation_promotion.py \
   -q
 
 echo "Running staged upgrade focused mypy..."
 "$PYTHON_BIN" -m mypy \
-  quant_investor/branch_config.py \
-  quant_investor/bayesian/outcome_ledger.py \
-  quant_investor/bayesian/calibration_v2.py \
-  quant_investor/bayesian/posterior_overlay.py \
-  quant_investor/data_quality_contract.py \
-  quant_investor/risk_tensor.py \
-  quant_investor/portfolio_optimizer.py \
-  quant_investor/observability.py \
+  quant_investor/v17_mainline/constants.py \
+  quant_investor/v17_mainline/contracts.py \
+  quant_investor/v17_mainline/storage.py \
+  quant_investor/v17_mainline/runtime.py \
+  quant_investor/pipeline/mainline.py \
   quant_investor/versioning.py \
   --ignore-missing-imports \
   --no-strict-optional

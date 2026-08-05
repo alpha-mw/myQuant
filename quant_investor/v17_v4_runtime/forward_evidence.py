@@ -69,8 +69,6 @@ FORWARD_REQUEST_ROOT: Final = RUN_ROOT / "forward_requests"
 FORWARD_EVIDENCE_ROOT: Final = SHADOW_ROOT / "forward_evidence"
 MAX_ARTIFACT_BYTES: Final = 64 * 1024 * 1024
 DISK_FREE_FLOOR_BYTES: Final = 512 * 1024 * 1024
-DEFAULT_PROTOCOL_STATE: Final = "V15_DEFAULT"
-GLOBAL_ACTIVATION_STATE: Final = "INACTIVE"
 RUN_STATE_INACTIVE: Final = "INACTIVE"
 RUN_STATE_FORWARD_EVIDENCE_ACTIVE: Final = "FORWARD_EVIDENCE_ACTIVE"
 RUN_STATE_EXPLORE_COMPLETE: Final = "EXPLORE_COMPLETE"
@@ -87,30 +85,24 @@ _FORBIDDEN_TRUE_FIELDS: Final = frozenset(
         "broker_authority",
         "broker_enabled",
         "broker_authorized",
-        "canary_eligible",
-        "canary_evidence_eligible",
-        "default_authority",
-        "default_eligible",
         "execution_authority",
         "execution_enabled",
         "execution_authorized",
         "formal_authority",
         "formal_eligible",
-        "formal_activation_eligible",
-        "formal_research_publication_eligible",
+        "mainline_authority",
         "order_authority",
         "order_enabled",
         "order_authorized",
         "policy_promotion_eligible",
         "promotion_authority",
         "promotion_eligible",
+        "production",
+        "production_authority",
         "provider_authority",
         "provider_calls_allowed",
         "provider_enabled",
         "provider_authorized",
-        "selector_authority",
-        "selector_enabled",
-        "selector_authorized",
         "trade_authority",
         "trade_enabled",
         "trade_authorized",
@@ -119,14 +111,12 @@ _FORBIDDEN_TRUE_FIELDS: Final = frozenset(
 _FORBIDDEN_BOOLEAN_NAMES: Final = frozenset(
     {
         "broker",
-        "canary",
-        "default",
         "execution",
-        "formal",
+        "mainline",
         "order",
         "promotion",
         "provider",
-        "selector",
+        "production",
         "trade",
     }
 )
@@ -168,23 +158,22 @@ _STAGE_RESULT_FIELDS: Final = frozenset(
 
 NO_SIDE_EFFECT_FLAGS: Final = {
     "broker": False,
-    "canary": False,
-    "default": False,
     "execution": False,
-    "formal": False,
+    "mainline": False,
     "order": False,
     "promotion": False,
+    "production": False,
     "provider": False,
-    "selector": False,
     "trade": False,
 }
 
 NO_AUTHORITY: Final = {
     "broker": False,
     "execution": False,
-    "formal_research_publication": False,
+    "mainline_authority": False,
     "order": False,
-    "research_runtime_default": False,
+    "production": False,
+    "research_only": True,
     "trade": False,
 }
 
@@ -208,7 +197,6 @@ class ForwardEvidenceError(RuntimeError):
 
     def __init__(self, code: str) -> None:
         self.code = code
-        self.global_activation_state = GLOBAL_ACTIVATION_STATE
         self.run_state = RUN_STATE_BLOCKED
         super().__init__(f"V17_V4_FORWARD_EVIDENCE_BLOCKED:{code}")
 
@@ -661,7 +649,7 @@ def _validate_no_authority(value: Any) -> None:
             if key == "authority":
                 if child is False:
                     continue
-                if isinstance(child, Mapping) and all(nested is False for nested in child.values()):
+                if isinstance(child, Mapping) and child == NO_AUTHORITY:
                     continue
                 _blocked("authority")
             if key in _FORBIDDEN_TRUE_FIELDS and child is not False:
@@ -1926,14 +1914,13 @@ def _run_document(
             "decision_session": request["decision_session"],
             "execution": False,
             "execution_outcome": ExecutionOutcome.SUCCEEDED.value,
-            "formal_activation_eligible": False,
-            "global_activation_state": GLOBAL_ACTIVATION_STATE,
+            "mainline_authority": False,
             "observation_refs": _sorted_refs(output_refs),
             "observation_run_id": (f"forward-observation-{request['request_id'][16:]}"),
             "order": False,
             "protocol_version": "myquant.v17.v4",
             "recorded_at": request["created_at"],
-            "research_runtime_default": False,
+            "research_only": True,
             "request_ref": dict(request_ref),
             "run_state": _run_state(definition),
             "stage_receipt_refs": _sorted_refs(receipt_refs),
@@ -1963,10 +1950,9 @@ def _validate_run_document(
         or run.get("authority") != NO_AUTHORITY
         or run.get("broker") is not False
         or run.get("execution") is not False
-        or run.get("formal_activation_eligible") is not False
-        or run.get("global_activation_state") != GLOBAL_ACTIVATION_STATE
+        or run.get("mainline_authority") is not False
         or run.get("order") is not False
-        or run.get("research_runtime_default") is not False
+        or run.get("research_only") is not True
         or run.get("run_state") != _run_state(definition)
         or run.get("trade") is not False
         or run.get("cutoff") != request["cutoff"]
@@ -1991,13 +1977,12 @@ def _session_document(
             "cutoff": request["cutoff"],
             "decision_session": request["decision_session"],
             "execution": False,
-            "formal_activation_eligible": False,
-            "global_activation_state": GLOBAL_ACTIVATION_STATE,
+            "mainline_authority": False,
             "observation_run_ref": dict(run_ref),
             "order": False,
             "protocol_version": "myquant.v17.v4",
             "published_at": request["created_at"],
-            "research_runtime_default": False,
+            "research_only": True,
             "run_state": _run_state(definition),
             "session_ref_id": (f"forward-observation-session-{request['request_id'][16:]}"),
             "strategy_id": request["strategy_id"],
@@ -2026,10 +2011,9 @@ def _validate_session_document(
         or session.get("authority") != NO_AUTHORITY
         or session.get("broker") is not False
         or session.get("execution") is not False
-        or session.get("formal_activation_eligible") is not False
-        or session.get("global_activation_state") != GLOBAL_ACTIVATION_STATE
+        or session.get("mainline_authority") is not False
         or session.get("order") is not False
-        or session.get("research_runtime_default") is not False
+        or session.get("research_only") is not True
         or session.get("run_state") != _run_state(definition)
         or session.get("trade") is not False
         or not isinstance(session.get("observation_run_ref"), Mapping)
@@ -2049,19 +2033,18 @@ def _result(
 ) -> dict[str, Any]:
     state = _run_state(definition)
     return {
-        "authority": False,
+        "authority": dict(NO_AUTHORITY),
         "broker": False,
         "created": created,
         "execution": False,
-        "formal_activation_eligible": False,
-        "global_activation_state": GLOBAL_ACTIVATION_STATE,
+        "mainline_authority": False,
         "lifecycle_labels": _lifecycle_labels(
             list(definition.stages),
             stage_receipts,
         ),
         "order": False,
         "profile": definition.profile.value,
-        "research_runtime_default": False,
+        "research_only": True,
         "request_id": request["request_id"],
         "run_ref": dict(session["observation_run_ref"]),
         "run_state": state,
@@ -2213,48 +2196,6 @@ def _request_stage_input_map(
     return result
 
 
-def _release_candidate(
-    *,
-    store: _ForwardEvidenceStore,
-    request: Mapping[str, Any],
-    request_ref: Mapping[str, str],
-    delegate: Callable[..., Any] | None,
-) -> dict[str, Any]:
-    if delegate is None:
-        _blocked("release_candidate_delegate_absent")
-    context = StageContext(
-        workspace_root=store.workspace_root,
-        request=request,
-        request_ref=request_ref,
-        profile=RunProfile.RELEASE_CANDIDATE,
-        stage="final",
-        required=True,
-        previous_receipt_refs=(),
-        previous_output_refs=(),
-    )
-    try:
-        delegated = _invoke(delegate, context)
-    except Exception as exc:
-        raise ForwardEvidenceError("release_candidate_delegate") from exc
-    _validate_no_authority(delegated)
-    return {
-        "authority": False,
-        "broker": False,
-        "delegate_result": delegated,
-        "delegated_to_strict_v3": True,
-        "execution": False,
-        "formal_activation_eligible": False,
-        "global_activation_state": GLOBAL_ACTIVATION_STATE,
-        "order": False,
-        "profile": RunProfile.RELEASE_CANDIDATE.value,
-        "research_runtime_default": False,
-        "request_id": request["request_id"],
-        "run_state": RUN_STATE_BLOCKED,
-        "side_effects": dict(NO_SIDE_EFFECT_FLAGS),
-        "trade": False,
-    }
-
-
 def run_forward(
     workspace_root: str | os.PathLike[str],
     *,
@@ -2266,7 +2207,6 @@ def run_forward(
     stage_validators: Mapping[str, StageValidator] | None = None,
     reference_reader: ReferenceReader | None = None,
     factor_pointer_reread: Callable[..., Any] | None = None,
-    release_candidate_delegate: Callable[..., Any] | None = None,
     event_hook: EventHook | None = None,
     disk_free_reader: DiskFreeReader | None = None,
 ) -> dict[str, Any]:
@@ -2314,13 +2254,6 @@ def run_forward(
         raw=request_raw,
     )
     definition = profile_definition(profile)
-    if definition.delegates_to_strict_v3:
-        return _release_candidate(
-            store=store,
-            request=request,
-            request_ref=request_reference,
-            delegate=release_candidate_delegate,
-        )
     callbacks = _normalize_callback_map(
         stage_callbacks,
         definition=definition,
@@ -2523,7 +2456,6 @@ def run_forward(
 
 __all__ = [
     "Completeness",
-    "DEFAULT_PROTOCOL_STATE",
     "DISK_FREE_FLOOR_BYTES",
     "ExecutionOutcome",
     "FORWARD_EVIDENCE_ROOT",
@@ -2532,7 +2464,6 @@ __all__ = [
     "FORWARD_RUN_VERSION",
     "FORWARD_SESSION_VERSION",
     "ForwardEvidenceError",
-    "GLOBAL_ACTIVATION_STATE",
     "MAX_ARTIFACT_BYTES",
     "NO_SIDE_EFFECT_FLAGS",
     "RUN_STATE_BLOCKED",

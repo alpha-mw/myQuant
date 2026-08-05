@@ -17,10 +17,6 @@ from typing import Final, Iterator
 SOURCE_ROOT: Final = PurePosixPath("data/private/v17_v4_sources")
 RUN_ROOT: Final = PurePosixPath("data/private/v17_v4_runs")
 SHADOW_ROOT: Final = PurePosixPath("results/v17_v4_shadow")
-FORMAL_RESEARCH_ROOT: Final = PurePosixPath(
-    "results/v17_v4_formal_research"
-)
-CANARY_ROOT: Final = PurePosixPath("results/v17_v4_canary")
 FACTOR_CONTROL_ROOT: Final = PurePosixPath(
     "data/private/factor_governance_production_control_v1"
 )
@@ -28,8 +24,6 @@ GOVERNED_ROOTS: Final = (
     SOURCE_ROOT,
     RUN_ROOT,
     SHADOW_ROOT,
-    FORMAL_RESEARCH_ROOT,
-    CANARY_ROOT,
 )
 REFERENCE_ROOTS: Final = (*GOVERNED_ROOTS, FACTOR_CONTROL_ROOT)
 PIT_CATALOG_ROOT: Final = SOURCE_ROOT / "pit_catalog"
@@ -754,11 +748,9 @@ class ExactReferenceReader(GovernedStore):
 
 
 __all__ = [
-    "CANARY_ROOT",
     "EMPTY_SHA256",
     "ExactReferenceReader",
     "FACTOR_CONTROL_ROOT",
-    "FORMAL_RESEARCH_ROOT",
     "GOVERNED_ROOTS",
     "GovernedStore",
     "PIT_CATALOG_LOCK",
