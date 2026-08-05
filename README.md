@@ -11,6 +11,8 @@ decision without evidence that can be replayed.*
 [![Version](https://img.shields.io/badge/Version-17.0.0-FF6B35?style=flat-square)](pyproject.toml)
 [![License](https://img.shields.io/badge/License-MIT-22C55E?style=flat-square)](LICENSE)
 
+**English** · [简体中文](README.zh-CN.md)
+
 [Problem](#the-problem) · [Design stance](#design-stance) · [Architecture](#architecture) · [Factor governance](#factor-governance) · [Quick start](#quick-start) · [Current state](#current-state)
 
 </div>
