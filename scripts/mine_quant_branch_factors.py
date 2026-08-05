@@ -7,6 +7,7 @@ import argparse
 import ast
 import hashlib
 import json
+import math
 import re
 import sys
 from dataclasses import dataclass
@@ -46,11 +47,23 @@ from quant_investor.factors.exposure_maps import (  # noqa: E402
     clamp_analysis_start_to_exposure,
     governed_exposure_date_bounds,
 )
+from quant_investor.factors.trial_correction import (  # noqa: E402
+    DEFAULT_DSR_FLOOR,
+    DEFAULT_PBO_CEILING,
+    HARVEY_LIU_ZHU_T_HURDLE,
+    TRIAL_CORRECTION_SCHEMA,
+    deflated_sharpe_ratio,
+    effective_trial_count,
+    expected_max_sharpe_under_null,
+    nonoverlap_t_statistic,
+    probability_of_backtest_overfitting,
+)
 from scripts.retest_aquant_alpha_mix_8gate import (  # noqa: E402
     _failed_gate_ids,
     _json_default,
     _matrix_from_frames,
     _passed_gate_ids,
+    _rank_ic_series,
     _safe_float,
     RetestContext,
     build_context,
@@ -69,6 +82,8 @@ _ACCEPTED_EXPOSURE_SOURCES = (
     GOVERNED_EXPOSURE_SOURCE,
     "strict_parquet_hybrid_market_cap_exposure",
 )
+# Time blocks for the CSCV overfitting pass; must be even for balanced splits.
+TRIAL_CORRECTION_BLOCK_COUNT = 10
 _ACCEPTED_EXPOSURE_SIZE_POLICIES = (
     GOVERNED_SIZE_POLICY,
     "same_trade_date_total_mv_then_asof_total_share_times_close",
@@ -1373,6 +1388,166 @@ def _set_parameter_stability(results: list[dict[str, Any]]) -> None:
         item["summary"] = review.summary
 
 
+def build_trial_correction_evidence(
+    results: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Measure the selection bias this run introduced by searching at all.
+
+    The trial count is every candidate the run scored, and the trial Sharpe
+    spread is how widely their ICIRs varied - together they say how high a
+    worthless candidate could have climbed by luck alone.  PBO is computed
+    across the whole candidate set from per-block IC, so it is a property of the
+    run, not of any one factor.
+    """
+
+    icirs = [
+        _safe_float(dict(item.get("metrics", {}) or {}).get("icir"))
+        for item in results
+    ]
+    finite = [value for value in icirs if math.isfinite(value)]
+    trial_sharpe_std = (
+        float(np.std(finite, ddof=1)) if len(finite) > 1 else 0.0
+    )
+    # Seventy smoothing variants of one idea are one hypothesis, not seventy.
+    trials = effective_trial_count(
+        {
+            str(item.get("name", "")): item.get("_ic_series")
+            for item in results
+            if isinstance(item.get("_ic_series"), pd.Series)
+        }
+    )
+    effective_trials = int(trials["effective_trial_count"])
+    block_frame = _block_performance_frame(results)
+    pbo = probability_of_backtest_overfitting(block_frame)
+    return {
+        "schema": TRIAL_CORRECTION_SCHEMA,
+        "trial_count": len(results),
+        "effective_trial_count": effective_trials,
+        "trial_cluster_count": int(trials["cluster_count"]),
+        "trial_cluster_floor": float(trials["correlation_floor"]),
+        "largest_trial_cluster_size": int(trials["largest_cluster_size"]),
+        "trial_sharpe_std": trial_sharpe_std,
+        "expected_max_sharpe_under_null": expected_max_sharpe_under_null(
+            trial_sharpe_std=trial_sharpe_std, trial_count=effective_trials
+        ),
+        "dsr_floor": DEFAULT_DSR_FLOOR,
+        "t_hurdle": HARVEY_LIU_ZHU_T_HURDLE,
+        "pbo_ceiling": DEFAULT_PBO_CEILING,
+        "pbo": pbo["pbo"],
+        "pbo_split_count": pbo["split_count"],
+        "pbo_config_count": pbo["config_count"],
+        "pbo_block_count": pbo["block_count"],
+        "pbo_median_oos_rank": pbo["median_oos_rank"],
+    }
+
+
+def _block_performance_frame(
+    results: Sequence[Mapping[str, Any]],
+    *,
+    block_count: int = TRIAL_CORRECTION_BLOCK_COUNT,
+) -> pd.DataFrame:
+    """One mean IC per (time block, candidate), for the CSCV pass."""
+
+    columns: dict[str, list[float]] = {}
+    for item in results:
+        series = item.get("_ic_series")
+        if not isinstance(series, pd.Series) or series.empty:
+            continue
+        ordered = series.dropna().sort_index()
+        if len(ordered) < block_count:
+            continue
+        blocks = np.array_split(ordered.to_numpy(dtype=float), block_count)
+        columns[str(item.get("name", ""))] = [
+            float(np.mean(block)) if len(block) else float("nan")
+            for block in blocks
+        ]
+    if not columns:
+        return pd.DataFrame()
+    return pd.DataFrame(columns)
+
+
+def _set_trial_correction(
+    results: list[dict[str, Any]],
+    evidence: Mapping[str, Any],
+) -> None:
+    """Attach per-candidate trial-corrected evidence and drop the IC series.
+
+    This does not re-run the eight gates: it is an additional bar on top of
+    them, never a way around one.
+    """
+
+    trial_count = int(evidence.get("trial_count", 0) or 0)
+    effective_trials = int(
+        evidence.get("effective_trial_count", trial_count) or trial_count
+    )
+    trial_sharpe_std = _safe_float(evidence.get("trial_sharpe_std"))
+    for item in results:
+        series = item.pop("_ic_series", None)
+        metrics = dict(item.get("metrics", {}) or {})
+        if isinstance(series, pd.Series) and not series.empty:
+            clean = series.dropna()
+            t_stat, p_value, cohort_count = nonoverlap_t_statistic(clean)
+            observed_sharpe = _safe_float(metrics.get("icir"))
+            dsr = deflated_sharpe_ratio(
+                observed_sharpe=observed_sharpe,
+                trial_sharpe_std=trial_sharpe_std,
+                trial_count=effective_trials,
+                sample_size=len(clean),
+                skew=float(clean.skew()) if len(clean) > 2 else 0.0,
+                kurtosis=(
+                    float(clean.kurtosis()) + 3.0 if len(clean) > 3 else 3.0
+                ),
+            )
+        else:
+            t_stat, p_value, cohort_count = 0.0, 1.0, 0
+            dsr = 0.0
+        harvey_liu_zhu_passed = bool(abs(t_stat) >= HARVEY_LIU_ZHU_T_HURDLE)
+        dsr_passed = bool(dsr >= DEFAULT_DSR_FLOOR)
+        pbo_passed = bool(
+            _safe_float(evidence.get("pbo"), 1.0) <= DEFAULT_PBO_CEILING
+        )
+        metrics.update(
+            {
+                "trial_count": trial_count,
+                "effective_trial_count": effective_trials,
+                "trial_sharpe_std": trial_sharpe_std,
+                "nonoverlap_t_stat": t_stat,
+                "nonoverlap_p_value": p_value,
+                "nonoverlap_cohort_count": cohort_count,
+                "harvey_liu_zhu_passed": harvey_liu_zhu_passed,
+                "deflated_sharpe_ratio": dsr,
+                "deflated_sharpe_passed": dsr_passed,
+                "run_pbo": _safe_float(evidence.get("pbo"), 1.0),
+                "run_pbo_passed": pbo_passed,
+                "trial_corrected_passed": bool(
+                    harvey_liu_zhu_passed and dsr_passed and pbo_passed
+                ),
+            }
+        )
+        item["metrics"] = metrics
+
+
+def qualified_candidates(
+    results: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Candidates that clear the eight gates *and* the trial correction.
+
+    The gate review answers whether a candidate is any good.  The trial
+    correction answers a different question - whether this run searched hard
+    enough that the leader could look this good by luck - and a candidate has to
+    survive both.  It is strictly an extra bar: nothing here can qualify a
+    candidate the gates rejected.
+    """
+
+    return [
+        dict(item)
+        for item in results
+        if item.get("decision") == "production_candidate"
+        and dict(item.get("metrics", {}) or {}).get("trial_corrected_passed")
+        is True
+    ]
+
+
 def rank_candidates(
     results: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -2176,7 +2351,15 @@ def run_mining(args: argparse.Namespace) -> dict[str, Any]:
                 decision_cost_bps=float(args.decision_cost_bps),
                 incremental_sleeve=float(args.incremental_sleeve_weight),
             )
+            # Kept out of ``metrics`` so nothing unserialisable reaches the
+            # report; the trial-correction pass consumes and drops it.
+            candidate_ic_series = _rank_ic_series(
+                signal,
+                metrics_context.forward_return,
+                metrics_context.rebalance_dates,
+            )
         except Exception as exc:
+            candidate_ic_series = pd.Series(dtype=float)
             blockers.append(f"candidate_compute_error:{exc}")
             metrics = {
                 "no_future_leakage": True,
@@ -2219,22 +2402,22 @@ def run_mining(args: argparse.Namespace) -> dict[str, Any]:
             }
         blockers.extend(str(item) for item in metrics.get("blockers", []))
         review = evaluate_with_myquant_gate(candidate.name, metrics)
-        results.append(
-            _candidate_result(
-                candidate,
-                metrics,
-                review,
-                blockers,
-                effective_analysis_start_date=effective_start,
-            )
+        result = _candidate_result(
+            candidate,
+            metrics,
+            review,
+            blockers,
+            effective_analysis_start_date=effective_start,
         )
+        result["_ic_series"] = candidate_ic_series
+        results.append(result)
 
     _set_parameter_stability(results)
     _set_family_fdr(results)
+    trial_correction = build_trial_correction_evidence(results)
+    _set_trial_correction(results, trial_correction)
     results = rank_candidates(results)
-    qualified = [
-        item for item in results if item["decision"] == "production_candidate"
-    ]
+    qualified = qualified_candidates(results)
     candidates_by_name = {
         candidate.name: candidate for candidate in candidates
     }
@@ -2307,6 +2490,7 @@ def run_mining(args: argparse.Namespace) -> dict[str, Any]:
         "loaded_symbol_count": len(full_context.frames),
         "horizon_days": int(args.horizon_days),
         "warmup_days": int(args.warmup_days),
+        "trial_correction": dict(trial_correction),
         "analysis_start_date": str(args.analysis_start_date),
         "resolved_analysis_start_date": resolved_analysis_start,
         "analysis_start_clamped_to_exposure": (
@@ -2434,6 +2618,12 @@ def write_outputs(output_dir: Path, payload: Mapping[str, Any]) -> None:
                     "pool_residual_oos_positive_ratio"
                 ),
                 "oos_positive_ratio": metrics.get("oos_positive_ratio"),
+                "nonoverlap_t_stat": metrics.get("nonoverlap_t_stat"),
+                "harvey_liu_zhu_passed": metrics.get("harvey_liu_zhu_passed"),
+                "deflated_sharpe_ratio": metrics.get("deflated_sharpe_ratio"),
+                "trial_corrected_passed": metrics.get(
+                    "trial_corrected_passed"
+                ),
                 "existing_factor_corr": metrics.get("existing_factor_corr"),
                 "master_return_delta": metrics.get("master_return_delta"),
                 "sharpe_delta": metrics.get("sharpe_delta"),
@@ -2473,6 +2663,17 @@ def render_markdown_report(payload: Mapping[str, Any]) -> str:
             f"{payload.get('resolved_analysis_start_date') or 'full'}"
         ),
         f"- Registry write: {payload.get('registry_write')}",
+        (
+            "- Trial correction: "
+            f"{_safe_float(dict(payload.get('trial_correction', {})).get('trial_count')):.0f} trials "
+            f"({_safe_float(dict(payload.get('trial_correction', {})).get('effective_trial_count')):.0f} effective), "
+            f"trial ICIR sd "
+            f"{_safe_float(dict(payload.get('trial_correction', {})).get('trial_sharpe_std')):.3f}, "
+            f"expected best-of-N ICIR under null "
+            f"{_safe_float(dict(payload.get('trial_correction', {})).get('expected_max_sharpe_under_null')):.3f}, "
+            f"PBO "
+            f"{_safe_float(dict(payload.get('trial_correction', {})).get('pbo'), 1.0):.3f}"
+        ),
         (
             "- Candidate maturity start: "
             f"{payload.get('candidate_maturity_start')} "
