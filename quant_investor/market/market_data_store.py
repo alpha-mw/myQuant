@@ -12,7 +12,7 @@ import stat
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
 import pandas as pd
@@ -25,6 +25,26 @@ from quant_investor.market.market_data_reader import (
 
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+
+# Earliest plausible exchange session per market. A `trade_date` before this is
+# not a late-listed symbol; it is corruption. Epoch-zero timestamps normalize to
+# "19700101" and previously entered the canonical table unchallenged.
+_MARKET_FIRST_SESSION: Mapping[str, str] = {
+    "CN": "19901219",  # Shanghai Stock Exchange first session
+    "US": "17920517",  # Buttonwood Agreement
+}
+_DEFAULT_FIRST_SESSION = "18000101"
+_MAX_REPORTED_INVALID_DATES = 20
+
+
+def _is_real_calendar_date(value: str) -> bool:
+    if len(value) != 8 or not value.isdigit():
+        return False
+    try:
+        date(int(value[0:4]), int(value[4:6]), int(value[6:8]))
+    except ValueError:
+        return False
+    return True
 
 
 class MarketDataStore:
@@ -63,6 +83,89 @@ class MarketDataStore:
         if not relative.parts or relative.parts[0] != "data":
             raise ValueError(f"{label}_outside_repository_data_root")
         return relative.as_posix()
+
+    def _snapshot_root(self) -> Path:
+        return self.data_root / "parquet" / self.market.lower() / "_snapshots"
+
+    def active_snapshot_id(self) -> str:
+        pointer = self.data_root / "parquet" / self.market.lower() / "_latest.json"
+        if not pointer.exists():
+            return ""
+        try:
+            payload = json.loads(pointer.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return ""
+        return str(payload.get("snapshot_id") or "") if isinstance(payload, Mapping) else ""
+
+    def prune_snapshot_serving_layers(
+        self,
+        *,
+        keep_recent: int = 10,
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """Drop the derived `serving/` layer from older published snapshots.
+
+        The `table/` layer hardlinks cleanly across snapshots because a daily
+        upsert rewrites only the affected `year=/month=` partitions.  The
+        `serving/` layer cannot: it is keyed by symbol, so appending one session
+        rewrites every symbol file, producing a full unshared copy per snapshot.
+
+        `serving/` is a derived projection of `table/`, so pruning it costs
+        reproducibility of *that* snapshot's serving-layout reads (the reader
+        fails closed with `serving bars root missing`) but loses no source data.
+        This never touches the active snapshot or the `keep_recent` newest ones,
+        and defaults to `dry_run` because it deletes published bytes.
+        """
+
+        if keep_recent < 1:
+            raise ValueError("keep_recent must be at least 1")
+        root = self._snapshot_root()
+        if not root.exists():
+            return {"market": self.market, "candidates": [], "pruned": [], "dry_run": dry_run}
+
+        active = self.active_snapshot_id()
+        snapshot_dirs = sorted(
+            (path for path in root.iterdir() if path.is_dir()),
+            key=lambda path: path.name,
+            reverse=True,
+        )
+        protected = {item.name for item in snapshot_dirs[:keep_recent]}
+        if active:
+            protected.add(active)
+
+        candidates: list[dict[str, Any]] = []
+        pruned: list[str] = []
+        for path in snapshot_dirs:
+            if path.name in protected:
+                continue
+            serving = path / "serving"
+            if not serving.exists():
+                continue
+            released = sum(
+                item.stat().st_size
+                for item in serving.rglob("*")
+                if item.is_file() and item.stat().st_nlink == 1
+            )
+            candidates.append({"snapshot_id": path.name, "released_bytes": released})
+            if not dry_run:
+                shutil.rmtree(serving)
+                pruned.append(path.name)
+
+        result = {
+            "market": self.market,
+            "active_snapshot_id": active,
+            "keep_recent": keep_recent,
+            "dry_run": dry_run,
+            "candidates": candidates,
+            "pruned": pruned,
+            "released_bytes": sum(item["released_bytes"] for item in candidates),
+        }
+        if pruned:
+            self.append_health_event(
+                "snapshot_serving_layer_pruned",
+                {"status": "pruned", **result},
+            )
+        return result
 
     def validate_latest(self) -> dict[str, Any]:
         gate = self.reader.clean_snapshot_gate(refresh=True)
@@ -330,7 +433,9 @@ class MarketDataStore:
     def _utc_now() -> str:
         return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
-    def _normalize_bars_frame(self, frame: pd.DataFrame) -> pd.DataFrame:
+    def _normalize_bars_frame(
+        self, frame: pd.DataFrame, *, strict: bool = True
+    ) -> pd.DataFrame:
         work = frame.copy()
         rename_map = {
             "Open": "open",
@@ -361,6 +466,7 @@ class MarketDataStore:
         work = work.loc[work["ts_code"].ne("") & work["trade_date"].ne("")].copy()
         if work.empty:
             raise ValueError("no valid bars rows after symbol/date normalization")
+        work = self._apply_trade_date_plausibility(work, strict=strict)
         for column in [
             "open",
             "high",
@@ -394,6 +500,69 @@ class MarketDataStore:
         work["_month"] = work["trade_date"].str.slice(4, 6).astype(int)
         return work
 
+    def first_plausible_session(self) -> str:
+        return _MARKET_FIRST_SESSION.get(self.market.upper(), _DEFAULT_FIRST_SESSION)
+
+    def implausible_trade_date_rows(self, frame: pd.DataFrame) -> list[tuple[str, str]]:
+        """Return (ts_code, trade_date) pairs whose session date cannot be real.
+
+        A `trade_date` is implausible when it is not a real calendar date or
+        predates the market's first exchange session.  The write path already
+        pins incoming dates to the declared target set, so this exists to stop
+        corruption riding forward through `_merge_bars` on existing bytes.
+        """
+
+        floor = self.first_plausible_session()
+        offenders: list[tuple[str, str]] = []
+        for symbol, trade_date in zip(
+            frame.get("ts_code", pd.Series(dtype=str)).astype(str),
+            frame.get("trade_date", pd.Series(dtype=str)).astype(str),
+        ):
+            if not _is_real_calendar_date(trade_date) or trade_date < floor:
+                offenders.append((symbol, trade_date))
+        return offenders
+
+    def _apply_trade_date_plausibility(
+        self, frame: pd.DataFrame, *, strict: bool
+    ) -> pd.DataFrame:
+        """Fail closed on incoming corruption; quarantine it out of existing bytes.
+
+        `strict=True` guards data entering the store, where an implausible
+        session date means the provider or the caller is wrong and the publish
+        must not proceed.  `strict=False` is used when re-reading already
+        published bytes: refusing there would wedge every future republish on
+        historical corruption, so the rows are dropped and recorded on the
+        health ledger instead, which lets the next snapshot heal itself.
+        """
+
+        offenders = self.implausible_trade_date_rows(frame)
+        if not offenders:
+            return frame
+        shown = sorted(set(offenders))[:_MAX_REPORTED_INVALID_DATES]
+        if strict:
+            raise ValueError(
+                f"{len(offenders)} bars row(s) carry an implausible trade_date "
+                f"for market {self.market} (earliest valid session "
+                f"{self.first_plausible_session()}): {shown}"
+            )
+        floor = self.first_plausible_session()
+        keep = [
+            _is_real_calendar_date(value) and value >= floor
+            for value in frame["trade_date"].astype(str)
+        ]
+        self.append_health_event(
+            "implausible_trade_date_quarantined",
+            {
+                "status": "quarantined",
+                "market": self.market,
+                "first_plausible_session": floor,
+                "dropped_row_count": len(offenders),
+                "dropped_rows": [list(item) for item in shown],
+                "dropped_rows_truncated": len(set(offenders)) > len(shown),
+            },
+        )
+        return frame.loc[keep].copy()
+
     def _latest_dates_from_bars(self, frame: pd.DataFrame) -> tuple[str, str]:
         dates = sorted(
             {
@@ -415,7 +584,7 @@ class MarketDataStore:
     def _merge_bars(self, existing: pd.DataFrame, incoming: pd.DataFrame) -> pd.DataFrame:
         frames: list[pd.DataFrame] = []
         if existing is not None and not existing.empty:
-            frames.append(self._normalize_bars_frame(existing))
+            frames.append(self._normalize_bars_frame(existing, strict=False))
         if incoming is not None and not incoming.empty:
             frames.append(incoming.copy())
         if not frames:
