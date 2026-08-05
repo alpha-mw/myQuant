@@ -539,10 +539,17 @@ def _fresh_evaluations(
         }
     )
     active_registry = MinedFactorRegistry.from_records(list(factors))
+    expression_inputs = _fresh_expression_inputs(context, args)
     for factor in factors:
         try:
             candidate = _mining_candidate_from_record(factor, MiningCandidate)
-            signal = compute_price_volume_signal(candidate, context)
+            signal = _fresh_candidate_signal(
+                candidate,
+                context,
+                expression_inputs=expression_inputs,
+                candidate_type=MiningCandidate,
+                price_volume_signal_builder=compute_price_volume_signal,
+            )
             matured_cohort_dates = _mature_rankic_dates(
                 signal,
                 context.forward_return,
@@ -799,6 +806,9 @@ def _build_parquet_fresh_context(args: argparse.Namespace) -> dict[str, Any]:
             amount,
             candidate_type=MiningCandidate,
             signal_builder=compute_price_volume_signal,
+            expression_inputs=_fresh_expression_inputs(
+                SimpleNamespace(frames=frames), args
+            ),
         )
     except Exception as exc:
         existing_blocker = f"existing_composite_unavailable:{exc}"
@@ -830,6 +840,7 @@ def _compute_existing_price_volume_composite(
     *,
     candidate_type: Any,
     signal_builder: Any,
+    expression_inputs: Any = None,
 ) -> tuple[pd.DataFrame | None, str]:
     active = registry.selectable_factors()
     if not active:
@@ -845,7 +856,13 @@ def _compute_existing_price_volume_composite(
     for factor in active:
         try:
             candidate = _mining_candidate_from_record(factor, candidate_type)
-            raw = signal_builder(candidate, signal_context)
+            raw = _fresh_candidate_signal(
+                candidate,
+                signal_context,
+                expression_inputs=expression_inputs,
+                candidate_type=candidate_type,
+                price_volume_signal_builder=signal_builder,
+            )
         except Exception as exc:
             blockers.append(f"{factor.name}:{exc}")
             continue
@@ -922,6 +939,10 @@ def _mature_rankic_dates(
 
 def _mining_candidate_from_record(factor: FactorRecord, candidate_type: Any) -> Any:
     impl = str(factor.implementation or "").strip()
+    if impl.startswith("aquant_expression:"):
+        return _aquant_candidate_from_record(factor, candidate_type, impl)
+    if impl.startswith("research_formula:"):
+        return _research_formula_candidate_from_record(factor, candidate_type, impl)
     if not impl.startswith("price_volume:"):
         raise ValueError(f"fresh evaluation supports price_volume factors only: {impl}")
     name = impl.split(":", 1)[1]
@@ -964,6 +985,217 @@ def _mining_candidate_from_record(factor: FactorRecord, candidate_type: Any) -> 
         implementation=impl,
         description=factor.description,
         window=_first_window_from_name(name),
+    )
+
+
+def _momentum_matrix(adj_close: pd.DataFrame, window: int) -> pd.DataFrame:
+    """Mining's `momentum(window)`, kept identical so health matches the runtime."""
+
+    return adj_close.div(adj_close.shift(window)).sub(1.0)
+
+
+def _pinned_baseline_composite(
+    baseline: Mapping[str, Any],
+    context: Any,
+    candidate_type: Any,
+    signal_builder: Any,
+) -> pd.DataFrame:
+    """Matrix analogue of `residual_baseline.build_baseline_composite`.
+
+    Production scores one cross-section; health needs the whole panel. The
+    weighting, neutral-fill and clipping match `compute_existing_composite` so a
+    pinned health value equals the pinned production value on the same date.
+    """
+
+    composite: pd.DataFrame | None = None
+    total_weight = 0.0
+    for item in baseline["factors"]:
+        candidate = candidate_type(
+            name=item["name"],
+            family="",
+            category="",
+            implementation=item["implementation"],
+            description="",
+            window=_first_window_from_name(item["implementation"].split(":", 1)[1]),
+        )
+        raw = signal_builder(candidate, context)
+        signed = float(item["weight"]) * (1.0 if float(item["direction"]) >= 0 else -1.0)
+        ranked = raw.rank(axis=1, pct=True).mul(2.0).sub(1.0).fillna(0.0).mul(signed)
+        composite = ranked if composite is None else composite.add(ranked, fill_value=0.0)
+        total_weight += abs(float(item["weight"]))
+    if composite is None or total_weight <= 1e-12:
+        raise ValueError("residual baseline has zero total weight")
+    return composite.div(total_weight).clip(-1.0, 1.0)
+
+
+def _pinned_formulaic_signal(
+    candidate: Any,
+    context: Any,
+    *,
+    expression_inputs: Any,
+    candidate_type: Any,
+    signal_builder: Any,
+) -> pd.DataFrame:
+    """Rank-blend two primitives, residualizing the right against the pin."""
+
+    from quant_investor.factors.residual_baseline import validate_residual_baseline
+    from scripts.mine_quant_branch_factors import (  # type: ignore
+        _cs_rank,
+        _residualize_against_existing,
+    )
+
+    params = dict(candidate.params or {})
+    baseline = validate_residual_baseline(params.get("residualize_right_against") or {})
+    weight = float(params.get("left_weight", 0.5))
+    if not 0.0 <= weight <= 1.0:
+        raise ValueError(f"invalid rank blend weight: {weight}")
+
+    def primitive(name: Any) -> pd.DataFrame:
+        text = str(name or "").strip()
+        if text.startswith("momentum_") and text.removeprefix("momentum_").isdigit():
+            return _momentum_matrix(context.adj_close, int(text.removeprefix("momentum_")))
+        if expression_inputs is not None and hasattr(expression_inputs, text):
+            return getattr(expression_inputs, text).reindex(
+                index=context.adj_close.index, columns=context.adj_close.columns
+            )
+        raise ValueError(f"unsupported formulaic primitive: {name}")
+
+    composite = _pinned_baseline_composite(
+        baseline, context, candidate_type, signal_builder
+    )
+    residual = _residualize_against_existing(primitive(params.get("right")), composite)
+    return _cs_rank(primitive(params.get("left"))).mul(weight) + _cs_rank(residual).mul(
+        1.0 - weight
+    )
+
+
+def _fresh_candidate_signal(
+    candidate: Any,
+    context: Any,
+    *,
+    expression_inputs: Any,
+    candidate_type: Any,
+    price_volume_signal_builder: Any,
+) -> pd.DataFrame:
+    """Dispatch a health signal by implementation.
+
+    Previously every caller assumed `compute_price_volume_signal`, which is why
+    the growth and formulaic families could not be evaluated at all.
+    """
+
+    impl = str(candidate.implementation or "").strip()
+    if impl.startswith("price_volume:"):
+        return price_volume_signal_builder(candidate, context)
+    if impl.startswith("aquant_expression:"):
+        from quant_investor.factors.aquant_expression import evaluate_aquant_expression
+
+        if expression_inputs is None:
+            raise ValueError(
+                f"fresh evaluation could not build A_quant inputs for {candidate.name}"
+            )
+        return evaluate_aquant_expression(candidate.expression, expression_inputs).reindex(
+            index=context.adj_close.index, columns=context.adj_close.columns
+        )
+    if impl.startswith("research_formula:"):
+        return _pinned_formulaic_signal(
+            candidate,
+            context,
+            expression_inputs=expression_inputs,
+            candidate_type=candidate_type,
+            signal_builder=price_volume_signal_builder,
+        )
+    raise ValueError(f"fresh evaluation cannot compute implementation: {impl}")
+
+
+def _fresh_expression_inputs(context: Any, args: argparse.Namespace) -> Any:
+    """Build A_quant inputs once per run, or None when the mart is unavailable.
+
+    Returning None rather than raising keeps a price_volume-only run working on
+    a machine with no fundamental mart; the dispatch then fails closed only for
+    the factors that actually need it.
+    """
+
+    try:
+        from quant_investor.factors.aquant_expression import (
+            build_aquant_expression_inputs,
+        )
+
+        return build_aquant_expression_inputs(
+            context.frames,
+            fundamental_mart_root=getattr(
+                args, "fundamental_mart_root", None
+            )
+            or f"{Path(getattr(args, 'data_root', 'data'))}/parquet/cn",
+        )
+    except Exception:
+        return None
+
+
+def _aquant_candidate_from_record(
+    factor: FactorRecord,
+    candidate_type: Any,
+    implementation: str,
+) -> Any:
+    """Build the growth-family candidate.
+
+    An empty expression evaluates to nothing rather than raising, so a missing
+    one is rejected here instead of silently producing an empty health series.
+    """
+
+    metadata = factor.metadata or {}
+    expression = str(metadata.get("expression", "") or "").strip()
+    if not expression:
+        raise ValueError(
+            f"fresh evaluation needs an expression for A_quant factor: {factor.name}"
+        )
+    return candidate_type(
+        name=factor.name,
+        family=str(factor.category or "aquant_expression"),
+        category=factor.category,
+        implementation=implementation,
+        description=factor.description,
+        expression=expression,
+        params=dict(metadata.get("params") or {}),
+    )
+
+
+def _research_formula_candidate_from_record(
+    factor: FactorRecord,
+    candidate_type: Any,
+    implementation: str,
+) -> Any:
+    """Build the formulaic-family candidate, pinned baselines only.
+
+    Health must not measure a factor production would refuse to run, so the
+    unpinned `_resid_existing` form is rejected on exactly the runtime's
+    predicate rather than a second copy of the rule.
+    """
+
+    from quant_investor.factors.runtime import production_set_dependent_primitives
+
+    if implementation.split(":", 1)[1] != "rank_blend":
+        raise ValueError(
+            f"unsupported research_formula implementation: {implementation}"
+        )
+    params = (factor.metadata or {}).get("params")
+    if not isinstance(params, Mapping) or not params:
+        raise ValueError(f"research_formula factor has no params: {factor.name}")
+    if dependent := production_set_dependent_primitives(factor):
+        raise ValueError(
+            f"factor definition depends on the production set: {factor.name} "
+            f"references {', '.join(dependent)}"
+        )
+    if not params.get("residualize_right_against"):
+        raise ValueError(
+            f"research_formula factor needs a pinned residual baseline: {factor.name}"
+        )
+    return candidate_type(
+        name=factor.name,
+        family=str(factor.category or "formulaic_research"),
+        category=factor.category,
+        implementation=implementation,
+        description=factor.description,
+        params=dict(params),
     )
 
 
