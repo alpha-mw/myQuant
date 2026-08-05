@@ -36,6 +36,11 @@ from quant_investor.factors.governance import (  # noqa: E402
     FactorRecord,
     GateResult,
 )
+from quant_investor.factors.incremental_alpha import (  # noqa: E402
+    NO_POOL_EVIDENCE_SOURCE,
+    POOL_RESIDUAL_EVIDENCE_SOURCE,
+    residualize_against_pool,
+)
 from quant_investor.factors.purged_cv import (  # noqa: E402
     build_cpcv_splits,
     cpcv_path_evidence,
@@ -726,6 +731,27 @@ def candidate_metrics(
         signal, context.existing_composite, dates
     )
 
+    raw_icir = _icir(ics)
+
+    # What the candidate adds once the production pool is projected out of it.
+    # A reparameterised copy of something already held residualises to noise,
+    # however good its standalone IC looks.
+    pool_residual_ics = _rank_ic_series(
+        residualize_against_pool(signal, context.existing_composite, dates),
+        context.forward_return,
+        dates,
+    )
+    pool_residual_icir = _icir(pool_residual_ics)
+    pool_residual_mean_rankic = (
+        float(pool_residual_ics.mean()) if not pool_residual_ics.empty else 0.0
+    )
+    pool_residual_retention = (
+        float(abs(pool_residual_icir) / abs(raw_icir))
+        if abs(raw_icir) > 1e-12
+        else 0.0
+    )
+    pool_residual_cpcv = _cpcv_evidence_for(pool_residual_ics, context)
+
     # Combinatorial purged cross-validation over the session calendar: blocks
     # and the purge/embargo around them are counted in sessions, so the 30-day
     # purge and embargo Gate 7 demands are literal.  Each path then keeps
@@ -797,7 +823,6 @@ def candidate_metrics(
     exposure_ready = (
         str(dict(context.exposure_metadata or {}).get("status", "")) == "ready"
     )
-    raw_icir = _icir(ics)
     raw_neutralized_icir = _icir(neutral_ics)
     neutralized_icir = raw_neutralized_icir if exposure_ready else 0.0
     neutralization_evidence_source = (
@@ -874,6 +899,22 @@ def candidate_metrics(
             "cpcv_purged_embargoed"
             if cpcv_evidence["path_count"] > 0
             else "cpcv_unavailable"
+        ),
+        # Set-level evidence: the candidate measured against what the pool
+        # already holds, which is what admission should actually rank on.
+        "pool_residual_mean_rankic": pool_residual_mean_rankic,
+        "pool_residual_icir": pool_residual_icir,
+        "pool_residual_retention": pool_residual_retention,
+        "pool_residual_oos_positive_ratio": float(
+            pool_residual_cpcv["positive_path_ratio"]
+        ),
+        "pool_residual_cpcv_mean_path_ic": float(
+            pool_residual_cpcv["mean_path_ic"]
+        ),
+        "incremental_alpha_evidence_source": (
+            POOL_RESIDUAL_EVIDENCE_SOURCE
+            if context.existing_composite is not None
+            else NO_POOL_EVIDENCE_SOURCE
         ),
         "cpcv_mean_path_ic": float(cpcv_evidence["mean_path_ic"]),
         "cpcv_path_ic_std": float(cpcv_evidence["path_ic_std"]),

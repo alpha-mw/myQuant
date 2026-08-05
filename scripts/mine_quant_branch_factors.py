@@ -1373,6 +1373,32 @@ def _set_parameter_stability(results: list[dict[str, Any]]) -> None:
         item["summary"] = review.summary
 
 
+def rank_candidates(
+    results: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Order candidates by gate score, then by what they add to the pool.
+
+    Standalone ICIR ranked a reparameterised copy of an existing production
+    factor above a weaker but genuinely independent one, which is how the
+    2026-08-01 run filled its shortlist with near-duplicates.  The residualised
+    ICIR leads instead; standalone ICIR only breaks ties between candidates that
+    add the same amount.
+    """
+
+    return sorted(
+        (dict(item) for item in results),
+        key=lambda item: (
+            int(item.get("gates_passed", 0)),
+            _safe_float(dict(item.get("metrics", {})).get("pool_residual_icir")),
+            _safe_float(dict(item.get("metrics", {})).get("icir")),
+            _safe_float(
+                dict(item.get("metrics", {})).get("master_return_delta")
+            ),
+        ),
+        reverse=True,
+    )
+
+
 def _set_family_fdr(results: list[dict[str, Any]]) -> None:
     """Attach family-scoped BH evidence from the actually computed RankIC p-value."""
 
@@ -2205,14 +2231,7 @@ def run_mining(args: argparse.Namespace) -> dict[str, Any]:
 
     _set_parameter_stability(results)
     _set_family_fdr(results)
-    results.sort(
-        key=lambda item: (
-            int(item.get("gates_passed", 0)),
-            _safe_float(item.get("metrics", {}).get("icir")),
-            _safe_float(item.get("metrics", {}).get("master_return_delta")),
-        ),
-        reverse=True,
-    )
+    results = rank_candidates(results)
     qualified = [
         item for item in results if item["decision"] == "production_candidate"
     ]
@@ -2404,6 +2423,17 @@ def write_outputs(output_dir: Path, payload: Mapping[str, Any]) -> None:
                 "mean_rankic": metrics.get("mean_rankic"),
                 "positive_ic_ratio": metrics.get("positive_ic_ratio"),
                 "neutralized_icir": metrics.get("neutralized_icir"),
+                "pool_residual_mean_rankic": metrics.get(
+                    "pool_residual_mean_rankic"
+                ),
+                "pool_residual_icir": metrics.get("pool_residual_icir"),
+                "pool_residual_retention": metrics.get(
+                    "pool_residual_retention"
+                ),
+                "pool_residual_oos_positive_ratio": metrics.get(
+                    "pool_residual_oos_positive_ratio"
+                ),
+                "oos_positive_ratio": metrics.get("oos_positive_ratio"),
                 "existing_factor_corr": metrics.get("existing_factor_corr"),
                 "master_return_delta": metrics.get("master_return_delta"),
                 "sharpe_delta": metrics.get("sharpe_delta"),
