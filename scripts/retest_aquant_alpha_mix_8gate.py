@@ -63,6 +63,9 @@ DEFAULT_AQUANT_AUDIT_DIR = Path(
     )
 )
 DEFAULT_UNIVERSES = ("hs300", "zz500", "zz1000")
+# Below this share of the raw ICIR, sector/size demeaning has taken the factor
+# apart and what is left is a style bet rather than stock selection.
+NEUTRALIZED_ICIR_RETENTION_FLOOR = 0.50
 
 
 @dataclass(frozen=True)
@@ -746,6 +749,29 @@ def candidate_metrics(
         if direction_observations
         else 0.0
     )
+    exposure_ready = (
+        str(dict(context.exposure_metadata or {}).get("status", "")) == "ready"
+    )
+    raw_icir = _icir(ics)
+    raw_neutralized_icir = _icir(neutral_ics)
+    neutralized_icir = raw_neutralized_icir if exposure_ready else 0.0
+    neutralization_evidence_source = (
+        "governed_exposure_sector_size_demean"
+        if exposure_ready
+        else "exposure_not_ready"
+    )
+    neutralized_icir_retention = (
+        float(abs(raw_neutralized_icir) / abs(raw_icir))
+        if exposure_ready and abs(raw_icir) > 1e-12
+        else 0.0
+    )
+    # A factor is pure style exposure when demeaning inside sector x size
+    # buckets flips its direction or eats most of its ICIR.
+    style_exposure_only = not (
+        exposure_ready
+        and raw_neutralized_icir * raw_icir > 0.0
+        and neutralized_icir_retention >= NEUTRALIZED_ICIR_RETENTION_FLOOR
+    )
     metrics: dict[str, Any] = {
         # The legacy retest does not emit the versioned PIT/tradability audit
         # needed to prove these hard gates.  Unknown evidence is a failure, not
@@ -781,10 +807,15 @@ def candidate_metrics(
         "execution_realism": False,
         "slippage_evidence_source": "not_evaluated",
         "capacity_pressure": _capacity_pressure(signal, context.amount, dates),
-        "neutralized_icir": 0.0,
-        "diagnostic_universe_neutralized_icir": _icir(neutral_ics),
+        # Gate 6 reads real neutralization evidence only when the governed
+        # exposure maps behind it are ready; otherwise the sector/size demean
+        # was a no-op and claiming an alpha survived it would be a fiction.
+        "neutralized_icir": neutralized_icir,
+        "diagnostic_universe_neutralized_icir": raw_neutralized_icir,
+        "neutralization_evidence_source": neutralization_evidence_source,
+        "neutralized_icir_retention": neutralized_icir_retention,
         "existing_factor_corr": existing_corr,
-        "style_exposure_only": True,
+        "style_exposure_only": style_exposure_only,
         "oos_positive_ratio": 0.0,
         "diagnostic_contiguous_fold_positive_ratio": (
             float(np.mean(fold_positive)) if fold_positive else 0.0
