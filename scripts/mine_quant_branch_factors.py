@@ -40,6 +40,12 @@ from quant_investor.factors.governance_protocol_v3 import (  # noqa: E402
     FORWARD_PRODUCTION_APPLY_BLOCKER,
     benjamini_hochberg_by_family,
 )
+from quant_investor.factors.exposure_maps import (  # noqa: E402
+    GOVERNED_EXPOSURE_SOURCE,
+    GOVERNED_SIZE_POLICY,
+    clamp_analysis_start_to_exposure,
+    governed_exposure_date_bounds,
+)
 from scripts.retest_aquant_alpha_mix_8gate import (  # noqa: E402
     _failed_gate_ids,
     _json_default,
@@ -55,6 +61,18 @@ from scripts.retest_aquant_alpha_mix_8gate import (  # noqa: E402
 
 DEFAULT_UNIVERSES = ("full_a",)
 DEFAULT_REGISTRY_PATH = "quant_investor/factor_registry/mined_factors.json"
+
+# The governed generation is the intended exposure source; the legacy hybrid
+# raw-table source is still accepted for roots that predate the generation
+# pointer.  Both are strict Parquet and both are hash-bound.
+_ACCEPTED_EXPOSURE_SOURCES = (
+    GOVERNED_EXPOSURE_SOURCE,
+    "strict_parquet_hybrid_market_cap_exposure",
+)
+_ACCEPTED_EXPOSURE_SIZE_POLICIES = (
+    GOVERNED_SIZE_POLICY,
+    "same_trade_date_total_mv_then_asof_total_share_times_close",
+)
 
 
 @dataclass(frozen=True)
@@ -426,6 +444,16 @@ def _restrict_context_from_start(
         ],
         existing_composite=existing,
         existing_blocker=context.existing_blocker,
+        # Gate 2 and Gate 6 both read these; dropping them here silently scored
+        # every narrowed candidate as if no exposure evidence existed.
+        sector_by_symbol=dict(context.sector_by_symbol),
+        size_bucket_by_symbol=dict(context.size_bucket_by_symbol),
+        size_bucket_by_date=(
+            context.size_bucket_by_date.reindex(dates)
+            if not context.size_bucket_by_date.empty
+            else context.size_bucket_by_date
+        ),
+        exposure_metadata=dict(context.exposure_metadata),
     )
 
 
@@ -1722,15 +1750,13 @@ def _production_market_evidence_blocker(
     )
     if exposure.get("status") != "ready":
         return "factor_exposure_evidence_not_ready"
-    if exposure.get("source") != "strict_parquet_hybrid_market_cap_exposure":
+    if exposure.get("source") not in _ACCEPTED_EXPOSURE_SOURCES:
         return "factor_exposure_source_not_strict_parquet"
     if float(exposure.get("coverage_ratio", 0.0) or 0.0) < 0.95:
         return "factor_exposure_coverage_below_95pct"
     if exposure.get("catalog_validated") is not True:
         return "factor_exposure_catalog_not_validated"
-    if exposure.get("size_policy") != (
-        "same_trade_date_total_mv_then_asof_total_share_times_close"
-    ):
+    if exposure.get("size_policy") not in _ACCEPTED_EXPOSURE_SIZE_POLICIES:
         return "factor_exposure_size_policy_mismatch"
     if float(exposure.get("evaluation_date_coverage_ratio", 0.0) or 0.0) < 0.95:
         return "factor_exposure_date_coverage_below_95pct"
@@ -1740,7 +1766,11 @@ def _production_market_evidence_blocker(
         return "factor_exposure_combined_size_coverage_below_95pct"
     if float(exposure.get("pit_size_pair_coverage_ratio", 0.0) or 0.0) < 0.60:
         return "factor_exposure_exact_pit_size_coverage_below_60pct"
-    if float(exposure.get("reconstructed_size_pair_ratio", 1.0) or 1.0) > 0.35:
+    # 0.0 reconstruction is the best possible result, so this one cannot use the
+    # ``value or default`` guard the ratios above use: a legitimate zero is
+    # falsy and would be read as complete reconstruction.
+    reconstructed = exposure.get("reconstructed_size_pair_ratio")
+    if reconstructed is None or float(reconstructed) > 0.35:
         return "factor_exposure_reconstruction_above_35pct"
     if exposure.get("share_reference_covers_evaluation_end") is not True:
         return "factor_exposure_share_reference_stale_for_evaluation"
@@ -2025,6 +2055,21 @@ def run_mining(args: argparse.Namespace) -> dict[str, Any]:
         analysis_start_date=str(args.analysis_start_date),
         min_price_coverage=float(args.min_analysis_price_coverage),
     )
+    exposure_start, _exposure_end = governed_exposure_date_bounds(
+        Path(args.fundamental_mart_root).expanduser()
+    )
+    exposure_clamped_start = clamp_analysis_start_to_exposure(
+        resolved_analysis_start, exposure_start
+    )
+    analysis_start_clamped_to_exposure = (
+        exposure_clamped_start != resolved_analysis_start
+    )
+    if analysis_start_clamped_to_exposure:
+        context, resolved_analysis_start = restrict_context_to_analysis_window(
+            full_context,
+            analysis_start_date=exposure_clamped_start,
+            min_price_coverage=float(args.min_analysis_price_coverage),
+        )
     exposure_dates = sorted(
         set(context.rebalance_dates) | set(context.biweekly_dates)
     )
@@ -2049,6 +2094,12 @@ def run_mining(args: argparse.Namespace) -> dict[str, Any]:
         evaluation_dates=exposure_dates,
         close_by_date=close_by_date,
     )
+    # Per-candidate maturity contexts are derived from ``full_context``, so it
+    # needs the same exposure or those candidates lose Gate 2 and Gate 6.
+    full_context.sector_by_symbol = dict(context.sector_by_symbol)
+    full_context.size_bucket_by_symbol = dict(context.size_bucket_by_symbol)
+    full_context.size_bucket_by_date = context.size_bucket_by_date
+    full_context.exposure_metadata = dict(context.exposure_metadata)
     expression_inputs = None
     candidates: list[MiningCandidate] = []
     if args.include_price_volume:
@@ -2239,6 +2290,14 @@ def run_mining(args: argparse.Namespace) -> dict[str, Any]:
         "warmup_days": int(args.warmup_days),
         "analysis_start_date": str(args.analysis_start_date),
         "resolved_analysis_start_date": resolved_analysis_start,
+        "analysis_start_clamped_to_exposure": (
+            analysis_start_clamped_to_exposure
+        ),
+        "exposure_coverage_start_date": (
+            exposure_start.strftime("%Y-%m-%d")
+            if exposure_start is not None
+            else ""
+        ),
         "candidate_maturity_start": bool(args.candidate_maturity_start),
         "min_candidate_signal_coverage": float(
             args.min_candidate_signal_coverage

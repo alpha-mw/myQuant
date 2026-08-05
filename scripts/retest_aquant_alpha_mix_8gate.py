@@ -25,6 +25,11 @@ from quant_investor.factors.aquant_expression import (  # noqa: E402
     build_aquant_expression_inputs,
     evaluate_aquant_expression,
 )
+from quant_investor.factors.exposure_maps import (  # noqa: E402
+    GOVERNED_EXPOSURE_SOURCE,
+    GOVERNED_SIZE_POLICY,
+    load_governed_exposure_maps,
+)
 from quant_investor.factors.governance import (  # noqa: E402
     FactorGateEvaluator,
     FactorLifecycleState,
@@ -894,6 +899,48 @@ def _runtime_smoke(
 
 
 def load_fundamental_exposure_maps(
+    *,
+    mart_root: str | Path,
+    symbols: Sequence[str],
+    as_of: pd.Timestamp | None,
+    evaluation_dates: Sequence[pd.Timestamp] = (),
+    close_by_date: pd.DataFrame | None = None,
+) -> tuple[
+    dict[str, str],
+    dict[str, str],
+    pd.DataFrame,
+    dict[str, Any],
+]:
+    """Prefer the governed generation; fall back to the legacy raw tables.
+
+    The legacy hybrid source is kept only so a root that predates the
+    fundamental generation pointer still resolves.  When both are unavailable
+    the governed blocker is the one worth reporting, because it names the
+    source the pipeline is supposed to be reading.
+    """
+
+    governed = load_governed_exposure_maps(
+        mart_root=mart_root,
+        symbols=symbols,
+        as_of=as_of,
+        evaluation_dates=evaluation_dates,
+        close_by_date=close_by_date,
+    )
+    if governed[3].get("status") == "ready":
+        return governed
+    legacy = _load_legacy_hybrid_exposure_maps(
+        mart_root=mart_root,
+        symbols=symbols,
+        as_of=as_of,
+        evaluation_dates=evaluation_dates,
+        close_by_date=close_by_date,
+    )
+    if legacy[3].get("status") == "ready":
+        return legacy
+    return governed
+
+
+def _load_legacy_hybrid_exposure_maps(
     *,
     mart_root: str | Path,
     symbols: Sequence[str],
