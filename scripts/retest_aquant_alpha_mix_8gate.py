@@ -36,6 +36,10 @@ from quant_investor.factors.governance import (  # noqa: E402
     FactorRecord,
     GateResult,
 )
+from quant_investor.factors.purged_cv import (  # noqa: E402
+    build_cpcv_splits,
+    cpcv_path_evidence,
+)
 from quant_investor.factors.pit_fundamentals import (  # noqa: E402
     DEFAULT_FUNDAMENTAL_MART_ROOT,
     append_tushare_financial_pit_series,
@@ -66,6 +70,10 @@ DEFAULT_UNIVERSES = ("hs300", "zz500", "zz1000")
 # Below this share of the raw ICIR, sector/size demeaning has taken the factor
 # apart and what is left is a style bet rather than stock selection.
 NEUTRALIZED_ICIR_RETENTION_FLOOR = 0.50
+# Gate 7 requires at least a 30-session purge and exactly a 30-session embargo,
+# which is also the forward-return horizon the labels are built on.
+CPCV_PURGE_DAYS = 30
+CPCV_EMBARGO_DAYS = 30
 
 
 @dataclass(frozen=True)
@@ -411,6 +419,38 @@ def _rank_ic_series(signal: pd.DataFrame, returns: pd.DataFrame, dates: Sequence
     return pd.Series(values, dtype=float).replace([np.inf, -np.inf], np.nan).dropna()
 
 
+def _cpcv_evidence_for(
+    ics: pd.Series,
+    context: RetestContext,
+) -> dict[str, Any]:
+    """Return CPCV path evidence, or the empty evidence when it cannot run."""
+
+    sessions = (
+        pd.DatetimeIndex(context.adj_close.index)
+        if not context.adj_close.empty
+        else pd.DatetimeIndex([])
+    )
+    try:
+        splits = build_cpcv_splits(
+            list(sessions),
+            purge_days=CPCV_PURGE_DAYS,
+            embargo_days=CPCV_EMBARGO_DAYS,
+        )
+    except ValueError:
+        return cpcv_path_evidence(
+            pd.Series(dtype=float),
+            (),
+            purge_days=CPCV_PURGE_DAYS,
+            embargo_days=CPCV_EMBARGO_DAYS,
+        )
+    return cpcv_path_evidence(
+        ics,
+        splits,
+        purge_days=CPCV_PURGE_DAYS,
+        embargo_days=CPCV_EMBARGO_DAYS,
+    )
+
+
 def _icir(ics: pd.Series) -> float:
     if len(ics) < 3:
         return 0.0
@@ -686,9 +726,14 @@ def candidate_metrics(
         signal, context.existing_composite, dates
     )
 
-    # These chronological slices are diagnostic only.  This function neither
-    # preregisters a factor nor executes a purged/embargoed v13 control-chain
-    # replay, so they must not be represented as true OOS evidence.
+    # Combinatorial purged cross-validation over the session calendar: blocks
+    # and the purge/embargo around them are counted in sessions, so the 30-day
+    # purge and embargo Gate 7 demands are literal.  Each path then keeps
+    # whichever month-end RankIC observations fall inside its test blocks.
+    cpcv_evidence = _cpcv_evidence_for(ics, context)
+
+    # The contiguous thirds below leak across the 30-session label window in
+    # both directions, so they stay diagnostic only.
     fold_positive: list[bool] = []
     if len(ics) >= 3:
         for fold in np.array_split(ics.sort_index(), 3):
@@ -816,18 +861,28 @@ def candidate_metrics(
         "neutralized_icir_retention": neutralized_icir_retention,
         "existing_factor_corr": existing_corr,
         "style_exposure_only": style_exposure_only,
-        "oos_positive_ratio": 0.0,
+        "oos_positive_ratio": float(cpcv_evidence["positive_path_ratio"]),
         "diagnostic_contiguous_fold_positive_ratio": (
             float(np.mean(fold_positive)) if fold_positive else 0.0
         ),
-        "walk_forward_purged": False,
-        "walk_forward_purge_days": 0,
-        "walk_forward_embargo_days": 0,
-        "walk_forward_fold_count": 0,
-        "walk_forward_evidence_hash": "",
-        "walk_forward_evidence_source": "contiguous_fold_diagnostic_only",
+        "walk_forward_purged": bool(cpcv_evidence["path_count"] > 0),
+        "walk_forward_purge_days": float(cpcv_evidence["purge_days"]),
+        "walk_forward_embargo_days": float(cpcv_evidence["embargo_days"]),
+        "walk_forward_fold_count": float(cpcv_evidence["path_count"]),
+        "walk_forward_evidence_hash": str(cpcv_evidence["evidence_hash"]),
+        "walk_forward_evidence_source": (
+            "cpcv_purged_embargoed"
+            if cpcv_evidence["path_count"] > 0
+            else "cpcv_unavailable"
+        ),
+        "cpcv_mean_path_ic": float(cpcv_evidence["mean_path_ic"]),
+        "cpcv_path_ic_std": float(cpcv_evidence["path_ic_std"]),
+        "cpcv_min_path_ic": float(cpcv_evidence["min_path_ic"]),
+        # Parameter sensitivity compares a candidate against its neighbours in
+        # the same family, which only the miner can see.  It stays fail-closed
+        # here and is filled in by the run-level pass.
         "parameter_stability": False,
-        "date_range_robustness": False,
+        "date_range_robustness": bool(cpcv_evidence["date_range_robustness"]),
         "rebalance_frequency_robustness": bool(not biweekly_ics.empty and float(biweekly_ics.mean()) > 0.0),
         "universe_robustness": bool(
             universe_ic and sum(1 for value in universe_ic.values() if value > 0.0) / len(universe_ic) >= 2 / 3
