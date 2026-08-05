@@ -89,7 +89,24 @@ Its final session reference proves only a completed Shadow observation. It
 does not activate the mainline, publish a public run, or authorize new risk,
 broker, order, execution, or trade activity.
 
-## 7. Verification
+## 7. Evaluate matured research evidence
+
+Run R2.2 only with the exact content-bound request path and byte SHA:
+
+```bash
+quant-investor-v17-v4 research-evaluate \
+  --workspace-root /absolute/path/to/myQuant \
+  --request-path data/private/research_intelligence/evaluation_requests/forward-evaluation-request-<sha256>.json \
+  --request-sha256 <sha256>
+```
+
+The command is offline and stdout-only. It does not write a result, append
+memory, call a provider or LLM, change a Factor tier or weight, choose a
+portfolio, or read or update the active pointer. Its authority fields must
+remain `decision_protocol=myquant.v17.v4`, `mainline_authority=false`, and
+`operational_activation_unchanged=true`.
+
+## 8. Verification
 
 Run the narrow contract and CLI tests for the changed surface, then run the
 repository's staged upgrade quality gate for a broad release. Verification

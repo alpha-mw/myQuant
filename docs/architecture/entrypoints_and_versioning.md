@@ -59,9 +59,16 @@ for a latest file.
 - Valid closed pointer: return a read-only
   `myquant.v17.v4.mainline-public-run.v1` projection.
 
-## Research-only entrypoint
+## Research-only entrypoints
 
 `quant-investor-v17-v4 run-forward` remains a Shadow observation command. Its
 artifacts live outside `results/v17_mainline/`, are not read by public result
 surfaces, and never grant mainline authority. See the
 [forward-evidence contract](v17_v4_forward_evidence_runtime.md).
+
+`quant-investor-v17-v4 research-evaluate` is the offline R2.2 evaluator. It
+accepts one exact, content-bound request and emits one canonical JSON envelope
+to stdout. It does not read or alter the strategy active pointer, persist an
+evaluation, call providers or an LLM, select a portfolio, mutate Factor
+Governance, or grant mainline authority. Every other `quant-investor-v17-v4`
+command is delegated unchanged to the V17 v4 research dispatcher.

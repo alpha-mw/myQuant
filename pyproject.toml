@@ -68,7 +68,7 @@ Repository = "https://github.com/alpha-mw/myQuant"
 
 [project.scripts]
 quant-investor = "quant_investor.cli.main:main"
-quant-investor-v17-v4 = "quant_investor.v17_v4_runtime.cli:main"
+quant-investor-v17-v4 = "quant_investor.intelligence.evaluator.cli:main"
 app = "web.main:app"
 
 [tool.black]

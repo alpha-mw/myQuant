@@ -72,3 +72,12 @@ returned as `myquant.v17.v4.mainline-public-run.v1`. Provider, LLM-control,
 broker, order, execution,
 and trade side effects remain forbidden unless a separate maintenance action
 was explicitly authorized.
+
+## Offline evaluation
+
+Matured typed Observation, Label and Evaluation artifacts may be evaluated by
+the separate `quant-investor-v17-v4 research-evaluate` command. The evaluator
+replays only exact references and writes its canonical envelope to stdout. It
+does not create forward artifacts, inspect or advance a mainline pointer, or
+turn Shadow evidence into operational authority. See the
+[R2.2 evaluator contract](v17_r22_forward_research_evaluator.md).

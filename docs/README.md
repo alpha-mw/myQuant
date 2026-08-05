@@ -10,6 +10,8 @@ and the separate Shadow forward-evidence lane.
 - [V17 v4 operations](runbooks/v17_v4_operations.md)
 - [Entrypoints and versioning](architecture/entrypoints_and_versioning.md)
 - [Forward-evidence runtime](architecture/v17_v4_forward_evidence_runtime.md)
+- [Investment Intelligence I0](architecture/v17_i0_investment_intelligence.md)
+- [Forward Research Evaluator R2.2](architecture/v17_r22_forward_research_evaluator.md)
 
 ## Supporting contracts
 
