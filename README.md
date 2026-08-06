@@ -65,7 +65,7 @@ that work came from.
 ```text
 ┌─────────────────────────────────────────────────────────────────┐
 │  4. GOVERNANCE & PUBLICATION                                    │
-│     immutable run -> CAS on active pointer -> read-only public  │
+│     immutable run -> CAS on pointer -> read-only public run     │
 │     factor registry, WAL + receipt, decision log                │
 ├─────────────────────────────────────────────────────────────────┤
 │  3. DETERMINISTIC CONTROL CHAIN                                 │
