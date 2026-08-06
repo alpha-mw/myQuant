@@ -84,7 +84,7 @@ flowchart TD
 
     N --> MR["mainline run · immutable"]
     MR --> AP["active pointer<br/>CAS against expected prevalue + exact readback"]
-    AP --> PB["public run · read-only"]
+    AP --> PB["read-only public run"]
 
     LLM["LLM review layer"] -. "advisory hints only; absent key changes nothing" .-> IC
 ```
