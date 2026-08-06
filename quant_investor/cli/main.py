@@ -5,10 +5,29 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+import re
 
 from quant_investor.pipeline import QuantInvestor
+
+
+def run_portfolio_cycle_status(**kwargs):
+    """Derive the read-only Phase 1 portfolio-cycle readiness diagnostic."""
+
+    from quant_investor.portfolio_cycle.readiness import (
+        derive_decision_input_readiness,
+    )
+
+    values = dict(kwargs)
+    historical_label = values.pop("historical_label")
+    return derive_decision_input_readiness(
+        expected_historical_label=historical_label,
+        synthetic_only=False,
+        **values,
+    )
+
 
 def run_download(**kwargs):
     from quant_investor.market.download import run_download as _run_download
@@ -146,6 +165,63 @@ def _parse_boolish(value: str | bool | None) -> bool:
     if text in {"0", "false", "no", "n", "off"}:
         return False
     raise argparse.ArgumentTypeError(f"expected boolean value, got {value!r}")
+
+
+def _workspace_relative_canonical_path(value: str) -> str:
+    """Accept one canonical POSIX path relative to the selected workspace."""
+
+    text = str(value)
+    candidate = PurePosixPath(text)
+    if (
+        not text
+        or "\\" in text
+        or candidate.is_absolute()
+        or text != candidate.as_posix()
+        or any(part in {"", ".", ".."} for part in candidate.parts)
+    ):
+        raise argparse.ArgumentTypeError(
+            "expected a canonical workspace-relative POSIX path"
+        )
+    try:
+        text.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise argparse.ArgumentTypeError(
+            "expected an ASCII workspace-relative POSIX path"
+        ) from exc
+    return text
+
+
+def _sha256_argument(value: str) -> str:
+    text = str(value)
+    if re.fullmatch(r"[0-9a-f]{64}", text) is None:
+        raise argparse.ArgumentTypeError(
+            "expected a lowercase 64-character SHA-256"
+        )
+    return text
+
+
+def _decision_cutoff_argument(value: str) -> str:
+    text = str(value)
+    try:
+        parsed = datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "decision cutoff must be canonical UTC YYYY-MM-DDTHH:MM:SSZ"
+        ) from exc
+    if parsed.strftime("%Y-%m-%dT%H:%M:%SZ") != text:
+        raise argparse.ArgumentTypeError(
+            "decision cutoff must be canonical UTC YYYY-MM-DDTHH:MM:SSZ"
+        )
+    return text
+
+
+def _historical_label_argument(value: str) -> str:
+    text = str(value)
+    if not text or text != text.strip() or len(text) > 160 or "\x00" in text:
+        raise argparse.ArgumentTypeError(
+            "historical label must be canonical text"
+        )
+    return text
 
 
 def _add_v17_public_read_arguments(parser: argparse.ArgumentParser) -> None:
@@ -458,6 +534,65 @@ def _build_parser() -> argparse.ArgumentParser:
         help="V17 回测不可用（固定 fail closed）",
     )
 
+    portfolio_parser = subparsers.add_parser(
+        "portfolio",
+        help="只读组合闭环诊断",
+    )
+    portfolio_subparsers = portfolio_parser.add_subparsers(
+        dest="portfolio_command",
+        required=True,
+    )
+    portfolio_cycle_status = portfolio_subparsers.add_parser(
+        "cycle-status",
+        help="读取 Phase 1 持仓与决策输入 readiness；不生产、不发布、不写入",
+    )
+    portfolio_cycle_status.add_argument(
+        "--workspace-root",
+        required=True,
+        help="已存在的 myQuant workspace root；命令不会创建目录",
+    )
+    portfolio_cycle_status.add_argument(
+        "--strategy-id",
+        default=None,
+        help="canonical V17 strategy id；缺失时报告 blocker，不推断历史标签映射",
+    )
+    portfolio_cycle_status.add_argument(
+        "--historical-label",
+        type=_historical_label_argument,
+        required=True,
+        help="仅用于 identity declaration exact equality；不参与策略选择",
+    )
+    portfolio_cycle_status.add_argument(
+        "--identity-path",
+        type=_workspace_relative_canonical_path,
+        default=None,
+        help="workspace-relative canonical identity declaration path",
+    )
+    portfolio_cycle_status.add_argument(
+        "--identity-sha256",
+        type=_sha256_argument,
+        default=None,
+        help="identity declaration exact-byte SHA-256；必须与 --identity-path 成对",
+    )
+    portfolio_cycle_status.add_argument(
+        "--holdings-pointer-path",
+        type=_workspace_relative_canonical_path,
+        default=None,
+        help="workspace-relative canonical holdings pointer path",
+    )
+    portfolio_cycle_status.add_argument(
+        "--holdings-pointer-sha256",
+        type=_sha256_argument,
+        default=None,
+        help="holdings pointer exact-byte SHA-256；必须与 path 成对",
+    )
+    portfolio_cycle_status.add_argument(
+        "--decision-cutoff",
+        type=_decision_cutoff_argument,
+        required=True,
+        help="统一 decision cutoff（canonical UTC YYYY-MM-DDTHH:MM:SSZ）",
+    )
+
     web_parser = subparsers.add_parser(
         "web",
         help="启动研究工作台 Web 服务（/api + workspace）",
@@ -664,6 +799,55 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "market" and args.market_command == "backtest":
         run_market_backtest()
+
+    if args.command == "portfolio" and args.portfolio_command == "cycle-status":
+        if (args.identity_path is None) != (args.identity_sha256 is None):
+            parser.error(
+                "--identity-path and --identity-sha256 must be provided together"
+            )
+        if (args.holdings_pointer_path is None) != (
+            args.holdings_pointer_sha256 is None
+        ):
+            parser.error(
+                "--holdings-pointer-path and --holdings-pointer-sha256 "
+                "must be provided together"
+            )
+        try:
+            result = run_portfolio_cycle_status(
+                workspace_root=Path(args.workspace_root),
+                strategy_id=args.strategy_id,
+                historical_label=args.historical_label,
+                identity_path=args.identity_path,
+                identity_sha256=args.identity_sha256,
+                holdings_pointer_path=args.holdings_pointer_path,
+                holdings_pointer_sha256=args.holdings_pointer_sha256,
+                decision_cutoff=args.decision_cutoff,
+            )
+        except Exception as exc:  # command boundary: never expose a traceback
+            error_code = getattr(
+                exc, "code", "PORTFOLIO_CYCLE_INTERNAL_ERROR"
+            )
+            error_detail = getattr(exc, "detail", None)
+            if error_detail is None:
+                error_detail = "internal portfolio-cycle diagnostic failure"
+            _print_json(
+                {
+                    "schema_id": "myquant.v17.v4.portfolio-cycle-cli-error.v1",
+                    "status": "ERROR",
+                    "error": {
+                        "code": error_code,
+                        "detail": error_detail,
+                    },
+                    "operational_authority": False,
+                    "write_performed": False,
+                }
+            )
+            raise SystemExit(1) from None
+        payload = result.to_dict() if hasattr(result, "to_dict") else result
+        _print_json(payload)
+        if str(payload.get("state")) == "BLOCKED":
+            raise SystemExit(2)
+        return
 
     if args.command == "web":
         run_web_api(host=args.host, port=args.port, reload=args.reload)
