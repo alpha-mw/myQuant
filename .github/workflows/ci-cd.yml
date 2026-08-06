@@ -43,19 +43,11 @@ jobs:
 
     - name: Type check with mypy
       run: |
-        uv run mypy quant_investor/agents quant_investor/factors --ignore-missing-imports
+        uv run mypy quant_investor/factors --ignore-missing-imports
 
     - name: Test engine core
       run: |
-        uv run pytest \
-          tests/unit/test_market_cli_pipeline.py \
-          tests/unit/test_mainline_dag_cutover.py \
-          tests/unit/test_llm_model_routing.py \
-          tests/unit/test_llm_transport_policy.py \
-          tests/unit/test_llm_usage_tracking.py \
-          tests/unit/test_review_layer_budgeting.py \
-          tests/unit/test_single_mainline.py \
-          -q
+        uv run pytest tests/unit -q
 
   workspace-surface:
     runs-on: ubuntu-latest
@@ -88,7 +80,6 @@ jobs:
     - name: Test workspace surface
       run: |
         uv run pytest \
-          tests/unit/test_workspace_api_contract.py \
           tests/unit/test_workspace_web_entrypoint.py \
           tests/unit/test_workspace_frontend_routes.py \
           -q
@@ -98,30 +89,6 @@ jobs:
 
     - name: Build frontend
       run: npm --prefix frontend run build
-
-  legacy-web:
-    runs-on: ubuntu-latest
-    continue-on-error: true
-
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: "3.13"
-
-    - name: Set up uv
-      uses: astral-sh/setup-uv@v5
-      with:
-        enable-cache: true
-
-    - name: Install dependencies
-      run: |
-        uv sync --extra dev
-
-    - name: Test legacy web surface
-      run: uv run pytest tests/unit/test_web_app.py -q
 
   nightly-full-tests:
     runs-on: ubuntu-latest

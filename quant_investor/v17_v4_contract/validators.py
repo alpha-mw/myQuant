@@ -17,6 +17,7 @@ _FACTOR_CONTROL_REF_KEYS: Final = {'artifact_schema', 'byte_sha256', 'relative_p
 _FACTOR_ACTIVE_SET_SCHEMA: Final = 'factor-governance-production-control.active-set-pointer.schema.v1'
 _FACTOR_CONTROL_RECEIPT_SCHEMA: Final = 'factor-governance-production-control.activation-receipt.schema.v1'
 _FACTOR_ARTIFACT_REF_SCHEMA: Final = 'factor-governance-production-control.artifact-ref.v1'
+SHADOW_RUN_RESEARCH_VERSION: Final = 'myquant.v17.v4.shadow-run.v2'
 _CN_SYMBOL_RE: Final = re.compile('^[0-9]{6}\\.(?:BJ|SH|SZ)$', re.ASCII)
 _FORWARD_CONTRACT_VERSIONS: Final = frozenset({'myquant.v17.v4.existing-factor-inventory.v1', 'myquant.v17.v4.factor-universe-observation.v1', 'myquant.v17.v4.forward-evaluation-receipt.v1', 'myquant.v17.v4.forward-evidence-origin-inventory.v1', 'myquant.v17.v4.forward-factor-allocation.v1', 'myquant.v17.v4.forward-label.v1', 'myquant.v17.v4.forward-observation-run.v1', 'myquant.v17.v4.forward-observation-session-ref.v1', 'myquant.v17.v4.forward-run-request.v1', 'myquant.v17.v4.forward-stage-output.v1', 'myquant.v17.v4.forward-stage-receipt.v1', 'myquant.v17.v4.strategy-pool-observation.v1'})
 _FORWARD_EXPECTED_REF_VERSIONS: Final = {'evidence_origin_inventory_ref': 'myquant.v17.v4.forward-evidence-origin-inventory.v1', 'existing_factor_inventory_ref': 'myquant.v17.v4.existing-factor-inventory.v1', 'factor_allocation_ref': 'myquant.v17.v4.forward-factor-allocation.v1', 'observation_run_ref': 'myquant.v17.v4.forward-observation-run.v1', 'request_ref': 'myquant.v17.v4.forward-run-request.v1'}

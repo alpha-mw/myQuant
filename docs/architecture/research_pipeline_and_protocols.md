@@ -1,6 +1,7 @@
 # Research Pipeline And Protocols
 
-本文件描述当前主线的研究链路、结构化协议边界和报告规则。
+本文件区分 V17 的目标研究架构与当前已注册的只读主线协议。源码、CLI
+注册和 exact artifact readback 高于本文中的目标描述。
 
 ## Governance Target
 
@@ -21,27 +22,44 @@
 
 ## Runtime Shape
 
-- 默认入口：`QuantInvestor`
-- 单标的公开主线：`QuantInvestor` 调用全市场 DAG helper，并把 DAG artifacts 转为 `QuantInvestorPipelineResult`。
-- 全市场主线：`quant-investor market analyze/run` 走 `execute_market_dag()`。
-- DAG 顺序：`data_snapshot` / symbol list -> batch read -> `DeterministicFunnel` -> candidate branch research -> Bayesian selection -> control chain -> reporting artifacts。
-- 生产 Markov regime 在 DAG context 阶段读取市场状态；它只在 full-market 或 broad market-reference scope 生产合格时覆盖 `GlobalContext.macro_regime` 并收紧风险预算。
-- 可选 LLM review layer 只提供 advisory hints；缺 key 或本地禁用时降级为 Codex handoff，不改变 deterministic 控制链。
-- stage profile：`market analyze/run` 写入 snapshot、symbol list、batch read、funnel/context、candidate research、Bayesian、control chain、report persistence 等阶段耗时。
-- 兼容输出：`final_strategy`、`final_report`
-- 结构化事实面：`agent_portfolio_plan`、`agent_report_bundle`、`agent_ic_decisions`
+### 当前已注册行为
 
-当前文档应把结构化协议视为规范面，把兼容 markdown 和策略对象视为从结构化结果再生成的输出。
+- `QuantInvestor.run()`、`quant-investor research run`、`quant-investor market
+  analyze` 和 `quant-investor market run` 都只解析调用方提供的 canonical
+  strategy ID 对应的 exact V17 active pointer。
+- 这些入口读取同一份 formal/portfolio/source public closure；它们不扫描、不
+  回退、不执行 full-A DAG，也不生产、发布或激活 mainline run。
+- 当前源码没有 registered high-level full-A decision producer 或 governed
+  mainline publisher。底层 `MainlineStore` exact-once/CAS primitives 是基础设施，
+  不是生产发布权限。
+- 因此 public DTO 的 `ACTIVE` 只证明 public artifact closure，不证明同日数据、
+  持仓连续性、Factor active set、Risk/Portfolio policy 或业务 readiness。
+
+### 目标架构（尚非当前 runtime）
+
+- 目标 DAG 顺序是：`data_snapshot` / symbol list -> batch read ->
+  `DeterministicFunnel` -> candidate branch research -> Bayesian selection ->
+  deterministic control chain -> reporting artifacts。
+- 目标生产 Markov regime 只可在 full-market 或合格 broad-market reference
+  scope 下收紧风险预算。
+- 目标 LLM review layer 只能生成 advisory hints，不得改变 deterministic 控制链。
+- `final_strategy`、`final_report`、`agent_portfolio_plan`、
+  `agent_report_bundle` 和 `agent_ic_decisions` 是目标结构化/兼容输出，不应被
+  解读为当前已注册 producer 的存在证明。
+
+该目标只有在一个 exact ref 同时包含可验证的纯 producer、闭合输入、immutable
+publication 和独立 owner-operated activation 后，才可描述为已执行 runtime。
 
 ## Full-Market Reporting
 
-- 入口：`quant_investor.market.analyze.run_market_analysis`
-- 当前主报告协议：`NarratorAgent -> ReportBundle`
-- full-market 文档应以 `ReportBundle` 为事实来源，而不是 markdown 拼接历史名词。
+- 当前没有 registered full-market reporting producer；`market analyze/run`
+  仍只读取已经激活的 V17 public closure。
+- 目标报告协议是 `NarratorAgent -> ReportBundle`。只有目标 producer 被正式实现、
+  验证并闭合发布后，full-market 文档才可把 `ReportBundle` 作为事实来源。
 
 ## Research Branches
 
-当前稳定 branch set：
+目标稳定 branch set：
 
 - `quant`
 - `fundamental`
@@ -49,7 +67,9 @@
 
 `kline`、Kronos/Chronos 与 `llm_debate` 仅是 Web 分析的辅助配置面，不计入 V17 v4 mainline canonical DAG 证据分支。已退役的 `intelligence` branch 与 `enable_intelligence` 字段会被严格拒绝且不会出现在当前 artifact 中。
 
-三个 canonical 分支在 Web/API 运行中始终执行，不提供 `enable_quant`、`enable_fundamental`、`enable_macro` 或对应 `branches.*.enabled` 开关；出现这些字段时请求会失败，而不是静默忽略。
+在目标 producer 中，三个 canonical 分支应始终执行，不提供 `enable_quant`、
+`enable_fundamental`、`enable_macro` 或对应 `branches.*.enabled` 开关；出现这些
+字段时请求应失败，而不是静默忽略。
 
 Bayesian likelihood 证据仅包含 `quant` 与 `fundamental`（`x/2`）；`macro` 只作为 prior/context。
 
@@ -80,7 +100,7 @@ provenance 校验，并把父 generation ID 与 envelope hash 绑定到新 gener
 - `ReportBundle`
   - 承载 `NarratorAgent` 只读生成的结构化报告。
 
-## Markov Regime Production Contract
+## Target Markov Regime Production Contract
 
 - Markov 默认 production-first：`MARKOV_REGIME_ENABLED=1` 启用，`MARKOV_REGIME_ENABLED=0` 是紧急 kill switch。
 - `MARKOV_REGIME_EXECUTION_TARGET=shadow` 为兼容旧输入而保留，但运行时归一化为 production，并写入 `markov_shadow_deprecated_normalized_to_production` 诊断。
@@ -108,5 +128,5 @@ provenance 校验，并把父 generation ID 与 envelope hash 绑定到新 gener
 ## Reporting Rules
 
 - `NarratorAgent` 是只读角色，不修改候选标的、风险限额、目标仓位或最终权重。
-- `NarratorAgent -> ReportBundle` 是当前公开报告协议名。
+- `NarratorAgent -> ReportBundle` 是目标报告协议名，不是当前 producer 能力证明。
 - LLM review 只能输出结构化建议，最终权重只由控制链生成。
