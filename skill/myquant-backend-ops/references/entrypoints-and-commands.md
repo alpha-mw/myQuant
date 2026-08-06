@@ -1,109 +1,111 @@
 # myQuant Entrypoints and Commands
 
-先用公开入口回答问题，再决定是否需要读内部模块。
+先用当前公开入口回答；不要把内部 helper、旧 DAG 或规范中的未来 writer 当成
+可运行命令。
 
-## Public Entrypoints
+## Public entrypoints
 
-| 场景 | 首选入口 | Source of truth |
+| 场景 | 当前入口 | 行为 |
 |---|---|---|
-| 单股或小池研究 | `quant-investor research run` | `quant_investor/cli/main.py`, `quant_investor/pipeline/mainline.py` |
-| 全市场下载 | `quant-investor market download` | `quant_investor/cli/main.py`, `quant_investor/market/download*.py` |
-| 全市场分析 | `quant-investor market analyze` | `quant_investor/cli/main.py`, `quant_investor/market/analyze.py` |
-| 全市场 daily pipeline | `quant-investor market run` | `quant_investor/cli/main.py`, `quant_investor/market/run_pipeline.py`, `quant_investor/market/dag_executor.py` |
-| 本地回测 | `quant-investor market backtest` | `quant_investor/cli/main.py`, `quant_investor/market/backtest.py` |
-| Workspace 运行时 | `quant-investor web` | `quant_investor/cli/main.py`, `web/main.py`, `web/workspace_app.py` |
-| 前端开发 | `./run_web.sh` | `run_web.sh`, `frontend/` |
+| 读取活动主线 | `quant-investor research run` | 精确读取一个 strategy pointer |
+| 兼容读取面 | `quant-investor market analyze` | 与 `research run` 同一只读结果 |
+| 兼容读取面 | `quant-investor market run` | 与 `research run` 同一只读结果 |
+| 市场维护 | `quant-investor market maintain` | 独立的本地数据维护 lane |
+| 旧下载别名 | `quant-investor market download` | compatibility alias |
+| 主线回测 | `quant-investor market backtest` | 固定 fail closed：不可用 |
+| V4 Forward | `quant-investor-v17-v4 run-forward` | 显式 request 的 Shadow evidence |
+| R2.2 评价 | `quant-investor-v17-v4 research-evaluate` | 离线、stdout-only |
+| Workspace | `quant-investor web` | 启动当前 FastAPI workspace |
 
-## High-Frequency Command Patterns
+仓库当前没有 production mainline publisher 或 activation command。
 
-### Single-mainline research
+## Exact mainline read
+
+三个公开命令必须提供相同的参数：
 
 ```bash
 quant-investor research run \
-  --stocks 000001.SZ 600519.SH \
+  --workspace-root /absolute/path/to/myQuant \
+  --strategy-id <strategy-id>
+
+quant-investor market analyze \
+  --workspace-root /absolute/path/to/myQuant \
+  --strategy-id <strategy-id>
+
+quant-investor market run \
+  --workspace-root /absolute/path/to/myQuant \
+  --strategy-id <strategy-id>
+```
+
+它们都只读取：
+
+```text
+results/v17_mainline/strategies/<strategy-id>/_active.json
+```
+
+不接受旧的 `--stocks`、`--capital`、`--risk`、`--mode` 或 `--top-k` 运行
+语义，不扫描最新 run，也不写结果。
+
+## Market maintenance
+
+```bash
+quant-investor market maintain \
   --market CN \
-  --capital 1000000 \
-  --risk 中等
+  --staged \
+  --resume \
+  --batch-size 200 \
+  --max-batches-per-run 1
 ```
 
-Use when:
-- 用户要跑单股或少量标的研究
-- 用户问“单一主线研究怎么启动”
-- 用户问 `QuantInvestor` 主流程对应哪个 CLI
+这是数据维护，不是 V17 decision run。执行前检查本地配置、canonical
+pointer、manifest 和任务是否允许 provider acquisition。正式验证时不得用 CSV
+替代严格 Parquet canonical 数据。
 
-### Full-market download
+## V4 Forward/Shadow
 
 ```bash
-quant-investor market maintain --market CN --staged --resume --batch-size 200 --max-batches-per-run 1
+quant-investor-v17-v4 run-forward \
+  --workspace-root /absolute/path/to/myQuant \
+  --request-path data/private/v17_v4_runs/forward_requests/<request-id>.json \
+  --request-sha256 <exact-byte-sha256>
 ```
 
-Use when:
-- 用户要按有限批次补全 CN 本地市场数据
-- 用户问下载阶段或 `data/` 来源
+request path 和 byte SHA 必须精确。Shadow receipt 不会创建或推进 mainline
+pointer。
 
-`quant-investor market download` remains a compatibility alias; prefer
-`market maintain --staged` for CN automation and formal-review preflight.
-
-### Full-market analysis
+## R2.2 Forward Research Evaluator
 
 ```bash
-quant-investor market analyze --market CN --mode batch --top-k 12
+quant-investor-v17-v4 research-evaluate \
+  --workspace-root /absolute/path/to/myQuant \
+  --request-path data/private/research_intelligence/evaluation_requests/forward-evaluation-request-<sha256>.json \
+  --request-sha256 <exact-byte-sha256>
 ```
 
-Use when:
-- 用户要基于已有本地数据做全市场研究
-- 用户问 shortlist / candidate / portfolio 建议从哪里来
+该命令只输出一行 canonical JSON envelope。它不写 result、不 append memory、
+不改 factor weight、不选组合、不读写 active pointer。
 
-### Full-market pipeline
-
-```bash
-quant-investor market run --market CN --mode batch --top-k 12
-```
-
-Use when:
-- 用户要完整 daily path
-- 用户说“下载 + 分析一起跑”
-
-### Workspace runtime
+## Workspace runtime
 
 ```bash
 quant-investor web --reload
 ```
 
-Use when:
-- 用户要启动工作台
-- 用户要检查 `/api/health`
-- 用户要定位 workspace 路由与服务层
+装配链：
 
-Current runtime entry:
-- `web.main:app` -> `web.api:app` -> `web.workspace_app:app`
+```text
+web.main:app -> web.api:app -> web.workspace_app:app
+```
 
-## Request Routing Examples
+健康检查是 `GET /api/health`。不要默认启动 `web.app:app`；它是显式旧 API
+场景才检查的 legacy factory。
 
-### “启动 myQuant 工作台并检查后端健康状态”
+## Routing reminders
 
-优先路径：
-1. `quant-investor web`
-2. `GET /api/health`
-3. 如需补充，再看 `GET /api/settings/`
-
-### “跑一个 CN 单股研究，并告诉我结果去哪看”
-
-优先路径：
-1. `quant-investor research run --stocks <symbol> --market CN`
-2. 结果与历史优先看 `data/web_runs.db`、`data/workspace_learning/`
-3. 如果是旧分析面，再看 `results/web_analysis/`
-
-### “帮我定位 preset / universe / research job 的后端接口和服务层”
-
-优先路径：
-1. `web/routers/presets.py`
-2. `web/routers/universe.py`
-3. `web/routers/research.py`
-4. 对应 `web/services/*`
-
-## Notes
-
-- 查询或解释类请求，先说明应该走哪个入口，不要直接跳内部实现
-- 用户明确要求运行命令时，可以直接执行；但如果涉及长耗时或外部依赖，先做轻量检查
-- `quant-investor web` 是 workspace 正统入口；不要默认从 `uvicorn web.app:app` 之类 legacy 工厂起服务
+- “跑一个股票研究”在当前 public mainline 不是可用写入工作流；先要求明确
+  strategy id，然后读取已有活动结果。
+- “全市场 daily pipeline”不能被 `market run` 这个兼容名称误导：当前实现仍
+  是只读 active pointer。
+- “回测”应返回 `V17_BACKTEST_UNAVAILABLE`，不能偷偷调用旧 backtest。
+- “每天自动跑 I0/R2.2”目前没有正式 scheduler；不能以 standalone legacy
+  automation 代替。

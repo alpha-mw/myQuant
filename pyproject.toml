@@ -88,28 +88,15 @@ exclude = [
     '^quant_investor/_vendor/',
     '^quant_investor/data/',
     '^quant_investor/data_manager\.py$',
-    '^quant_investor/enhanced_data_layer\.py$',
-    '^quant_investor/forecast_snapshot_store\.py$',
-    '^quant_investor/reporting/',
-    '^quant_investor/learning/',
-    '^quant_investor/monitoring/',
     '^quant_investor/market/download.*\.py$',
-    '^quant_investor/market/run_pipeline\.py$',
     '^quant_investor/fetch_.*\.py$',
     '^quant_investor/alpha.*\.py$',
     '^quant_investor/stock_database\.py$',
     '^quant_investor/macro_terminal_tushare\.py$',
-    '^quant_investor/agents/subagents/',
-    '^quant_investor/agents/orchestrator\.py$',
-    '^quant_investor/agents/narrator_agent\.py$',
-    '^quant_investor/agent_orchestrator\.py$',
 ]
 
 [[tool.mypy.overrides]]
-module = [
-    "quant_investor.agents.*",
-    "quant_investor.factors.*",
-]
+module = ["quant_investor.factors.*"]
 strict_optional = true
 
 # Byte-pinned by FIXED_EXISTING_PROJECT_SHA256 in
@@ -122,7 +109,6 @@ disable_error_code = ["type-var"]
 
 [[tool.mypy.overrides]]
 module = [
-    "quant_investor.agents.portfolio_constructor",
     "quant_investor.factors",
     "quant_investor.factors.aquant_expression",
     "quant_investor.factors.correlation",

@@ -1,5 +1,11 @@
 # V17 v4 Mainline Operations
 
+> **Current availability:** this repository implements exact, fail-closed
+> mainline readers but no public production publisher or activation command.
+> Steps 2 and 3 specify the required contract for a future or external governed
+> writer; they are not commands that can currently be run from this repository.
+> Do not use low-level storage/test helpers as an operational substitute.
+
 ## 1. Preconditions
 
 - Work from a clean, reviewed build of the V17 v4 contract and runtime.
