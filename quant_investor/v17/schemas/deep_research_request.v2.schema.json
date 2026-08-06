@@ -1,0 +1,167 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "myquant.v17.deep-research-request.v2",
+  "title": "V17DeepResearchRequestV2",
+  "type": "object",
+  "additionalProperties": false,
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "symbol": {
+      "type": "string",
+      "pattern": "^(?:[0368][0-9]{5}\\.(?:SZ|SH|BJ)|[0-9]{6})$"
+    },
+    "privateJsonRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "object_path": {
+          "type": "string",
+          "pattern": "^data/private/v17_sources/objects/[0-9a-f]{2}/[0-9a-f]{64}\\.json$"
+        },
+        "byte_sha256": {"$ref": "#/$defs/sha256"},
+        "size_bytes": {"type": "integer", "minimum": 1},
+        "semantic_sha256": {"$ref": "#/$defs/sha256"},
+        "schema_version": {"$ref": "#/$defs/identifier"}
+      },
+      "required": [
+        "object_path",
+        "byte_sha256",
+        "size_bytes",
+        "semantic_sha256",
+        "schema_version"
+      ]
+    },
+    "modelJsonRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "object_path": {
+          "type": "string",
+          "pattern": "^results/v17_shadow/models/objects/[0-9a-f]{2}/[0-9a-f]{64}\\.json$"
+        },
+        "byte_sha256": {"$ref": "#/$defs/sha256"},
+        "size_bytes": {"type": "integer", "minimum": 1},
+        "semantic_sha256": {"$ref": "#/$defs/sha256"},
+        "schema_version": {"$ref": "#/$defs/identifier"}
+      },
+      "required": [
+        "object_path",
+        "byte_sha256",
+        "size_bytes",
+        "semantic_sha256",
+        "schema_version"
+      ]
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "evidence_id": {"$ref": "#/$defs/identifier"},
+        "kind": {"$ref": "#/$defs/identifier"},
+        "object_ref": {"$ref": "#/$defs/privateJsonRef"},
+        "layers": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/identifier"}
+        },
+        "coverage": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/identifier"}
+        },
+        "signals": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/identifier"}
+        },
+        "red_flags": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/identifier"}
+        }
+      },
+      "required": [
+        "evidence_id",
+        "kind",
+        "object_ref",
+        "layers",
+        "coverage",
+        "signals",
+        "red_flags"
+      ]
+    },
+    "symbolEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "symbol": {"$ref": "#/$defs/symbol"},
+        "evidence_ready": {"type": "boolean"},
+        "evidence": {
+          "type": "array",
+          "maxItems": 1024,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/evidence"}
+        }
+      },
+      "required": ["symbol", "evidence_ready", "evidence"]
+    }
+  },
+  "properties": {
+    "version": {"const": "myquant.v17.deep-research-request.v2"},
+    "request_id": {"$ref": "#/$defs/identifier"},
+    "run_id": {"$ref": "#/$defs/identifier"},
+    "market": {"const": "CN"},
+    "cutoff": {"type": "string", "format": "date-time"},
+    "source_manifest_ref": {
+      "allOf": [
+        {"$ref": "#/$defs/privateJsonRef"},
+        {
+          "properties": {
+            "schema_version": {"const": "myquant.v17.source-manifest.v2"}
+          }
+        }
+      ]
+    },
+    "deterministic_result_ref": {"$ref": "#/$defs/modelJsonRef"},
+    "template_resource_sha256": {"$ref": "#/$defs/sha256"},
+    "symbol_ordering": {"const": "sealed-universe-order"},
+    "symbols": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1024,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/symbol"}
+    },
+    "evidence_by_symbol": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1024,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/symbolEvidence"}
+    },
+    "authority": {"const": false},
+    "semantic_sha256": {"$ref": "#/$defs/sha256"}
+  },
+  "required": [
+    "version",
+    "request_id",
+    "run_id",
+    "market",
+    "cutoff",
+    "source_manifest_ref",
+    "deterministic_result_ref",
+    "template_resource_sha256",
+    "symbol_ordering",
+    "symbols",
+    "evidence_by_symbol",
+    "authority",
+    "semantic_sha256"
+  ]
+}

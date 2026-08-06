@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "myquant.v17.portfolio-risk-policy-snapshot.v1",
+  "title": "PortfolioRiskPolicySnapshot",
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "identity": {
+      "type": "object",
+      "properties": {
+        "version": {"const": "myquant.v17.portfolio-risk-policy-snapshot.v1"},
+        "policy_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "strategy_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "market": {"const": "CN"},
+        "availability": {"enum": ["AVAILABLE", "UNAVAILABLE"]},
+        "authority": {"const": false},
+        "semantic_sha256": {"$ref": "#/$defs/sha256"}
+      },
+      "required": ["version", "policy_id", "strategy_id", "market", "availability", "authority", "semantic_sha256"]
+    },
+    "source_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "source_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "path": {"type": "string", "minLength": 1, "maxLength": 2048},
+        "byte_sha256": {"$ref": "#/$defs/sha256"},
+        "semantic_sha256": {"$ref": "#/$defs/sha256"}
+      },
+      "required": ["source_id", "path", "byte_sha256", "semantic_sha256"]
+    }
+  },
+  "oneOf": [
+    {
+      "allOf": [
+        {"$ref": "#/$defs/identity"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "version": {}, "policy_id": {}, "strategy_id": {}, "market": {},
+            "availability": {"const": "AVAILABLE"}, "authority": {}, "semantic_sha256": {},
+            "pit_cutoff": {"type": "string", "minLength": 10},
+            "as_of": {"type": "string", "format": "date-time"},
+            "expires_at": {"type": "string", "format": "date-time"},
+            "gross_cap": {"type": "number", "minimum": 0, "maximum": 1},
+            "cash_floor": {"type": "number", "minimum": 0, "maximum": 1},
+            "single_name_cap": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+            "industry_cap": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+            "cluster_cap": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+            "beta_cap": {"type": "number", "exclusiveMinimum": 0},
+            "stress_loss_cap": {"type": "number", "minimum": 0, "maximum": 1},
+            "adv20_participation_cap": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+            "turnover_cap": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+            "stress_scenario": {"type": "string", "minLength": 1, "maxLength": 256},
+            "source_refs": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/source_ref"}}
+          },
+          "required": ["version", "policy_id", "strategy_id", "market", "availability", "pit_cutoff", "as_of", "expires_at", "gross_cap", "cash_floor", "single_name_cap", "industry_cap", "cluster_cap", "beta_cap", "stress_loss_cap", "adv20_participation_cap", "turnover_cap", "stress_scenario", "source_refs", "authority", "semantic_sha256"]
+        }
+      ]
+    },
+    {
+      "allOf": [
+        {"$ref": "#/$defs/identity"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "version": {}, "policy_id": {}, "strategy_id": {}, "market": {},
+            "availability": {"const": "UNAVAILABLE"}, "authority": {}, "semantic_sha256": {},
+            "reason": {"type": "string", "minLength": 1, "maxLength": 512}
+          },
+          "required": ["version", "policy_id", "strategy_id", "market", "availability", "reason", "authority", "semantic_sha256"]
+        }
+      ]
+    }
+  ]
+}

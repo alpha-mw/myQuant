@@ -381,6 +381,17 @@ class CNParquetBatchMaintainer:
         scope_allowed_symbols = allowed & target_symbols
         observed_target_symbols = daily_symbols & target_symbols
         inactive_absent = scope_inactive_symbols - daily_symbols
+        terminal_provider_conflicts = set(
+            select_terminal_delisting_candidates(
+                inactive_absent,
+                target_trade_date=target_trade_date,
+                pit_records_by_symbol=(
+                    pit_records if isinstance(pit_records, dict) else {}
+                ),
+            )
+        )
+        inactive_absent -= terminal_provider_conflicts
+        scope_inactive_symbols -= terminal_provider_conflicts
         suspended_absent = (
             scope_suspended_symbols - daily_symbols - inactive_absent
         )
@@ -571,7 +582,7 @@ class CNParquetBatchMaintainer:
         )
         terminal_candidate_pool = (
             primary_missing_after_status - verified_nontrading_absent
-        )
+        ) | terminal_provider_conflicts
         terminal_candidates = select_terminal_delisting_candidates(
             terminal_candidate_pool,
             target_trade_date=target_trade_date,

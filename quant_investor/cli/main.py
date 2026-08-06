@@ -77,6 +77,12 @@ def run_fundamental_promotion(**kwargs):
     return promote_staged_fundamental_generation(**kwargs)
 
 
+def run_macro_maintenance(**kwargs):
+    from quant_investor.macro.maintenance import run_cn_macro_maintenance
+
+    return run_cn_macro_maintenance(**kwargs)
+
+
 def run_storage_validate(**kwargs):
     from quant_investor.market.market_data_store import (
         run_storage_validate as _run_storage_validate,
@@ -356,6 +362,31 @@ def _build_parser() -> argparse.ArgumentParser:
         required=True,
     )
 
+    market_macro = market_subparsers.add_parser(
+        "macro-maintain",
+        help="维护 CN Macro observations 与 official release calendar",
+    )
+    market_macro.add_argument("--market", required=True, choices=["CN"])
+    market_macro.add_argument("--target-date", required=True)
+    market_macro.add_argument("--snapshot-manifest-path", required=True)
+    market_macro.add_argument("--expected-snapshot-manifest-sha256", required=True)
+    market_macro.add_argument("--coverage-manifest-path", required=True)
+    market_macro.add_argument("--expected-coverage-manifest-sha256", required=True)
+    market_macro.add_argument("--scope-artifact-path", required=True)
+    market_macro.add_argument("--expected-scope-artifact-sha256", required=True)
+    market_macro.add_argument(
+        "--release-root", default="data/parquet/cn/macro_release_calendar"
+    )
+    market_macro.add_argument("--expected-release-pointer-sha256", required=True)
+    market_macro.add_argument(
+        "--observations-root", default="data/parquet/cn/macro_observations"
+    )
+    market_macro.add_argument("--expected-observations-pointer-sha256", required=True)
+    market_macro.add_argument("--release-run-id", required=True)
+    market_macro.add_argument("--observations-run-id", required=True)
+    market_macro.add_argument("--allow-live", action="store_true")
+    market_macro.add_argument("--commit", action="store_true")
+
     market_storage_validate = market_subparsers.add_parser(
         "storage-validate",
         help="校验本地 Parquet canonical snapshot 健康状态",
@@ -552,6 +583,30 @@ def main(argv: list[str] | None = None) -> None:
                 expected_pointer_sha256=args.expected_pointer_sha256,
             )
         )
+        return
+
+    if args.command == "market" and args.market_command == "macro-maintain":
+        result = run_macro_maintenance(
+            market=args.market,
+            target_date=args.target_date,
+            snapshot_manifest_path=args.snapshot_manifest_path,
+            expected_snapshot_manifest_sha256=args.expected_snapshot_manifest_sha256,
+            coverage_manifest_path=args.coverage_manifest_path,
+            expected_coverage_manifest_sha256=args.expected_coverage_manifest_sha256,
+            scope_artifact_path=args.scope_artifact_path,
+            expected_scope_artifact_sha256=args.expected_scope_artifact_sha256,
+            release_root=args.release_root,
+            expected_release_pointer_sha256=args.expected_release_pointer_sha256,
+            observations_root=args.observations_root,
+            expected_observations_pointer_sha256=args.expected_observations_pointer_sha256,
+            release_run_id=args.release_run_id,
+            observations_run_id=args.observations_run_id,
+            allow_live=args.allow_live,
+            commit=args.commit,
+        )
+        _print_json(result)
+        if str(result.get("status")) not in {"OK", "DRY_RUN_OK"}:
+            raise SystemExit(2)
         return
 
     if args.command == "market" and args.market_command == "storage-validate":

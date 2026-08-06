@@ -11,22 +11,21 @@ SCAN_ROOTS = [
     ROOT / "scripts",
 ]
 
+# Every entry is a reviewed exemption from the legacy-CSV ban. An entry naming a
+# path that no longer exists is therefore an exemption nobody decided to grant:
+# recreate a file at that path and it inherits permission silently. The entries
+# deleted by 389562a (2026-08-05) were pruned for that reason, and
+# ``test_allowlist_has_no_dead_entries`` keeps the list from rotting again.
 ALLOWLIST = {
     # Formal-review and audit readers consume strategy-record CSV artifacts,
     # never canonical market bars.
     "quant_investor/monitoring/cn_aggressive_daily_review.py",
     "scripts/build_holdings_fundamental_sheet.py",
-    "scripts/print_pipeline_state.py",
-    "scripts/run_track_record_audit.py",
     # Dashboard export reads strategy-record CSV artifacts, not runtime market data.
-    "scripts/export_cn_aggressive_dashboard_data.py",
     "scripts/backfill_cn_dashboard_benchmark.py",
-    "scripts/check_cn_dashboard_export.py",
     "scripts/merge_cn_dashboard_benchmark_fills.py",
-    # Hash-bound offline retirement replay reads frozen evidence, never market runtime data.
-    "scripts/run_v14_retirement_replay_gate.py",
+    # One-way migration off legacy CSV state; reading CSV is its entire purpose.
     "scripts/migrate_legacy_csv_state_to_parquet.py",
-    "scripts/run_us_aggressive_analysis.py",
     # Factor package integrity verification reads installed wheel RECORD
     # metadata, not production market bars.
     "scripts/build_factor_v4_3_prior_diagnostic_nomination.py",
@@ -57,6 +56,18 @@ def _iter_python_files() -> list[Path]:
         if root.exists():
             files.extend(sorted(root.rglob("*.py")))
     return files
+
+
+def test_allowlist_has_no_dead_entries() -> None:
+    """A deleted file must not leave its CSV exemption behind.
+
+    The allowlist grants permission by path, so an entry whose file is gone
+    silently re-grants that permission to whatever is written at the path next.
+    Pruning is part of deleting the file, not a later cleanup.
+    """
+
+    dead = sorted(entry for entry in ALLOWLIST if not (ROOT / entry).exists())
+    assert dead == []
 
 
 def test_production_runtime_has_no_legacy_csv_read_ports() -> None:

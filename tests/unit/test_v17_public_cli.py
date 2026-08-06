@@ -102,8 +102,9 @@ def test_market_help_hides_retired_producers_and_keeps_neutral_commands(capsys) 
 
     assert exc_info.value.code == 0
     help_text = capsys.readouterr().out
-    for retired in ("macro-", "fundamental-research-", "data-governance"):
+    for retired in ("macro-refresh", "fundamental-research-", "data-governance"):
         assert retired not in help_text
+    assert "macro-maintain" in help_text
     for supported in (
         "maintain",
         "download",

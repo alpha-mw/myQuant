@@ -1,4 +1,4 @@
-"""Hash-bound evidence for a Shenzhen terminal-delisting boundary.
+"""Hash-bound evidence for Shenzhen and Beijing terminal-delisting boundaries.
 
 Tushare ``stock_basic`` can briefly retain ``list_status=L`` after the last
 delisting-consolidation session.  This module does not rewrite PIT membership
@@ -32,6 +32,10 @@ from quant_investor.market.pit_universe import (
 
 TERMINAL_DELISTING_SCHEMA_VERSION = "cn-terminal-delisting-evidence.v1"
 TERMINAL_DELISTING_POLICY_VERSION = "szse-terminal-15-open-sessions.v1"
+TERMINAL_DELISTING_POLICY_VERSION_V2 = "cn-exchange-terminal-15-open-sessions.v2"
+SUPPORTED_TERMINAL_DELISTING_POLICIES = frozenset(
+    {TERMINAL_DELISTING_POLICY_VERSION, TERMINAL_DELISTING_POLICY_VERSION_V2}
+)
 TERMINAL_DELISTING_CLASSIFICATION = "verified_terminal_delisting_absent"
 TERMINAL_CHANGE_REASONS = frozenset({"终止上市", "退市整理期"})
 STOCK_BASIC_FIELDS = "ts_code,name,list_status,list_date,delist_date"
@@ -168,12 +172,12 @@ def select_terminal_delisting_candidates(
     target_trade_date: str,
     pit_records_by_symbol: Mapping[str, Any],
 ) -> list[str]:
-    """Select only PIT-listed Shenzhen rows with a terminal provider name."""
+    """Select PIT-listed SZ/BJ rows whose canonical name marks terminal trade."""
 
     selected: list[str] = []
     for symbol in _normalize_symbols(symbols):
         record = pit_records_by_symbol.get(symbol)
-        if record is None or not symbol.endswith(".SZ"):
+        if record is None or not symbol.endswith((".SZ", ".BJ")):
             continue
         status = evaluate_listing_status(
             record,
@@ -222,8 +226,8 @@ def _build_symbol_proof(
 ) -> tuple[dict[str, Any], list[str]]:
     reasons: list[str] = []
     proof: dict[str, Any] = {"symbol": symbol, "verified": False, "queries": {}}
-    if not symbol.endswith(".SZ"):
-        return proof, ["symbol_not_szse"]
+    if not symbol.endswith((".SZ", ".BJ")):
+        return proof, ["symbol_exchange_not_supported"]
     pit_status = evaluate_listing_status(
         pit_record,
         symbol=symbol,
@@ -232,9 +236,10 @@ def _build_symbol_proof(
     if pit_status.reason != REASON_LISTED or not pit_status.tradable:
         return proof, [f"pit_not_listed_tradable:{pit_status.reason}"]
 
+    provider_expected_status = "D" if symbol.endswith(".BJ") else "L"
     stock_params = {
         "ts_code": symbol,
-        "list_status": "L",
+        "list_status": provider_expected_status,
         "fields": STOCK_BASIC_FIELDS,
     }
     stock_frame, stock_error = _query_frame(provider, "stock_basic", stock_params)
@@ -257,10 +262,14 @@ def _build_symbol_proof(
         return proof, ["stock_basic_exact_row_count_mismatch"]
     stock_row = stock_rows[0]
     stock_name = _normalize_identity(stock_row.get("name"))
-    if _normalize_reason(stock_row.get("list_status")).upper() != "L":
-        reasons.append("stock_basic_status_not_listed")
-    if _compact_date(stock_row.get("delist_date")):
+    provider_status = _normalize_reason(stock_row.get("list_status")).upper()
+    provider_delist_date = _compact_date(stock_row.get("delist_date"))
+    if provider_status != provider_expected_status:
+        reasons.append("stock_basic_status_mismatch")
+    if provider_expected_status == "L" and provider_delist_date:
         reasons.append("stock_basic_delist_date_already_present")
+    if provider_expected_status == "D" and not provider_delist_date:
+        reasons.append("stock_basic_delist_date_missing")
     if not stock_name.endswith("退"):
         reasons.append("stock_basic_name_not_terminal")
     if reasons:
@@ -288,7 +297,11 @@ def _build_symbol_proof(
             _normalize_symbol(row.get("ts_code")) == symbol
             and start_date
             and start_date <= target_trade_date
-            and (not end_date or target_trade_date <= end_date)
+            and (
+                (not end_date or target_trade_date <= end_date)
+                if provider_expected_status == "L"
+                else start_date <= (provider_delist_date or target_trade_date)
+            )
             and _normalize_identity(row.get("name")) == stock_name
             and _normalize_reason(row.get("change_reason")) in TERMINAL_CHANGE_REASONS
         ):
@@ -375,6 +388,8 @@ def _build_symbol_proof(
         reasons.append("inferred_delist_date_after_target_or_missing")
     if daily_dates and any(value >= inferred_delist_date for value in daily_dates):
         reasons.append("daily_row_present_on_or_after_inferred_delist_date")
+    if provider_delist_date and provider_delist_date != inferred_delist_date:
+        reasons.append("provider_delist_date_boundary_mismatch")
     if reasons:
         return proof, reasons
 
@@ -410,8 +425,9 @@ def _build_symbol_proof(
         {
             "verified": True,
             "stock_basic_name": stock_name,
-            "source_list_status": "L",
-            "provider_delist_date": "",
+            "source_list_status": provider_status,
+            "provider_delist_date": provider_delist_date,
+            "exchange": "BSE" if symbol.endswith(".BJ") else "SZSE",
             "terminal_change_reason": _normalize_reason(active_row.get("change_reason")),
             "terminal_start_date": start_date,
             "terminal_announcement_date": announcement_date,
@@ -457,7 +473,7 @@ def build_terminal_delisting_evidence(
     verified = sorted(verified)
     payload: dict[str, Any] = {
         "schema_version": TERMINAL_DELISTING_SCHEMA_VERSION,
-        "resolver_policy_version": TERMINAL_DELISTING_POLICY_VERSION,
+        "resolver_policy_version": TERMINAL_DELISTING_POLICY_VERSION_V2,
         "classification": TERMINAL_DELISTING_CLASSIFICATION,
         "target_trade_date": target,
         "source": ("tushare.stock_basic+namechange+daily+trade_cal+suspend_d+bak_daily"),
@@ -519,7 +535,7 @@ def validate_terminal_delisting_evidence(
         blockers.append("payload_sha256_mismatch")
     if payload.get("schema_version") != TERMINAL_DELISTING_SCHEMA_VERSION:
         blockers.append("schema_version_mismatch")
-    if payload.get("resolver_policy_version") != TERMINAL_DELISTING_POLICY_VERSION:
+    if payload.get("resolver_policy_version") not in SUPPORTED_TERMINAL_DELISTING_POLICIES:
         blockers.append("resolver_policy_version_mismatch")
     if payload.get("classification") != TERMINAL_DELISTING_CLASSIFICATION:
         blockers.append("classification_mismatch")
@@ -560,9 +576,11 @@ def validate_terminal_delisting_evidence(
         if not isinstance(proof, Mapping) or proof.get("verified") is not True:
             blockers.append(f"symbol_proof_invalid:{symbol}")
             continue
-        if proof.get("source_list_status") != "L":
+        expected_provider_status = "D" if symbol.endswith(".BJ") else "L"
+        if proof.get("source_list_status") != expected_provider_status:
             blockers.append(f"symbol_source_status_mismatch:{symbol}")
-        if _compact_date(proof.get("provider_delist_date")):
+        provider_delist_date = _compact_date(proof.get("provider_delist_date"))
+        if expected_provider_status == "L" and provider_delist_date:
             blockers.append(f"symbol_provider_delist_date_nonempty:{symbol}")
         if not _normalize_identity(proof.get("stock_basic_name")).endswith("退"):
             blockers.append(f"symbol_terminal_name_mismatch:{symbol}")
@@ -591,6 +609,10 @@ def validate_terminal_delisting_evidence(
             or open_dates[0] != start_date
             or daily_dates != open_dates[:15]
             or inferred != open_dates[15]
+            or (
+                expected_provider_status == "D"
+                and provider_delist_date != inferred
+            )
             or inferred > target
             or any(value >= inferred for value in daily_dates)
             or _compact_date(inferred_dates.get(symbol)) != inferred
@@ -603,7 +625,7 @@ def validate_terminal_delisting_evidence(
         expected_queries = {
             "stock_basic": {
                 "ts_code": symbol,
-                "list_status": "L",
+                "list_status": expected_provider_status,
                 "fields": STOCK_BASIC_FIELDS,
             },
             "namechange": {
@@ -661,8 +683,10 @@ def validate_terminal_delisting_evidence(
                 if (
                     stock_name != _normalize_identity(proof.get("stock_basic_name"))
                     or not stock_name.endswith("退")
-                    or _normalize_reason(stock_row.get("list_status")).upper() != "L"
+                    or _normalize_reason(stock_row.get("list_status")).upper()
+                    != expected_provider_status
                     or _compact_date(stock_row.get("delist_date"))
+                    != provider_delist_date
                 ):
                     blockers.append(f"symbol_stock_basic_semantic_mismatch:{symbol}")
 
@@ -689,7 +713,11 @@ def validate_terminal_delisting_evidence(
                     _normalize_symbol(row.get("ts_code")) == symbol
                     and row_start
                     and row_start <= target
-                    and (not row_end or target <= row_end)
+                    and (
+                        (not row_end or target <= row_end)
+                        if expected_provider_status == "L"
+                        else row_start <= provider_delist_date
+                    )
                     and _normalize_identity(row.get("name"))
                     == _normalize_identity(proof.get("stock_basic_name"))
                     and _normalize_reason(row.get("change_reason")) in TERMINAL_CHANGE_REASONS
@@ -893,6 +921,7 @@ def terminal_delist_dates(payload: Mapping[str, Any]) -> dict[str, str]:
 __all__ = [
     "TERMINAL_DELISTING_CLASSIFICATION",
     "TERMINAL_DELISTING_POLICY_VERSION",
+    "TERMINAL_DELISTING_POLICY_VERSION_V2",
     "TERMINAL_DELISTING_SCHEMA_VERSION",
     "build_terminal_delisting_evidence",
     "read_terminal_delisting_evidence",
