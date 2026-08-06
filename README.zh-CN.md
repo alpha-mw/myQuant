@@ -33,8 +33,9 @@ Quant-Investor 是一个面向中国 A 股的研究仓库，围绕唯一公开�
 
 仓库今天已经具备实际用途，但能力边界必须说清楚：它可以读取并校验已经激活的
 V17 结果，可以累积 research-only 的 Forward 证据，可以评估精确的 I0/R2.2 请求，
-也可以诊断组合决策输入是否齐备。当前仓库没有公开的决策 run 生产器、生产发布器、
-激活命令、券商连接、下单路径或交易执行器。
+可以把完整复放的研究闭包转成 I1 投资决策 memo，也可以诊断组合决策输入是否齐备。
+I1 是 library-only 的研究层。当前仓库没有公开的决策 run 生产器、生产发布器、激活
+命令、券商连接、下单路径或交易执行器。
 
 ## 设计主张
 
@@ -76,6 +77,8 @@ flowchart TD
         FR["显式、内容绑定的 Forward 请求"] --> SH["V4 Forward / Shadow 观测"]
         SH --> I0["I0 Investment Intelligence<br/>Evidence · Bayesian · 三层 Regime · Fusion · Hypothesis · Memory"]
         I0 --> R22["R2.2 research-evaluate<br/>规范 stdout 信封 · 不持久化"]
+        I0 --> I1["I1 Investment Decision Intelligence<br/>精确复放 · 风险 · 五个研究状态 · memo"]
+        R22 -. "可选精确复放" .-> I1
     end
 
     subgraph PD["已实现：组合诊断通道"]
@@ -133,6 +136,18 @@ Markov filter；没有向后平滑、隐藏历史搜索、持久化 writer、仓
 R2.2 重放一个精确请求，并向 stdout 输出一个规范评估信封。它可以提出 Memory 后缀
 提案，但不会写入该提案。当前仓库也没有 V17 投资智能 scheduler、daemon 或自动
 paper-portfolio adapter。
+
+I1 是建立在精确 I0 和可选精确 R2.2 复放之上的 library-only 投资决策层。它构建按
+内容寻址的 Decision Context，分别评估 Business、Financial、Market 和 Thesis 风险，
+返回五个确定性研究状态之一，投影 source-bound Investment Memo，并可追加独立的
+Decision Discipline 链。它的 validator 会从完整闭包重新构建对应结果并要求逐字节
+一致；仅仅重新封印 artifact 不能证明完成了复放。
+
+五个状态是 `THESIS_INVALIDATED`、`INSUFFICIENT_EVIDENCE`、`WATCHLIST`、
+`RESEARCH_APPROVED` 和 `PAPER_CANDIDATE`。这些都是研究工作流状态，不是市场动作。
+`PAPER_CANDIDATE` 只表示有资格进入外部 paper review，不代表完成选股、准入组合、
+确定仓位、下单或交易。I1 不新增公开 CLI、Web 路由、scheduler、writer、selector、
+portfolio、broker、order、execution 或 trade 权限。
 
 ### 因子治理
 
@@ -217,7 +232,25 @@ quant-investor-v17-v4 research-evaluate \
 该命令离线运行，只向 stdout 输出结果。它不会调用 provider 或模型，不会写结果、
 追加 Memory、改变 Factor tier、选择组合或触碰 active pointer。
 
-### 5. 诊断组合周期输入
+### 5. 在 Python 中构建完整复放的 I1 研究决策
+
+I1 被刻意设计为 Python library，而不是公开命令。调用方必须提供完整 I0 复放闭包，
+也可以绑定一个精确 R2.2 请求。library 在不持久化、也不发起外部调用的前提下推导
+Context、Risk、Decision、Memo 和 Discipline 值：
+
+```python
+from quant_investor.intelligence.decision import (
+    assess_investment_risk,
+    build_investment_memo,
+    collect_investment_decision_context,
+    make_investment_decision,
+)
+```
+
+通过更严格的 paper-review gates 后可以产生 `PAPER_CANDIDATE`；它只允许构建一个
+最小化的 `PENDING_EXTERNAL_REVIEW` proposal，交给另一条受治理的外部 paper 工作流。
+
+### 6. 诊断组合周期输入
 
 ```bash
 quant-investor portfolio cycle-status --help
@@ -234,6 +267,7 @@ quant-investor portfolio cycle-status --help
 | **数据静默替换** | strict canonical Parquet、哈希绑定 manifest，不隐藏回退到 CSV 或最新文件。 |
 | **公开权威含糊** | 一个精确策略指针只命名一个不可变 run 及其递归闭包。 |
 | **把研究说成生产** | Forward、Shadow、I0/R2.2、Factor 诊断和公开 mainline 权威使用不同 schema 与存储族。 |
+| **把研究批准误当成交易** | I1 使用五个明确研究状态；即使 `PAPER_CANDIDATE` 也只授予外部 paper-review 资格。 |
 | **非因果 Regime 分析** | Market、Industry、Theme 各自只做一次显式向前 Markov 步骤，不做向后平滑或隐藏历史读取。 |
 | **多重检验与因子冗余** | 试验修正、同族多重检验和增量价值证据是 Factor Governance 的一等问题。 |
 | **模型输出变成决策** | LLM 只出建议；候选、限制和权重必须来自确定性控制。 |
@@ -252,7 +286,8 @@ semantic hash。缺少闭包的合理数字不会被提升成公开结论。
 的“成功/失败”更有运维价值，因为它说明究竟缺少哪一层权威。
 
 **研究可以足够深入，但不会因此获得运维权限。** Bayesian 诊断、Markov Regime、
-branch Fusion、Hypothesis 和 Memory 提案可以持续演进，同时仍无法激活组合。
+branch Fusion、Hypothesis 和 Memory 提案可以继续演进为完整复放的 I1 风险、决策、
+memo 和 discipline artifact，同时仍无法激活组合。
 
 **AI 负责解释，确定性契约负责决策。** 模型可以总结、质疑或起草 hypothesis，不能
 修改精确证据闭包、候选集、风险策略、组合、指针或交易状态。
@@ -285,6 +320,8 @@ quant-investor-v17-v4 --help
 - Python、CLI、Web、Dashboard 对同一 V17 权威链的读取；
 - 显式 V4 Forward / Shadow 观测；
 - 确定性 I0 Investment Intelligence 与 R2.2 评估；
+- library-only I1 Investment Decision Intelligence：精确复放 I0/可选 R2.2、四维风险、
+  五个研究状态、确定性 memo 和 decision-discipline 值；
 - Factor Governance 研究证据；
 - 只读策略身份、持仓和准备度诊断；
 - 显式市场维护与存储校验表面。
@@ -294,6 +331,7 @@ quant-investor-v17-v4 --help
 - 端到端全 A 决策 run 生产器；
 - 受治理 production publisher 或操作者激活命令；
 - 自动 I0/R2.2 日度 scheduler 或请求生成器；
+- 公开 I1 CLI、Web 路由、scheduler、持久化/Memory writer 或自动 Paper adapter 实现；
 - 完整组合周期生产器、paper ledger writer 或学习 orchestrator；
 - 券商、下单、执行或交易集成。
 
@@ -308,7 +346,7 @@ quant_investor/
   data/                      数据源与 point-in-time 加工
   market/                    CN 维护与规范读取
   factors/                   Factor Governance 与研究证据
-  intelligence/              I0 与 R2.2 research-only 智能层
+  intelligence/              I0、R2.2 与 library-only I1 研究智能层
   portfolio_cycle/           身份、持仓和准备度基础
   v17_mainline/              active pointer 契约与 public run 读取器
   v17_v4_contract/           V17 v4 schema 与校验
@@ -337,6 +375,7 @@ PYTHON=./.venv/bin/python scripts/staged_upgrade_quality_gate.sh
 - [V17 v4 主线契约](docs/architecture/v17_v4_production_research_contract.md)
 - [I0 Investment Intelligence](docs/architecture/v17_i0_investment_intelligence.md)
 - [R2.2 Forward Research Evaluator](docs/architecture/v17_r22_forward_research_evaluator.md)
+- [I1 Investment Decision Intelligence](docs/architecture/v17_i1_investment_decision_intelligence.md)
 - [组合周期基础](docs/architecture/v17_portfolio_cycle_foundation.md)
 - [Factor Governance v4](docs/factor_governance_v4.md)
 - [因子挖掘机制](docs/factor_mining_mechanism.md)

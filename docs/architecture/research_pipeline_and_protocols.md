@@ -55,6 +55,37 @@ It may return a Memory Append Proposal, but it does not persist that proposal.
 There is no V17 I0/R2.2 daily scheduler, request generator, daemon or automatic
 paper-portfolio adapter in the current tree.
 
+### I1 Investment Decision Intelligence
+
+`quant_investor.intelligence.decision` is a deterministic, content-addressed,
+library-only decision layer. It accepts the complete I0 replay closure and may
+also accept one exact R2.2 request path and byte SHA-256. It rebuilds I0 and,
+when supplied, R2.2 before it admits the research context; it never trusts a
+summary-shaped or merely resealed receipt.
+
+```text
+exact V4 / I0 replay + optional exact R2.2 replay
+  -> Investment Decision Context
+  -> four-dimensional Risk Assessment
+  -> THESIS_INVALIDATED | INSUFFICIENT_EVIDENCE | WATCHLIST
+     | RESEARCH_APPROVED | PAPER_CANDIDATE
+  -> deterministic Investment Memo
+  -> append-only Decision Discipline Chain
+  -> optional external-review Paper Intake Proposal
+```
+
+The five outcomes are research states, not actions. `PAPER_CANDIDATE` means
+only that a replayed decision passed the stricter eligibility gates for an
+external paper-review workflow. It does not select a stock, admit a holding,
+construct a portfolio, set a weight or authorize an order or trade.
+
+I1 has no public CLI, Web route, scheduler, daemon, persistence or Memory
+writer, Paper adapter implementation, selector, portfolio, provider, model,
+broker, order, execution or trade authority. It does not modify the existing
+Memory contract or R2.2 Memory Proposal. See
+[V17 I1 Investment Decision Intelligence](v17_i1_investment_decision_intelligence.md)
+for the closed replay, state precedence, memo and discipline contracts.
+
 ## Causal Regime contract
 
 The current Markov implementation is under

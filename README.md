@@ -36,10 +36,11 @@ limit or change a weight.
 
 The repository is useful today, but its boundaries matter: it can read and
 validate an already activated V17 result, accumulate research-only Forward
-evidence, evaluate exact I0/R2.2 requests and diagnose portfolio-input
-readiness. It does not currently expose a public decision-run producer,
-production publisher, activation command, broker connection, order path or
-trade executor.
+evidence, evaluate exact I0/R2.2 requests, turn their fully replayed research
+closure into an I1 investment-decision memo, and diagnose portfolio-input
+readiness. I1 is a library-only research layer. The repository does not
+currently expose a public decision-run producer, production publisher,
+activation command, broker connection, order path or trade executor.
 
 ## The thesis
 
@@ -84,6 +85,8 @@ flowchart TD
         FR["Explicit content-bound Forward request"] --> SH["V4 Forward / Shadow observation"]
         SH --> I0["I0 Investment Intelligence<br/>Evidence · Bayesian · 3-layer Regime · Fusion · Hypothesis · Memory"]
         I0 --> R22["R2.2 research-evaluate<br/>canonical stdout envelope · no persistence"]
+        I0 --> I1["I1 Investment Decision Intelligence<br/>exact replay · risk · five research states · memo"]
+        R22 -. "optional exact replay" .-> I1
     end
 
     subgraph PD["Implemented portfolio diagnostic"]
@@ -146,6 +149,22 @@ R2.2 replays one exact request and emits one canonical evaluation envelope to
 stdout. It may propose a Memory suffix, but it does not write that proposal.
 There is no V17 research-intelligence scheduler, daemon or automatic
 paper-portfolio adapter in the current tree.
+
+I1 is the library-only investment-decision layer above exact I0 and optional
+exact R2.2 replay. It builds a content-addressed Decision Context, assesses
+Business, Financial, Market and Thesis risk, returns one of five deterministic
+research states, projects a source-bound Investment Memo, and can append a
+separate Decision Discipline chain. Its validators rebuild the complete
+supplied closure and require byte-for-byte equality; a resealed artifact is not
+accepted as proof of replay.
+
+The five states are `THESIS_INVALIDATED`, `INSUFFICIENT_EVIDENCE`, `WATCHLIST`,
+`RESEARCH_APPROVED` and `PAPER_CANDIDATE`. They are research workflow states,
+not market actions. `PAPER_CANDIDATE` means only eligibility for an external
+paper-review workflow. It does not mean stock selection, portfolio admission,
+position sizing, an order or a trade. I1 adds no public CLI, Web route,
+scheduler, writer, selector, portfolio, broker, order, execution or trade
+authority.
 
 ### Factor governance
 
@@ -237,7 +256,27 @@ The command is offline and stdout-only. It does not call a provider or model,
 write a result, append Memory, change a Factor tier, choose a portfolio or touch
 the active pointer.
 
-### 5. Diagnose portfolio-cycle inputs
+### 5. Build a replayed I1 research decision in Python
+
+I1 is intentionally a Python library rather than a public command. Callers
+must supply the complete I0 replay closure and may bind one exact R2.2 request.
+The library then derives Context, Risk, Decision, Memo and Discipline values
+without persistence or external calls:
+
+```python
+from quant_investor.intelligence.decision import (
+    assess_investment_risk,
+    build_investment_memo,
+    collect_investment_decision_context,
+    make_investment_decision,
+)
+```
+
+Passing the stricter paper-review gates can produce `PAPER_CANDIDATE`; it only
+permits construction of a minimal `PENDING_EXTERNAL_REVIEW` proposal for a
+separately governed external paper workflow.
+
+### 6. Diagnose portfolio-cycle inputs
 
 ```bash
 quant-investor portfolio cycle-status --help
@@ -256,6 +295,7 @@ still be incomplete.
 | **Silent data substitution** | Strict canonical Parquet, hash-bound manifests and no hidden CSV/latest-file fallback. |
 | **Ambiguous public authority** | One exact strategy pointer names one immutable run and its transitive closure. |
 | **Research presented as production** | Forward, Shadow, I0/R2.2, Factor diagnostics and public mainline authority are separate schema and storage families. |
+| **Research approval mistaken for a trade** | I1 uses five explicit research states; even `PAPER_CANDIDATE` grants only external paper-review eligibility. |
 | **Non-causal regime analysis** | Market, Industry and Theme each use one explicit forward Markov step with no backward smoothing or hidden history. |
 | **Multiple testing and factor redundancy** | Trial correction, family-level multiplicity and incremental-value evidence are first-class Factor Governance concerns. |
 | **Model output becoming a decision** | LLM output is advisory; deterministic controls remain the only acceptable source of candidates, limits and weights. |
@@ -278,7 +318,8 @@ generic success/failure label because it identifies the missing authority.
 
 **Research is allowed to be ambitious without acquiring operational power.**
 Bayesian diagnostics, Markov Regime, branch Fusion, hypothesis generation and
-Memory proposals can evolve while remaining unable to activate a portfolio.
+Memory proposals can evolve into replayed I1 risk, decision, memo and discipline
+artifacts while remaining unable to activate a portfolio.
 
 **AI explains; deterministic contracts decide.** A model may summarize,
 challenge or draft a hypothesis. It cannot alter the exact evidence closure,
@@ -315,6 +356,9 @@ Implemented now:
 - Python, CLI, Web and Dashboard readers over the same V17 authority chain;
 - explicit V4 Forward / Shadow observation;
 - deterministic I0 Investment Intelligence and R2.2 evaluation;
+- library-only I1 Investment Decision Intelligence with exact I0/optional R2.2
+  replay, four-dimensional risk, five research states, deterministic memo and
+  decision-discipline values;
 - Factor Governance research evidence;
 - read-only portfolio identity, holdings and readiness diagnostics;
 - explicit market maintenance and storage validation surfaces.
@@ -324,6 +368,8 @@ Not implemented as a public operational workflow:
 - an end-to-end full-A decision-run producer;
 - a governed production publisher or owner-operated activation command;
 - an automatic I0/R2.2 daily scheduler or request generator;
+- a public I1 CLI, Web route, scheduler, persistence/Memory writer or automatic
+  Paper adapter implementation;
 - a complete portfolio-cycle producer, paper-ledger writer or learning
   orchestrator;
 - broker, order, execution or trade integration.
@@ -339,7 +385,7 @@ quant_investor/
   data/                      data sources and point-in-time processing
   market/                    CN maintenance and canonical reads
   factors/                   Factor Governance and research evidence
-  intelligence/              I0 and R2.2 research-only intelligence
+  intelligence/              I0, R2.2 and library-only I1 research intelligence
   portfolio_cycle/           identity, holdings and readiness foundation
   v17_mainline/              active-pointer contract and public run reader
   v17_v4_contract/           V17 v4 schemas and validation
@@ -369,6 +415,7 @@ during local verification unless the task explicitly authorizes them.
 - [V17 v4 mainline contract](docs/architecture/v17_v4_production_research_contract.md)
 - [I0 Investment Intelligence](docs/architecture/v17_i0_investment_intelligence.md)
 - [R2.2 Forward Research Evaluator](docs/architecture/v17_r22_forward_research_evaluator.md)
+- [I1 Investment Decision Intelligence](docs/architecture/v17_i1_investment_decision_intelligence.md)
 - [Portfolio-cycle foundation](docs/architecture/v17_portfolio_cycle_foundation.md)
 - [Factor Governance v4](docs/factor_governance_v4.md)
 - [Factor mining mechanism](docs/factor_mining_mechanism.md)

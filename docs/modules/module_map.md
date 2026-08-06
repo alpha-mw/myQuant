@@ -71,6 +71,21 @@ for Market, Industry and Theme. It has no backward smoothing, persistence,
 portfolio, broker or execution authority. R2.2 is offline and stdout-only; any
 memory update is a caller-owned proposal, not a write.
 
+### `quant_investor/intelligence/decision`
+
+Implements the I1 Investment Decision Intelligence library above exact I0 and
+optional exact R2.2 replay. It builds content-addressed Decision Context, Risk
+Assessment, five-state Decision, deterministic Memo, Decision Discipline and
+external-review-only Paper Intake values. Validators rerun the complete supplied
+closure and require byte-for-byte equality rather than trusting a resealed
+document.
+
+This package is library-only. It has no public CLI or Web registration,
+scheduler, daemon, persistence or Memory writer, selector, portfolio builder,
+paper adapter implementation, provider or LLM call, broker, order, execution or
+trade authority. `PAPER_CANDIDATE` means only external paper-review eligibility;
+it is not portfolio admission or a trading signal.
+
 ### `quant_investor/v17_v3_contract`
 
 Retains explicit historical compatibility contracts used by governed V4
