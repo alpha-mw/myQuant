@@ -1,132 +1,95 @@
 # myQuant Runtime Paths and Artifacts
 
-这一页回答“东西落在哪里、谁负责写、排障先看哪”。
+这一页回答“当前 lane 从哪里读、产物在哪里、排障先看什么”。
 
-## Core Runtime Files
+## V17 mainline authority
 
-### `.env`
+```text
+results/v17_mainline/strategies/<strategy-id>/
+  _active.json
+  runs/<run-id>/run.json
+```
 
-- 位置：repo root `.env`
-- 用途：运行时环境变量与 API keys
-- 典型键：
-  - `TUSHARE_TOKEN`
-  - `KIMI_API_KEY`
-  - `DEEPSEEK_API_KEY`
-  - `DASHSCOPE_API_KEY`
-  - `FRED_API_KEY`
-  - `FINNHUB_API_KEY`
-  - `DB_PATH`
-  - `LOG_LEVEL`
+- `_active.json` 是公开可见性的唯一 authority carrier。
+- public reader 精确解析 pointer 的 run ref 和 transitive closure。
+- 缺失 pointer 返回 unavailable；无效链返回 blocker；都不得写 bootstrap、
+  fallback 或 cache。
+- 当前仓库没有公开 mainline publisher/activation command。包内公开的低层
+  exact-once/CAS storage primitives 是可写库能力，但不是受治理的生产操作入口
+  或 production authority。
 
-Primary owners:
-- `web/config.py`
-- `web/services/settings_service.py`
-- `web/routers/settings.py`
-- `quant_investor/config.py`
+## V4 Forward and Shadow
 
-### `data/stock_database.db`
+显式 request 位于：
 
-- 主本地市场数据库
-- 保存股票列表、OHLCV、因子、profile、fundamentals、peer relationships
-- `DB_PATH` 默认指向这里
+```text
+data/private/v17_v4_runs/forward_requests/
+```
 
-Primary owners:
-- `web/services/data_service.py`
-- `quant_investor/stock_database.py`
+Shadow 产物使用自己的 V4 Forward roots，并由 exact path、byte SHA、semantic
+SHA 和 receipt 链约束。它们不是 `results/v17_mainline/` 的 authority，不能
+替代 active pointer。
 
-### `data/app.db`
+## I0 and R2.2
 
-- 旧分析面和部分 portfolio 状态数据库
-- 主要由 legacy 分析服务使用，不是 workspace 主历史库
+R2.2 请求与显式输入位于：
 
-Primary owners:
-- `web/services/analysis_service.py`
-- `web/services/portfolio_service.py`
+```text
+data/private/research_intelligence/evaluation_requests/
+data/private/research_intelligence/evaluation_inputs/
+```
 
-### `data/web_runs.db`
+- I0 evidence、hypothesis、regime input/receipt 和 memory inventory 都是显式、
+  content-addressed 输入。
+- R2.2 输出只在 stdout envelope 中返回；仓库不为它写 results 或 memory。
+- memory append proposal 的持久化与 CAS 属于 caller，不属于 evaluator。
+- 排障先检查 exact request path/SHA、origin closure、cutoff、artifact refs 和
+  blocker code，不扫描目录找“最近一次”。
 
-- 当前 workspace 主数据库
-- 保存：
-  - `runs`
-  - `presets`
-  - `trade_records`
+## Canonical market data
 
-Primary owners:
-- `web/services/run_history_store.py`
-- `web/services/preset_store.py`
-- `web/routers/research.py`
-- `web/routers/presets.py`
-- `web/routers/settings.py`
+生产/评审路径使用严格 Parquet canonical pointer、manifest 和 readback。常见
+本地数据库或服务层数据源包括：
 
-如果用户问 “history 为什么没写进去”，先看这里，不要先看 `data/app.db`。
+```text
+data/stock_database.db
+```
 
-### `results/web_analysis/`
+具体位置可被仓库配置覆盖，必须以当前 config 和 pointer 为准。CSV 只能用于
+明确的导出或迁移，不是 canonical fallback。
 
-- legacy web analysis 结果目录
-- 常见内容：
-  - `analysis_*.json`
-  - `analysis_request_*.json`
-  - `jobs/job_*.json`
+维护、`storage-validate`、serving materialization、feature materialization 和
+decision-mainline read 是不同步骤。单独看到一个验证成功行不能证明整个维护
+或 mainline run 已完成。
 
-Primary owners:
-- `web/services/analysis_service.py`
-- `web/tasks/run_analysis_job.py`
+## Web data surface
 
-### `data/workspace_learning/`
+当前 `GET /api/research/{strategy_id}` 直接读取 V17 mainline authority chain，
+没有 history/job/preset 写库职责。`/api/data` 由 `web/services/data_service.py`
+提供市场数据库读取和显式 import；settings 与 universe 是独立支持面。
 
-- workspace 自动保存的待跟踪 trade case 文件
-- 一次 run 可能按 symbol 生成多个 `jobid_symbol.json`
+不要默认把以下旧产物当成当前 public research authority：
 
-Primary owners:
-- `web/services/research_runner.py`
-- `web/services/run_history_store.py`
+- `data/web_runs.db`
+- `data/app.db`
+- `results/web_analysis/`
+- `data/workspace_learning/`
 
-### `data/llm_usage.jsonl`
+只有用户明确指定 legacy API/历史工作区问题，并且当前源码确实引用这些路径
+时，才进入对应诊断。
 
-- 在线 LLM 使用记录
-- 用于 session 级 token 与成本汇总
+## Configuration
 
-Primary owners:
-- `quant_investor/llm_gateway.py`
-- `quant_investor/pipeline/mainline.py`
+- repo root `.env` 是本地配置来源；不要输出 token 或 credentials。
+- 已退休的 Fundamental overlay、Markov production overlay、旧 pipeline/engine
+  和 total-timeout key 会 fail loudly；迁移见
+  `docs/runbooks/v17_legacy_configuration_cleanup.md`。
+- 保留的 Funnel/Bayesian shortlist/agent timeout 配置被 standalone automation
+  消费，但这不表示该 automation 已注册为 V17 runtime。
 
-## Useful Distinctions
+## Diagnostic order
 
-### Workspace vs legacy analysis
-
-- workspace 历史、preset、trade records：`data/web_runs.db`
-- legacy analysis session / portfolio mutation：`data/app.db`
-- legacy analysis 输出文件：`results/web_analysis/`
-
-### Deterministic path vs review layer
-
-- 主线可在无 LLM key 时安全降级
-- 缺少 `KIMI_API_KEY` 或 `DEEPSEEK_API_KEY` 不等于整个后端不可用
-- 先区分是：
-  - 主线执行失败
-  - review layer 降级
-  - 结果持久化失败
-
-## Diagnostic Starting Points
-
-### “为什么 workspace history 里没有这次运行”
-
-先查：
-1. `web/routers/research.py`
-2. `web/services/research_runner.py`
-3. `web/services/run_history_store.py`
-4. `data/web_runs.db`
-
-### “为什么 analysis 页面结果文件没有生成”
-
-先查：
-1. `web/services/analysis_service.py`
-2. `web/tasks/run_analysis_job.py`
-3. `results/web_analysis/`
-4. `data/app.db`
-
-### “数据库到底应该看哪个”
-
-- 市场数据：`data/stock_database.db`
-- workspace 历史：`data/web_runs.db`
-- legacy analysis / portfolio：`data/app.db`
+1. 确认 lane：mainline read、maintenance、Forward、R2.2、Web 或 legacy。
+2. 确认 exact path、SHA、schema、strategy、cutoff 和 pointer。
+3. 检查 manifest/readback、receipt 和 blocker。
+4. 确认零写入边界；不要以缓存、旧 run 或可选输入降级掩盖错误。

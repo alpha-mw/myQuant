@@ -40,13 +40,13 @@ from ..evidence.forward_adapter import (
     ExactArtifactReader,
     replay_forward_evaluation_inputs,
 )
-from ..evidence.models import EVIDENCE_VERSION, validate_evidence
+from ..evidence.models import EVIDENCE_VERSION, validate_evidence, validate_evidence_set
 from ..hypothesis.models import HYPOTHESIS_VERSION, validate_hypothesis
 from ..memory.chain import append_memory, memory_tip
 from ..package import verify_package
 from ..regime.engine import REGIME_RECEIPT_VERSION as I0_REGIME_RECEIPT_VERSION
 from ..regime.engine import validate_regime_receipt
-from ..regime.input import REGIME_INPUT_VERSION
+from ..regime.input import REGIME_INPUT_VERSION, validate_regime_input
 from .receipts import (
     ENVELOPE_VERSION,
     MEMORY_INVENTORY_VERSION,
@@ -1412,24 +1412,39 @@ def _regime_receipt(
         regime_source_receipt = _load_research_input(reader, binding["receipt_ref"])
         evidence = [_load_research_input(reader, value) for value in binding["evidence_refs"]]
         receipt_time = timestamp(
-            regime_source_receipt["timestamp"], label="regime_receipt.timestamp"
+            regime_source_receipt.get("timestamp"), label="regime_receipt.timestamp"
         )
+        try:
+            validated_input = validate_regime_input(regime_input, as_of=receipt_time)
+            validated_evidence = validate_evidence_set(evidence, as_of=receipt_time)
+        except IntelligenceContractError as exc:
+            raise IntelligenceContractError(f"regime binding validation failed: {exc}") from exc
+        expected_input_ref = content_ref(validated_input, identity_field="input_id")
+        expected_evidence_refs = [
+            content_ref(item, identity_field="evidence_id") for item in validated_evidence
+        ]
+        if regime_source_receipt.get("input_ref") != expected_input_ref:
+            raise IntelligenceContractError("regime receipt input binding mismatch")
+        if regime_source_receipt.get("evidence_refs") != expected_evidence_refs:
+            raise IntelligenceContractError("regime receipt evidence binding mismatch")
+        validated_receipt = validate_regime_receipt(
+            regime_source_receipt,
+            regime_input=validated_input,
+            evidence=validated_evidence,
+            as_of=receipt_time,
+        )
+        for source_ref in validated_input["source_refs"]:
+            if source_ref not in authorized:
+                raise IntelligenceContractError("regime input source is not authorized")
+        for item in validated_evidence:
+            if item["source_ref"] not in authorized:
+                raise IntelligenceContractError("regime evidence source is not authorized")
         if (
-            not regime_input["available_at"]
+            not validated_input["available_at"]
             <= receipt_time
             <= origin["bundle"]["run_ref"]["cutoff"]
         ):
             raise IntelligenceContractError("regime receipt temporal direction is invalid")
-        for item in evidence:
-            validated = validate_evidence(item, as_of=receipt_time)
-            if validated["source_ref"] not in authorized:
-                raise IntelligenceContractError("regime evidence source is not authorized")
-        validated_receipt = validate_regime_receipt(
-            regime_source_receipt,
-            regime_input=regime_input,
-            evidence=evidence,
-            as_of=receipt_time,
-        )
         selected_states[origin["origin_id"]] = {
             "industry": validated_receipt["industry_state"],
             "market": validated_receipt["market_state"],
@@ -1801,7 +1816,9 @@ def run_forward_research_evaluation(
         raise ForwardEvaluationError("artifact_invalid", str(exc)) from exc
     except IntelligenceContractError as exc:
         text = str(exc).lower()
-        if "future" in text or "temporal" in text or "postdate" in text:
+        if "regime" in text:
+            code = "evaluation_blocked"
+        elif "future" in text or "temporal" in text or "postdate" in text:
             code = "temporal_invalid"
         elif "closure" in text:
             code = "closure_invalid"

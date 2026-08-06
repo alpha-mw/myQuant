@@ -2,9 +2,9 @@
 
 <img src="assets/logo.svg" alt="Quant-Investor" width="520"/>
 
-**一套 A 股量化研究与组合决策系统。**
+**一套 fail-closed、公开主线仅支持 V17 的 A 股研究系统。**
 
-*量化真正难的不是找到信号，而是证明信号是真的 —— 以及在证据缺失时拒绝出手。*
+*证据采用内容寻址，研究与权威彼此隔离；结果缺失时，系统不会编造替代品。*
 
 [![Python](https://img.shields.io/badge/Python-3.13%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org)
 [![Version](https://img.shields.io/badge/Version-17.0.0-FF6B35?style=flat-square)](pyproject.toml)
@@ -12,243 +12,136 @@
 
 [English](README.md) · **简体中文**
 
-[核心命题](#核心命题) · [整体框架](#整体框架) · [运行流程](#运行流程) ·
-[它解决了哪些量化问题](#它解决了哪些量化问题) · [特色](#特色) ·
-[快速开始](#快速开始) · [当前状态](#当前状态)
+[项目目的](#项目目的) · [当前运行面](#当前运行面) · [研究智能](#研究智能) · [治理目标](#治理目标) · [快速开始](#快速开始) · [当前边界](#当前边界)
 
 </div>
 
 ---
 
-## 这是什么
+## 项目目的
 
-一套单人运维、仅覆盖 A 股的量化研究系统：427 个模块约 29 万行 Python，210 个测试
-文件，**没有券商连接，没有下单权限**。它以严格的 point-in-time 行情与基本面数据为
-输入，产出三条独立证据分支，经确定性控制链融合，并为每个策略只发布一个受治理的
-结果。
+Quant-Investor 是一个面向中国 A 股的研究仓库，核心规则很简单：每个公开结论都
+必须能追溯到精确证据；缺少权威时必须 fail closed。
 
-它的全部结构都围绕下面这一条命题组织。
+仓库中存在几条刻意隔离的链路：
 
-## 核心命题
+- 严格的市场数据维护与 point-in-time 输入；
+- Factor Governance 与 research-only 前瞻证据；
+- I0 Investment Intelligence 库和 R2.2 前瞻评估器；
+- V17 v4 active-pointer 合约，以及只读的 Python、CLI、Web 和 Dashboard 消费者；
+- 为兼容而保留、但位于 V17 权威之外的独立 legacy automation。
 
-多数量化系统不会大声失败。它们的失败方式是悄悄给出一个**看起来正是你想要的数字**。
-真正该问的不是「我的 alpha 是多少」，而是 **「这个数字要在什么条件下才是错的，而我
-会不会发现」**。
+这些链路可以共享代码和证据格式，但不会彼此静默授予生产或组合权威。
 
-有四件事会出错，而且都是无声的：
+## 当前运行面
+
+目前已实现的 V17 公开流程是读取器，不是决策运行生成器：
+
+```text
+results/v17_mainline/strategies/<strategy-id>/_active.json
+  -> 校验精确 active pointer
+  -> 校验精确 immutable run 及其传递闭包
+  -> 投影 myquant.v17.v4.mainline-public-run.v1
+  -> 通过 Python、CLI、Web 或 Dashboard 返回同一份只读公开结果
+```
+
+所有公开读取面只解析一个精确指针。它们不会扫描最新运行、用 Shadow session
+替代、自动创建权威文件，也不会回退到其他协议。
+
+| 情况 | 结果 | 写入 |
+|---|---|---:|
+| Active pointer 缺失 | `V17_MAINLINE_UNINITIALIZED` | 0 |
+| Pointer、run 或闭包无效 | `V17_MAINLINE_BLOCKED:<blocker>` | 0 |
+| 公开请求不是 CN | `V17_MARKET_UNSUPPORTED` | 0 |
+| 请求主线回测 | `V17_BACKTEST_UNAVAILABLE` | 0 |
+
+所有公开结果读取面都只有读权限。`v17_mainline` 包同时公开了 low-level
+exact-once 和 compare-and-swap 存储原语，但这些原语不是受治理的生产 publisher、
+activation workflow 或 production authority。本仓库目前没有公开的生产 publisher
+或 activation 命令。
+
+这条边界专门防止四类常见失败：
 
 | 失败方式 | 从系统内部看到的样子 |
 |---|---|
-| **扛不住自己窗口的证据** | 一个用八个月数据挖出来的因子，展示 rank IC 0.05 和八门全过，然后在五年尺度衰减到四分之一。日频 rank IC 对 30 天前瞻收益高度重叠，朴素 t 检验把显著性放大约 √30 倍 —— 足以让一个假象在 p < 1e-4 上看起来像 alpha。 |
-| **会自我替换的数据** | 缺失的 Parquet 分区变成 CSV 回退、陈旧快照或推断值。链路照样返回结果，输出里没有任何一处说明它究竟由哪些字节算出。 |
-| **会漂移的定义** | 定义为「对当前生产组合取残差」的因子，每当生产集变化，含义就变了。它记录在案的证据描述的是一个已经不存在的基线。 |
-| **握有决策权的语言模型** | 能调权重的模型就能幻觉出一个权重。模型输出一旦进入控制路径，「为什么是这个仓位」就不再有确定性答案。 |
+| **扛不住自己窗口的证据** | 短窗口因子因重叠前瞻标签而显得显著，换到更长尺度后快速衰减。 |
+| **会自我替换的数据** | 缺失的 Parquet 被 CSV、陈旧或推断数据替代，却不披露结果究竟由哪些字节产生。 |
+| **会漂移的定义** | 因子的参考生产集变化后，定义含义随之变化，旧证据不再描述当前定义。 |
+| **握有决策权的语言模型** | 模型生成的权重进入控制路径后，“为什么是这个仓位”失去确定性答案。 |
 
-整个仓库的组织原则就是对这四点的回答：
+> **每一个数字都必须携带可复现的生成证据。证据缺失等于拒绝，而不是默认值。**
 
-> **每一个数字都携带可复现的生成证据。证据缺失等于拒绝，而不是等于取默认值。**
+## 研究智能
 
-这就是为什么系统是 *fail-closed* 而不是 *best-effort*。best-effort 的链路优化的是
-「永远能返回点什么」；这套系统优化的是「绝不返回自己辩护不了的东西」。
-`V17_MAINLINE_UNINITIALIZED` 是一个**正确答案**。
+V17 研究分为 observation 链和离线 intelligence 链：
 
-## 整体框架
+```text
+显式 V4 Forward request
+  -> research-only Shadow observation 与精确来源闭包
+  -> I0 Evidence records
+  -> Bayesian 诊断 + 三层因果 Regime + branch Fusion
+  -> 可证伪 Hypothesis + 不可变 Memory value
+  -> 精确 R2.2 evaluation request
+  -> stdout-only evaluation envelope + Memory Append Proposal
+```
 
-一条链路，四个阶段；不能证明工作来源，就到不了下一个阶段。
+### I0 Markov regime
+
+Markov 没有消失。当前实现刻意比旧生产 overlay 更窄：
+
+- 三个彼此独立的层级：Market、Industry、Theme；
+- 从显式、内容寻址的 `RegimeInput` 开始，只做一次 forward filter step；
+- source refs 必须属于 observation 已验证的递归闭包；
+- 不做 backward smoothing、拟合、隐式历史查找或持久化写入；
+- 不具备仓位上限、risk overlay、portfolio、selector、broker、order 或 trade 权限。
+
+R2.2 计算 regime-conditioned 研究指标时，只消费每一层已经选中的 state。它不把
+posterior map 作为聚合输入，也不更新 Markov 模型。
+
+### 尚未自动化的部分
+
+I0 和 R2.2 是库加显式 CLI 命令。当前没有 V17 research-intelligence scheduler、
+daemon、daily request generator、Memory CAS writer 或 paper-portfolio adapter。
+缺少可选 Regime binding 时结果为 unavailable；提供了无效 binding 时整次评估阻断。
+
+仓库也包含 `quant_investor/automation/` 下恢复的独立自动化模块。它是一条不完整
+的 legacy 链，没有 V17 公开入口，且缺少部分 lazy runtime 依赖。它不是 I0/R2.2
+日度循环，也不能创建主线权威。
+
+## 治理目标
+
+目标 producer 拓扑仍有治理价值，但不能与当前公开命令的实现混为一谈。下图节点是
+目标职责；图中出现某个节点，不代表当前已经存在已注册的端到端 producer。
 
 ```mermaid
 flowchart TD
-    D["<b>strict CN Parquet + PIT 成分</b><br/>哈希绑定 manifest，staging → validate → serving"] --> S["Data Snapshot"]
-    S --> F["<b>DeterministicFunnel</b><br/>数据质量 / 可交易性 / 流动性硬闸门<br/>确定性排序，无模型"]
-
-    F --> Q["Quant"]
-    F --> FD["Fundamental"]
-    F --> MA["Macro"]
-
-    Q --> B["<b>Bayesian 后验</b><br/>先验 + 两条似然，log-odds 更新<br/>行动阈值随 regime 变化"]
-    FD --> B
-    MA -. "先验 / 上下文 —— 从不为某只标的投票" .-> B
-
-    B --> RG["<b>RiskGuard</b><br/>硬否决、敞口与单票上限"]
-    MK["Markov Regime"] -. "min(baseline, suggested) —— 只能降风险" .-> RG
-
-    RG --> IC["ICCoordinator<br/>共识、分歧、结构化动作"]
-    IC --> PC["<b>PortfolioConstructor</b><br/>确定性目标权重"]
-    PC --> N["NarratorAgent<br/>只读"]
-
-    N --> MR["mainline run · 不可变"]
-    MR --> AP["活跃指针<br/>针对预期前值 CAS + 精确回读"]
-    AP --> PB["public run · 只读"]
-
-    LLM["LLM review 层"] -. "只出建议；没有 key 也不改变任何结果" .-> IC
+    D["<b>strict CN Parquet + PIT membership</b><br/>哈希绑定输入与显式维护"] --> F["<b>目标确定性 producer</b><br/>候选池 + 闭合证据"]
+    F --> Q["Quant 证据"]
+    F --> FD["Fundamental 证据<br/>同一候选池"]
+    MA["Macro / regime context"] -. "只影响组合上下文；不产生标的 alpha" .-> C
+    Q --> C["<b>目标确定性控制</b><br/>readiness + 风险否决"]
+    FD --> C
+    C --> PC["<b>目标组合构建</b><br/>确定性权重"]
+    PC --> MR["不可变 mainline run"]
+    MR --> AP["active pointer<br/>expected-prevalue CAS + 精确回读"]
+    AP --> PB["只读 public run"]
+    I0["I0 / R2.2 intelligence"] -. "仅研究证据；无控制权限" .-> Q
+    LLM["LLM review layer"] -. "仅 advisory" .-> C
 ```
 
-喂给 quant 分支的因子池在旁边跑自己那条受治理的回路，由
-`FactorGovernanceProtocol v4` 管辖；它是下面
-[因子挖掘与治理](#3-因子挖掘与治理--周度只读报告月末提案) 一节的主题。
+未来 producer 必须闭合所有输入和输出引用，把 advisory 模型输出留在确定性控制
+之外，持久化不可变 run，并且只能通过 expected-prevalue CAS 加精确回读推进策略
+指针。合并或部署代码永远不等于 activation。
 
-**数据权威。** 规范存储是 Parquet 加哈希绑定的 manifest，经
-`parquet_staging -> parquet_serving` 校验后才晋级；不可能的字节进隔离区，而不是就地
-修补。成分是 point-in-time 的（`results/pit_universe/`），所以一次回补的上市记录不能
-追溯性地混进 2021 年的截面。CSV 只用于显式导出或迁移，永远不作为读取回退。
+## 因子治理
 
-**证据生产。** `DeterministicFunnel` 用硬性数据质量、可交易性、流动性闸门
-加确定性排序，把全 A 压缩成候选集（默认上限 500）—— 没有模型，没有随机性。三条分支
-随后在**同一个池**上研究：`quant`、`fundamental`、`macro`。喂给 quant 分支的因子池
-另由一套八闸门协议治理（见下）。
+Factor Governance v4 把因子研究与 activation 隔离。其证据面覆盖数据安全、覆盖率、
+RankIC/IC、分组收益、成本与换手、中性化、purged 样本外稳健性、组合增量、
+trial correction、family-level 多重性校正和成熟度检查。
 
-**控制链。** 分支证据变成后验，后验遇上硬约束，约束变成权重。每一段都有
-类型化契约（`BranchVerdict`、`RiskDecision`、`ICDecision`、`PortfolioPlan`、
-`ReportBundle`），且每一段**只能收紧**上一段允许的范围。
-
-**治理。** 链路跑完的结果并不公开。它先成为不可变的 `mainline-run.v1`，
-随后只有一次针对预期前值的 compare-and-swap（再加精确回读）才能推进活跃指针。
-**部署代码不会激活任何东西。**
-
-这条链路中段的不对称都是刻意的，每一条都堵住一种特定的自欺方式：
-
-- **只有 `quant` 和 `fundamental` 进入 Bayesian 似然。** `macro` 是先验和上下文，它
-  塑造风险预算，从不为某只标的投票。
-- **Fundamental 必须自证来源。** 只有 canonical generation pointer 校验通过、
-  lineage 绑定到 `tushare_primary` 时才允许进入似然；否则分支仍出诊断，但该标的的
-  似然被严格中性化为 `0.50` —— 存在，且可证明不含信息。
-- **Regime 只能降风险。** Markov 输出以 `min(baseline, suggested)` 应用于目标敞口与
-  单票上限；换手上限只能收紧不能放松。regime 信号无法把账本说服成更大的仓位。
-- **分支不可开关。** 不存在 `enable_quant`。带这种字段的请求会失败，而不是被静默忽略。
-- **说明必须分桶，且分桶是承重的。** `investment_risks`、`coverage_notes`、
-  `diagnostic_notes` 按契约分离，后两者被禁止进入配权。一次 provider 故障不能泄漏成
-  一个仓位大小。
-
-## 运行流程
-
-四条不同节奏的回路。它们共享存储与哈希，任何一条都不能抄近路绕过另一条。
-
-### 1. 数据维护 —— 每日、显式
-
-```bash
-quant-investor market maintain --market CN --staged
-quant-investor market storage-validate --market CN
-```
-
-下载 → 清洗 → 暂存 → 校验 → 晋级 serving → 刷新 manifest 与 PIT 成分。这是一条独立
-且必须显式触发的工作流：**任何分析命令都不会为了补一个洞而自动发起网络请求。**
-
-### 2. 决策 —— DAG
-
-```text
-data_snapshot（strict Parquet 健康度、最新交易日）
-  -> 标的池 / PIT 成分
-  -> 批量读取
-  -> DeterministicFunnel            硬闸门 + 确定性排序
-  -> GlobalContext                  macro、regime、行业映射
-  -> 逐标的研究                      quant | fundamental | macro
-  -> Bayesian selection             先验 + 两条似然，log-odds 更新
-  -> RiskGuard                      硬否决、敞口与单票上限
-  -> ICCoordinator                  共识、分歧、结构化动作
-  -> PortfolioConstructor           确定性目标权重
-  -> NarratorAgent                  只读报告
-  -> 报告持久化 + 各阶段耗时
-```
-
-Bayesian 这一步是在层级先验上做两条似然的 log-odds 更新，行动阈值随 regime 变化
-（趋势上涨 0.52 买入，趋势下跌 0.60），并对覆盖缺口与降级后端施加显式惩罚。
-`RiskGuard` 使用**双语**硬否决关键词集 —— A 股的风险文本是中文，只有英文词表的否决
-会永远静默失效 —— 并默认 15% 单票上限；出现三条以上不同风险说明，动作本身就被压到
-HOLD。
-
-可选的 LLM review 层位于这条链**旁边**而不是里面。它只输出建议；没有 API key 时降级
-为 handoff，确定性结果逐字节不变。**每一个权重都来自 `PortfolioConstructor`。**
-
-### 3. 因子挖掘与治理 —— 周度只读报告，月末提案
-
-```text
-候选生成
-  -> Gate 1-8          数据安全、覆盖/稳定、IC-RankIC、分组收益、成本/换手、
-                       行业 x 市值中性化、purged CPCV 样本外、组合增量
-  -> 试验修正          deflated Sharpe、PBO、非重叠 t > 3.0、有效试验数聚类
-  -> family BH         同族内 q <= 0.10
-  -> 成熟度            12 个月末 RankIC 观测，或 8 个非重叠 30 交易日 cohort，
-                       基于 strict Parquet 日历
-  -> canonical replay  A/B/C/D 四臂走真实控制链，逐段哈希绑定
-  -> 月末提案（永远不是 apply）
-```
-
-周度运行**不能改变任何权重**。月末最多两条提案；一旦达到十因子目标，每次新增必须
-一进一出，且其配对增量边际的 95% 置信下界必须严格大于零。
-
-### 4. 发布与读取
-
-```text
-pipeline 结果 -> mainline-run.v1（不可变）
-             -> mainline-active-pointer.v1 上的 CAS（预期前值 + 回读）
-             -> mainline-public-run.v1（只读投影）
-```
-
-三条命令解析同一个指针，返回同一条权威链：
-
-```bash
-quant-investor research run --workspace-root /abs/path/myQuant --strategy-id <id>
-quant-investor market analyze --workspace-root /abs/path/myQuant --strategy-id <id>
-quant-investor market run --workspace-root /abs/path/myQuant --strategy-id <id>
-```
-
-独立的 **Shadow 通道**从内容寻址的封存请求中累积「只朝前」的证据。它的产出永远不
-授予主线权威，也永远不能作为公开 run 返回：
-
-```bash
-quant-investor-v17-v4 run-forward --workspace-root /abs/path/myQuant \
-  --request-path <request.json> --request-sha256 <sha256>
-```
-
-研究与生产是**结构上**分离的，不是靠约定。
-
-## 它解决了哪些量化问题
-
-| 经典失败 | 系统的处理 |
-|---|---|
-| **前视与幸存者偏差** | point-in-time 成分；基本面 generation 逐行带 `availability_date`；regime 特征先按 `as_of` 截断 dated frame 再计算任何东西。 |
-| **数据静默替换** | 单一规范 Parquet 通道 + 哈希绑定 manifest；无 CSV 回退；损坏进隔离而非修补；输入缺失是显式 blocker code。 |
-| **重叠标签导致的显著性膨胀** | 非重叠 30 交易日 cohort t 检验，门槛取 **3.0** 而非 2.0，且 cohort 宽度由序列自身的采样间隔推断。 |
-| **多重检验 / 因子动物园** | 同族 Benjamini-Hochberg `q <= 0.10`，叠加 deflated Sharpe（下限 0.95）、PBO（上限 0.5），以及先把相关候选聚合再算 best-of-N 零假设的**有效**试验数。 |
-| **回测过拟合** | 组合式 purged 交叉验证：10 个区块、全部 C(10,2)=45 条路径、以交易日计的 30 日 purge 与 30 日 embargo、内容绑定的证据哈希。 |
-| **因子冗余** | 排序目标本身就是**增量**的：逐截面把生产池投影出候选，按残差化 ICIR 排序。`low_dollar_volume` 的克隆从独立 RankIC 0.12 掉到残差 0.011，名次下滑 95 位。 |
-| **风格暴露冒充 alpha** | Gate 6 在行业 × 市值桶内评中性化 ICIR，市值用**截面三分位**而非固定绝对阈值（后者在牛市里会把整个截面扫进 `large`，等于不中性化）。`style_exposure_only` 标记那些在去均值后方向翻转或损失一半 ICIR 的因子。 |
-| **无意中的集中度** | 单因子 20%、单族 35% 的上限在算术上互相作用：恰好五个因子时 20% 上限迫使每个都是 20%，两个同族就是 40%。**因此五因子集必须来自五个不同族** —— 集中度由算术而非判断约束。 |
-| **无法复现的定义** | 依赖可变注册表状态的定义在生产闸门被拒。确实需要时，其基线被 **pin 住**：显式命名并以内容哈希绑定。 |
-| **顺周期加风险** | regime 覆盖只能降。永远是 `min(baseline, suggested)`。 |
-| **LLM 幻觉进入控制路径** | 建议权与决策权是结构性分离的。`NarratorAgent` 只读；LLM 层不能改候选、风险限额或权重；完全没有 key 时系统行为不变。 |
-| **结果不可审计** | 不可变 run、只走 CAS 且带回读的激活、带前后注册表哈希的 append-only WAL 蓝图、当日激活 receipt，以及一份 advisory 与 human action 必须按 ID 配对才可能考虑成交的决策日志。 |
-| **稀薄日历粉饰统计** | 交易日来自活跃快照**实际观测到**的日子，稀薄日被排除：1,796 个观测到的 A 股交易日中，只有 858 个带有真实截面。用其余日期凑成熟度会满足算术，但底下什么都没有。 |
-
-## 特色
-
-**fail-closed 是架构，不是开关。** 每个公开面只解析唯一一个指针。缺失 →
-`V17_MAINLINE_UNINITIALIZED`，不写任何东西；无效 → `V17_MAINLINE_BLOCKED:<blocker>`。
-没有回退、不扫目录找最近一次运行、不自举。主线回测不是降级而是拒绝：
-`V17_BACKTEST_UNAVAILABLE`。
-
-**内容寻址的权威。** 结果沿固定链路流转，每一环绑定上一环的字节。激活是
-compare-and-swap 加精确回读 —— 竞态或过期预期会中止，而不是覆盖。
-
-**AI 只建议，控制链才决策。** 系统确实是多智能体的，而且**没有一个智能体能决定任何
-事**。LLM 层是叙述者和评审者，背后挂着 provider 优先级链；把它整个拿掉，权重一分不动。
-
-**因子的门槛由搜索规模决定，而不是由最好那个结果决定。** deflated Sharpe 问的是：
-N 次毫无价值的试验中最好那次会打到多少分。当前运行这个数是 1.067，而实际观测到的最佳
-ICIR 是 0.724 —— 所以诚实的结论是：**枚举更多候选只会抬高门槛**，出路是更小的预注册
-搜索而不是更大的搜索。这个反直觉结论是承重的设计结论，不是一个麻烦。
-
-**冗余是目标函数，不是驳回理由。** 多数链路把冗余放在最后当否决。这里的搜索**直接
-指向**增量价值：按候选给池子新增了什么来排序，近似重复品根本到不了列表顶端，也就不
-需要在最后被否掉。
-
-**系统用自己的词汇报告自己的不足。** 挖掘无产出时，输出会区分
-`factor_exposure_evidence_not_ready`（管道问题）与
-`no_qualified_positive_candidate`（关于候选本身的判断）。这是两种不同的问题，运行结果
-会说清楚撞的是哪一种。
-
-**研究与生产不会被混淆。** Shadow 是独立运行时、独立存储根、独立 schema 族。不存在
-任何把一方提升为另一方的开关。
+Ready 状态必须在运行时从精确的当前 artifacts 解析。本 README 不固定容易漂移的
+候选数量、交易日数量或 ready 值。除非另一个受治理的 activation 合约已满足，
+挖掘和诊断证据都保持 report-only。
 
 ## 快速开始
 
@@ -257,71 +150,103 @@ uv sync
 cp .env.example .env
 ```
 
-本地验证保持离线。只填显式授权的工作流真正需要的项。随后运行
-[发布与读取](#4-发布与读取) 中的任一读取命令。
+本地验证默认离线。只有得到明确授权的维护工作流才填写所需凭据。
 
-## 当前状态
+以下三个兼容命令读取同一个 V17 active pointer：
 
-仅 CN，**没有券商、下单、执行或交易权限**。有两件事是敞开的，且都是设计的后果而非
-未完成的收尾。
+```bash
+quant-investor research run --workspace-root /absolute/path/to/myQuant --strategy-id <strategy-id>
+quant-investor market analyze --workspace-root /absolute/path/to/myQuant --strategy-id <strategy-id>
+quant-investor market run --workspace-root /absolute/path/to/myQuant --strategy-id <strategy-id>
+```
 
-**Factor Governance v4 尚未 ready。** 在完整开放交易日日历上度量，五个候选中三个通过
-`q <= 0.10`。失败的两个恰好就是记录证据来自短期近窗的那两个 —— 它们扛不住对 30 天
-重叠前瞻收益的修正。门槛在正常工作，因此 `factor_governance_ready` 保持 `false`。
+市场维护是独立工作流；只有操作者明确授权时才可以调用外部 provider：
 
-**Gate 1、5、8 目前还没有证据生产者**，因此 fail-closed，任何候选最高只能到 5/8。它们
-分别需要：逐候选的版本化 PIT / 可交易性审计；用参与率滑点模型替换当前 1bp 平坦假设；
-以及走真实控制链的完整 A/B/C/D replay。
+```bash
+quant-investor market maintain --market CN --staged
+quant-investor market storage-validate --market CN
+```
 
-**主线还没有发布器。** `quant_investor/v17_mainline/` 只有读侧。在决策输出生产者存在
-之前，公开面返回 `V17_MAINLINE_UNINITIALIZED` —— 这是正确答案，不是 bug。
+从精确请求生成 research-only V4 Forward observation：
+
+```bash
+quant-investor-v17-v4 run-forward \
+  --workspace-root /absolute/path/to/myQuant \
+  --request-path <request.json> \
+  --request-sha256 <sha256>
+```
+
+使用 R2.2 评估已经成熟的证据：
+
+```bash
+quant-investor-v17-v4 research-evaluate \
+  --workspace-root /absolute/path/to/myQuant \
+  --request-path data/private/research_intelligence/evaluation_requests/forward-evaluation-request-<sha256>.json \
+  --request-sha256 <sha256>
+```
+
+评估器不写结果文件，只向 stdout 输出一行 canonical JSON envelope；Memory 持久化
+仍是调用方单独负责的 CAS 操作。
+
+## 当前边界
+
+- 唯一支持的公开决策协议是 `myquant.v17.v4`，且仅支持 CN。
+- 公开命令都是 active-pointer 的只读消费者。
+- 没有公开的主线 publisher、activation CLI 或主线回测。
+- Shadow、I0 和 R2.2 都是 research-only，不具备 broker、execution、order 或
+  trade 权限。
+- Markov 以三层、单步、因果 research filter 的形式存在；没有生产 Markov 环境
+  开关，也没有持久化 risk overlay。
+- 没有自动 paper-portfolio 或 Investment Memory writer。
+- 独立 legacy automation 不是 V17 权威面。
 
 ## 项目地图
 
 ```text
 quant_investor/
+  automation/                独立但不完整的 legacy automation
   cli/                       公开命令路由
-  data/                      数据源、PIT 成分、加工
-  market/                    CN 维护、规范读取、DAG executor
-  funnel/                    确定性全市场压缩
-  agents/                    分支、RiskGuard、IC、PortfolioConstructor、Narrator
-  bayesian/                  先验、似然、后验、校准
-  macro/ regime/             上下文与只降风险的覆盖层
-  factors/                   Factor Governance v4、CPCV、试验修正
-  pipeline/                  研究与组合链路
-  v17_mainline/              活跃指针权威与公开 run 读取
-  v17_v4_contract/           V17 v4 schema 与校验
-  v17_v4_runtime/            只研究的 Shadow 运行时
-  learning/                  交易后复盘与记忆晋级
-portfolio_dashboard/         只读看板契约
-web/                         本地研究工作台 API
-results/v17_mainline/        受治理的活跃主线结果
-results/v17_v4_shadow/       只研究的前瞻证据
+  data/                      数据 provider 与 universe helper
+  factors/                   Factor Governance 与研究证据
+  intelligence/              I0 与 R2.2 离线评估器
+  macro/                     source-bound 宏观 observation helper
+  market/                    市场维护与 canonical 读取
+  pipeline/                  只读 V17 公开 Python facade
+  v17_mainline/              active-pointer 校验与公开投影
+  v17_v3_contract/           历史兼容 validator 与 resources
+  v17_v4_contract/           V17 v4 schema 与 validator
+  v17_v4_runtime/            research-only Forward/Shadow runtime
+portfolio_dashboard/         只读 V17 DTO consumer
+web/                         本地 API；V17 research 路由只读
+docs/                        架构、runbook 与 review
 ```
 
 ## 开发
 
-Python 3.13+。先跑最小相关测试；大范围分阶段升级工作用：
+Python 3.13+。先运行最窄的相关测试；涉及共享面的广泛变更运行：
 
 ```bash
 PYTHON=./.venv/bin/python scripts/staged_upgrade_quality_gate.sh
 ```
 
-除非任务显式授权，本地验证期间不要调用实时数据、LLM、券商、下单、执行或交易 API。
+除非任务明确授权，本地验证不得调用 live data、LLM、broker、order、execution 或
+trade API。
 
 ## 文档
 
 - [文档索引](docs/README.md)
-- [V17 v4 主线契约](docs/architecture/v17_v4_production_research_contract.md)
-- [研究链路与协议](docs/architecture/research_pipeline_and_protocols.md)
+- [V17 v4 主线合约](docs/architecture/v17_v4_production_research_contract.md)
+- [入口与版本](docs/architecture/entrypoints_and_versioning.md)
+- [Forward evidence runtime](docs/architecture/v17_v4_forward_evidence_runtime.md)
+- [Investment Intelligence I0](docs/architecture/v17_i0_investment_intelligence.md)
+- [Forward Research Evaluator R2.2](docs/architecture/v17_r22_forward_research_evaluator.md)
 - [Factor Governance v4](docs/factor_governance_v4.md)
 - [因子挖掘机制](docs/factor_mining_mechanism.md)
 - [V17 v4 运维](docs/runbooks/v17_v4_operations.md)
-- [入口与版本](docs/architecture/entrypoints_and_versioning.md)
-- [前瞻证据运行时](docs/architecture/v17_v4_forward_evidence_runtime.md)
+- [Legacy 配置清理](docs/runbooks/v17_legacy_configuration_cleanup.md)
 - [模块地图](docs/modules/module_map.md)
 - [Agent 指南](AGENTS.md)
 
-## 许可证
+## License
 
 [MIT](LICENSE) © 2024 alpha-mw

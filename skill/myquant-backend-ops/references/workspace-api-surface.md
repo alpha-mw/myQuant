@@ -1,10 +1,8 @@
 # myQuant Workspace API Surface
 
-先回答公开 API 在哪，再回答 service 和持久化层在哪。
+以 `web.workspace_app` 实际挂载的 router 为准，不复用旧 endpoint 清单。
 
-## Runtime Entry
-
-Current workspace runtime:
+## Runtime entry
 
 ```text
 quant-investor web
@@ -13,111 +11,53 @@ quant-investor web
 -> web.workspace_app:app
 ```
 
-Primary assembly files:
+当前装配文件：
+
 - `web/main.py`
 - `web/api/__init__.py`
 - `web/workspace_app.py`
 
-Health endpoint:
-- `GET /api/health`
+健康检查：`GET /api/health`。
 
-## Current Public Routers
+## Current public routers
 
-### `/api/research`
+### Research mainline read
 
-Router:
-- `web/routers/research.py`
+```http
+GET /api/research/{strategy_id}
+```
 
-Models:
-- `web/models/research_models.py`
+可选 query：`expected_pointer_sha256`。
 
-Services and stores:
-- `web/services/research_runner.py`
-- `web/services/run_history_store.py`
+- Router: `web/routers/research.py`
+- Response model: `web/models/research_models.py`
+- Authority reader: `quant_investor.v17_mainline.read_public_run`
+- Source: `results/v17_mainline/strategies/<strategy-id>/_active.json`
 
-Important endpoints:
-- `POST /api/research/run`
-- `GET /api/research/history/list`
-- `GET /api/research/startup-context`
-- `GET /api/research/{job_id}`
-- `GET /api/research/{job_id}/stream`
-- `GET /api/research/{job_id}/report`
-- `DELETE /api/research/{job_id}`
+这是精确、只读 endpoint。没有 POST run、history list、job stream、report 或
+delete endpoint，也不写 `web_runs.db` 或 learning case。
 
-Persistence:
-- `data/web_runs.db`
-- `data/workspace_learning/`
+### Settings
 
-### `/api/presets`
-
-Router:
-- `web/routers/presets.py`
-
-Models:
-- `web/models/research_models.py`
-
-Store:
-- `web/services/preset_store.py`
-- `web/services/run_history_store.py`
-
-Important endpoints:
-- `GET /api/presets/`
-- `GET /api/presets/{preset_id}`
-- `POST /api/presets/`
-- `PUT /api/presets/{preset_id}`
-- `DELETE /api/presets/{preset_id}`
-
-Persistence:
-- `data/web_runs.db`
-
-### `/api/universe`
-
-Router:
-- `web/routers/universe.py`
-
-Supporting data providers:
-- `quant_investor.data.universe.cn_universe`
-- `quant_investor.data.universe.us_universe`
-
-Important endpoints:
-- `GET /api/universe/{market}/presets`
-- `GET /api/universe/{market}/{key}/symbols`
-- `POST /api/universe/{market}/resolve`
-
-Notes:
-- `market` is `CN` or `US`
-- 这是公开的 universe 解析面，不要先跳到市场下载模块
-
-### `/api/settings`
-
-Router:
-- `web/routers/settings.py`
-
-Models:
-- `web/models/settings_models.py`
-- `web/models/research_models.py`
-
-Supporting store:
-- `web/services/run_history_store.py`
-
-Important endpoints:
 - `GET /api/settings/`
 - `GET /api/settings/models`
 - `PATCH /api/settings/`
 
-Persistence:
-- `.env`
-- `data/web_runs.db` summary reads
+Router: `web/routers/settings.py`。Models: `web/models/settings_models.py` 与
+`web/models/research_models.py`。设置写入是显式外部副作用；修改前必须确认
+用户授权，并避免暴露 credentials。
 
-### `/api/data`
+### Universe
 
-Router:
-- `web/api/data.py`
+- `GET /api/universe/{market}/presets`
+- `GET /api/universe/{market}/{key}/symbols`
+- `POST /api/universe/{market}/resolve`
 
-Service:
-- `web/services/data_service.py`
+Router: `web/routers/universe.py`。Universe 辅助 endpoint 的市场能力不扩大
+V17 public mainline 的 CN-only authority boundary。
 
-Important endpoints:
+### Data
+
 - `GET /api/data/statistics`
 - `GET /api/data/market/overview`
 - `GET /api/data/stocks`
@@ -128,33 +68,29 @@ Important endpoints:
 - `GET /api/data/stocks/{ts_code}/competitors`
 - `POST /api/data/import`
 
-Persistence:
-- `data/stock_database.db`
-- some derived reads from `data/app.db` and `results/`
+Router: `web/api/data.py`。Service: `web/services/data_service.py`。`import` 是
+显式写入；只在用户要求且输入来源清楚时调用。
 
-## Legacy API Surface
+## Not mounted as current workspace API
 
-Only go here when the user explicitly mentions `/api/v1`, `analysis`, legacy `portfolio`, or old health endpoints.
+以下不是当前 `web.workspace_app` 的公开 router：
 
-Legacy factory:
-- `web/app.py`
+- `/api/presets/*`
+- `POST /api/research/run`
+- `/api/research/history/*`
+- research job stream/report/delete routes
+- legacy `/api/v1/*` analysis/portfolio surface
 
-Mounted legacy routers:
-- `web/api/analysis.py` -> `/api/v1/analysis`
-- `web/api/data.py` -> `/api/v1/api/data` via the legacy factory prefixing behavior
-- `web/api/portfolio.py` -> `/api/v1/portfolio`
-- `web/api/settings.py` -> `/api/v1/settings`
+`web/app.py` 是旧 factory。只有用户明确提到 legacy `/api/v1` 或旧 analysis/
+portfolio 行为时才检查，并先验证它当前实际挂载了什么；不要把它的 route、
+service 或数据库归属写成 workspace 的现行能力。
 
-Legacy health:
-- `GET /api/v1/health`
+## Ownership answer order
 
-Important caution:
-- `web/api/data.py` is currently shared between current workspace and legacy factory, so always state which runtime you are talking about
+用户问“接口在哪 / 谁写数据 / 为什么没落盘”时按以下顺序回答：
 
-## Ownership Pattern
-
-When the user asks “接口在哪 / 谁在写库 / 为什么没落盘”, answer in this order:
-1. Router file
-2. Request or response model file
-3. Service or store file
-4. SQLite file or results directory
+1. 当前 runtime 是否实际挂载该 route。
+2. Router 和 request/response model。
+3. Service 或 exact authority reader。
+4. 实际读取/写入的 pointer、数据库或 artifact。
+5. 是否需要外部副作用授权。

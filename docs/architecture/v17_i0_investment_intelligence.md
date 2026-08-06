@@ -4,9 +4,8 @@
 
 Sprint I0 restores an additive, research-only intelligence layer between V4
 Forward Observation artifacts and future evaluation work. It does not replace
-or modify the V4 observation runtime, the V5 baseline, the current research CLI,
-public Python/Web surfaces, factor governance, portfolio construction or any
-execution surface.
+or modify the V4 observation runtime, the current V17 mainline public readers,
+factor governance, portfolio construction or any execution surface.
 
 The package root is `quant_investor/intelligence`. Its cross-layer dependencies
 are limited to read-only V4 canonical/schema and typed artifact validators.
@@ -221,7 +220,8 @@ Session path/SHA and explicit typed/closure refs, reruns the exact Observation
 adapter, and requires byte-for-byte equality with the supplied bundle before it
 performs complete component replay and source-authorization checks.
 
-Required verification is: I0 tests, Forward tests, V4 regression, V5 baseline,
-public boundaries, staged quality gate, mypy, Black, Flake8, package verification
-and a full runtime-receipt replay. Source Truth, Authority, Security Master and
-Census artifacts are protected and must have an empty diff.
+Required verification is: I0 tests, Forward tests, V4 observation regression,
+current mainline public-boundary regression, staged quality gate, mypy, Black,
+Flake8, package verification and a full runtime-receipt replay. Source Truth,
+Authority, Security Master and Census artifacts are protected and must have an
+empty diff.

@@ -1,112 +1,135 @@
 # Research Pipeline And Protocols
 
-本文件描述当前主线的研究链路、结构化协议边界和报告规则。
+This page distinguishes the current callable V17 surface from the upstream
+producer topology that remains a governance target. The distinction is
+load-bearing: public command names such as `market run` are compatibility names
+and do not prove that a decision DAG was executed.
 
-## Governance Target
+## Implemented public surface
 
-治理层目标链路固定为：
+`quant-investor research run`, `quant-investor market analyze`, and
+`quant-investor market run` all resolve the same exact strategy active pointer.
+The `QuantInvestor` Python facade and `GET /api/research/{strategy_id}` use the
+same reader.
 
-`snapshot -> DeterministicFunnel -> three branches -> Bayesian -> RiskGuard -> ICCoordinator -> PortfolioConstructor -> NarratorAgent`
+```text
+exact strategy active pointer
+  -> exact immutable mainline run
+  -> exact formal / portfolio / source closure
+  -> myquant.v17.v4.mainline-public-run.v1
+```
 
-含义：
+The reader never builds a run, scans for a recent artifact, selects another
+protocol, falls back to Shadow, or writes a bootstrap. Mainline backtesting is
+unsupported. The current repository has no public production publisher or
+activation CLI.
 
-- snapshot 负责披露本地数据来源、最新交易日和 strict Parquet 健康状态。
-- `DeterministicFunnel` 负责 quant-only 初筛和 candidate set 收敛。
-- three branches 严格只包含 `quant`、`fundamental`、`macro`。
-- Bayesian selection 负责把分支证据映射为 posterior shortlist。
-- `RiskGuard` 负责硬约束、hard veto、exposure cap 和 symbol-level limit。
-- `ICCoordinator` 负责共识、分歧和结构化动作建议。
-- `PortfolioConstructor` 负责 deterministic 配权。
-- `NarratorAgent` 只读取结构化结果并生成说明。
+## Implemented research surfaces
 
-## Runtime Shape
+### V4 Forward / Shadow
 
-- 默认入口：`QuantInvestor`
-- 单标的公开主线：`QuantInvestor` 调用全市场 DAG helper，并把 DAG artifacts 转为 `QuantInvestorPipelineResult`。
-- 全市场主线：`quant-investor market analyze/run` 走 `execute_market_dag()`。
-- DAG 顺序：`data_snapshot` / symbol list -> batch read -> `DeterministicFunnel` -> candidate branch research -> Bayesian selection -> control chain -> reporting artifacts。
-- 生产 Markov regime 在 DAG context 阶段读取市场状态；它只在 full-market 或 broad market-reference scope 生产合格时覆盖 `GlobalContext.macro_regime` 并收紧风险预算。
-- 可选 LLM review layer 只提供 advisory hints；缺 key 或本地禁用时降级为 Codex handoff，不改变 deterministic 控制链。
-- stage profile：`market analyze/run` 写入 snapshot、symbol list、batch read、funnel/context、candidate research、Bayesian、control chain、report persistence 等阶段耗时。
-- 兼容输出：`final_strategy`、`final_report`
-- 结构化事实面：`agent_portfolio_plan`、`agent_report_bundle`、`agent_ic_decisions`
+`quant-investor-v17-v4 run-forward` processes an exact, content-bound request
+and produces research-only Forward evidence. Shadow artifacts cannot advance a
+mainline pointer or be returned as the public run.
 
-当前文档应把结构化协议视为规范面，把兼容 markdown 和策略对象视为从结构化结果再生成的输出。
+### I0 Investment Intelligence
 
-## Full-Market Reporting
+`quant_investor.intelligence` is a deterministic, research-only library. It
+accepts explicit V4 observation and source closures and provides:
 
-- 入口：`quant_investor.market.analyze.run_market_analysis`
-- 当前主报告协议：`NarratorAgent -> ReportBundle`
-- full-market 文档应以 `ReportBundle` 为事实来源，而不是 markdown 拼接历史名词。
+- source-bound Evidence records;
+- Bayesian likelihood diagnostics;
+- a three-layer causal Regime filter;
+- availability-aware branch Fusion;
+- falsifiable Hypotheses;
+- immutable append-only Memory values and receipts.
 
-## Research Branches
+It has no provider, model, selector, portfolio, broker, order, execution,
+trade, persistence-writer, or active-pointer authority.
 
-当前稳定 branch set：
+### R2.2 Forward Research Evaluator
 
-- `quant`
-- `fundamental`
-- `macro`
+`quant-investor-v17-v4 research-evaluate` accepts one exact canonical request,
+replays its V4 and I0 inputs, and emits one canonical JSON envelope to stdout.
+It may return a Memory Append Proposal, but it does not persist that proposal.
+There is no V17 I0/R2.2 daily scheduler, request generator, daemon or automatic
+paper-portfolio adapter in the current tree.
 
-`kline`、Kronos/Chronos 与 `llm_debate` 仅是 Web 分析的辅助配置面，不计入 V17 v4 mainline canonical DAG 证据分支。已退役的 `intelligence` branch 与 `enable_intelligence` 字段会被严格拒绝且不会出现在当前 artifact 中。
+## Causal Regime contract
 
-三个 canonical 分支在 Web/API 运行中始终执行，不提供 `enable_quant`、`enable_fundamental`、`enable_macro` 或对应 `branches.*.enabled` 开关；出现这些字段时请求会失败，而不是静默忽略。
+The current Markov implementation is under
+`quant_investor/intelligence/regime/`, not a production overlay configured by
+environment variables.
 
-Bayesian likelihood 证据仅包含 `quant` 与 `fundamental`（`x/2`）；`macro` 只作为 prior/context。
+The fixed layers are:
 
-Fundamental 只有在 canonical generation pointer 验证通过、branch readiness 为
-`pass`/`warn`、generation 与逐行 lineage 均绑定 `tushare_primary` 时才可进入
-likelihood。任一 generation、来源、PIT 或 readiness 证据缺失/冲突时，分支仍可
-输出诊断，但该标的的 Fundamental likelihood 必须严格中性化为 `0.50`。
-公开 `publish_fundamental_generation()` 只能发布非 primary generation；
-`tushare_primary` 必须由 live maintenance 内部能力签发，并同时绑定 provider
-manifest、六张 raw table 与三张 generation output table，不能由调用方 metadata
-或行字段自报获得。该证明以 `cn-fundamental-primary-provenance.v1` envelope
-持久化到 generation manifest 与 pointer；缺少该 envelope 的旧 primary generation
-可作为历史文件保留，但读取会 fail closed，不能确认 generation 或贡献 likelihood。
-增量 primary generation 若保留旧行，父 generation 也必须通过同一 durable
-provenance 校验，并把父 generation ID 与 envelope hash 绑定到新 generation；
-离线或旧格式父数据不能借一次 live partial refresh 被整体升级为 primary。
+- Market: `BULL`, `RANGE`, `HIGH_VOL`, `BEAR`;
+- Industry: `EARLY_EXPANSION`, `EXPANSION`, `PEAK`, `DECLINE`, `RECOVERY`;
+- Theme: `EMERGING`, `ACCELERATING`, `MAINSTREAM`, `CROWDED`, `DECLINING`.
 
-## Structured Control Contracts
+Each layer performs exactly one forward filter step:
 
-- `BranchVerdict`
-  - 承载分支结论、`final_score`、`final_confidence` 和三桶说明。
-- `RiskDecision`
-  - 承载 `hard_veto`、`action_cap`、`max_weight`、`gross_exposure_cap` 等硬约束。
-- `ICDecision`
-  - 承载共识、冲突点和结构化动作建议，不直接生成精确权重。
-- `PortfolioPlan`
-  - 承载 deterministic 目标权重、敞口和执行说明。
-- `ReportBundle`
-  - 承载 `NarratorAgent` 只读生成的结构化报告。
+```text
+predicted[j] = sum(previous[i] * transition[i,j])
+posterior[j] = predicted[j] * emission[j] / normalization
+selected     = maximum posterior with fixed-domain tie break
+```
 
-## Markov Regime Production Contract
+Every posterior-driving source must belong to the exact observation closure.
+There is no backward smoothing, parameter fitting, hidden history discovery,
+persistence writer, position cap, risk overlay or portfolio mutation.
 
-- Markov 默认 production-first：`MARKOV_REGIME_ENABLED=1` 启用，`MARKOV_REGIME_ENABLED=0` 是紧急 kill switch。
-- `MARKOV_REGIME_EXECUTION_TARGET=shadow` 为兼容旧输入而保留，但运行时归一化为 production，并写入 `markov_shadow_deprecated_normalized_to_production` 诊断。
-- Market regime input 必须带结构化 scope：`regime_scope`、`scope_key`、`production_eligible`、`source_symbol_count`、`requested_symbol_count`、`explicit_symbol_count`、`sampled`、`source_universe_key`。
-- 显式小股票池、抽样过小的 universe、或缺失 broad reference 数据时，Markov 状态为 production-ineligible；DAG 保留 MacroAgent regime、baseline target exposure、baseline max single weight 和原控制链。
-- 当当前 DAG 输入不是 full-market 时，Markov 使用本地 strict/canonical market reference universe（CN 默认 `full_a`，US 默认 `full_us`），按稳定排序进行 deterministic sample，最多 `MARKOV_REGIME_MAX_REFERENCE_SYMBOLS`。
-- Markov 应用时只允许降低风险：target exposure 与 max single weight 都取 baseline 与 Markov 建议的 `min()`；turnover cap 只能新增或收紧，不直接写目标权重。
-- DAG/Markov baseline max single weight 为 50%，以匹配集中持仓目标；RiskGuard、流动性与可交易性约束仍可给出更低的 symbol-level cap。
-- Regime features 必须按 `as_of` 截断 dated frames 后再计算 returns、volatility、breadth、momentum、drawdown、breakout 和 liquidity。
-- Regime history persistence 按 `market + scope_key + source_universe_key + as_of` 隔离；future records 不参与 posterior、transition estimation 或 duplicate-write decisions；无 scope 的 legacy records 不用于 production scoped history。
+R2.2 accepts an optional Regime binding per origin. If supplied, the Input,
+Evidence and Receipt must be content-bound, replay exactly, use only authorized
+sources, and satisfy `input.available_at <= receipt.timestamp <= origin cutoff`.
+The aggregation consumes selected states only; missing bindings stay explicit
+and invalid bindings block the evaluation.
 
-## Bucketization Rules
+## Governance target for an upstream producer
 
-以下三类字段必须严格分桶：
+An eventual governed producer is expected to close this topology:
 
-- `investment_risks`
-  - 只记录会影响可投资性、仓位、流动性、回撤或事件暴露的风险。
-- `coverage_notes`
-  - 只记录覆盖率、可得性、缺失和 provider 缺口。
-- `diagnostic_notes`
-  - 只记录超时、fallback、异常、解析失败和工程诊断。
+```text
+strict CN Parquet + PIT membership
+  -> deterministic candidate set
+  -> Quant / Fundamental evidence + Macro context
+  -> deterministic risk and portfolio controls
+  -> immutable mainline run
+  -> expected-prevalue CAS activation + exact readback
+```
 
-`coverage_notes` 与 `diagnostic_notes` 不得直接作为最终配权输入。
+This is a normative topology, not the implementation behind the current public
+read commands. A future producer must keep the following invariants:
 
-## Reporting Rules
+- deterministic controls remain authoritative;
+- advisory model output cannot alter candidates, limits or weights;
+- missing or invalid evidence is explicit, never silently replaced;
+- only an exact active pointer grants public visibility;
+- code deployment and operational activation remain separate actions.
 
-- `NarratorAgent` 是只读角色，不修改候选标的、风险限额、目标仓位或最终权重。
-- `NarratorAgent -> ReportBundle` 是当前公开报告协议名。
-- LLM review 只能输出结构化建议，最终权重只由控制链生成。
+The intended evidence roles remain asymmetric: Quant and Fundamental may enter
+symbol likelihood; Macro is context/prior and cannot vote as a third symbol
+likelihood. Fundamental evidence must prove exact generation provenance or
+remain neutral/unavailable. These are producer requirements, not claims that a
+callable public producer exists in this repository.
+
+## Reporting and bucket rules
+
+Any future structured producer should keep coverage, diagnostics and investment
+risk separate:
+
+- `investment_risks` may affect investability or governed risk limits;
+- `coverage_notes` describe availability and provider gaps;
+- `diagnostic_notes` describe engineering failures and degradation.
+
+Coverage and diagnostic notes cannot directly become portfolio weights. A
+read-only narrator or advisory review model may explain a structured result but
+cannot mutate it.
+
+## Standalone legacy automation
+
+`quant_investor/automation/` is a restored, incomplete legacy lane. It has no
+public V17 entrypoint and retains lazy references to modules not present in the
+current tree. It is neither the public V17 reader nor the I0/R2.2 research loop,
+and it grants no mainline authority. Its repair, publication or removal requires
+a separate compatibility audit.

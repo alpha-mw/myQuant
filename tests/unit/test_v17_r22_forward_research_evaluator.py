@@ -43,6 +43,7 @@ from quant_investor.intelligence.evidence import build_evidence
 from quant_investor.intelligence.evidence.forward_adapter import ExactArtifactReader
 from quant_investor.intelligence.hypothesis import build_hypothesis
 from quant_investor.intelligence.memory import validate_memory_chain
+from quant_investor.intelligence.regime import infer_multilayer_regime
 from quant_investor.v17_v4_contract.canonical import (
     canonical_bytes,
     canonical_resource_bytes,
@@ -52,6 +53,7 @@ from tests.unit.test_v17_i0_investment_intelligence import (
     _artifact_ref as _v4_artifact_ref,
 )
 from tests.unit.test_v17_i0_investment_intelligence import _forward_closure
+from tests.unit.test_v17_i0_investment_intelligence import _regime_input as _i0_regime_input
 
 AS_OF = "2026-01-02T07:00:00Z"
 EVALUATED_AT = "2026-02-27T07:00:00Z"
@@ -807,7 +809,11 @@ def _expanded_forward_closure(
     )
 
 
-def _end_to_end_request(root: Path) -> tuple[str, str]:
+def _end_to_end_request(
+    root: Path,
+    *,
+    regime_mode: str = "missing",
+) -> tuple[str, str]:
     (
         session_path,
         session_sha,
@@ -852,6 +858,56 @@ def _end_to_end_request(root: Path) -> tuple[str, str]:
     hypothesis_ref = _research_input_ref(root, hypothesis, identity_field="hypothesis_id")
     memory_inventory = build_memory_inventory(entries=[], timestamp_value="1970-01-01T00:00:00Z")
     memory_ref = _research_input_ref(root, memory_inventory, identity_field="inventory_id")
+
+    regime_binding = None
+    if regime_mode != "missing":
+        input_source = (
+            _source_ref("source-outside")
+            if regime_mode == "outside-closure"
+            else source_refs["source-a"]
+        )
+        valid_regime_input = _i0_regime_input(source_ref=input_source)
+        receipt_time = "2026-01-03T07:00:00Z" if regime_mode == "mistimed" else AS_OF
+        regime_source_receipt = infer_multilayer_regime(
+            regime_input=valid_regime_input,
+            evidence=[supporting],
+            as_of=receipt_time,
+        )
+        if regime_mode in {"input-ref-mismatch", "evidence-ref-mismatch"}:
+            unsealed_receipt = deepcopy(regime_source_receipt)
+            unsealed_receipt.pop("receipt_id")
+            unsealed_receipt.pop("semantic_sha256")
+            target = (
+                unsealed_receipt["input_ref"]
+                if regime_mode == "input-ref-mismatch"
+                else unsealed_receipt["evidence_refs"][0]
+            )
+            target["artifact_id"] = "deliberate-binding-mismatch"
+            regime_source_receipt = seal_content_addressed(
+                unsealed_receipt,
+                identity_field="receipt_id",
+            )
+        regime_input = valid_regime_input
+        if regime_mode == "malformed":
+            regime_input = seal_content_addressed(
+                {
+                    key: value
+                    for key, value in valid_regime_input.items()
+                    if key not in {"available_at", "input_id", "semantic_sha256"}
+                },
+                identity_field="input_id",
+            )
+        regime_input_ref = _research_input_ref(root, regime_input, identity_field="input_id")
+        regime_receipt_ref = _research_input_ref(
+            root, regime_source_receipt, identity_field="receipt_id"
+        )
+        regime_binding = {
+            "evidence_refs": [supporting_ref],
+            "industry_entity_scope": "GLOBAL_BREADTH",
+            "input_ref": regime_input_ref,
+            "receipt_ref": regime_receipt_ref,
+            "theme_entity_scope": "GLOBAL_BREADTH",
+        }
 
     factor_ref = json.loads((root / observation_ref["relative_path"]).read_text(encoding="utf-8"))[
         "factor_ref"
@@ -959,7 +1015,7 @@ def _end_to_end_request(root: Path) -> tuple[str, str]:
         ],
         "label_ref": label_ref,
         "origin_id": "pending",
-        "regime_binding": None,
+        "regime_binding": regime_binding,
         "session_byte_sha256": session_sha,
         "session_relative_path": session_path,
         "universe_factor_id": "factor-a",
@@ -1049,6 +1105,99 @@ def test_exact_replay_builds_self_contained_no_authority_receipt(
     assert first["hypothesis_evaluations"][0]["hypothesis_status"] == "SUPPORTED"
     assert first["memory_proposal"]["proposed_entries"][-1]["status"] == "SUPPORTED"
     assert "posterior" not in _walk_keys(first)
+
+
+def test_non_null_regime_binding_replays_selected_states_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request_path, request_sha = _end_to_end_request(tmp_path, regime_mode="valid")
+    monkeypatch.setattr(
+        "quant_investor.intelligence.evaluator.forward_evaluator.verify_package",
+        lambda: {"semantic_sha256": SHA_A},
+    )
+    result = run_forward_research_evaluation(
+        str(tmp_path), request_path=request_path, request_sha256=request_sha
+    )
+    regime = result["regime_evaluation"]
+    assert "SELECTED_STATES_ONLY_NO_POSTERIOR_INPUT" in regime["limitations"]
+    assert "NO_BACKWARD_SMOOTHING" in regime["limitations"]
+    assert "posterior" not in _walk_keys(regime)
+    market = next(row for row in regime["layer_rows"] if row["layer"] == "market")
+    bull = next(row for row in market["state_rows"] if row["state"] == "BULL")
+    rank_ic = next(row for row in bull["factor_metric_rows"] if row["metric_id"] == "rank_ic")
+    assert rank_ic["status"] == "AVAILABLE"
+
+
+def test_missing_regime_binding_is_unavailable_not_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request_path, request_sha = _end_to_end_request(tmp_path)
+    monkeypatch.setattr(
+        "quant_investor.intelligence.evaluator.forward_evaluator.verify_package",
+        lambda: {"semantic_sha256": SHA_A},
+    )
+    result = run_forward_research_evaluation(
+        str(tmp_path), request_path=request_path, request_sha256=request_sha
+    )
+    regime = result["regime_evaluation"]
+    assert "MISSING_SELECTED_STATE_ORIGINS_DISCLOSED" in regime["limitations"]
+    assert all(
+        metric["status"] == "UNAVAILABLE"
+        for layer in regime["layer_rows"]
+        for state in layer["state_rows"]
+        for metric in state["factor_metric_rows"]
+    )
+
+
+@pytest.mark.parametrize(
+    "regime_mode",
+    [
+        "outside-closure",
+        "malformed",
+        "mistimed",
+        "input-ref-mismatch",
+        "evidence-ref-mismatch",
+    ],
+)
+def test_invalid_supplied_regime_binding_is_stable_blocker_and_writes_nothing(
+    regime_mode: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    request_path, request_sha = _end_to_end_request(tmp_path, regime_mode=regime_mode)
+    before = {
+        path.relative_to(tmp_path).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in tmp_path.rglob("*")
+        if path.is_file()
+    }
+    monkeypatch.setattr(
+        "quant_investor.intelligence.evaluator.forward_evaluator.verify_package",
+        lambda: {"semantic_sha256": SHA_A},
+    )
+    assert (
+        evaluator_cli(
+            [
+                "research-evaluate",
+                "--workspace-root",
+                str(tmp_path),
+                "--request-path",
+                request_path,
+                "--request-sha256",
+                request_sha,
+            ]
+        )
+        == 2
+    )
+    captured = capfd.readouterr()
+    assert captured.err == ""
+    assert captured.out.count("\n") == 1
+    assert json.loads(captured.out)["blocker_code"] == "evaluation_blocked"
+    assert before == {
+        path.relative_to(tmp_path).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in tmp_path.rglob("*")
+        if path.is_file()
+    }
 
 
 def test_cli_success_is_one_canonical_stdout_envelope(

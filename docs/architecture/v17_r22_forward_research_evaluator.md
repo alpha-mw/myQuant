@@ -8,11 +8,12 @@ observations or labels, fetch data, choose a factor, change a factor weight,
 update a Bayesian posterior, persist memory, select securities or authorize an
 order.
 
-The implementation is additive under
-`quant_investor/intelligence/evaluator/`. No file below the V4 or V5 contract
-and runtime roots is changed. The only supported decision protocol remains
-`myquant.v17.v4`. The evaluator does not inspect, infer or change any strategy
-active pointer, so code availability does not imply operational activation.
+The implementation is isolated under
+`quant_investor/intelligence/evaluator/`. It does not replace the V4 observation
+runtime or the current V17 mainline public contracts. The only supported
+decision protocol remains `myquant.v17.v4`. The evaluator does not inspect,
+infer or change any strategy active pointer, so code availability does not imply
+operational activation.
 
 ## Exact input protocol
 
@@ -187,6 +188,15 @@ receipt's historical timestamp. Only the selected Market, Industry and Theme
 states from the one-step causal filter are consumed. Posterior maps are not
 accepted by the aggregation helper; there is no backward smoothing, model
 fitting or parameter update.
+
+When the optional binding is supplied, the evaluator revalidates both artifacts
+and requires exact replay of the receipt's input ref and evidence refs. Every
+Regime Input source and every regime evidence source must be a member of the
+origin's recursively authorized V4 source closure. Both binding scope fields
+must equal `GLOBAL_BREADTH`. Temporal binding is closed as
+`input available_at <= receipt timestamp <= origin run cutoff`. An
+outside-closure, malformed or mistimed supplied binding blocks the whole
+evaluation; it is never downgraded to an unavailable optional feature.
 
 Each layer is evaluated independently, not as a joint state. The ten
 regime-conditioned metrics are RankIC, raw and annualized ICIR, spread,

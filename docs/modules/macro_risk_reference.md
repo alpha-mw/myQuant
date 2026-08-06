@@ -1,5 +1,10 @@
 # Macro Risk Reference
 
+> **边界说明：** 本页是 `macro_terminal_tushare.py` 的独立旧版/手工参考，
+> 不是当前 V17 mainline 的 Macro contract，也不会被公开主线读取、I0 或
+> R2.2 自动调用。下列阈值与手工输入没有主线权限，不能作为缺失正式证据时的
+> fallback；其中 CN/US 辅助能力也不扩大 V17 公开结果的 CN-only 边界。
+
 本文件描述 [`quant_investor/macro_terminal_tushare.py`](../../quant_investor/macro_terminal_tushare.py) 的宏观分支指标体系、状态判断规则和历史对标参考。
 
 当前实现中，工厂函数 `create_terminal()` 只支持 `CN` 和 `US` 两个市场；本文中涉及 `HK` 或其他市场的内容，均表示扩展方向，而不是当前已落地能力。

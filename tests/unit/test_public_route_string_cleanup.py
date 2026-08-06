@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 SCAN_ROOTS = [
     ROOT / "quant_investor",
@@ -16,14 +15,19 @@ SCAN_SUFFIXES = {".py", ".md", ".toml"}
 
 
 def _removed_public_tokens() -> list[str]:
-    tokens = [f"QuantInvestor{suffix}" for suffix in ("V8", "V9", "V10", "V11", "Current", "Latest")]
-    tokens.extend(["Current" + "PipelineResult", "--" + "architecture"])
+    tokens = [
+        f"QuantInvestor{suffix}" for suffix in ("V8", "V9", "V10", "V11", "Current", "Latest")
+    ]
     tokens.extend(
         [
-            "quant_investor_" + f"v{suffix}"
-            for suffix in ("8", "9", "10", "11")
+            "Current" + "PipelineResult",
+            "QuantInvestor" + "PipelineResult",
+            "execute_market_" + "dag",
+            "quant_investor.market.analyze." + "run_market_analysis",
+            "--" + "architecture",
         ]
     )
+    tokens.extend(["quant_investor_" + f"v{suffix}" for suffix in ("8", "9", "10", "11")])
     tokens.append("legacy" + "_v8_pipeline")
     return tokens
 
@@ -41,10 +45,15 @@ def _iter_scan_files():
 def test_removed_public_route_strings_do_not_exist_in_current_tree():
     removed_tokens = _removed_public_tokens()
     offenders: list[str] = []
+    allowed_negative_assertions = {
+        (Path("tests/unit/test_v17_public_python.py"), "QuantInvestor" + "PipelineResult"),
+    }
 
     for path in _iter_scan_files():
         text = path.read_text(encoding="utf-8")
         for token in removed_tokens:
+            if (path.relative_to(ROOT), token) in allowed_negative_assertions:
+                continue
             if token in text:
                 offenders.append(f"{path.relative_to(ROOT)}::{token}")
 

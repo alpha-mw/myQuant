@@ -7,6 +7,13 @@ research and portfolio-decision runtime. It has no broker, order, execution, or
 trade authority. Deterministic data, Factor, risk, portfolio, and readiness
 gates remain authoritative; review-model output is advisory.
 
+This document defines the governed authority contract, including the required
+behavior of a future or external writer. All current public result readers are
+read-only, and the repository has no public production publisher or activation
+CLI. The package also exports low-level exact-once and compare-and-swap storage
+primitives; they do not constitute a governed operator workflow or grant
+production authority.
+
 ## Three v1 artifacts
 
 The mainline authority chain has exactly three roles:
@@ -56,10 +63,12 @@ Only the exact active pointer grants public visibility. A directory entry, a
 completed Shadow session, or a valid immutable run without pointer activation
 has no public authority. Readers must never scan for the newest run.
 
-The pointer is advanced only by the governed activation writer using an exact
-expected prevalue, an atomic replacement, and exact post-write readback. The
-immutable run must already exist and validate before the pointer write. A
-failed precondition leaves the prior pointer byte-for-byte unchanged.
+Under the normative writer contract, the pointer may be advanced only by a
+governed activation writer using an exact expected prevalue, an atomic
+replacement, and exact post-write readback. The immutable run must already
+exist and validate before the pointer write. A failed precondition leaves the
+prior pointer byte-for-byte unchanged. No such public writer command is
+implemented in this repository.
 
 ## Public resolution
 
@@ -81,10 +90,12 @@ run, cache, or fallback result. If the chain is present but invalid, it returns
 
 ## Code availability is not activation
 
-Installing, merging, or deploying V17 v4 code makes the contract executable;
-it does not activate any strategy. Operational activation is a separate,
-auditable act that publishes a validated immutable run and then advances the
-strategy's active pointer under CAS/readback.
+Installing, merging, or deploying V17 v4 code makes the read and validation
+contract executable; it does not activate any strategy. In the normative
+governance design, operational activation is a separate, auditable act that
+publishes a validated immutable run and then advances the strategy's active
+pointer under CAS/readback. That act must occur through a separately governed
+writer outside the current public command surface.
 
 Conversely, removing an entrypoint from a deployment does not rewrite or delete
 governed artifacts. Operators must treat code rollout and active-pointer state
