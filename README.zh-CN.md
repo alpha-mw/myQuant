@@ -2,7 +2,7 @@
 
 <img src="assets/logo.svg" alt="Quant-Investor" width="520"/>
 
-**一套 fail-closed 的 A 股研究与组合决策系统。**
+**一套 A 股量化研究与组合决策系统。**
 
 *量化真正难的不是找到信号，而是证明信号是真的 —— 以及在证据缺失时拒绝出手。*
 

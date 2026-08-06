@@ -2,7 +2,7 @@
 
 <img src="assets/logo.svg" alt="Quant-Investor" width="520"/>
 
-**A fail-closed A-share research and portfolio-decision system.**
+**An A-share quantitative research and portfolio-decision system.**
 
 *The hard part of quant is not finding a signal. It is proving the signal is
 real — and refusing to act when the proof is missing.*
