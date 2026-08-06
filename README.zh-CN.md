@@ -56,34 +56,31 @@
 
 一条链路，四个阶段；不能证明工作来源，就到不了下一个阶段。
 
-```text
-             strict CN Parquet + PIT 成分
-                              |
-                        data snapshot                  ---- 数据权威
-                              |
-                     DeterministicFunnel
-                              |
-              +---------------+---------------+
-              |               |               |
-            Quant        Fundamental        Macro      ---- 证据生产
-              |               |               |
-              +---------------+---------------+
-                              |
-                     Bayesian 后验
-                              |
-                          RiskGuard  <--  Markov regime
-                              |           （只能降风险）
-                        ICCoordinator                  ---- 确定性控制链
-                              |
-                     PortfolioConstructor
-                              |
-                        NarratorAgent
-                              |
-                    mainline run（不可变）
-                              |
-                     活跃指针（CAS）                     ---- 治理与发布
-                              |
-                    public run（只读）
+```mermaid
+flowchart TD
+    D["<b>strict CN Parquet + PIT 成分</b><br/>哈希绑定 manifest，staging → validate → serving"] --> S["Data Snapshot"]
+    S --> F["<b>DeterministicFunnel</b><br/>数据质量 / 可交易性 / 流动性硬闸门<br/>确定性排序，无模型"]
+
+    F --> Q["Quant"]
+    F --> FD["Fundamental"]
+    F --> MA["Macro"]
+
+    Q --> B["<b>Bayesian 后验</b><br/>先验 + 两条似然，log-odds 更新<br/>行动阈值随 regime 变化"]
+    FD --> B
+    MA -. "先验 / 上下文 —— 从不为某只标的投票" .-> B
+
+    B --> RG["<b>RiskGuard</b><br/>硬否决、敞口与单票上限"]
+    MK["Markov Regime"] -. "min(baseline, suggested) —— 只能降风险" .-> RG
+
+    RG --> IC["ICCoordinator<br/>共识、分歧、结构化动作"]
+    IC --> PC["<b>PortfolioConstructor</b><br/>确定性目标权重"]
+    PC --> N["NarratorAgent<br/>只读"]
+
+    N --> MR["mainline run · 不可变"]
+    MR --> AP["活跃指针<br/>针对预期前值 CAS + 精确回读"]
+    AP --> PB["public run · 只读"]
+
+    LLM["LLM review 层"] -. "只出建议；没有 key 也不改变任何结果" .-> IC
 ```
 
 喂给 quant 分支的因子池在旁边跑自己那条受治理的回路，由

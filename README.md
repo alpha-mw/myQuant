@@ -62,34 +62,31 @@ answer.
 One path, four stages, and no way to reach a later stage without proving where
 the work came from.
 
-```text
-             strict CN Parquet + PIT membership
-                              |
-                        data snapshot                  ---- data authority
-                              |
-                     DeterministicFunnel
-                              |
-              +---------------+---------------+
-              |               |               |
-            Quant        Fundamental        Macro      ---- evidence
-              |               |               |             production
-              +---------------+---------------+
-                              |
-                     Bayesian posterior
-                              |
-                          RiskGuard  <--  Markov regime
-                              |           (may only reduce)
-                        ICCoordinator                  ---- deterministic
-                              |                             control chain
-                     PortfolioConstructor
-                              |
-                        NarratorAgent
-                              |
-                    mainline run (immutable)
-                              |
-                     active pointer (CAS)              ---- governance and
-                              |                             publication
-                    public run (read-only)
+```mermaid
+flowchart TD
+    D["<b>strict CN Parquet + PIT membership</b><br/>hash-bound manifests, staging → validate → serving"] --> S["Data Snapshot"]
+    S --> F["<b>DeterministicFunnel</b><br/>data-quality / tradability / liquidity gates<br/>deterministic ranking, no model"]
+
+    F --> Q["Quant"]
+    F --> FD["Fundamental"]
+    F --> MA["Macro"]
+
+    Q --> B["<b>Bayesian Posterior</b><br/>prior + two likelihoods in log-odds<br/>regime-aware action thresholds"]
+    FD --> B
+    MA -. "prior / context — never votes on a symbol" .-> B
+
+    B --> RG["<b>RiskGuard</b><br/>hard veto, exposure and single-name caps"]
+    MK["Markov Regime"] -. "min(baseline, suggested) — may only reduce" .-> RG
+
+    RG --> IC["ICCoordinator<br/>consensus, conflicts, structured actions"]
+    IC --> PC["<b>PortfolioConstructor</b><br/>deterministic target weights"]
+    PC --> N["NarratorAgent<br/>read-only"]
+
+    N --> MR["mainline run · immutable"]
+    MR --> AP["active pointer<br/>CAS against expected prevalue + exact readback"]
+    AP --> PB["public run · read-only"]
+
+    LLM["LLM review layer"] -. "advisory hints only; absent key changes nothing" .-> IC
 ```
 
 The factor pool feeding the quant branch runs its own governed loop off to the
