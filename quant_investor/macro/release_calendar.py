@@ -77,6 +77,7 @@ _MAX_RAW_BYTES = 64 * 1024 * 1024
 _ARTIFACT_KINDS = frozenset(
     {
         "coverage_receipt",
+        "coverage_response",
         "official_bundle",
         "observation",
         "parser_contract",
@@ -1129,19 +1130,48 @@ def _validate_capture(
                 raise ReleaseCalendarValidationError(
                     "release_calendar_coverage_source_mismatch"
                 )
-            _exact_keys(
-                receipt,
-                {"schema_version", "issuer", "through"},
-                "release_calendar_coverage_receipt_shape_invalid",
-            )
+            receipt_schema = str(receipt.get("schema_version") or "")
+            if receipt_schema == "macro-release-issuer-coverage.v1":
+                _exact_keys(
+                    receipt,
+                    {"schema_version", "issuer", "through"},
+                    "release_calendar_coverage_receipt_shape_invalid",
+                )
+            elif receipt_schema == "macro-release-issuer-coverage.v2":
+                _exact_keys(
+                    receipt,
+                    {
+                        "schema_version", "issuer", "through",
+                        "response_source_id", "response_sha256",
+                        "response_size_bytes",
+                    },
+                    "release_calendar_coverage_receipt_shape_invalid",
+                )
+                response_ref = sources_by_id.get(
+                    str(receipt.get("response_source_id") or "")
+                )
+                if (
+                    response_ref is None
+                    or response_ref.issuer != issuer
+                    or response_ref.artifact_kind != "coverage_response"
+                    or response_ref.raw_sha256 != receipt.get("response_sha256")
+                    or response_ref.size_bytes != receipt.get("response_size_bytes")
+                    or parse_timestamp(response_ref.captured_at, field_name="captured_at")
+                    < parse_timestamp(str(receipt.get("through")), field_name="through")
+                ):
+                    raise ReleaseCalendarValidationError(
+                        "release_calendar_coverage_response_binding_invalid"
+                    )
+            else:
+                raise ReleaseCalendarValidationError(
+                    "release_calendar_coverage_receipt_schema_invalid"
+                )
             receipt_clock = _utc_timestamp(
                 receipt.get("through"),
                 "release_calendar_coverage_receipt_clock_invalid",
             )
             if (
-                receipt.get("schema_version")
-                != "macro-release-issuer-coverage.v1"
-                or receipt.get("issuer") != issuer
+                receipt.get("issuer") != issuer
                 or parse_timestamp(ref.captured_at, field_name="captured_at")
                 < parse_timestamp(receipt_clock, field_name="through")
             ):
@@ -1559,6 +1589,12 @@ def _validate_capture(
     referenced_sources = {
         source_id for item in coverage for source_id in item.source_ids
     }
+    referenced_sources.update(
+        str(payload.get("response_source_id"))
+        for payload in source_payloads.values()
+        if isinstance(payload, Mapping)
+        and payload.get("schema_version") == "macro-release-issuer-coverage.v2"
+    )
     referenced_sources.update(
         source_id for event in events for source_id in event.source_ids
     )
@@ -2576,12 +2612,24 @@ def publish_release_calendar(
         }
         new_pointer_raw = _canonical_json_bytes(pointer_payload, newline=True)
         new_pointer_sha = _atomic_pointer_write(root, new_pointer_raw)
-        evidence = _load_generation(
-            root,
-            generation_id=generation_id,
-            manifest_sha256=manifest_sha,
-            pointer_sha256=new_pointer_sha,
-        )
+        try:
+            evidence = _load_generation(
+                root,
+                generation_id=generation_id,
+                manifest_sha256=manifest_sha,
+                pointer_sha256=new_pointer_sha,
+            )
+        except Exception:
+            if pointer_raw is None:
+                (root / POINTER_FILENAME).unlink(missing_ok=True)
+                _fsync_directory(root)
+            else:
+                restored_sha = _atomic_pointer_write(root, pointer_raw)
+                if restored_sha != current_pointer_sha:
+                    raise ReleaseCalendarValidationError(
+                        "release_calendar_pointer_restore_failed"
+                    )
+            raise
         return ReleaseCalendarPublishResult(
             identity=evidence.identity,
             evidence=evidence,

@@ -113,3 +113,28 @@ repository's staged upgrade quality gate for a broad release. Verification
 must include missing-pointer and invalid-pointer no-write assertions, CN-only
 routing, public DTO equality across surfaces, unsupported-backtest no-write,
 and Shadow/mainline isolation.
+
+## 8. CN Macro and release-calendar maintenance
+
+`quant-investor market macro-maintain` is the only registered writer for the
+daily CN Macro observation roll and official release-calendar coverage
+extension. It is dry-run by default. A committing run requires both
+`--allow-live` and `--commit`, exact expected-before SHA-256 values for the
+release-calendar and Macro-observation pointers, and exact path+SHA bindings
+for the immutable market snapshot manifest, its target-date coverage manifest,
+and the full-A scope artifact.
+
+The command calls only the NBS and PBC official coverage URLs. It stores each
+complete HTTP response entity as hash-bound `coverage_response` evidence and a
+v2 coverage receipt that binds that response. The common cutoff is frozen after
+both response entities have completed and before either pointer write. The
+release calendar is published first by CAS; the local breadth observation then
+rolls against the same cutoff, target, market-open-days evidence and canonical
+market inputs. If the second stage fails, the release child may remain as an
+independently healthy promotion and the receipt reports `PARTIAL`. A failed
+stage never substitutes stale, inferred, public-fallback or manual values.
+
+The command must not import or restore the retired
+`quant_investor.market.macro_mart` producer. It does not run analysis, create
+candidates or portfolios, activate Factor or Mainline state, render Dashboard
+output, connect a broker, create an order, or trade.

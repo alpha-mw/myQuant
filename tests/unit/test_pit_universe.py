@@ -17,6 +17,7 @@ from quant_investor.market.pit_universe import (
     PITUniverseStore,
     build_pit_delisted_field,
     build_pit_universe_mask,
+    carry_forward_historical_records,
     dedupe_latest_records,
     estimate_historical_bar_backfill_cost,
     evaluate_listing_status,
@@ -461,7 +462,7 @@ def test_refresh_pit_universe_requires_current_component_coverage(
     assert not store.canonical_path.exists()
 
 
-def test_refresh_pit_universe_cannot_shrink_existing_membership(
+def test_refresh_pit_universe_carries_forward_complete_historical_delisting(
     tmp_path: Path,
 ) -> None:
     store = PITUniverseStore(root_dir=tmp_path / "reference")
@@ -478,11 +479,47 @@ def test_refresh_pit_universe_cannot_shrink_existing_membership(
                 return frame.iloc[0:0]
             return frame
 
-    with pytest.raises(RuntimeError, match="would shrink canonical PIT"):
-        refresh_pit_universe_from_tushare(
-            _ShrinkingPro(),
-            store=store,
-            execute=True,
+    parent_sha = store.load_generation_binding()["discovery_pointer_sha256"]
+    refreshed = refresh_pit_universe_from_tushare(
+        _ShrinkingPro(),
+        store=store,
+        execute=True,
+        observed_at="2026-07-07T00:00:00Z",
+        source_run_id="carry-forward-test",
+        expected_parent_pointer_sha256=parent_sha,
+    )
+
+    assert refreshed["membership_nonshrinking"] is True
+    assert refreshed["carried_forward_symbols"] == ["000002.SZ"]
+    assert refreshed["manifest"]["lineage"]["parent_discovery_pointer_sha256"] == parent_sha
+    assert "000002.SZ" in {record.symbol for record in store.load_latest_records()}
+
+
+@pytest.mark.parametrize(
+    ("parent", "required_symbols"),
+    [
+        (_record("000002.SZ", status=LIST_STATUS_LISTED), []),
+        (_record("000002.SZ", status=LIST_STATUS_DELISTED), []),
+        (
+            _record(
+                "000002.SZ",
+                status=LIST_STATUS_DELISTED,
+                delist_date="20250102",
+            ),
+            ["000002.SZ"],
+        ),
+    ],
+)
+def test_carry_forward_never_relaxes_non_shrink_for_ineligible_parent_rows(
+    parent: PITUniverseRecord,
+    required_symbols: list[str],
+) -> None:
+    with pytest.raises(RuntimeError, match="non-carry-forward-eligible"):
+        carry_forward_historical_records(
+            [_record("000001.SZ")],
+            [parent],
+            required_symbols=required_symbols,
+            observed_at="2026-07-07T00:00:00Z",
         )
 
 

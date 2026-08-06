@@ -38,6 +38,12 @@ OPEN_DATES = [
     "20260713",
     "20260714",
 ]
+BSE_OPEN_DATES = [
+    "20260709", "20260710", "20260713", "20260714", "20260715",
+    "20260716", "20260717", "20260720", "20260721", "20260722",
+    "20260723", "20260724", "20260727", "20260728", "20260729",
+    "20260730",
+]
 
 
 def _pit(symbol: str, name: str, *, status: str = "L", delist_date: str = "") -> PITUniverseRecord:
@@ -117,6 +123,36 @@ class _Provider:
         return pd.DataFrame(columns=["ts_code", "trade_date"])
 
 
+class _BseProvider(_Provider):
+    def stock_basic(self, **kwargs):
+        self.calls.append(("stock_basic", kwargs))
+        return pd.DataFrame([{
+            "ts_code": "920305.BJ", "name": "云创退", "list_status": "D",
+            "list_date": "20210826", "delist_date": "20260730",
+        }])
+
+    def namechange(self, **kwargs):
+        self.calls.append(("namechange", kwargs))
+        return pd.DataFrame([{
+            "ts_code": "920305.BJ", "name": "云创退",
+            "start_date": "20260709", "end_date": "20260729",
+            "ann_date": "20260708", "change_reason": "退市整理期",
+        }])
+
+    def daily(self, **kwargs):
+        self.calls.append(("daily", kwargs))
+        return pd.DataFrame([
+            {"ts_code": "920305.BJ", "trade_date": value}
+            for value in BSE_OPEN_DATES[:15]
+        ])
+
+    def trade_cal(self, **kwargs):
+        self.calls.append(("trade_cal", kwargs))
+        return pd.DataFrame([
+            {"cal_date": value, "is_open": 1} for value in BSE_OPEN_DATES
+        ])
+
+
 def _records() -> dict[str, PITUniverseRecord]:
     return {
         "000004.SZ": _pit("000004.SZ", "国华退"),
@@ -133,24 +169,48 @@ def test_terminal_delisting_evidence_verifies_both_symbols() -> None:
         pit_membership_path="data/parquet/cn/reference/stock_basic_membership.parquet",
         pit_membership_sha256="a" * 64,
     )
-
     assert payload["all_candidates_verified"] is True
     assert payload["verified_symbols"] == ["000004.SZ", "002808.SZ"]
     assert payload["inferred_delist_dates"] == {
         "000004.SZ": "20260714",
         "002808.SZ": "20260714",
     }
-    assert (
-        validate_terminal_delisting_evidence(
-            payload,
-            target_trade_date="20260714",
-            candidate_symbols=["000004.SZ", "002808.SZ"],
-            pit_membership_path="data/parquet/cn/reference/stock_basic_membership.parquet",
-            pit_membership_sha256="a" * 64,
-        )
-        == []
+    assert validate_terminal_delisting_evidence(
+        payload,
+        target_trade_date="20260714",
+        candidate_symbols=["000004.SZ", "002808.SZ"],
+        pit_membership_path="data/parquet/cn/reference/stock_basic_membership.parquet",
+        pit_membership_sha256="a" * 64,
+    ) == []
+
+
+def test_bse_provider_delisted_conflict_requires_hash_bound_terminal_boundary() -> None:
+    records = {"920305.BJ": _pit("920305.BJ", "云创退")}
+    assert select_terminal_delisting_candidates(
+        ["920305.BJ"],
+        target_trade_date="20260805",
+        pit_records_by_symbol=records,
+    ) == ["920305.BJ"]
+
+    payload = build_terminal_delisting_evidence(
+        _BseProvider(),
+        target_trade_date="20260805",
+        candidate_symbols=["920305.BJ"],
+        pit_records_by_symbol=records,
+        pit_membership_path="pit.parquet",
+        pit_membership_sha256="a" * 64,
     )
 
+    assert payload["all_candidates_verified"] is True
+    assert payload["inferred_delist_dates"] == {"920305.BJ": "20260730"}
+    assert payload["symbol_proofs"]["920305.BJ"]["source_list_status"] == "D"
+    assert validate_terminal_delisting_evidence(
+        payload,
+        target_trade_date="20260805",
+        candidate_symbols=["920305.BJ"],
+        pit_membership_path="pit.parquet",
+        pit_membership_sha256="a" * 64,
+    ) == []
 
 @pytest.mark.parametrize(
     ("provider", "reason_fragment"),
@@ -184,13 +244,14 @@ def test_terminal_candidate_selection_enforces_outer_pit_gates() -> None:
         "000005.SZ": _pit("000005.SZ", "普通股份"),
         "000006.SZ": _pit("000006.SZ", "已退", status="D"),
         "000007.SZ": _pit("000007.SZ", "日期退", delist_date="20260714"),
+        "920305.BJ": _pit("920305.BJ", "云创退"),
     }
 
     assert select_terminal_delisting_candidates(
         records,
         target_trade_date="20260714",
         pit_records_by_symbol=records,
-    ) == ["000004.SZ", "002808.SZ"]
+    ) == ["000004.SZ", "002808.SZ", "920305.BJ"]
 
 
 def test_resolver_reuses_only_valid_positive_cache_and_rejects_tamper(

@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+from quant_investor.macro import release_calendar as release_calendar_module
 from quant_investor.macro.contracts import MacroObservation
 from quant_investor.macro.official_web_compiler import (
     NBS_QUARTERLY_GDP_PARSER_V2,
@@ -536,6 +537,42 @@ def test_cas_no_clobber_and_writer_lock(tmp_path: Path) -> None:
         )
     with release_calendar_writer_lock(canonical_root=fixture.canonical_root):
         assert (fixture.canonical_root / ".release-calendar.lock").is_file()
+
+
+def test_post_switch_readback_failure_restores_parent_pointer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture, parent = _publish_initial(tmp_path)
+    pointer_path = fixture.canonical_root / "_latest.json"
+    parent_pointer_bytes = pointer_path.read_bytes()
+    child_fixture = _extend_fixture(fixture, tmp_path / "child-inputs")
+    original_load_generation = release_calendar_module._load_generation
+
+    def fail_child_readback(*args, **kwargs):
+        if kwargs.get("generation_id") == "calendar-readback-failure":
+            raise ReleaseCalendarValidationError("injected_child_readback_failure")
+        return original_load_generation(*args, **kwargs)
+
+    monkeypatch.setattr(
+        release_calendar_module,
+        "_load_generation",
+        fail_child_readback,
+    )
+    with pytest.raises(
+        ReleaseCalendarValidationError,
+        match="injected_child_readback_failure",
+    ):
+        publish_release_calendar(
+            **child_fixture.kwargs(
+                run_id="calendar-readback-failure",
+                expected_pointer_sha256=parent.identity.pointer_sha256,
+            )
+        )
+    assert pointer_path.read_bytes() == parent_pointer_bytes
+    assert release_calendar_pointer_sha256(
+        canonical_root=fixture.canonical_root
+    ) == parent.identity.pointer_sha256
 
 
 @pytest.mark.parametrize("target", ["plan", "open_days", "raw", "pointer"])

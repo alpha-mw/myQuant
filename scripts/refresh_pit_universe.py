@@ -53,6 +53,11 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--execute", action="store_true", help="Write local PIT membership artifacts.")
     parser.add_argument(
+        "--expected-parent-pointer-sha256",
+        default="",
+        help="Required with --execute: exact expected-before PIT discovery pointer SHA-256.",
+    )
+    parser.add_argument(
         "--allow-online",
         action="store_true",
         help="Acknowledge that this command will call Tushare.",
@@ -79,6 +84,8 @@ def main(argv: Sequence[str] | None = None) -> dict:
         raise SystemExit("--allow-online is required because this command calls Tushare.")
     if args.execute and not bool(getattr(config, "PIT_UNIVERSE_BACKFILL_ENABLED", False)):
         raise SystemExit("Set PIT_UNIVERSE_BACKFILL_ENABLED=1 to write PIT universe artifacts.")
+    if args.execute and not args.expected_parent_pointer_sha256:
+        raise SystemExit("--expected-parent-pointer-sha256 is required with --execute.")
     if ts is None:
         raise SystemExit("tushare is not installed.")
     if not config.TUSHARE_TOKEN:
@@ -112,6 +119,7 @@ def main(argv: Sequence[str] | None = None) -> dict:
         store=store,
         execute=bool(args.execute),
         required_symbols=required_symbols,
+        expected_parent_pointer_sha256=args.expected_parent_pointer_sha256,
     )
     if args.execute:
         required_generation_evidence = (

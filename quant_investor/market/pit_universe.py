@@ -28,6 +28,8 @@ PIT_UNIVERSE_SCHEMA_VERSION = "cn_pit_universe.v1"
 PIT_UNIVERSE_MANIFEST_SCHEMA_VERSION = "cn_pit_universe_manifest.v1"
 PIT_UNIVERSE_DISCOVERY_SCHEMA_VERSION = "cn_pit_universe_latest.v1"
 PIT_UNIVERSE_REFRESH_SCHEMA_VERSION = "cn_pit_universe_refresh.v1"
+PIT_UNIVERSE_LINEAGE_SCHEMA_VERSION = "cn_pit_universe_lineage.v1"
+PIT_UNIVERSE_MAX_LINEAGE_DEPTH = 64
 
 PIT_UNIVERSE_GENERATIONS_DIRNAME = "_generations"
 PIT_UNIVERSE_GENERATION_MANIFEST_FILENAME = "manifest.json"
@@ -135,7 +137,7 @@ def _stable_read_bytes(path: Path, *, blocker: str) -> bytes:
         raise RuntimeError(blocker) from exc
     try:
         before = os.fstat(descriptor)
-        if not stat.S_ISREG(before.st_mode):
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
             raise RuntimeError(blocker)
         chunks: list[bytes] = []
         while True:
@@ -352,6 +354,59 @@ def dedupe_latest_records(records: Sequence[PITUniverseRecord]) -> list[PITUnive
         chosen.membership_quality = _quality_for_group(group)
         latest.append(chosen)
     return latest
+
+
+def carry_forward_historical_records(
+    fresh_records: Sequence[PITUniverseRecord],
+    parent_records: Sequence[PITUniverseRecord],
+    *,
+    required_symbols: Iterable[str],
+    observed_at: str,
+) -> tuple[list[PITUniverseRecord], list[str]]:
+    """Prefix-extend a refresh with complete historical delisted parent rows.
+
+    Fresh provider rows are always authoritative.  A missing parent row is
+    eligible only when it is a closed, internally consistent historical
+    delisting outside the required current component scope.  Any other shrink
+    remains a hard blocker.
+    """
+
+    fresh = records_by_symbol(fresh_records)
+    parent = records_by_symbol(parent_records)
+    required = {
+        normalize_symbol(symbol)
+        for symbol in required_symbols
+        if normalize_symbol(symbol)
+    }
+    cutoff_date = compact_date(observed_at)
+    if not cutoff_date:
+        raise RuntimeError("pit_refresh_observed_at_invalid")
+    carried: list[str] = []
+    rejected: list[str] = []
+    for symbol in sorted(set(parent) - set(fresh)):
+        record = parent[symbol]
+        eligible = (
+            symbol not in required
+            and record.source_list_status == LIST_STATUS_DELISTED
+            and record.membership_quality == "ok"
+            and bool(record.list_date)
+            and bool(record.delist_date)
+            and record.effective_from == record.list_date
+            and record.effective_to == record.delist_date
+            and record.list_date < record.delist_date <= cutoff_date
+        )
+        if not eligible:
+            rejected.append(symbol)
+            continue
+        fresh[symbol] = PITUniverseRecord.from_dict(record.to_dict())
+        carried.append(symbol)
+    if rejected:
+        raise RuntimeError(
+            "stock_basic refresh would shrink canonical PIT membership with "
+            "non-carry-forward-eligible rows: "
+            f"count={len(rejected)},symbols={rejected[:20]}"
+        )
+    return [fresh[symbol] for symbol in sorted(fresh)], carried
 
 
 def records_by_symbol(records: Sequence[PITUniverseRecord]) -> dict[str, PITUniverseRecord]:
@@ -712,6 +767,9 @@ class PITUniverseStore:
         self,
         manifest_path: str | Path | None = None,
         expected_manifest_sha256: str = "",
+        *,
+        _lineage_depth: int = 0,
+        _visited_manifests: frozenset[str] = frozenset(),
     ) -> dict[str, Any]:
         """Load a hash-bound immutable PIT generation.
 
@@ -720,6 +778,8 @@ class PITUniverseStore:
         manifest SHA-256, which prevents a mutable-path lookup from silently
         selecting different bytes.
         """
+        if _lineage_depth > PIT_UNIVERSE_MAX_LINEAGE_DEPTH:
+            raise RuntimeError("pit_generation_lineage_depth_exceeded")
         discovery_payload: dict[str, Any] = {}
         discovery_pointer_path = ""
         discovery_pointer_sha256 = ""
@@ -763,6 +823,10 @@ class PITUniverseStore:
             manifest_path,
             blocker="pit_generation_manifest_path_invalid",
         )
+        resolved_manifest_text = str(resolved_manifest)
+        if resolved_manifest_text in _visited_manifests:
+            raise RuntimeError("pit_generation_lineage_cycle")
+        visited = _visited_manifests | {resolved_manifest_text}
         if resolved_manifest.name != PIT_UNIVERSE_GENERATION_MANIFEST_FILENAME:
             raise RuntimeError("pit_generation_manifest_path_invalid")
         manifest_bytes = _stable_read_bytes(
@@ -829,6 +893,104 @@ class PITUniverseStore:
         if records_sha256 != str(manifest.get("records_sha256") or ""):
             raise RuntimeError("pit_generation_records_sha256_mismatch")
 
+        lineage = manifest.get("lineage")
+        if lineage is not None:
+            if not isinstance(lineage, Mapping):
+                raise RuntimeError("pit_generation_lineage_invalid")
+            required_lineage_keys = {
+                "schema_version",
+                "parent_generation_id",
+                "parent_discovery_pointer_path",
+                "parent_discovery_pointer_sha256",
+                "parent_discovery_pointer_artifact_path",
+                "parent_generation_manifest_path",
+                "parent_generation_manifest_sha256",
+                "parent_canonical_path",
+                "parent_canonical_sha256",
+                "parent_records_sha256",
+                "carried_forward_symbols",
+                "carried_forward_symbol_count",
+                "carried_forward_records_sha256",
+            }
+            if (
+                set(lineage) != required_lineage_keys
+                or lineage.get("schema_version")
+                != PIT_UNIVERSE_LINEAGE_SCHEMA_VERSION
+            ):
+                raise RuntimeError("pit_generation_lineage_invalid")
+            parent_pointer_artifact = self._generation_member_path(
+                lineage.get("parent_discovery_pointer_artifact_path"),
+                blocker="pit_generation_parent_pointer_artifact_invalid",
+            )
+            if parent_pointer_artifact.parent != resolved_manifest.parent:
+                raise RuntimeError("pit_generation_parent_pointer_artifact_invalid")
+            parent_pointer_bytes = _stable_read_bytes(
+                parent_pointer_artifact,
+                blocker="pit_generation_parent_pointer_artifact_invalid",
+            )
+            if _sha256_bytes(parent_pointer_bytes) != _validate_sha256(
+                lineage.get("parent_discovery_pointer_sha256"),
+                blocker="pit_generation_parent_pointer_sha256_invalid",
+            ):
+                raise RuntimeError("pit_generation_parent_pointer_sha256_mismatch")
+            try:
+                parent_pointer_payload = json.loads(parent_pointer_bytes.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise RuntimeError("pit_generation_parent_pointer_payload_invalid") from exc
+            if not isinstance(parent_pointer_payload, Mapping) or any(
+                parent_pointer_payload.get(field) != lineage.get(lineage_field)
+                for field, lineage_field in (
+                    ("generation_id", "parent_generation_id"),
+                    (
+                        "generation_manifest_path",
+                        "parent_generation_manifest_path",
+                    ),
+                    (
+                        "generation_manifest_sha256",
+                        "parent_generation_manifest_sha256",
+                    ),
+                    ("canonical_path", "parent_canonical_path"),
+                    ("canonical_sha256", "parent_canonical_sha256"),
+                    ("records_sha256", "parent_records_sha256"),
+                )
+            ):
+                raise RuntimeError("pit_generation_parent_pointer_binding_mismatch")
+            parent = self.load_generation_binding(
+                lineage.get("parent_generation_manifest_path"),
+                str(lineage.get("parent_generation_manifest_sha256") or ""),
+                _lineage_depth=_lineage_depth + 1,
+                _visited_manifests=visited,
+            )
+            carried = sorted(
+                {normalize_symbol(item) for item in lineage.get("carried_forward_symbols", [])}
+            )
+            if (
+                not carried
+                or lineage.get("carried_forward_symbol_count") != len(carried)
+                or parent["generation_id"] != lineage.get("parent_generation_id")
+                or parent["canonical_path"] != lineage.get("parent_canonical_path")
+                or parent["canonical_sha256"] != lineage.get("parent_canonical_sha256")
+                or parent["manifest"].get("records_sha256")
+                != lineage.get("parent_records_sha256")
+            ):
+                raise RuntimeError("pit_generation_lineage_binding_mismatch")
+            child_by_symbol = {record.symbol: record for record in records}
+            parent_by_symbol = {
+                record.symbol: record for record in parent["records"]
+            }
+            if any(
+                symbol not in child_by_symbol
+                or symbol not in parent_by_symbol
+                or child_by_symbol[symbol].to_dict()
+                != parent_by_symbol[symbol].to_dict()
+                for symbol in carried
+            ):
+                raise RuntimeError("pit_generation_carried_record_mismatch")
+            if self._records_sha256(
+                [child_by_symbol[symbol] for symbol in carried]
+            ) != str(lineage.get("carried_forward_records_sha256") or ""):
+                raise RuntimeError("pit_generation_carried_records_sha256_mismatch")
+
         if discovery_payload:
             pointer_generation_id = str(
                 discovery_payload.get("generation_id") or ""
@@ -888,13 +1050,31 @@ class PITUniverseStore:
         latest_records: Sequence[PITUniverseRecord] | None = None,
         observed_at: str,
         source_run_id: str,
+        expected_parent_pointer_sha256: str = "",
+        parent_binding: Mapping[str, Any] | None = None,
+        carried_forward_symbols: Sequence[str] = (),
     ) -> dict[str, Any]:
         with self._writer_lock():
+            parent_pointer_bytes: bytes | None = None
+            if expected_parent_pointer_sha256:
+                expected_parent_sha = _validate_sha256(
+                    expected_parent_pointer_sha256,
+                    blocker="pit_expected_parent_pointer_sha256_invalid",
+                )
+                parent_pointer_bytes = _stable_read_bytes(
+                    self.manifest_path,
+                    blocker="pit_parent_pointer_readback_invalid",
+                )
+                if _sha256_bytes(parent_pointer_bytes) != expected_parent_sha:
+                    raise RuntimeError("pit_parent_pointer_cas_mismatch")
             return self._write_snapshot_locked(
                 raw_records=raw_records,
                 latest_records=latest_records,
                 observed_at=observed_at,
                 source_run_id=source_run_id,
+                parent_binding=parent_binding,
+                carried_forward_symbols=carried_forward_symbols,
+                parent_pointer_bytes=parent_pointer_bytes,
             )
 
     def _write_snapshot_locked(
@@ -904,6 +1084,9 @@ class PITUniverseStore:
         latest_records: Sequence[PITUniverseRecord] | None = None,
         observed_at: str,
         source_run_id: str,
+        parent_binding: Mapping[str, Any] | None = None,
+        carried_forward_symbols: Sequence[str] = (),
+        parent_pointer_bytes: bytes | None = None,
     ) -> dict[str, Any]:
         latest = list(latest_records or dedupe_latest_records(raw_records))
         if self.root_dir.is_symlink():
@@ -973,6 +1156,40 @@ class PITUniverseStore:
             "status_counts": dict(sorted(status_counts.items())),
             "membership_quality_counts": dict(sorted(quality_counts.items())),
         }
+        carried = sorted({normalize_symbol(item) for item in carried_forward_symbols})
+        if carried:
+            parent = dict(parent_binding or {})
+            manifest["lineage"] = {
+                "schema_version": PIT_UNIVERSE_LINEAGE_SCHEMA_VERSION,
+                "parent_generation_id": str(parent.get("generation_id") or ""),
+                "parent_discovery_pointer_path": str(
+                    parent.get("discovery_pointer_path") or ""
+                ),
+                "parent_discovery_pointer_sha256": str(
+                    parent.get("discovery_pointer_sha256") or ""
+                ),
+                "parent_discovery_pointer_artifact_path": str(
+                    generation_root / "parent_pointer.json"
+                ),
+                "parent_generation_manifest_path": str(
+                    parent.get("generation_manifest_path") or ""
+                ),
+                "parent_generation_manifest_sha256": str(
+                    parent.get("generation_manifest_sha256") or ""
+                ),
+                "parent_canonical_path": str(parent.get("canonical_path") or ""),
+                "parent_canonical_sha256": str(
+                    parent.get("canonical_sha256") or ""
+                ),
+                "parent_records_sha256": str(
+                    (parent.get("manifest") or {}).get("records_sha256") or ""
+                ),
+                "carried_forward_symbols": carried,
+                "carried_forward_symbol_count": len(carried),
+                "carried_forward_records_sha256": self._records_sha256(
+                    [record for record in latest if record.symbol in set(carried)]
+                ),
+            }
         manifest_bytes = _json_bytes(manifest)
         manifest_sha256 = _sha256_bytes(manifest_bytes)
         if generation_root.exists():
@@ -1009,6 +1226,13 @@ class PITUniverseStore:
                     temporary_root / PIT_UNIVERSE_GENERATION_MANIFEST_FILENAME,
                     manifest_bytes,
                 )
+                if carried:
+                    if not parent_pointer_bytes:
+                        raise RuntimeError("pit_parent_pointer_artifact_missing")
+                    _write_bytes_exclusive(
+                        temporary_root / "parent_pointer.json",
+                        parent_pointer_bytes,
+                    )
                 canonical_readback = _stable_read_bytes(
                     temporary_root / PIT_UNIVERSE_GENERATION_CANONICAL_FILENAME,
                     blocker="pit_generation_prepare_canonical_readback_invalid",
@@ -1118,6 +1342,7 @@ def refresh_pit_universe_from_tushare(
     observed_at: str | None = None,
     source_run_id: str | None = None,
     required_symbols: Iterable[str] | None = None,
+    expected_parent_pointer_sha256: str = "",
 ) -> dict[str, Any]:
     resolved_observed_at = observed_at or _utc_now_iso()
     resolved_run_id = source_run_id or _source_run_id(resolved_observed_at)
@@ -1130,24 +1355,52 @@ def refresh_pit_universe_from_tushare(
         observed_at=resolved_observed_at,
         source_run_id=resolved_run_id,
     )
-    latest_records = dedupe_latest_records(raw_records)
-    latest_symbols = {record.symbol for record in latest_records if record.symbol}
+    fresh_records = dedupe_latest_records(raw_records)
+    fresh_symbols = {record.symbol for record in fresh_records if record.symbol}
     required = {
         normalize_symbol(symbol)
         for symbol in required_symbols or []
         if normalize_symbol(symbol)
     }
-    missing_required = sorted(required - latest_symbols)
+    missing_required = sorted(required - fresh_symbols)
     if missing_required:
         raise RuntimeError(
             "stock_basic refresh omits required current components: "
             f"count={len(missing_required)},symbols={missing_required[:20]}"
         )
-    existing_symbols = {
-        record.symbol
-        for record in store.load_latest_records()
-        if record.symbol
-    }
+    try:
+        parent_binding = store.load_generation_binding()
+    except RuntimeError as exc:
+        if str(exc) != "pit_latest_generation_binding_missing":
+            raise
+        parent_binding = {
+            "records": [],
+            "generation_id": "",
+            "generation_manifest_path": "",
+            "generation_manifest_sha256": "",
+            "canonical_path": "",
+            "canonical_sha256": "",
+            "discovery_pointer_path": "",
+            "discovery_pointer_sha256": "",
+            "manifest": {},
+        }
+    if expected_parent_pointer_sha256:
+        expected_parent_sha = _validate_sha256(
+            expected_parent_pointer_sha256,
+            blocker="pit_expected_parent_pointer_sha256_invalid",
+        )
+        if parent_binding["discovery_pointer_sha256"] != expected_parent_sha:
+            raise RuntimeError("pit_parent_pointer_cas_mismatch")
+    elif execute and parent_binding["discovery_pointer_sha256"]:
+        raise RuntimeError("pit_expected_parent_pointer_sha256_required")
+    latest_records, carried_forward_symbols = carry_forward_historical_records(
+        fresh_records,
+        parent_binding["records"],
+        required_symbols=required_symbols or (),
+        observed_at=resolved_observed_at,
+    )
+    latest_symbols = {record.symbol for record in latest_records if record.symbol}
+    existing_symbols = {record.symbol for record in parent_binding["records"] if record.symbol}
     missing_existing = sorted(existing_symbols - latest_symbols)
     if missing_existing:
         raise RuntimeError(
@@ -1170,6 +1423,16 @@ def refresh_pit_universe_from_tushare(
         "existing_symbol_count": len(existing_symbols),
         "existing_symbols_missing": missing_existing,
         "membership_nonshrinking": True,
+        "carried_forward_symbols": carried_forward_symbols,
+        "carried_forward_symbol_count": len(carried_forward_symbols),
+        "parent_generation_id": parent_binding["generation_id"],
+        "parent_generation_manifest_sha256": parent_binding[
+            "generation_manifest_sha256"
+        ],
+        "parent_canonical_sha256": parent_binding["canonical_sha256"],
+        "parent_discovery_pointer_sha256": parent_binding[
+            "discovery_pointer_sha256"
+        ],
         "manifest": {},
     }
     if execute:
@@ -1178,6 +1441,9 @@ def refresh_pit_universe_from_tushare(
             latest_records=latest_records,
             observed_at=resolved_observed_at,
             source_run_id=resolved_run_id,
+            expected_parent_pointer_sha256=expected_parent_pointer_sha256,
+            parent_binding=parent_binding,
+            carried_forward_symbols=carried_forward_symbols,
         )
         report["manifest"] = published
         for evidence_key in (
@@ -1225,6 +1491,7 @@ __all__ = [
     "build_pit_delisted_field",
     "build_pit_universe_mask",
     "compact_date",
+    "carry_forward_historical_records",
     "dedupe_latest_records",
     "estimate_historical_bar_backfill_cost",
     "evaluate_listing_status",

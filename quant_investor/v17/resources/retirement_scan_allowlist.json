@@ -1,0 +1,265 @@
+{
+  "authority": false,
+  "entries": [
+    {
+      "detector": "text.v16-token",
+      "exact_count": 4,
+      "expected_sha256": "4233ebe283a4e032a1991e210eef52343e19541c2f0b0a87fe597eee6670e4c9",
+      "path": "docs/architecture/v17_v2_contract.md",
+      "reason": "v17 retirement documentation preserves explicit historical protocol references"
+    },
+    {
+      "detector": "text.v16-token",
+      "exact_count": 3,
+      "expected_sha256": "b277e3e3caadb3af41af9a519a8f7d4aa144987a668f214952a7c6460a3db51b",
+      "path": "docs/runbooks/v17_shadow_operations.md",
+      "reason": "v17 retirement documentation preserves explicit historical protocol references"
+    },
+    {
+      "detector": "text.version-16.0.0",
+      "exact_count": 5,
+      "expected_sha256": "3e218b062085ae6a77c85be5141f3466f21ea4401cc990e072ca57f3772008dd",
+      "path": "frontend/package-lock.json",
+      "reason": "third-party dependency version strings are unrelated to the myQuant protocol"
+    },
+    {
+      "detector": "python.string-v16",
+      "exact_count": 4,
+      "expected_sha256": "a0ad614d2779feb5767c3d13f065bbca1ad3788f4bf549f2b70a501406b98689",
+      "path": "quant_investor/_sourceless.py",
+      "reason": "negative import inventory prevents retired modules from reappearing"
+    },
+    {
+      "detector": "text.v16-token",
+      "exact_count": 4,
+      "expected_sha256": "a0ad614d2779feb5767c3d13f065bbca1ad3788f4bf549f2b70a501406b98689",
+      "path": "quant_investor/_sourceless.py",
+      "reason": "negative import inventory prevents retired modules from reappearing"
+    },
+    {
+      "detector": "python.string-v16",
+      "exact_count": 2,
+      "expected_sha256": "5e695a2ed1977b072899ce082e9f82280f9fe508f6e52d05c7d7405b8b6e19ba",
+      "path": "quant_investor/v17/retirement.py",
+      "reason": "purge state machine names the two exact protected retirement roots"
+    },
+    {
+      "detector": "text.v16-token",
+      "exact_count": 2,
+      "expected_sha256": "5e695a2ed1977b072899ce082e9f82280f9fe508f6e52d05c7d7405b8b6e19ba",
+      "path": "quant_investor/v17/retirement.py",
+      "reason": "purge state machine names the two exact protected retirement roots"
+    },
+    {
+      "detector": "python.string-v16",
+      "exact_count": 12,
+      "expected_sha256": "2f4e60f7d80edda970492c70c51c40744561d79606ddbd250a4a7c6f7ae74ed3",
+      "path": "quant_investor/v17/retirement_scan.py",
+      "reason": "retirement scanner implementation must recognize forbidden legacy tokens"
+    },
+    {
+      "detector": "text.v16-token",
+      "exact_count": 15,
+      "expected_sha256": "2f4e60f7d80edda970492c70c51c40744561d79606ddbd250a4a7c6f7ae74ed3",
+      "path": "quant_investor/v17/retirement_scan.py",
+      "reason": "retirement scanner implementation must recognize forbidden legacy tokens"
+    },
+    {
+      "detector": "text.version-16.0.0",
+      "exact_count": 1,
+      "expected_sha256": "2f4e60f7d80edda970492c70c51c40744561d79606ddbd250a4a7c6f7ae74ed3",
+      "path": "quant_investor/v17/retirement_scan.py",
+      "reason": "retirement scanner implementation must recognize forbidden legacy tokens"
+    },
+    {
+      "detector": "text.v16-token",
+      "exact_count": 8,
+      "expected_sha256": "429a0ced02a047654ad5c813d70ca558036dd5e6a3e8fb142bc1cc1e7dc440e0",
+      "path": "quant_investor/v17_v2_contract/resources/main_suite_runtime_policy.v1.json",
+      "reason": "sealed Phase 0 runtime policy binds protected retirement roots"
+    },
+    {
+      "detector": "text.version-16.0.0",
+      "exact_count": 4,
+      "expected_sha256": "429a0ced02a047654ad5c813d70ca558036dd5e6a3e8fb142bc1cc1e7dc440e0",
+      "path": "quant_investor/v17_v2_contract/resources/main_suite_runtime_policy.v1.json",
+      "reason": "sealed Phase 0 runtime policy records prior installed metadata"
+    },
+    {
+      "detector": "text.v16-token",
+      "exact_count": 8,
+      "expected_sha256": "3305e6dfe262ea48a178306300ccd6ae0cadf8778795625a088415108b709f85",
+      "path": "scripts/schemas/v17_phase0_command_receipt.v2.schema.json",
+      "reason": "closed Phase 0 schema enumerates protected retirement root identities"
+    },
+    {
+      "detector": "text.v16-token",
+      "exact_count": 8,
+      "expected_sha256": "9cbf86cc5d0197e3c4373dc5a0a5b90596ef15ddc8531032042f8076cd369bba",
+      "path": "scripts/schemas/v17_phase0_evidence_index.v2.schema.json",
+      "reason": "closed Phase 0 schema enumerates protected retirement root identities"
+    },
+    {
+      "detector": "text.v16-token",
+      "exact_count": 8,
+      "expected_sha256": "394830466f8933c1ec6378a593936faa4f0f538676537484e94636dcfbadc621",
+      "path": "scripts/schemas/v17_phase0_hash_freeze.v2.schema.json",
+      "reason": "closed Phase 0 schema enumerates protected retirement root identities"
+    },
+    {
+      "detector": "text.v16-token",
+      "exact_count": 8,
+      "expected_sha256": "d5499d7b4dd51937dc3f2c75b1d31b880a5d0499ab09ff87dd9e656975b5a1fa",
+      "path": "scripts/schemas/v17_phase0_package_evidence.v2.schema.json",
+      "reason": "closed Phase 0 schema enumerates protected retirement root identities"
+    },
+    {
+      "detector": "text.v16-token",
+      "exact_count": 8,
+      "expected_sha256": "1cc971f65cded06628ed4b990212d27c30798d1710c0e1d0da40e0c93ae7f9de",
+      "path": "scripts/schemas/v17_phase0_session.v2.schema.json",
+      "reason": "closed Phase 0 schema enumerates protected retirement root identities"
+    },
+    {
+      "detector": "text.v16-token",
+      "exact_count": 8,
+      "expected_sha256": "8abe4290be37db48a830b3b38dc6f149e0b004b5373c76dd52fe07a8509dd4a8",
+      "path": "scripts/schemas/v17_phase0_skip_baseline.v2.schema.json",
+      "reason": "closed Phase 0 schema enumerates protected retirement root identities"
+    },
+    {
+      "detector": "python.string-v16",
+      "exact_count": 9,
+      "expected_sha256": "192ee40b10066c7fbc133fdacc564eab05fa630a282895ac589ffb141efb04f7",
+      "path": "scripts/v17_offline_dependency_evidence.py",
+      "reason": "Phase 0 gate binds protected retirement roots"
+    },
+    {
+      "detector": "text.v16-token",
+      "exact_count": 9,
+      "expected_sha256": "192ee40b10066c7fbc133fdacc564eab05fa630a282895ac589ffb141efb04f7",
+      "path": "scripts/v17_offline_dependency_evidence.py",
+      "reason": "Phase 0 gate binds protected retirement roots"
+    },
+    {
+      "detector": "python.string-v16",
+      "exact_count": 4,
+      "expected_sha256": "3a3cf5ccb79cca0aa0c1ba9a4455854876b54ea5f2475f6a152cca7463a4c0a2",
+      "path": "scripts/v17_phase0_diff_check.py",
+      "reason": "Phase 0 gate binds protected retirement roots"
+    },
+    {
+      "detector": "text.v16-token",
+      "exact_count": 7,
+      "expected_sha256": "3a3cf5ccb79cca0aa0c1ba9a4455854876b54ea5f2475f6a152cca7463a4c0a2",
+      "path": "scripts/v17_phase0_diff_check.py",
+      "reason": "Phase 0 gate binds protected retirement roots"
+    },
+    {
+      "detector": "python.string-v16",
+      "exact_count": 11,
+      "expected_sha256": "74bb818160f97d4728e4b3a0533aa43fc7066a6c5709ca4dca1abd394d38d13a",
+      "path": "scripts/v17_phase0_evidence_index.py",
+      "reason": "Phase 0 gate binds protected retirement roots"
+    },
+    {
+      "detector": "text.v16-token",
+      "exact_count": 13,
+      "expected_sha256": "74bb818160f97d4728e4b3a0533aa43fc7066a6c5709ca4dca1abd394d38d13a",
+      "path": "scripts/v17_phase0_evidence_index.py",
+      "reason": "Phase 0 gate binds protected retirement roots"
+    },
+    {
+      "detector": "python.string-v16",
+      "exact_count": 8,
+      "expected_sha256": "b5746a9da8cee49d4055d567a022ad4108e5d4ae05041e4eb6f04f615b191e37",
+      "path": "scripts/v17_phase0_evidence_session.py",
+      "reason": "Phase 0 gate binds protected retirement roots"
+    },
+    {
+      "detector": "text.v16-token",
+      "exact_count": 8,
+      "expected_sha256": "b5746a9da8cee49d4055d567a022ad4108e5d4ae05041e4eb6f04f615b191e37",
+      "path": "scripts/v17_phase0_evidence_session.py",
+      "reason": "Phase 0 gate binds protected retirement roots"
+    },
+    {
+      "detector": "python.string-v16",
+      "exact_count": 8,
+      "expected_sha256": "65af096bf43cf116a2e53e5f8b5d62d1b48ad7d523f5aab8d9c77174e833d1b3",
+      "path": "scripts/v17_phase0_main_suite_harness.py",
+      "reason": "Phase 0 gate binds protected retirement roots"
+    },
+    {
+      "detector": "text.v16-token",
+      "exact_count": 8,
+      "expected_sha256": "65af096bf43cf116a2e53e5f8b5d62d1b48ad7d523f5aab8d9c77174e833d1b3",
+      "path": "scripts/v17_phase0_main_suite_harness.py",
+      "reason": "Phase 0 gate binds protected retirement roots"
+    },
+    {
+      "detector": "python.string-v16",
+      "exact_count": 12,
+      "expected_sha256": "cbfcd0bd43eee2b1d5af127604ae261bb4d4f74f404ba4dfccdf7817d668731c",
+      "path": "scripts/v17_phase0_package_evidence.py",
+      "reason": "Phase 0 gate binds protected retirement roots"
+    },
+    {
+      "detector": "text.v16-token",
+      "exact_count": 12,
+      "expected_sha256": "cbfcd0bd43eee2b1d5af127604ae261bb4d4f74f404ba4dfccdf7817d668731c",
+      "path": "scripts/v17_phase0_package_evidence.py",
+      "reason": "Phase 0 gate binds protected retirement roots"
+    },
+    {
+      "detector": "python.string-v16",
+      "exact_count": 9,
+      "expected_sha256": "20d18ef66c969645516b5d24ec2a46edd318a25a9e4f9d3995d99e0d01eac052",
+      "path": "scripts/v17_phase0_skip_baseline.py",
+      "reason": "Phase 0 gate binds protected retirement roots"
+    },
+    {
+      "detector": "text.v16-token",
+      "exact_count": 9,
+      "expected_sha256": "20d18ef66c969645516b5d24ec2a46edd318a25a9e4f9d3995d99e0d01eac052",
+      "path": "scripts/v17_phase0_skip_baseline.py",
+      "reason": "Phase 0 gate binds protected retirement roots"
+    },
+    {
+      "detector": "python.string-v16",
+      "exact_count": 14,
+      "expected_sha256": "c86571bea51419f1ca7e089a1fdf3905a18dcb52d037c3622287738877c1ebf5",
+      "path": "tests/unit/test_v17_retirement.py",
+      "reason": "negative retirement tests exercise forbidden legacy tokens and roots"
+    },
+    {
+      "detector": "text.v16-token",
+      "exact_count": 14,
+      "expected_sha256": "c86571bea51419f1ca7e089a1fdf3905a18dcb52d037c3622287738877c1ebf5",
+      "path": "tests/unit/test_v17_retirement.py",
+      "reason": "negative retirement tests exercise forbidden legacy tokens and roots"
+    },
+    {
+      "detector": "python.string-v16",
+      "exact_count": 17,
+      "expected_sha256": "787153d364a22b41031d0b1414236fbffa934a4db5148823e433b158c6441624",
+      "path": "tests/unit/test_v17_retirement_scan.py",
+      "reason": "negative retirement scanner tests exercise forbidden legacy tokens and roots"
+    },
+    {
+      "detector": "text.v16-token",
+      "exact_count": 21,
+      "expected_sha256": "787153d364a22b41031d0b1414236fbffa934a4db5148823e433b158c6441624",
+      "path": "tests/unit/test_v17_retirement_scan.py",
+      "reason": "negative retirement scanner tests exercise forbidden legacy tokens and roots"
+    },
+    {
+      "detector": "text.version-16.0.0",
+      "exact_count": 2,
+      "expected_sha256": "787153d364a22b41031d0b1414236fbffa934a4db5148823e433b158c6441624",
+      "path": "tests/unit/test_v17_retirement_scan.py",
+      "reason": "negative retirement scanner tests exercise forbidden legacy tokens and roots"
+    }
+  ],
+  "schema_version": "v17-retirement-scan-allowlist.v1"
+}

@@ -59,55 +59,67 @@ answer.
 
 ## The framework
 
-Four layers, each of which can only pass work forward when it can prove where
-that work came from.
+One path, four stages, and no way to reach a later stage without proving where
+the work came from.
 
-```text
-┌─────────────────────────────────────────────────────────────────┐
-│  4. GOVERNANCE & PUBLICATION                                    │
-│     immutable run -> CAS on pointer -> read-only public run     │
-│     factor registry, WAL + receipt, decision log                │
-├─────────────────────────────────────────────────────────────────┤
-│  3. DETERMINISTIC CONTROL CHAIN                                 │
-│     Bayesian posterior -> RiskGuard -> ICCoordinator            │
-│     -> PortfolioConstructor -> NarratorAgent (read-only)        │
-├─────────────────────────────────────────────────────────────────┤
-│  2. EVIDENCE PRODUCTION                                         │
-│     DeterministicFunnel -> {quant | fundamental | macro}        │
-│     factor pool under FactorGovernanceProtocol v4               │
-├─────────────────────────────────────────────────────────────────┤
-│  1. DATA AUTHORITY                                              │
-│     strict Parquet + PIT membership + hash-bound manifests      │
-│     staging -> validate -> serving, quarantine on corruption    │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    D["<b>strict CN Parquet + PIT membership</b><br/>hash-bound manifests, staging → validate → serving"] --> S["Data Snapshot"]
+    S --> F["<b>DeterministicFunnel</b><br/>data-quality / tradability / liquidity gates<br/>deterministic ranking, no model"]
+
+    F --> Q["Quant"]
+    F --> FD["Fundamental"]
+    F --> MA["Macro"]
+
+    Q --> B["<b>Bayesian Posterior</b><br/>prior + two likelihoods in log-odds<br/>regime-aware action thresholds"]
+    FD --> B
+    MA -. "prior / context — never votes on a symbol" .-> B
+
+    B --> RG["<b>RiskGuard</b><br/>hard veto, exposure and single-name caps"]
+    MK["Markov Regime"] -. "min(baseline, suggested) — may only reduce" .-> RG
+
+    RG --> IC["ICCoordinator<br/>consensus, conflicts, structured actions"]
+    IC --> PC["<b>PortfolioConstructor</b><br/>deterministic target weights"]
+    PC --> N["NarratorAgent<br/>read-only"]
+
+    N --> MR["mainline run · immutable"]
+    MR --> AP["active pointer<br/>CAS against expected prevalue + exact readback"]
+    AP --> PB["read-only public run"]
+
+    LLM["LLM review layer"] -. "advisory hints only; absent key changes nothing" .-> IC
 ```
 
-**Layer 1 — data authority.** Canonical storage is Parquet with a hash-bound
+The factor pool feeding the quant branch runs its own governed loop off to the
+side, under `FactorGovernanceProtocol v4`; it is the subject of
+[Factor mining](#3-factor-mining-and-governance--weekly-report-only-month-end-proposals)
+below.
+
+**Data authority.** Canonical storage is Parquet with a hash-bound
 manifest, promoted through `parquet_staging -> parquet_serving` only after
 validation; implausible bytes are quarantined rather than repaired in place.
 Universe membership is point-in-time (`results/pit_universe/`), so a backfilled
 listing cannot retroactively join a 2021 cross-section. CSV exists only for
 explicit export or migration, never as a read fallback.
 
-**Layer 2 — evidence production.** `DeterministicFunnel` compresses the full
+**Evidence production.** `DeterministicFunnel` compresses the full
 A-share market to a candidate set (default cap 500) using hard data-quality,
 tradability and liquidity gates plus deterministic ranking — no model, no
 randomness. Three branches then research the *same* pool: `quant`,
 `fundamental`, `macro`. Separately, the factor pool that feeds the quant branch
 is governed by its own eight-gate protocol (see below).
 
-**Layer 3 — the control chain.** Branch evidence becomes a posterior, the
+**The control chain.** Branch evidence becomes a posterior, the
 posterior meets hard constraints, and constraints become weights. Each stage has
 a typed contract (`BranchVerdict`, `RiskDecision`, `ICDecision`,
 `PortfolioPlan`, `ReportBundle`) and each stage can only tighten what the
 previous one allowed.
 
-**Layer 4 — governance.** A completed pipeline result is not public. It becomes
+**Governance.** A completed pipeline result is not public. It becomes
 an immutable `mainline-run.v1`, and only a compare-and-swap against an expected
 prevalue — followed by exact readback — moves the active pointer. Deploying code
 activates nothing.
 
-The asymmetries inside layers 2 and 3 are deliberate, and each one closes a
+The asymmetries in the middle of that path are deliberate, and each one closes a
 specific way of lying to yourself:
 
 - **Only `quant` and `fundamental` enter the Bayesian likelihood.** `macro` is

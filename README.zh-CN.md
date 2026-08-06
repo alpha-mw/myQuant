@@ -54,47 +54,58 @@
 
 ## 整体框架
 
-四层，每一层只有在能证明工作来源时才能把工作交给下一层。
+一条链路，四个阶段；不能证明工作来源，就到不了下一个阶段。
 
-```text
-┌─────────────────────────────────────────────────────────────────┐
-│  4. 治理与发布                                                   │
-│     不可变 run -> 活跃指针 CAS -> 只读公开投影                    │
-│     因子注册表、WAL + receipt、决策日志                           │
-├─────────────────────────────────────────────────────────────────┤
-│  3. 确定性控制链                                                  │
-│     Bayesian 后验 -> RiskGuard -> ICCoordinator                  │
-│     -> PortfolioConstructor -> NarratorAgent（只读）              │
-├─────────────────────────────────────────────────────────────────┤
-│  2. 证据生产                                                      │
-│     DeterministicFunnel -> {quant | fundamental | macro}         │
-│     因子池由 FactorGovernanceProtocol v4 治理                     │
-├─────────────────────────────────────────────────────────────────┤
-│  1. 数据权威                                                      │
-│     strict Parquet + PIT 成分 + 哈希绑定 manifest                 │
-│     staging -> validate -> serving，损坏字节进 quarantine          │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    D["<b>strict CN Parquet + PIT 成分</b><br/>哈希绑定 manifest，staging → validate → serving"] --> S["Data Snapshot"]
+    S --> F["<b>DeterministicFunnel</b><br/>数据质量 / 可交易性 / 流动性硬闸门<br/>确定性排序，无模型"]
+
+    F --> Q["Quant"]
+    F --> FD["Fundamental"]
+    F --> MA["Macro"]
+
+    Q --> B["<b>Bayesian 后验</b><br/>先验 + 两条似然，log-odds 更新<br/>行动阈值随 regime 变化"]
+    FD --> B
+    MA -. "先验 / 上下文 —— 从不为某只标的投票" .-> B
+
+    B --> RG["<b>RiskGuard</b><br/>硬否决、敞口与单票上限"]
+    MK["Markov Regime"] -. "min(baseline, suggested) —— 只能降风险" .-> RG
+
+    RG --> IC["ICCoordinator<br/>共识、分歧、结构化动作"]
+    IC --> PC["<b>PortfolioConstructor</b><br/>确定性目标权重"]
+    PC --> N["NarratorAgent<br/>只读"]
+
+    N --> MR["mainline run · 不可变"]
+    MR --> AP["活跃指针<br/>针对预期前值 CAS + 精确回读"]
+    AP --> PB["public run · 只读"]
+
+    LLM["LLM review 层"] -. "只出建议；没有 key 也不改变任何结果" .-> IC
 ```
 
-**第 1 层 —— 数据权威。** 规范存储是 Parquet 加哈希绑定的 manifest，经
+喂给 quant 分支的因子池在旁边跑自己那条受治理的回路，由
+`FactorGovernanceProtocol v4` 管辖；它是下面
+[因子挖掘与治理](#3-因子挖掘与治理--周度只读报告月末提案) 一节的主题。
+
+**数据权威。** 规范存储是 Parquet 加哈希绑定的 manifest，经
 `parquet_staging -> parquet_serving` 校验后才晋级；不可能的字节进隔离区，而不是就地
 修补。成分是 point-in-time 的（`results/pit_universe/`），所以一次回补的上市记录不能
 追溯性地混进 2021 年的截面。CSV 只用于显式导出或迁移，永远不作为读取回退。
 
-**第 2 层 —— 证据生产。** `DeterministicFunnel` 用硬性数据质量、可交易性、流动性闸门
+**证据生产。** `DeterministicFunnel` 用硬性数据质量、可交易性、流动性闸门
 加确定性排序，把全 A 压缩成候选集（默认上限 500）—— 没有模型，没有随机性。三条分支
 随后在**同一个池**上研究：`quant`、`fundamental`、`macro`。喂给 quant 分支的因子池
 另由一套八闸门协议治理（见下）。
 
-**第 3 层 —— 控制链。** 分支证据变成后验，后验遇上硬约束，约束变成权重。每一段都有
+**控制链。** 分支证据变成后验，后验遇上硬约束，约束变成权重。每一段都有
 类型化契约（`BranchVerdict`、`RiskDecision`、`ICDecision`、`PortfolioPlan`、
 `ReportBundle`），且每一段**只能收紧**上一段允许的范围。
 
-**第 4 层 —— 治理。** 链路跑完的结果并不公开。它先成为不可变的 `mainline-run.v1`，
+**治理。** 链路跑完的结果并不公开。它先成为不可变的 `mainline-run.v1`，
 随后只有一次针对预期前值的 compare-and-swap（再加精确回读）才能推进活跃指针。
 **部署代码不会激活任何东西。**
 
-第 2、3 层内部的不对称都是刻意的，每一条都堵住一种特定的自欺方式：
+这条链路中段的不对称都是刻意的，每一条都堵住一种特定的自欺方式：
 
 - **只有 `quant` 和 `fundamental` 进入 Bayesian 似然。** `macro` 是先验和上下文，它
   塑造风险预算，从不为某只标的投票。

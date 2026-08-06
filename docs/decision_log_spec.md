@@ -69,7 +69,7 @@
   --trade-date 2026-07-07 \
   --channel codex \
   --question "是否卖出 688519" \
-  --answer-summary "先运行 print_pipeline_state，仅翻译正式管线状态" \
+  --answer-summary "先解析活跃主线指针，仅翻译正式管线状态" \
   --answer-source codex_thread
 ```
 
