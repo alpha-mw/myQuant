@@ -19,7 +19,6 @@ SCAN_ROOTS = [
 ALLOWLIST = {
     # Formal-review and audit readers consume strategy-record CSV artifacts,
     # never canonical market bars.
-    "quant_investor/monitoring/cn_aggressive_daily_review.py",
     "scripts/build_holdings_fundamental_sheet.py",
     # Dashboard export reads strategy-record CSV artifacts, not runtime market data.
     "scripts/backfill_cn_dashboard_benchmark.py",
