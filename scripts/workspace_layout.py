@@ -12,8 +12,7 @@ from typing import Any
 
 REPO_ROOT_DIRS = (
     "quant_investor",
-    "web",
-    "frontend",
+    "portfolio_dashboard",
     "tests",
     "docs",
     "data",
@@ -22,7 +21,7 @@ REPO_ROOT_DIRS = (
 )
 
 ENVIRONMENT_ROLES = {
-    "venv": "Current Web and main-flow compatible environment.",
+    "venv": "Current main-flow compatible environment.",
     ".venv": "Current script-side environment.",
     ".venv-managed": "Candidate managed environment kept for migration only.",
 }
@@ -32,12 +31,10 @@ EXPLICIT_CLEANUP_DIRS = (
     Path(".mypy_cache"),
     Path(".pytest_cache"),
     Path(".uv-cache"),
-    Path("frontend") / "dist",
     Path("results") / "htmlcov",
 )
 
 DERIVED_ARTIFACT_DIRS = {
-    Path("frontend") / "dist",
     Path("results") / "htmlcov",
 }
 

@@ -21,7 +21,6 @@ offline by default, and compatible with the existing public CLI/API contracts.
 - `pytest tests/unit/test_v17_mainline_runtime.py -v`
 - `pytest tests/unit/test_v17_public_python.py -v`
 - `pytest tests/unit/test_v17_public_cli.py -v`
-- `pytest tests/unit/test_v17_public_web.py -v`
 - `pytest tests/unit/test_tushare_url_defaults.py -v`
 - `pytest tests/unit/test_fundamental_provider_contract.py -v`
 - `pytest tests/unit/test_fundamental_live_fetch_resilience.py -v`

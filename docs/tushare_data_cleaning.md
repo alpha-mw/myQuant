@@ -3,7 +3,7 @@
 This upgrade inserts an offline cleaning layer into the CN Tushare daily
 download path. It is data hygiene only: it does not change stock selection,
 posterior scoring, RiskGuard, PortfolioConstructor, target weights, orders,
-LLM behavior, broker behavior, frontend behavior, or factor admission.
+LLM behavior, broker behavior, or factor admission.
 
 ## Runtime Behavior
 

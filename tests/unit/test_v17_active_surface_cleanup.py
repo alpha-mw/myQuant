@@ -50,6 +50,32 @@ def test_legacy_single_layer_regime_detector_is_removed() -> None:
     assert "intelligence.regime" not in cli_source
 
 
+def test_web_workspace_layer_is_removed() -> None:
+    for relative_path in (
+        "web",
+        "frontend",
+        "run_web.sh",
+        "vercel.json",
+        "docker-compose.yml",
+        "quant_investor/run_history_store.py",
+    ):
+        assert not (ROOT / relative_path).exists(), relative_path
+
+    cli_source = (ROOT / "quant_investor" / "cli" / "main.py").read_text(encoding="utf-8")
+    assert "uvicorn" not in cli_source
+    assert "web.main" not in cli_source
+    assert "run_web_api" not in cli_source
+
+
+def test_web_only_dependencies_are_not_declared() -> None:
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+    for package in ("fastapi", "uvicorn", "pydantic", "httpx"):
+        assert package not in pyproject, package
+        assert package not in requirements, package
+    assert "web.main:app" not in pyproject
+
+
 def test_mypy_configuration_does_not_hide_removed_packages() -> None:
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     stale_paths = {

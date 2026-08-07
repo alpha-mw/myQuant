@@ -8,7 +8,6 @@ echo "Running staged upgrade focused tests..."
   tests/unit/test_v17_mainline_runtime.py \
   tests/unit/test_v17_public_python.py \
   tests/unit/test_v17_public_cli.py \
-  tests/unit/test_v17_public_web.py \
   tests/unit/test_v17_v4_forward_evidence.py \
   tests/unit/test_market_data_parquet_direct_maintenance.py \
   tests/unit/test_fundamental_generation_promotion.py \

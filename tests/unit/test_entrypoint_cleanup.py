@@ -64,10 +64,11 @@ def test_cli_research_run_has_no_architecture_switch():
     )
 
 
-def test_cli_web_help_describes_workspace_service():
+def test_cli_exposes_no_web_workspace_command():
     cli_main = importlib.import_module("quant_investor.cli.main")
     parser = cli_main._build_parser()
 
     help_text = parser.format_help()
 
-    assert "启动研究工作台 Web 服务" in help_text
+    assert "web" not in help_text
+    assert not hasattr(cli_main, "run_web_api")

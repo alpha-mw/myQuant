@@ -314,7 +314,6 @@ quant_investor/
   v17_v4_contract/           V17 v4 schema 与校验
   v17_v4_runtime/            Forward / Shadow 观测运行时
 portfolio_dashboard/         只读 Dashboard 契约
-web/                         本地研究工作台与 Web reader
 results/v17_mainline/        活跃结果命名空间，仅在状态存在时出现
 results/v17_v4_shadow/       research-only 前瞻证据命名空间
 ```

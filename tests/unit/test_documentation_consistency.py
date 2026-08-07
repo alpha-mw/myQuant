@@ -23,7 +23,6 @@ REPO_SKILL_DOCS = [
     ROOT / "skill" / "myquant-backend-ops" / "SKILL.md",
     ROOT / "skill" / "myquant-backend-ops" / "references" / "entrypoints-and-commands.md",
     ROOT / "skill" / "myquant-backend-ops" / "references" / "runtime-paths-and-artifacts.md",
-    ROOT / "skill" / "myquant-backend-ops" / "references" / "workspace-api-surface.md",
 ]
 MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 AGENTS_TEST_RE = re.compile(r"`pytest ([^`]+?\.py) -v`")
@@ -140,10 +139,8 @@ def test_repository_backend_skill_matches_the_current_public_surface():
     skill_text = "\n".join(_read(path) for path in REPO_SKILL_DOCS)
 
     assert "--strategy-id" in skill_text
-    assert "GET /api/research/{strategy_id}" in skill_text
-    assert "expected_pointer_sha256" in skill_text
+    assert "--expected-pointer-sha256" in skill_text
     assert "research-evaluate" in skill_text
     assert "stdout-only" in skill_text
-    assert "没有 POST run" in skill_text
     assert "没有公开 production publisher" in skill_text
     assert "standalone legacy automation" in skill_text

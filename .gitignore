@@ -86,10 +86,9 @@ quant_investor/data/storage/*
 reports/
 quant_investor/factor_registry/*.lock
 portfolio_dashboard/generated/
-# Root-anchored: the unanchored `models/` pattern silently blocked the
-# web/models/ source package (Pydantic schemas) from ever being committed.
+# Root-anchored so the pattern only ignores trained-model output at the repo
+# root, never a source package named `models/` somewhere in the tree.
 /models/
-!web/models/
 cache/
 output/
 results/

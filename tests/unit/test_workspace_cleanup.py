@@ -30,12 +30,10 @@ def test_iter_cleanup_targets_only_collects_safe_workspace_caches(tmp_path):
     (tmp_path / "quant_investor" / "__pycache__").mkdir(parents=True)
     (tmp_path / ".pytest_cache").mkdir()
     (tmp_path / ".uv-cache").mkdir()
-    (tmp_path / "frontend" / "dist").mkdir(parents=True)
     (tmp_path / "results" / "htmlcov").mkdir(parents=True)
     (tmp_path / "venv" / "lib" / "__pycache__").mkdir(parents=True)
     (tmp_path / "data" / "__pycache__").mkdir(parents=True)
     (tmp_path / "results" / "__pycache__").mkdir(parents=True)
-    (tmp_path / "frontend" / "node_modules" / "pkg" / "__pycache__").mkdir(parents=True)
 
     targets = [path.relative_to(tmp_path).as_posix() for path in iter_cleanup_targets(tmp_path)]
 
@@ -45,7 +43,6 @@ def test_iter_cleanup_targets_only_collects_safe_workspace_caches(tmp_path):
         ".pytest_cache",
         ".uv-cache",
         "__pycache__",
-        "frontend/dist",
         "quant_investor/__pycache__",
         "results/htmlcov",
     ]
@@ -76,13 +73,13 @@ def test_describe_environment_roles_reports_current_presence(tmp_path):
 
 def test_workspace_cleanup_script_applies_cleanup_and_prepares_tmp_dirs(tmp_path, capsys):
     (tmp_path / ".pytest_cache").mkdir()
-    (tmp_path / "frontend" / "dist").mkdir(parents=True)
+    (tmp_path / "results" / "htmlcov").mkdir(parents=True)
 
     exit_code = cleanup_main(["--root", str(tmp_path), "--apply", "--show-envs"])
 
     assert exit_code == 0
     assert not (tmp_path / ".pytest_cache").exists()
-    assert not (tmp_path / "frontend" / "dist").exists()
+    assert not (tmp_path / "results" / "htmlcov").exists()
     assert (tmp_path / "results" / "tmp").is_dir()
     assert (tmp_path / "reports" / "tmp").is_dir()
 
@@ -93,7 +90,7 @@ def test_workspace_cleanup_script_applies_cleanup_and_prepares_tmp_dirs(tmp_path
 
 def test_cleanup_inventory_classifies_protected_sources_and_delete_candidates(tmp_path):
     (tmp_path / ".mypy_cache").mkdir()
-    (tmp_path / "frontend" / "dist").mkdir(parents=True)
+    (tmp_path / "results" / "htmlcov").mkdir(parents=True)
     (tmp_path / "data" / "parquet" / "cn").mkdir(parents=True)
     (tmp_path / "data" / "parquet" / "cn" / "_latest.json").write_text(
         "{}",
@@ -134,8 +131,8 @@ def test_cleanup_inventory_classifies_protected_sources_and_delete_candidates(tm
 
     assert items[".mypy_cache"]["classification"] == "safe_cache"
     assert items[".mypy_cache"]["delete_allowed"] is True
-    assert items["frontend/dist"]["classification"] == "derived_artifact"
-    assert items["frontend/dist"]["delete_allowed"] is True
+    assert items["results/htmlcov"]["classification"] == "derived_artifact"
+    assert items["results/htmlcov"]["delete_allowed"] is True
     assert items["data/parquet/cn/_latest.json"]["classification"] == "active_runtime_source"
     assert items["data/parquet/cn/_latest.json"]["delete_allowed"] is False
     assert items["data/raw_backups/tushare"]["classification"] == "duplicate_restore_source"

@@ -27,8 +27,6 @@ Out-of-scope silent catch sites left unchanged in Phase 8:
 - `quant_investor/market/market_data_reader.py`: 256
 - `quant_investor/market/download.py`: 482, 484
 - `quant_investor/market/name_map.py`: 53
-- `web/services/data_service.py`: 455, 519, 803
-- `web/services/research_runner.py`: 89, 120, 174, 203
 - `scripts/factor_health_automation.py`: 467, 739
 
 Notes:
