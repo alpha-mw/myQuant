@@ -1,0 +1,211 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://myquant.local/schema/cn_aggressive_dashboard.v1.schema.json",
+  "title": "CN aggressive archived holdings and performance Dashboard",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "generated_at", "status", "market", "strategy_label",
+    "strategy_id_kind", "read_only", "authority_flags", "latest_record_seen",
+    "latest_valid_record", "previous_valid_record", "latest_data_date",
+    "data_age_calendar_days", "current_evidence", "previous_evidence", "history", "positions",
+    "changes", "portfolio", "benchmarks", "concentration", "risks", "i1_research",
+    "i1_display_status", "blockers", "warnings", "valid_record_count",
+    "rejected_record_count", "rejected_record_reason_counts", "rejected_record_samples",
+    "source_refs", "content_sha256"
+  ],
+  "properties": {
+    "schema_version": {"const": "cn_aggressive_dashboard.v1"},
+    "generated_at": {"type": "string", "minLength": 1},
+    "status": {"enum": ["FRESH", "PARTIAL", "BLOCKED"]},
+    "market": {"const": "CN"},
+    "strategy_label": {"const": "aggressive_tech_manufacturing"},
+    "strategy_id_kind": {"const": "HISTORICAL_DISPLAY_LABEL_NOT_V17_CANONICAL_ID"},
+    "read_only": {"const": true},
+    "authority_flags": {"$ref": "#/$defs/authorityFlags"},
+    "latest_record_seen": {"$ref": "#/$defs/record"},
+    "latest_valid_record": {"$ref": "#/$defs/record"},
+    "previous_valid_record": {"$ref": "#/$defs/record"},
+    "latest_data_date": {"$ref": "#/$defs/date"},
+    "data_age_calendar_days": {"type": "integer", "minimum": 0},
+    "current_evidence": {"$ref": "#/$defs/evidence"},
+    "previous_evidence": {"$ref": "#/$defs/evidence"},
+    "history": {"$ref": "#/$defs/history"},
+    "positions": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/position"}},
+    "changes": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/change"}},
+    "portfolio": {"$ref": "#/$defs/portfolio"},
+    "benchmarks": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/benchmark"}},
+    "concentration": {"$ref": "#/$defs/concentration"},
+    "risks": {"type": "array", "items": {"$ref": "#/$defs/risk"}},
+    "i1_research": {"type": ["object", "null"]},
+    "i1_display_status": {"type": "string", "minLength": 1},
+    "blockers": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+    "warnings": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+    "valid_record_count": {"type": "integer", "minimum": 2},
+    "rejected_record_count": {"type": "integer", "minimum": 0},
+    "rejected_record_reason_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 1}},
+    "rejected_record_samples": {"type": "array", "maxItems": 12, "items": {"type": "string", "minLength": 1}},
+    "source_refs": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/sourceRef"}},
+    "content_sha256": {"$ref": "#/$defs/sha256"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"enum": ["FRESH", "PARTIAL"]}}},
+      "then": {"properties": {"blockers": {"maxItems": 0}}},
+      "else": {"properties": {"blockers": {"minItems": 1}}}
+    }
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "record": {"type": "string", "pattern": "^[0-9]{8}_[0-9]{4}$"},
+    "date": {"type": "string", "format": "date"},
+    "symbol": {"type": "string", "pattern": "^[0-9]{6}\\.(?:SH|SZ|BJ)$"},
+    "finiteNumber": {"type": "number"},
+    "nullableNumber": {"type": ["number", "null"]},
+    "sourceRef": {
+      "type": "object", "additionalProperties": false, "required": ["path", "sha256"],
+      "properties": {"path": {"type": "string", "minLength": 1}, "sha256": {"$ref": "#/$defs/sha256"}}
+    },
+    "authorityFlags": {
+      "type": "object", "additionalProperties": false,
+      "required": ["benchmark_provider_calls", "broker_calls", "candidate_generation", "holdings_writes", "order_calls", "portfolio_recomputation", "provider_calls", "strategy_record_writes", "trade_calls", "v17_pointer_mutation"],
+      "properties": {
+        "benchmark_provider_calls": {"const": false}, "broker_calls": {"const": false},
+        "candidate_generation": {"const": false}, "holdings_writes": {"const": false},
+        "order_calls": {"const": false}, "portfolio_recomputation": {"const": false},
+        "provider_calls": {"const": false}, "strategy_record_writes": {"const": false},
+        "trade_calls": {"const": false}, "v17_pointer_mutation": {"const": false}
+      }
+    },
+    "evidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["manifest_path", "manifest_sha256", "manual_manifest_path", "manual_manifest_sha256", "ledger_path", "ledger_sha256", "pnl_path", "pnl_sha256", "financial_state_sha256", "execution_status", "execution_kind"],
+      "properties": {
+        "manifest_path": {"type": "string"}, "manifest_sha256": {"$ref": "#/$defs/sha256"},
+        "manual_manifest_path": {"type": "string"}, "manual_manifest_sha256": {"$ref": "#/$defs/sha256"},
+        "ledger_path": {"type": "string"}, "ledger_sha256": {"$ref": "#/$defs/sha256"},
+        "pnl_path": {"type": "string"}, "pnl_sha256": {"$ref": "#/$defs/sha256"},
+        "financial_state_sha256": {"$ref": "#/$defs/sha256"},
+        "execution_status": {"type": "string"},
+        "execution_kind": {"enum": ["carry_forward", "applied_effective_ledger"]}
+      }
+    },
+    "position": {
+      "type": "object", "additionalProperties": false,
+      "required": ["symbol", "name", "shares", "avg_cost", "cost_basis", "recorded_price", "market_value", "unrealized_pnl", "realized_pnl", "nav_weight", "equity_weight", "thesis_status", "price_date", "evidence_status"],
+      "properties": {
+        "symbol": {"$ref": "#/$defs/symbol"}, "name": {"type": "string", "minLength": 1},
+        "shares": {"type": "number", "exclusiveMinimum": 0}, "avg_cost": {"$ref": "#/$defs/finiteNumber"},
+        "cost_basis": {"$ref": "#/$defs/finiteNumber"}, "recorded_price": {"$ref": "#/$defs/finiteNumber"},
+        "market_value": {"$ref": "#/$defs/finiteNumber"}, "unrealized_pnl": {"$ref": "#/$defs/finiteNumber"},
+        "realized_pnl": {"$ref": "#/$defs/nullableNumber"}, "nav_weight": {"$ref": "#/$defs/finiteNumber"},
+        "equity_weight": {"$ref": "#/$defs/finiteNumber"}, "thesis_status": {"type": "string"},
+        "price_date": {"$ref": "#/$defs/date"}, "evidence_status": {"const": "HASH_BOUND_EFFECTIVE_LEDGER"}
+      }
+    },
+    "change": {
+      "type": "object", "additionalProperties": false,
+      "required": ["symbol", "name", "change_type", "previous_shares", "current_shares", "share_delta", "nav_weight_delta", "equity_weight_delta"],
+      "properties": {
+        "symbol": {"$ref": "#/$defs/symbol"}, "name": {"type": "string"},
+        "change_type": {"enum": ["NEW", "INCREASED", "REDUCED", "CLOSED", "UNCHANGED"]},
+        "previous_shares": {"$ref": "#/$defs/finiteNumber"}, "current_shares": {"$ref": "#/$defs/finiteNumber"},
+        "share_delta": {"$ref": "#/$defs/finiteNumber"}, "nav_weight_delta": {"$ref": "#/$defs/finiteNumber"},
+        "equity_weight_delta": {"$ref": "#/$defs/finiteNumber"}
+      }
+    },
+    "performancePoint": {
+      "type": "object", "additionalProperties": false,
+      "required": ["date", "record", "total_value", "portfolio_unit_nav", "portfolio_cumulative_return", "csi300_nav", "csi300_cumulative_return", "cumulative_excess_return", "benchmark_coverage", "benchmark_value_date", "evidence_status"],
+      "properties": {
+        "date": {"$ref": "#/$defs/date"}, "record": {"$ref": "#/$defs/record"},
+        "total_value": {"$ref": "#/$defs/finiteNumber"},
+        "portfolio_unit_nav": {"$ref": "#/$defs/finiteNumber"},
+        "portfolio_cumulative_return": {"$ref": "#/$defs/finiteNumber"},
+        "csi300_nav": {"$ref": "#/$defs/finiteNumber"},
+        "csi300_cumulative_return": {"$ref": "#/$defs/finiteNumber"},
+        "cumulative_excess_return": {"$ref": "#/$defs/finiteNumber"},
+        "benchmark_coverage": {"enum": ["exact_close", "previous_trading_day_ffill"]},
+        "benchmark_value_date": {"$ref": "#/$defs/date"},
+        "evidence_status": {"enum": ["ARCHIVE_INCEPTION_EXACT_BYTES_NO_DECLARED_SHA", "LEGACY_EXACT_BYTES_NO_DECLARED_SHA", "HASH_BOUND_CURRENT_CLOSURE"]}
+      }
+    },
+    "history": {
+      "type": "object", "additionalProperties": false,
+      "required": ["archive_start_record", "archive_start_date", "first_pnl_record", "first_pnl_date", "latest_performance_record", "latest_performance_date", "included_record_count", "performance_point_count", "legacy_exact_byte_record_count", "hash_bound_current_record_count", "funding_events", "net_external_flow", "rejected_record_count", "rejected_record_reason_counts", "rejected_record_samples", "evidence_status", "baseline_manifest_path", "baseline_manifest_sha256", "baseline_ledger_path", "baseline_ledger_sha256"],
+      "properties": {
+        "archive_start_record": {"$ref": "#/$defs/record"}, "archive_start_date": {"$ref": "#/$defs/date"},
+        "first_pnl_record": {"$ref": "#/$defs/record"}, "first_pnl_date": {"$ref": "#/$defs/date"},
+        "latest_performance_record": {"$ref": "#/$defs/record"}, "latest_performance_date": {"$ref": "#/$defs/date"},
+        "included_record_count": {"type": "integer", "minimum": 2},
+        "performance_point_count": {"type": "integer", "minimum": 2},
+        "legacy_exact_byte_record_count": {"type": "integer", "minimum": 0},
+        "hash_bound_current_record_count": {"type": "integer", "minimum": 0},
+        "funding_events": {"type": "array", "items": {"$ref": "#/$defs/fundingEvent"}},
+        "net_external_flow": {"$ref": "#/$defs/finiteNumber"},
+        "rejected_record_count": {"type": "integer", "minimum": 0},
+        "rejected_record_reason_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 1}},
+        "rejected_record_samples": {"type": "array", "maxItems": 12, "items": {"type": "string", "minLength": 1}},
+        "evidence_status": {"enum": ["PARTIAL_LEGACY_EXACT_BYTES_NO_DECLARED_SHA", "HASH_BOUND_CURRENT_CLOSURE_ONLY"]},
+        "baseline_manifest_path": {"type": "string", "minLength": 1}, "baseline_manifest_sha256": {"$ref": "#/$defs/sha256"},
+        "baseline_ledger_path": {"type": ["string", "null"]}, "baseline_ledger_sha256": {"anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]}
+      }
+    },
+    "fundingEvent": {
+      "type": "object", "additionalProperties": false,
+      "required": ["record", "date", "amount", "total_value_before", "total_value_after", "evidence_path", "evidence_sha256", "binding_status"],
+      "properties": {
+        "record": {"$ref": "#/$defs/record"}, "date": {"$ref": "#/$defs/date"},
+        "amount": {"$ref": "#/$defs/finiteNumber"}, "total_value_before": {"$ref": "#/$defs/finiteNumber"},
+        "total_value_after": {"$ref": "#/$defs/finiteNumber"}, "evidence_path": {"type": "string", "minLength": 1},
+        "evidence_sha256": {"$ref": "#/$defs/sha256"},
+        "binding_status": {"enum": ["MANIFEST_EMBED_AND_INDEPENDENT_MANUAL_MATCH", "INDEPENDENT_MANUAL_AND_EXACT_SUPPLEMENT_ONLY"]}
+      }
+    },
+    "portfolio": {
+      "type": "object", "additionalProperties": false,
+      "required": ["cash", "market_value", "total_value", "cash_weight", "gross_exposure", "portfolio_pnl", "current_unrealized_pnl", "latest_record_realized_pnl_from_rebalance", "cumulative_realized_pnl", "realized_pnl_evidence_status", "cumulative_twr", "latest_record_interval_return", "max_drawdown", "latest_interval_turnover", "return_method", "gross_or_net", "fee_basis", "performance_start_date", "performance_end_date", "performance_points"],
+      "properties": {
+        "cash": {"$ref": "#/$defs/finiteNumber"}, "market_value": {"$ref": "#/$defs/finiteNumber"},
+        "total_value": {"$ref": "#/$defs/finiteNumber"}, "cash_weight": {"$ref": "#/$defs/finiteNumber"},
+        "gross_exposure": {"$ref": "#/$defs/finiteNumber"}, "portfolio_pnl": {"$ref": "#/$defs/finiteNumber"},
+        "current_unrealized_pnl": {"$ref": "#/$defs/finiteNumber"},
+        "latest_record_realized_pnl_from_rebalance": {"$ref": "#/$defs/finiteNumber"},
+        "cumulative_realized_pnl": {"$ref": "#/$defs/nullableNumber"},
+        "realized_pnl_evidence_status": {"enum": ["VERIFIED", "UNKNOWN"]},
+        "cumulative_twr": {"$ref": "#/$defs/finiteNumber"}, "latest_record_interval_return": {"$ref": "#/$defs/finiteNumber"},
+        "max_drawdown": {"$ref": "#/$defs/finiteNumber"}, "latest_interval_turnover": {"$ref": "#/$defs/finiteNumber"},
+        "return_method": {"const": "funding_aware_time_weighted_unitization"},
+        "gross_or_net": {"type": "string"}, "fee_basis": {"type": "string"},
+        "performance_start_date": {"$ref": "#/$defs/date"}, "performance_end_date": {"$ref": "#/$defs/date"},
+        "performance_points": {"type": "array", "minItems": 2, "items": {"$ref": "#/$defs/performancePoint"}}
+      }
+    },
+    "benchmark": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "name", "ts_code", "source_path", "source_sha256", "start_date", "end_date", "return", "excess_return", "max_drawdown", "missing_dates", "coverage"],
+      "properties": {
+        "id": {"const": "CSI300"}, "name": {"const": "沪深300"}, "ts_code": {"const": "000300.SH"},
+        "source_path": {"type": "string"}, "source_sha256": {"$ref": "#/$defs/sha256"},
+        "start_date": {"$ref": "#/$defs/date"}, "end_date": {"$ref": "#/$defs/date"},
+        "return": {"$ref": "#/$defs/finiteNumber"}, "excess_return": {"$ref": "#/$defs/finiteNumber"},
+        "max_drawdown": {"$ref": "#/$defs/finiteNumber"},
+        "missing_dates": {"type": "array", "maxItems": 0},
+        "coverage": {"type": "array", "minItems": 2, "items": {"enum": ["exact_close", "previous_trading_day_ffill"]}}
+      }
+    },
+    "concentration": {
+      "type": "object", "additionalProperties": false,
+      "required": ["top1_equity_weight", "top3_equity_weight", "equity_hhi", "holding_count", "thesis_status_counts"],
+      "properties": {
+        "top1_equity_weight": {"$ref": "#/$defs/finiteNumber"}, "top3_equity_weight": {"$ref": "#/$defs/finiteNumber"},
+        "equity_hhi": {"$ref": "#/$defs/finiteNumber"}, "holding_count": {"type": "integer", "minimum": 1},
+        "thesis_status_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 1}}
+      }
+    },
+    "risk": {
+      "type": "object", "additionalProperties": false, "required": ["code", "severity", "detail"],
+      "properties": {"code": {"type": "string"}, "severity": {"enum": ["LOW", "MEDIUM", "HIGH"]}, "detail": {"type": "string"}}
+    }
+  }
+}

@@ -1,0 +1,120 @@
+{
+  "schema_version": "cn_aggressive_dashboard.v1",
+  "generated_at": "2099-01-03T12:00:00+08:00",
+  "status": "PARTIAL",
+  "market": "CN",
+  "strategy_label": "aggressive_tech_manufacturing",
+  "strategy_id_kind": "HISTORICAL_DISPLAY_LABEL_NOT_V17_CANONICAL_ID",
+  "read_only": true,
+  "authority_flags": {
+    "benchmark_provider_calls": false,
+    "broker_calls": false,
+    "candidate_generation": false,
+    "holdings_writes": false,
+    "order_calls": false,
+    "portfolio_recomputation": false,
+    "provider_calls": false,
+    "strategy_record_writes": false,
+    "trade_calls": false,
+    "v17_pointer_mutation": false
+  },
+  "latest_record_seen": "20990103_1200",
+  "latest_valid_record": "20990103_1200",
+  "previous_valid_record": "20990102_1200",
+  "latest_data_date": "2099-01-03",
+  "data_age_calendar_days": 0,
+  "current_evidence": {
+    "manifest_path": "SYNTHETIC/20990103_1200/manifest.json",
+    "manifest_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "manual_manifest_path": "SYNTHETIC/20990103_1200/manual_execution_manifest.json",
+    "manual_manifest_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+    "ledger_path": "SYNTHETIC/20990103_1200/ledger_after_manual_switch.csv",
+    "ledger_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+    "pnl_path": "SYNTHETIC/20990103_1200/pnl_summary.csv",
+    "pnl_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+    "financial_state_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+    "execution_status": "no_action_carry_forward",
+    "execution_kind": "carry_forward"
+  },
+  "previous_evidence": {
+    "manifest_path": "SYNTHETIC/20990102_1200/manifest.json",
+    "manifest_sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+    "manual_manifest_path": "SYNTHETIC/20990102_1200/manual_execution_manifest.json",
+    "manual_manifest_sha256": "7777777777777777777777777777777777777777777777777777777777777777",
+    "ledger_path": "SYNTHETIC/20990102_1200/ledger_after_manual_switch.csv",
+    "ledger_sha256": "8888888888888888888888888888888888888888888888888888888888888888",
+    "pnl_path": "SYNTHETIC/20990102_1200/pnl_summary.csv",
+    "pnl_sha256": "9999999999999999999999999999999999999999999999999999999999999999",
+    "financial_state_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "execution_status": "no_action_carry_forward",
+    "execution_kind": "carry_forward"
+  },
+  "history": {
+    "archive_start_record": "20990102_1200", "archive_start_date": "2099-01-02",
+    "first_pnl_record": "20990102_1200", "first_pnl_date": "2099-01-02",
+    "latest_performance_record": "20990103_1200", "latest_performance_date": "2099-01-03",
+    "included_record_count": 2, "performance_point_count": 2,
+    "legacy_exact_byte_record_count": 0, "hash_bound_current_record_count": 2,
+    "funding_events": [{
+      "record": "20990102_1200", "date": "2099-01-02", "amount": 5000,
+      "total_value_before": 4900, "total_value_after": 9900,
+      "evidence_path": "SYNTHETIC/20990102_1200/funding.json",
+      "evidence_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "binding_status": "MANIFEST_EMBED_AND_INDEPENDENT_MANUAL_MATCH"
+    }],
+    "net_external_flow": 5000,
+    "rejected_record_count": 0, "rejected_record_reason_counts": {}, "rejected_record_samples": [],
+    "evidence_status": "HASH_BOUND_CURRENT_CLOSURE_ONLY",
+    "baseline_manifest_path": "SYNTHETIC/20990102_1200/manifest.json",
+    "baseline_manifest_sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+    "baseline_ledger_path": "SYNTHETIC/20990102_1200/ledger_after_manual_switch.csv",
+    "baseline_ledger_sha256": "8888888888888888888888888888888888888888888888888888888888888888"
+  },
+  "positions": [{
+    "symbol": "000001.SZ", "name": "合成样例A", "shares": 100, "avg_cost": 10,
+    "cost_basis": 1000, "recorded_price": 11, "market_value": 1100, "unrealized_pnl": 100,
+    "realized_pnl": null, "nav_weight": 0.11, "equity_weight": 1, "thesis_status": "SYNTHETIC",
+    "price_date": "2099-01-03", "evidence_status": "HASH_BOUND_EFFECTIVE_LEDGER"
+  }],
+  "changes": [{
+    "symbol": "000001.SZ", "name": "合成样例A", "change_type": "UNCHANGED",
+    "previous_shares": 100, "current_shares": 100, "share_delta": 0,
+    "nav_weight_delta": 0, "equity_weight_delta": 0
+  }],
+  "portfolio": {
+    "cash": 8900, "market_value": 1100, "total_value": 10000, "cash_weight": 0.89,
+    "gross_exposure": 0.11, "portfolio_pnl": 0, "current_unrealized_pnl": 100,
+    "latest_record_realized_pnl_from_rebalance": 0, "cumulative_realized_pnl": null,
+    "realized_pnl_evidence_status": "UNKNOWN", "cumulative_twr": 0.01,
+    "latest_record_interval_return": 0.01, "max_drawdown": 0, "latest_interval_turnover": 0,
+    "return_method": "funding_aware_time_weighted_unitization", "gross_or_net": "UNKNOWN",
+    "fee_basis": "UNKNOWN", "performance_start_date": "2099-01-02", "performance_end_date": "2099-01-03",
+    "performance_points": [
+      {"date": "2099-01-02", "record": "20990102_1200", "total_value": 9900, "portfolio_unit_nav": 1, "portfolio_cumulative_return": 0, "csi300_nav": 1, "csi300_cumulative_return": 0, "cumulative_excess_return": 0, "benchmark_coverage": "exact_close", "benchmark_value_date": "2099-01-02", "evidence_status": "HASH_BOUND_CURRENT_CLOSURE"},
+      {"date": "2099-01-03", "record": "20990103_1200", "total_value": 10000, "portfolio_unit_nav": 1.01, "portfolio_cumulative_return": 0.01, "csi300_nav": 1.005, "csi300_cumulative_return": 0.005, "cumulative_excess_return": 0.005, "benchmark_coverage": "exact_close", "benchmark_value_date": "2099-01-03", "evidence_status": "HASH_BOUND_CURRENT_CLOSURE"}
+    ]
+  },
+  "benchmarks": [{
+    "id": "CSI300", "name": "沪深300", "ts_code": "000300.SH",
+    "source_path": "SYNTHETIC/cn_index_benchmark.csv",
+    "source_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "start_date": "2099-01-02", "end_date": "2099-01-03", "return": 0.005,
+    "excess_return": 0.005, "max_drawdown": 0, "missing_dates": [],
+    "coverage": ["exact_close", "exact_close"]
+  }],
+  "concentration": {"top1_equity_weight": 1, "top3_equity_weight": 1, "equity_hhi": 1, "holding_count": 1, "thesis_status_counts": {"SYNTHETIC": 1}},
+  "risks": [{"code": "SYNTHETIC_SAMPLE", "severity": "MEDIUM", "detail": "Tracked sample only; never a production input."}],
+  "i1_research": null,
+  "i1_display_status": "NOT_DISPLAYED_NO_EXACT_HASH_BOUND_I1_ARTIFACT",
+  "blockers": [],
+  "warnings": ["synthetic_sample_only"],
+  "valid_record_count": 2,
+  "rejected_record_count": 0,
+  "rejected_record_reason_counts": {},
+  "rejected_record_samples": [],
+  "source_refs": [
+    {"path": "SYNTHETIC/20990102_1200/funding.json", "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},
+    {"path": "SYNTHETIC/cn_index_benchmark.csv", "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+  ],
+  "content_sha256": "2f29b3ca98ceb928840216b4b2ed0c845e68f2db3cf933b83e3195acaae8dd14"
+}

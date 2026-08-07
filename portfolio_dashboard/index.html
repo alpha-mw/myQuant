@@ -3,123 +3,114 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>myQuant V17 Mainline Dashboard v5</title>
+    <title>CN aggressive 持仓与业绩 Dashboard</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
     <div class="app-shell">
       <header class="page-header">
         <div>
-          <p class="eyebrow">V17 · SINGLE STRATEGY · READ ONLY</p>
-          <h1>myQuant Mainline Dashboard</h1>
-          <p class="subtitle">只展示经 active pointer 解析并严格闭合的 V17 主线 public run。</p>
+          <p class="eyebrow">CN · ARCHIVED RECORDS · READ ONLY</p>
+          <h1>aggressive_<wbr>tech_<wbr>manufacturing</h1>
+          <p class="subtitle">历史展示标签；当前持仓只认 hash-bound 有效 ledger，业绩从 2026-03-17 归档起点按 exact-byte 证据统计，不是 V17 canonical strategy。</p>
         </div>
-        <span id="runtimeStatus" class="status-pill blocked">V17_MAINLINE_UNINITIALIZED</span>
+        <span id="runtimeStatus" class="status-pill blocked">BLOCKED</span>
       </header>
 
       <main>
-        <section class="state-grid" aria-label="Mainline state">
-          <article class="state-card primary-card">
-            <span>Canonical strategy</span>
-            <strong id="strategyId">—</strong>
-          </article>
-          <article class="state-card">
-            <span>Run</span>
-            <strong id="runId">—</strong>
-          </article>
-          <article class="state-card">
-            <span>Gross weight</span>
-            <strong id="grossWeight">—</strong>
-          </article>
-          <article class="state-card">
-            <span>Cash weight</span>
-            <strong id="cashWeight">—</strong>
-          </article>
-          <article class="state-card">
-            <span>Targets</span>
-            <strong id="targetCount">—</strong>
-          </article>
+        <section class="state-grid dashboard-kpis" aria-label="Portfolio state">
+          <article class="state-card primary-card"><span>最新有效记录</span><strong id="latestRecord">—</strong></article>
+          <article class="state-card"><span>数据日期</span><strong id="dataDate">—</strong></article>
+          <article class="state-card"><span>总资产</span><strong id="totalValue">—</strong></article>
+          <article class="state-card"><span>现金 / 仓位</span><strong id="cashExposure">—</strong></article>
+          <article class="state-card"><span>3月归档以来 TWR</span><strong id="twrValue">—</strong></article>
+          <article class="state-card"><span>沪深300 / 超额</span><strong id="benchmarkValue">—</strong></article>
+          <article class="state-card"><span>最大回撤</span><strong id="drawdownValue">—</strong></article>
+          <article class="state-card"><span>组合 P&amp;L</span><strong id="pnlValue">—</strong></article>
         </section>
 
         <section id="blockerPanel" class="panel blocker-panel" hidden>
-          <div class="panel-heading">
-            <div>
-              <p class="eyebrow">FAIL CLOSED</p>
-              <h2>主线数据不可用</h2>
-            </div>
-          </div>
+          <div class="panel-heading"><div><p class="eyebrow">FAIL CLOSED</p><h2>Dashboard 不可用</h2></div></div>
           <ul id="blockerList" class="blocker-list"></ul>
         </section>
 
-        <section id="emptyState" class="panel empty-state">
-          <h2>没有可展示的主线组合</h2>
-          <p id="emptyStateText">Dashboard 等待单策略 active pointer。</p>
-        </section>
-
-        <div id="activeContent" hidden>
-          <section class="panel contract-strip" aria-label="Contract identity">
-            <div><span>Input schema</span><code id="inputSchema">—</code></div>
-            <div><span>Protocol</span><code id="protocolValue">—</code></div>
-            <div><span>Market</span><code id="marketValue">—</code></div>
-            <div><span>Capability</span><code id="capabilityValue">—</code></div>
-            <div><span>Authority source</span><code id="authoritySource">—</code></div>
-            <div><span>Semantic SHA-256</span><code id="semanticHash">—</code></div>
-          </section>
-
+        <div id="dashboardContent" hidden>
           <section class="panel">
             <div class="panel-heading">
-              <div>
-                <p class="eyebrow">PORTFOLIO</p>
-                <h2>目标权重</h2>
-              </div>
-              <p>股票代码按 ASCII 严格升序，权重为 public run 原值。</p>
+              <div><p class="eyebrow">CURRENT EFFECTIVE LEDGER</p><h2>当前有效持仓</h2></div>
+              <p>价格均为记录价，不是当前行情；单股已实现盈亏缺少分项闭包时显示 UNKNOWN。</p>
             </div>
             <div class="table-wrap">
               <table>
-                <thead><tr><th>Symbol</th><th>Lane</th><th class="numeric">Current</th><th class="numeric">Final</th></tr></thead>
-                <tbody id="targetRows"></tbody>
+                <thead><tr><th>代码 公司名</th><th class="numeric">股数</th><th class="numeric">成本</th><th class="numeric">记录价</th><th class="numeric">市值</th><th class="numeric">NAV 权重</th><th class="numeric">权益权重</th><th class="numeric">未实现 P&amp;L</th><th>已实现</th><th>证据</th></tr></thead>
+                <tbody id="positionRows"></tbody>
               </table>
             </div>
           </section>
 
           <section class="panel">
             <div class="panel-heading">
-              <div>
-                <p class="eyebrow">SOURCE CLOSURE</p>
-                <h2>不可变引用</h2>
-              </div>
-              <p>每一项均绑定 schema、相对路径与 exact-byte SHA-256。</p>
+              <div><p class="eyebrow">LATEST VS PREVIOUS</p><h2>持仓变化</h2></div>
+              <p id="changeSubtitle">—</p>
             </div>
             <div class="table-wrap">
               <table>
-                <thead><tr><th>Artifact</th><th>Schema</th><th>Path</th><th>Byte SHA-256</th></tr></thead>
-                <tbody id="referenceRows"></tbody>
+                <thead><tr><th>代码 公司名</th><th>变化</th><th class="numeric">前股数</th><th class="numeric">现股数</th><th class="numeric">数量变化</th><th class="numeric">NAV 权重变化</th><th class="numeric">权益权重变化</th></tr></thead>
+                <tbody id="changeRows"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="two-column">
+            <article class="panel">
+              <div class="panel-heading"><div><p class="eyebrow">PERFORMANCE</p><h2>业绩与基准</h2></div></div>
+              <dl id="performanceList" class="metric-list"></dl>
+            </article>
+            <article class="panel">
+              <div class="panel-heading"><div><p class="eyebrow">CONCENTRATION</p><h2>集中度与口径</h2></div></div>
+              <dl id="concentrationList" class="metric-list"></dl>
+            </article>
+          </section>
+
+          <section class="panel">
+            <div class="panel-heading">
+              <div><p class="eyebrow">SINCE ARCHIVE INCEPTION</p><h2>自 3 月起的业绩轨迹</h2></div>
+              <p>按估值证据日期与沪深300交易日对齐；旧记录为 exact-byte PARTIAL 证据，不获得当前持仓权威。</p>
+            </div>
+            <dl id="historySummary" class="metric-list history-summary"></dl>
+            <div class="table-wrap history-table-wrap">
+              <table>
+                <thead><tr><th>估值日期</th><th>记录</th><th class="numeric">总资产</th><th class="numeric">单位净值</th><th class="numeric">组合累计</th><th class="numeric">沪深300累计</th><th class="numeric">累计超额</th><th>证据</th></tr></thead>
+                <tbody id="performanceRows"></tbody>
               </table>
             </div>
           </section>
 
           <section class="panel">
+            <div class="panel-heading"><div><p class="eyebrow">RISK</p><h2>主要风险</h2></div></div>
+            <div id="riskGrid" class="risk-grid"></div>
+          </section>
+
+          <section class="panel">
             <div class="panel-heading">
-              <div>
-                <p class="eyebrow">READ ONLY</p>
-                <h2>权限边界</h2>
-              </div>
-              <p>所有外部调用、写选择器和交易能力必须关闭。</p>
+              <div><p class="eyebrow">EXACT-BYTE CLOSURE</p><h2>当前证据</h2></div>
+              <p>路径与 SHA 来自当前 bundle 的 source closure；checker 会重新读取并核对字节。</p>
             </div>
-            <div class="table-wrap compact-table">
-              <table>
-                <thead><tr><th>Capability flag</th><th>State</th></tr></thead>
-                <tbody id="authorityRows"></tbody>
-              </table>
-            </div>
+            <div class="table-wrap"><table><thead><tr><th>Artifact</th><th>Path</th><th>SHA-256</th></tr></thead><tbody id="evidenceRows"></tbody></table></div>
+          </section>
+
+          <section class="panel muted-panel">
+            <div class="panel-heading"><div><p class="eyebrow">EVIDENCE LIMITS</p><h2>未验证口径与 I1</h2></div></div>
+            <p id="i1Status" class="mono">—</p>
+            <ul id="warningList" class="warning-list"></ul>
           </section>
         </div>
       </main>
     </div>
 
-    <script src="private/mainline_public_run.js"></script>
-    <script src="js/mainline_input.js"></script>
-    <script src="js/dashboard_contract_v5.js"></script>
+    <script src="private/generated/cn_aggressive_dashboard.v1.js"></script>
+    <script src="js/cn_aggressive_input.js"></script>
+    <script src="js/cn_aggressive_dashboard_contract_v1.js"></script>
     <script src="app.js"></script>
   </body>
 </html>
