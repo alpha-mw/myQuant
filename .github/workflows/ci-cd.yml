@@ -110,16 +110,11 @@ jobs:
       with:
         enable-cache: true
 
-    - name: Install build dependencies
-      run: |
-        uv sync --extra dev
-        uv pip install build twine
-
     - name: Build package
-      run: uv run python -m build
+      run: uv build
 
     - name: Check package
-      run: uv run twine check dist/*
+      run: uvx twine check dist/*
 
   model-training:
     needs: [engine-core]
