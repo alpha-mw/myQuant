@@ -85,7 +85,6 @@ quant_investor/data/storage/*
 !quant_investor/data/storage/csv_store.py
 reports/
 quant_investor/factor_registry/*.lock
-portfolio_dashboard/generated/
 # Root-anchored so the pattern only ignores trained-model output at the repo
 # root, never a source package named `models/` somewhere in the tree.
 /models/

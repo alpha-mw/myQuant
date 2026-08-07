@@ -106,5 +106,4 @@ readback gate，之后才替换 private bundle；发布后复核失败会恢复�
 时才可显示 I1。没有 exact artifact 时 `i1_research` 必须为 `null`。I1 的五态始终是
 research-only，不能映射为持仓变化、组合准入、买卖、订单或交易。
 
-旧 `dashboard_contract.v5` 文件仍保留用于 V17 public-run contract 兼容与独立测试；
 本页面不把这套历史组合包装成 V17 public run。
