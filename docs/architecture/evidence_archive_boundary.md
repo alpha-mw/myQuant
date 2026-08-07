@@ -45,6 +45,38 @@ rather than fixed in place, because fixing it in place would change the bytes.
 
 Changing anything in this layer requires a governance re-pin, not a refactor.
 
+## The archive runs only on the machine that published it
+
+Three separate bindings tie the archive to one specific machine, not merely to
+one operating system:
+
+1. **Interpreter identity.** `AST_RUNTIME_FINGERPRINT` in
+   `governance_candidate_preregistration_v4_3.py` pins the absolute path of the
+   publishing interpreter (`/Users/…/.venv/bin/python`), the SHA-256 of that
+   binary, and its build string down to the Clang version. Any other
+   interpreter raises `runtime Python identity mismatch`.
+2. **A Darwin-only syscall.** `governance_private_bundle_io` publishes through
+   `renameatx_np` with `RENAME_EXCL` to get exactly-once creation. On Linux it
+   fails closed with `REJECTED_FAIL_CLOSED: renameatx_np(RENAME_EXCL) requires
+   Darwin`.
+3. **The owner's git object store.** Source identity is resolved with
+   `git cat-file blob <sha>` against a repository outside this one; those blobs
+   exist only locally.
+
+These are properties of the seal, not defects. Repairing any of them means
+editing byte-pinned files.
+
+The practical consequence is that these tests cannot pass in CI. GitHub's
+Ubuntu runners fail all of them, and a hosted macOS runner would still fail the
+first and third. `tests/unit/conftest.py` therefore skips the affected modules
+when `CI` is set, so CI verifies the runtime layer — which must stay green —
+while the archive is verified on the owner's machine, where its seals actually
+mean something. `RUN_EVIDENCE_ARCHIVE_TESTS=1` forces them on, `=0` forces them
+off.
+
+**Run the full local suite before trusting a governance change.** A green CI
+badge says nothing about this layer.
+
 ## Consequences for tooling and review
 
 - **The 800-line file cap does not apply here.** Many of these modules are

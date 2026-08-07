@@ -171,9 +171,7 @@ def run_cn_macro_maintenance(
     cutoff_at = max(item[3] for item in captures)
 
     generation_root = Path(release.identity.generation_path)
-    with tempfile.TemporaryDirectory(
-        prefix="cn-macro-maintenance-", dir="/private/tmp"
-    ) as temporary:
+    with tempfile.TemporaryDirectory(prefix="cn-macro-maintenance-") as temporary:
         stage = Path(temporary)
         plan_path = stage / "plan.json"
         open_days_path = stage / "market_open_days.json"
