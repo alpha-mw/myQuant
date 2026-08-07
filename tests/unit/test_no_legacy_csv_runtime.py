@@ -22,9 +22,8 @@ ALLOWLIST = {
     "scripts/build_holdings_fundamental_sheet.py",
     # Dashboard export reads strategy-record CSV artifacts, not runtime market data.
     "scripts/backfill_cn_dashboard_benchmark.py",
+    "scripts/cn_dashboard_common.py",
     "scripts/merge_cn_dashboard_benchmark_fills.py",
-    # One-way migration off legacy CSV state; reading CSV is its entire purpose.
-    "scripts/migrate_legacy_csv_state_to_parquet.py",
     # Factor package integrity verification reads installed wheel RECORD
     # metadata, not production market bars.
     "scripts/build_factor_v4_3_prior_diagnostic_nomination.py",

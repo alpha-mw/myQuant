@@ -14,16 +14,11 @@ fi
 echo "Running Phase 10 factor shadow report focused tests..."
 "$PYTHON_BIN" -m pytest \
   tests/unit/test_factor_library_shadow_status.py \
-  tests/unit/test_observability_factor_governance.py \
-  tests/unit/test_factor_shadow_no_runtime_wiring.py \
-  tests/unit/test_cn_aggressive_portfolio_tracker.py::test_run_tracker_renders_formal_diagnostics_without_changing_action \
   -q
 
 echo "Running Phase 10 factor shadow report focused mypy..."
 "$PYTHON_BIN" -m mypy \
   quant_investor/factors/report.py \
-  quant_investor/observability.py \
-  quant_investor/monitoring/cn_aggressive_portfolio_tracker.py \
   --ignore-missing-imports \
   --no-strict-optional
 

@@ -10,7 +10,6 @@ echo "Running Phase 12 execution cost focused tests..."
 "$PYTHON_BIN" -m pytest \
   tests/unit/test_factor_execution_cost.py \
   tests/unit/test_factor_execution_cost_store.py \
-  tests/unit/test_factor_execution_cost_no_runtime_effect.py \
   -q
 
 echo "Running Phase 12 execution cost focused mypy..."

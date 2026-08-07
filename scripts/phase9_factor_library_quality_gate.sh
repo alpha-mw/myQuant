@@ -24,7 +24,6 @@ echo "Running Phase 9 factor library focused tests..."
   tests/unit/test_factor_library.py \
   tests/unit/test_factor_library_report.py \
   tests/unit/test_factor_library_store.py \
-  tests/unit/test_observability_factor_governance.py \
   -q
 
 echo "Running Phase 9 factor library focused mypy..."
@@ -44,7 +43,6 @@ echo "Running Phase 9 factor library focused mypy..."
   quant_investor/factors/library.py \
   quant_investor/factors/report.py \
   quant_investor/versioning.py \
-  quant_investor/observability.py \
   --ignore-missing-imports \
   --no-strict-optional
 

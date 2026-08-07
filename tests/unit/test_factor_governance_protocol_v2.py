@@ -49,14 +49,6 @@ from quant_investor.factors.registry_store import (
     load_registry_snapshot_strict,
 )
 from quant_investor.factors.runtime import MinedFactorRegistry
-from scripts.rollback_factor_governance_transition import (
-    main as rollback_main,
-    parse_args as parse_rollback_args,
-    run_rollback,
-)
-from scripts.build_factor_governance_replay_evidence import (
-    main as build_evidence_main,
-)
 
 
 def _hash(value: object) -> str:
@@ -455,31 +447,12 @@ def test_only_canonical_producer_artifact_can_build_apply_plan(tmp_path) -> None
         load_governance_replay_evidence(handwritten)
 
 
-def test_retired_v2_evidence_cli_rejects_without_writing(
-    tmp_path,
-    capsys,
-) -> None:
-    replay_path = tmp_path / "full-chain-replay.json"
-    evidence_path = tmp_path / "private" / "governance-evidence.json"
-    replay_path.write_text(
-        json.dumps(_raw_replay(), ensure_ascii=False),
-        encoding="utf-8",
-    )
+def test_retired_v2_governance_clis_are_removed() -> None:
+    """Both v2 CLIs were pure refusal stubs; they are gone rather than kept as ones."""
 
-    exit_code = build_evidence_main(
-        [
-            "--full-chain-replay-json",
-            str(replay_path),
-            "--output-json",
-            str(evidence_path),
-        ]
-    )
-
-    assert exit_code == 2
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    assert "v2_is_retired" in captured.err
-    assert not evidence_path.exists()
+    scripts_dir = Path(__file__).resolve().parents[2] / "scripts"
+    assert not (scripts_dir / "build_factor_governance_replay_evidence.py").exists()
+    assert not (scripts_dir / "rollback_factor_governance_transition.py").exists()
 
 
 def test_slot_risk_budget_retains_previous_when_evidence_is_insufficient() -> None:
@@ -599,10 +572,7 @@ def _historical_inverse_wal_fixture(tmp_path: Path) -> dict[str, object]:
     }
 
 
-def test_retired_v2_rollback_cli_rejects_without_registry_change(
-    tmp_path,
-    capsys,
-) -> None:
+def test_historical_inverse_wal_state_exhausts_the_monthly_budget(tmp_path) -> None:
     fixture = _historical_inverse_wal_fixture(tmp_path)
     registry_path = fixture["registry_path"]
     ledger_path = fixture["ledger_path"]
@@ -636,16 +606,6 @@ def test_retired_v2_rollback_cli_rejects_without_registry_change(
         "--expected-evidence-hash",
         applied["evidence_hash"],
     ]
-
-    assert rollback_main(common_rollback_args) == 2
-    captured = capsys.readouterr()
-    assert "Legacy governance rollback is retired" in captured.err
-    with pytest.raises(ValueError, match="Legacy governance rollback is retired"):
-        run_rollback(parse_rollback_args(common_rollback_args))
-    assert load_registry_snapshot_strict(registry_path).registry_sha256 == (
-        after_apply.registry_sha256
-    )
-    assert ledger_path.read_bytes() == ledger_before_rollback
 
     assert monthly_mutation_budget_blockers(ledger_path, "2026-07") == [
         "monthly_transition_budget_exhausted"

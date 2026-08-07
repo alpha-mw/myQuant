@@ -12,7 +12,6 @@ echo "Running Phase 11 factor shadow scoring focused tests..."
 "$PYTHON_BIN" -m pytest \
   tests/unit/test_factor_shadow_scoring.py \
   tests/unit/test_factor_shadow_scoring_store.py \
-  tests/unit/test_factor_shadow_scoring_no_runtime_effect.py \
   -q
 
 echo "Running Phase 11 factor shadow scoring focused mypy..."

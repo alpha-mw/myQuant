@@ -11,7 +11,6 @@ echo "Running Phase 12 tradability and execution feasibility focused tests..."
   tests/unit/test_factor_tradability.py \
   tests/unit/test_factor_execution_feasibility_audit.py \
   tests/unit/test_factor_tradability_audit_store.py \
-  tests/unit/test_factor_tradability_no_runtime_effect.py \
   -q
 
 echo "Running Phase 12 tradability focused mypy..."

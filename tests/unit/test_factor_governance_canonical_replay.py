@@ -27,7 +27,6 @@ from quant_investor.factors.governance_canonical_replay import (
     strict_json_loads,
     verify_canonical_replay,
 )
-from scripts.build_factor_governance_canonical_replay import main as replay_main
 
 
 def _sha(raw: bytes) -> str:
@@ -673,27 +672,6 @@ def test_registry_source_and_stage_paths_reject_non_strings(
             registry_path=replay_fixture["registry"],
             draft_path=replay_fixture["draft"],
         )
-
-
-def test_cli_non_string_source_path_is_blocked_without_traceback(
-    replay_fixture: dict[str, Any], capsys: pytest.CaptureFixture[str]
-) -> None:
-    draft = replay_fixture["draft_payload"]
-    draft["calendar"]["path"] = True
-    _write_json(replay_fixture["draft"], draft)
-    assert replay_main(
-        [
-            "--private-root",
-            str(replay_fixture["private"]),
-            "--registry-path",
-            str(replay_fixture["registry"]),
-            "--draft-path",
-            str(replay_fixture["draft"]),
-        ]
-    ) == 2
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    assert "Traceback" not in captured.err
 
 
 def test_constructible_replay_uses_exact_receipt_and_discloses_no_authority(
@@ -2001,40 +1979,9 @@ def test_strict_json_wraps_huge_integer_conversion_limit() -> None:
         strict_json_loads(raw, expected_fields={"a"})
 
 
-def test_huge_numeric_conversion_and_cli_fail_closed_without_traceback(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_huge_numeric_conversion_fails_closed(tmp_path: Path) -> None:
     with pytest.raises(CanonicalReplayError, match="finite"):
         canonical_module._finite(10**4000, "huge")
-
-    private = tmp_path / "private"
-    private.mkdir(mode=0o700)
-    registry = tmp_path / "registry.json"
-    _write_json(
-        registry,
-        {
-            "schema_version": "mined-factor-registry.v1",
-            "metadata": {},
-            "factors": [],
-        },
-        mode=0o644,
-    )
-    draft = tmp_path / "huge.json"
-    draft.write_bytes(b'{"a":' + (b"9" * 5000) + b"}")
-    draft.chmod(0o600)
-    assert replay_main(
-        [
-            "--private-root",
-            str(private),
-            "--registry-path",
-            str(registry),
-            "--draft-path",
-            str(draft),
-        ]
-    ) == 2
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    assert "Traceback" not in captured.err
 
 
 def test_walk_forward_purged_requires_exact_boolean() -> None:
@@ -2191,20 +2138,8 @@ def test_bundle_recomputed_boolean_cannot_equal_numeric_value(
         )
 
 
-def test_retired_v1_cli_rejects_without_logical_control_output(
-    replay_fixture: dict[str, Any], capsys: pytest.CaptureFixture[str]
-) -> None:
-    assert replay_main(
-        [
-            "--private-root",
-            str(replay_fixture["private"]),
-            "--registry-path",
-            str(replay_fixture["registry"]),
-            "--draft-path",
-            str(replay_fixture["draft"]),
-        ]
-    ) == 2
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    assert "legacy_canonical_replay_v1_retired" in captured.err
-    assert str(replay_fixture["registry"]) not in captured.err
+def test_retired_v1_canonical_replay_cli_is_removed() -> None:
+    """The v1 CLI was a pure refusal stub; it is gone rather than kept as one."""
+
+    root = Path(__file__).resolve().parents[2]
+    assert not (root / "scripts" / "build_factor_governance_canonical_replay.py").exists()

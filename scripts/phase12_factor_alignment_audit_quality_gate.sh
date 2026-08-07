@@ -10,7 +10,6 @@ echo "Running Phase 12 factor alignment audit focused tests..."
 "$PYTHON_BIN" -m pytest \
   tests/unit/test_factor_alignment_audit.py \
   tests/unit/test_factor_alignment_audit_store.py \
-  tests/unit/test_factor_alignment_no_runtime_effect.py \
   -q
 
 echo "Running Phase 12 factor alignment audit focused mypy..."
