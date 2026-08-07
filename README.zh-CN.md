@@ -328,6 +328,12 @@ uv run flake8 quant_investor --count --select=E9,F63,F7,F82 --show-source --stat
 uv run mypy quant_investor/factors --ignore-missing-imports
 ```
 
+清理本地缓存（`__pycache__` 与各工具缓存）：
+
+```bash
+find . -name __pycache__ -type d -not -path './.venv/*' -exec rm -rf {} + ; rm -rf .mypy_cache .pytest_cache .uv-cache results/htmlcov
+```
+
 除非任务明确授权，本地校验期间不要调用实时 Tushare、yfinance、LLM、券商、下单、
 执行或交易 API。
 

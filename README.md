@@ -360,6 +360,12 @@ uv run flake8 quant_investor --count --select=E9,F63,F7,F82 --show-source --stat
 uv run mypy quant_investor/factors --ignore-missing-imports
 ```
 
+To clear local caches (`__pycache__` and the tool caches):
+
+```bash
+find . -name __pycache__ -type d -not -path './.venv/*' -exec rm -rf {} + ; rm -rf .mypy_cache .pytest_cache .uv-cache results/htmlcov
+```
+
 Do not call live Tushare, yfinance, LLM, broker, order, execution or trade APIs
 during local verification unless the task explicitly authorizes them.
 
