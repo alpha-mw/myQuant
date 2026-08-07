@@ -320,10 +320,12 @@ results/v17_v4_shadow/       research-only 前瞻证据命名空间
 
 ## 开发
 
-Python 3.13+。先运行最小相关检查。大范围 staged-upgrade 工作使用：
+Python 3.13+。先运行最小相关检查。与 CI 等价的完整本地校验：
 
 ```bash
-PYTHON=./.venv/bin/python scripts/staged_upgrade_quality_gate.sh
+uv run pytest tests/unit -q
+uv run flake8 quant_investor --count --select=E9,F63,F7,F82 --show-source --statistics
+uv run mypy quant_investor/factors --ignore-missing-imports
 ```
 
 除非任务明确授权，本地校验期间不要调用实时 Tushare、yfinance、LLM、券商、下单、

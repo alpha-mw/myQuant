@@ -95,7 +95,7 @@ def test_agents_recommended_tests_exist():
         assert (ROOT / relative).exists(), f"AGENTS.md references missing test: {relative}"
 
 
-def test_workspace_docs_point_to_live_workspace_modules_and_launcher():
+def test_public_docs_describe_the_live_entrypoints_and_contracts():
     readme = _read(ROOT / "README.md")
     readme_cn = _read(ROOT / "README.zh-CN.md")
     docs_index = _read(ROOT / "docs" / "README.md")

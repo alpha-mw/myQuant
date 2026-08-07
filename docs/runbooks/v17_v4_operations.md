@@ -115,7 +115,8 @@ remain `decision_protocol=myquant.v17.v4`, `mainline_authority=false`, and
 ## 8. Verification
 
 Run the narrow contract and CLI tests for the changed surface, then run the
-repository's staged upgrade quality gate for a broad release. Verification
+full unit suite plus the flake8 and mypy steps from
+`.github/workflows/ci-cd.yml` for a broad release. Verification
 must include missing-pointer and invalid-pointer no-write assertions, CN-only
 routing, public DTO equality across surfaces, unsupported-backtest no-write,
 and Shadow/mainline isolation.

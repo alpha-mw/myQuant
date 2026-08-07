@@ -351,11 +351,13 @@ results/v17_v4_shadow/       research-only forward-evidence namespace
 
 ## Development
 
-Python 3.13+. Run the smallest relevant checks first. For broad staged-upgrade
-work, use:
+Python 3.13+. Run the smallest relevant checks first. The full local
+equivalent of CI is:
 
 ```bash
-PYTHON=./.venv/bin/python scripts/staged_upgrade_quality_gate.sh
+uv run pytest tests/unit -q
+uv run flake8 quant_investor --count --select=E9,F63,F7,F82 --show-source --statistics
+uv run mypy quant_investor/factors --ignore-missing-imports
 ```
 
 Do not call live Tushare, yfinance, LLM, broker, order, execution or trade APIs

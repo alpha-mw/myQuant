@@ -44,6 +44,14 @@ jobs:
     - name: Type check with mypy
       run: |
         uv run mypy quant_investor/factors --ignore-missing-imports
+        uv run mypy \
+          quant_investor/pipeline/mainline.py \
+          quant_investor/v17_mainline/constants.py \
+          quant_investor/v17_mainline/contracts.py \
+          quant_investor/v17_mainline/runtime.py \
+          quant_investor/v17_mainline/storage.py \
+          quant_investor/versioning.py \
+          --ignore-missing-imports
 
     - name: Test engine core
       run: |
