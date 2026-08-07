@@ -76,11 +76,42 @@ def test_web_only_dependencies_are_not_declared() -> None:
     assert "web.main:app" not in pyproject
 
 
+def test_superseded_contract_generations_are_removed() -> None:
+    """v17_v4_contract is the only surviving generation of the V17 contract package."""
+
+    for relative_path in (
+        "quant_investor/v17",
+        "quant_investor/v17_v2_contract",
+        "quant_investor/v17_v2_runtime",
+        "quant_investor/v17_v3_contract",
+    ):
+        assert not (ROOT / relative_path).exists(), relative_path
+
+    assert (ROOT / "quant_investor" / "v17_v4_contract").is_dir()
+
+
+def test_unreferenced_modules_are_removed() -> None:
+    for relative_path in (
+        "quant_investor/fetch_us_index_components.py",
+        "quant_investor/fetch_complete_us_universe.py",
+        "quant_investor/reencode_csv_for_excel.py",
+        "quant_investor/macro/tushare_normalizer.py",
+        "quant_investor/_vendor",
+        "quant_investor/data/storage",
+        "quant_investor/monitoring",
+        "quant_investor/intelligence/decision",
+        "quant_investor/market/resources",
+    ):
+        assert not (ROOT / relative_path).exists(), relative_path
+
+
 def test_mypy_configuration_does_not_hide_removed_packages() -> None:
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     stale_paths = {
         "quant_investor/agent_orchestrator",
         "quant_investor/agents",
+        "quant_investor/_vendor",
+        "quant_investor/v17_v3_contract",
         "quant_investor/enhanced_data_layer",
         "quant_investor/forecast_snapshot_store",
         "quant_investor/learning",

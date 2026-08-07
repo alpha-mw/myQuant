@@ -104,3 +104,7 @@ tmp/
 temp/
 *.tmp
 .omx/
+
+# Ad-hoc browser-session page dumps. Without this rule five of these were
+# committed in July 2026.
+.playwright-cli/

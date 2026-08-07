@@ -80,7 +80,6 @@ ignore_missing_imports = true
 strict_optional = false
 disable_error_code = ["import-untyped", "no-any-return", "no-untyped-def", "var-annotated"]
 exclude = [
-    '^quant_investor/_vendor/',
     '^quant_investor/data/',
     '^quant_investor/data_manager\.py$',
     '^quant_investor/market/download.*\.py$',

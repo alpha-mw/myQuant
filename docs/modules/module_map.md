@@ -71,11 +71,6 @@ for Market, Industry and Theme. It has no backward smoothing, persistence,
 portfolio, broker or execution authority. R2.2 is offline and stdout-only; any
 memory update is a caller-owned proposal, not a write.
 
-### `quant_investor/v17_v3_contract`
-
-Retains explicit historical compatibility contracts used by governed V4
-research tooling. It is not a competing public decision mainline.
-
 ## Standalone legacy automation
 
 ### `quant_investor/automation`
