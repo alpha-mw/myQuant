@@ -93,10 +93,14 @@ exclude = [
 module = ["quant_investor.factors.*"]
 strict_optional = true
 
-# Byte-pinned by FIXED_EXISTING_PROJECT_SHA256 in
-# quant_investor/factors/governance_prior_diagnostic_nomination_v4_3.py.
-# The source cannot change without a governance re-pin, so the one remaining
-# annotation defect is suppressed here rather than in the file itself.
+# quant_investor/factors/governance*.py is the evidence archive layer: sealed,
+# unreachable from any runtime entry point, and byte-pinned by
+# FIXED_EXISTING_PROJECT_SHA256 in
+# quant_investor/factors/governance_prior_diagnostic_nomination_v4_3.py, whose
+# keys are repository-relative paths. Editing, renaming or moving a pinned file
+# breaks the seal. The one remaining annotation defect is therefore suppressed
+# here rather than fixed in the file, and the 800-line file cap does not apply
+# to that layer. See docs/architecture/evidence_archive_boundary.md.
 [[tool.mypy.overrides]]
 module = ["quant_investor.factors.governance_aquant_no_label_eval_v4_1"]
 disable_error_code = ["type-var"]

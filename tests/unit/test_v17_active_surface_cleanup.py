@@ -105,6 +105,27 @@ def test_unreferenced_modules_are_removed() -> None:
         assert not (ROOT / relative_path).exists(), relative_path
 
 
+def test_runtime_entrypoints_do_not_import_the_evidence_archive() -> None:
+    """The governance evidence archive is SHA-pinned and must stay off runtime paths.
+
+    See docs/architecture/evidence_archive_boundary.md.
+    """
+
+    for relative_path in (
+        "quant_investor/cli/main.py",
+        "quant_investor/automation/daily_runner.py",
+    ):
+        source = (ROOT / relative_path).read_text(encoding="utf-8")
+        assert "governance_" not in source, relative_path
+
+
+def test_evidence_archive_boundary_is_documented() -> None:
+    doc = ROOT / "docs" / "architecture" / "evidence_archive_boundary.md"
+    assert doc.is_file()
+    text = doc.read_text(encoding="utf-8")
+    assert "FIXED_EXISTING_PROJECT_SHA256" in text
+
+
 def test_mypy_configuration_does_not_hide_removed_packages() -> None:
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     stale_paths = {
