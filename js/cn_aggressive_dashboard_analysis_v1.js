@@ -14,7 +14,8 @@
     if (!Array.isArray(points)) return [];
     return points.slice().filter(function (point) {
       return point && /^\d{4}-\d{2}-\d{2}$/.test(point.date || "") &&
-        finite(point.portfolio_unit_nav) && finite(point.csi300_nav);
+        finite(point.portfolio_unit_nav) && finite(point.csi300_nav) &&
+        finite(point.star50_nav) && finite(point.chinext_nav);
     }).sort(function (left, right) {
       return left.date.localeCompare(right.date) || String(left.record).localeCompare(String(right.record));
     });
@@ -61,6 +62,8 @@
       var base = index === 0 ? first : groups[index - 1].points[groups[index - 1].points.length - 1];
       var portfolioReturn = last.portfolio_unit_nav / base.portfolio_unit_nav - 1;
       var benchmarkReturn = last.csi300_nav / base.csi300_nav - 1;
+      var star50Return = last.star50_nav / base.star50_nav - 1;
+      var chinextReturn = last.chinext_nav / base.chinext_nav - 1;
       return {
         period: group.period,
         base_date: base.date,
@@ -68,9 +71,13 @@
         end_date: last.date,
         portfolio_return: portfolioReturn,
         benchmark_return: benchmarkReturn,
+        star50_return: star50Return,
+        chinext_return: chinextReturn,
         excess_return: portfolioReturn - benchmarkReturn,
         portfolio_max_drawdown: maximumDrawdown(group.points, "portfolio_unit_nav", base.portfolio_unit_nav),
         benchmark_max_drawdown: maximumDrawdown(group.points, "csi300_nav", base.csi300_nav),
+        star50_max_drawdown: maximumDrawdown(group.points, "star50_nav", base.star50_nav),
+        chinext_max_drawdown: maximumDrawdown(group.points, "chinext_nav", base.chinext_nav),
         ending_total_value: last.total_value,
         point_count: group.points.length,
         evidence_status: group.points.some(function (point) {
@@ -94,16 +101,22 @@
     var monthly = monthlyPerformance(points);
     var portfolioDrawdown = drawdownSeries(points, "portfolio_unit_nav");
     var benchmarkDrawdown = drawdownSeries(points, "csi300_nav");
+    var star50Drawdown = drawdownSeries(points, "star50_nav");
+    var chinextDrawdown = drawdownSeries(points, "chinext_nav");
     return {
       points: points,
       portfolio_drawdown: portfolioDrawdown,
       benchmark_drawdown: benchmarkDrawdown,
+      star50_drawdown: star50Drawdown,
+      chinext_drawdown: chinextDrawdown,
       monthly: monthly,
       best_period: extreme(monthly, "portfolio_return", "max"),
       weakest_period: extreme(monthly, "portfolio_return", "min"),
       best_excess_period: extreme(monthly, "excess_return", "max"),
       deepest_portfolio_drawdown: extreme(portfolioDrawdown, "value", "min"),
-      deepest_benchmark_drawdown: extreme(benchmarkDrawdown, "value", "min")
+      deepest_benchmark_drawdown: extreme(benchmarkDrawdown, "value", "min"),
+      deepest_star50_drawdown: extreme(star50Drawdown, "value", "min"),
+      deepest_chinext_drawdown: extreme(chinextDrawdown, "value", "min")
     };
   }
 

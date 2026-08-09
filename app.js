@@ -59,6 +59,11 @@
   function signedClass(value) {
     return Number(value) < 0 ? "negative" : Number(value) > 0 ? "positive" : "";
   }
+  function benchmarkById(bundle, benchmarkId) {
+    return (bundle.benchmarks || []).find(function (benchmark) {
+      return benchmark.id === benchmarkId;
+    });
+  }
   function publicRedacted(value) {
     return PublicMode ? "公开版已隐藏" : value;
   }
@@ -304,6 +309,8 @@
     var series = [
       { key: "portfolio", label: "组合", values: points.map(function (point) { return { date: point.date, value: point.portfolio_unit_nav * 100 }; }) },
       { key: "benchmark", label: "沪深300", values: points.map(function (point) { return { date: point.date, value: point.csi300_nav * 100 }; }) },
+      { key: "star50", label: "科创50", values: points.map(function (point) { return { date: point.date, value: point.star50_nav * 100 }; }) },
+      { key: "chinext", label: "创业板指", values: points.map(function (point) { return { date: point.date, value: point.chinext_nav * 100 }; }) },
       { key: "excess", label: "累计超额", values: points.map(function (point) { return { date: point.date, value: 100 + point.cumulative_excess_return * 100 }; }) }
     ];
     var allValues = [];
@@ -316,7 +323,7 @@
     var xScale = linear(start, end, dimensions.left, width - dimensions.right);
     var yScale = linear(yMin, yMax, height - dimensions.bottom, dimensions.top);
     var svg = svgNode("svg", { viewBox: "0 0 " + width + " " + height, width: width, height: height, "aria-hidden": "true" });
-    svg.appendChild(svgNode("title", {}, "组合、沪深300与累计超额历史曲线"));
+    svg.appendChild(svgNode("title", {}, "组合、三项基准与对沪深300累计超额历史曲线"));
     svg.appendChild(svgNode("desc", {}, "从 " + points[0].date + " 到 " + points[points.length - 1].date + "，共同起点归一化为100。"));
     appendAxes(svg, dimensions, xScale, yScale, points, yMin, yMax, formatIndex);
 
@@ -369,16 +376,20 @@
       bottom: height - dimensions.bottom,
       xScale: xScale,
       yScale: yScale,
-      ariaLabel: "按日期查看组合、沪深300与累计超额净值",
+      ariaLabel: "按日期查看组合、沪深300、科创50、创业板指与累计超额净值",
       series: [
         { key: "portfolio", value: function (point) { return point.portfolio_unit_nav * 100; } },
         { key: "benchmark", value: function (point) { return point.csi300_nav * 100; } },
+        { key: "star50", value: function (point) { return point.star50_nav * 100; } },
+        { key: "chinext", value: function (point) { return point.chinext_nav * 100; } },
         { key: "excess", value: function (point) { return 100 + point.cumulative_excess_return * 100; } }
       ],
       tooltipRows: function (point) {
         return [
           { key: "portfolio", label: "组合净值", value: point.portfolio_unit_nav.toFixed(4) + "  (" + percent(point.portfolio_cumulative_return, true) + ")" },
           { key: "benchmark", label: "沪深300", value: point.csi300_nav.toFixed(4) + "  (" + percent(point.csi300_cumulative_return, true) + ")" },
+          { key: "star50", label: "科创50", value: point.star50_nav.toFixed(4) + "  (" + percent(point.star50_cumulative_return, true) + ")" },
+          { key: "chinext", label: "创业板指", value: point.chinext_nav.toFixed(4) + "  (" + percent(point.chinext_cumulative_return, true) + ")" },
           { key: "excess", label: "累计超额", value: percent(point.cumulative_excess_return, true) }
         ];
       }
@@ -390,6 +401,8 @@
     host.replaceChildren();
     var portfolio = analysis.portfolio_drawdown;
     var benchmark = analysis.benchmark_drawdown;
+    var star50 = analysis.star50_drawdown;
+    var chinext = analysis.chinext_drawdown;
     if (portfolio.length < 2) {
       var empty = document.createElement("div");
       empty.className = "chart-empty";
@@ -402,14 +415,16 @@
     var dimensions = { width: width, height: height, left: width < 560 ? 52 : 60, right: 18, top: 18, bottom: 36 };
     var start = parseDate(portfolio[0].date);
     var end = parseDate(portfolio[portfolio.length - 1].date);
-    var minimum = Math.min.apply(null, portfolio.concat(benchmark).map(function (point) { return point.value * 100; }));
+    var minimum = Math.min.apply(null, portfolio.concat(benchmark, star50, chinext).map(function (point) { return point.value * 100; }));
     var yMin = Math.min(-2, minimum * 1.15);
     var xScale = linear(start, end, dimensions.left, width - dimensions.right);
     var yScale = linear(yMin, 0, height - dimensions.bottom, dimensions.top);
     var portfolioValues = portfolio.map(function (point) { return { date: point.date, value: point.value * 100 }; });
     var benchmarkValues = benchmark.map(function (point) { return { date: point.date, value: point.value * 100 }; });
+    var star50Values = star50.map(function (point) { return { date: point.date, value: point.value * 100 }; });
+    var chinextValues = chinext.map(function (point) { return { date: point.date, value: point.value * 100 }; });
     var svg = svgNode("svg", { viewBox: "0 0 " + width + " " + height, width: width, height: height, "aria-hidden": "true" });
-    svg.appendChild(svgNode("title", {}, "组合与沪深300历史回撤"));
+    svg.appendChild(svgNode("title", {}, "组合与三项基准历史回撤"));
     svg.appendChild(svgNode("desc", {}, "回撤从各自历史高点计算，数值越低表示距离前高越远。"));
     appendAxes(svg, dimensions, xScale, yScale, activeAnalysis.points, yMin, 0, formatDrawdown);
     svg.appendChild(svgNode("path", {
@@ -421,6 +436,8 @@
       class: "chart-area drawdown-portfolio"
     }));
     svg.appendChild(svgNode("path", { d: pathFor(benchmarkValues, function (point) { return xScale(parseDate(point.date)); }, function (point) { return yScale(point.value); }), class: "chart-line benchmark" }));
+    svg.appendChild(svgNode("path", { d: pathFor(star50Values, function (point) { return xScale(parseDate(point.date)); }, function (point) { return yScale(point.value); }), class: "chart-line star50" }));
+    svg.appendChild(svgNode("path", { d: pathFor(chinextValues, function (point) { return xScale(parseDate(point.date)); }, function (point) { return yScale(point.value); }), class: "chart-line chinext" }));
     svg.appendChild(svgNode("path", { d: pathFor(portfolioValues, function (point) { return xScale(parseDate(point.date)); }, function (point) { return yScale(point.value); }), class: "chart-line portfolio" }));
     [
       { item: analysis.deepest_portfolio_drawdown, label: "组合", key: "portfolio" },
@@ -450,15 +467,19 @@
       bottom: height - dimensions.bottom,
       xScale: xScale,
       yScale: yScale,
-      ariaLabel: "按日期查看组合与沪深300回撤",
+      ariaLabel: "按日期查看组合与沪深300、科创50、创业板指回撤",
       series: [
         { key: "portfolio", value: function (point, index) { return portfolioValues[index].value; } },
-        { key: "benchmark", value: function (point, index) { return benchmarkValues[index].value; } }
+        { key: "benchmark", value: function (point, index) { return benchmarkValues[index].value; } },
+        { key: "star50", value: function (point, index) { return star50Values[index].value; } },
+        { key: "chinext", value: function (point, index) { return chinextValues[index].value; } }
       ],
       tooltipRows: function (point, index) {
         return [
           { key: "portfolio", label: "组合回撤", value: percent(portfolio[index].value) },
-          { key: "benchmark", label: "沪深300回撤", value: percent(benchmark[index].value) }
+          { key: "benchmark", label: "沪深300回撤", value: percent(benchmark[index].value) },
+          { key: "star50", label: "科创50回撤", value: percent(star50[index].value) },
+          { key: "chinext", label: "创业板指回撤", value: percent(chinext[index].value) }
         ];
       }
     });
@@ -563,7 +584,9 @@
 
   function renderMetrics(bundle) {
     var portfolio = bundle.portfolio;
-    var benchmark = bundle.benchmarks[0];
+    var csi300 = benchmarkById(bundle, "CSI300");
+    var star50 = benchmarkById(bundle, "STAR50");
+    var chinext = benchmarkById(bundle, "CHINEXT");
     var performance = byId("performanceList");
     if (!performance) return;
     performance.replaceChildren();
@@ -575,7 +598,9 @@
     metric(performance, "最新调仓已实现 P&L", publicRedacted(money(portfolio.latest_record_realized_pnl_from_rebalance)));
     metric(performance, "累计已实现 P&L", "UNKNOWN");
     metric(performance, "费用 / 毛净", portfolio.fee_basis + " / " + portfolio.gross_or_net);
-    metric(performance, "沪深300覆盖", benchmark.start_date + " → " + benchmark.end_date + " · " + benchmark.missing_dates.length + " gaps");
+    [csi300, star50, chinext].forEach(function (benchmark) {
+      metric(performance, benchmark.name + "覆盖", benchmark.start_date + " → " + benchmark.end_date + " · " + benchmark.missing_dates.length + " gaps");
+    });
 
     var concentration = byId("concentrationList");
     concentration.replaceChildren();
@@ -627,6 +652,8 @@
       makeCell(row, period.base_date.slice(5) + " → " + period.end_date.slice(5));
       makeCell(row, percent(period.portfolio_return, true), "numeric " + signedClass(period.portfolio_return));
       makeCell(row, percent(period.benchmark_return, true), "numeric " + signedClass(period.benchmark_return));
+      makeCell(row, percent(period.star50_return, true), "numeric " + signedClass(period.star50_return));
+      makeCell(row, percent(period.chinext_return, true), "numeric " + signedClass(period.chinext_return));
       makeCell(row, percent(period.excess_return, true), "numeric " + signedClass(period.excess_return));
       makeCell(row, percent(period.portfolio_max_drawdown), "numeric negative");
       makeCell(row, publicRedacted(money(period.ending_total_value)), "numeric monthly-ending-value");
@@ -652,10 +679,14 @@
   }
 
   function renderHistoryAnalysis(bundle, analysis) {
-    var benchmark = bundle.benchmarks[0];
+    var csi300 = benchmarkById(bundle, "CSI300");
+    var star50 = benchmarkById(bundle, "STAR50");
+    var chinext = benchmarkById(bundle, "CHINEXT");
     var list = byId("historyInsightList");
     list.replaceChildren();
-    insight(list, "累计相对表现", percent(benchmark.excess_return, true), "组合 TWR 相对沪深300的累计收益差。", signedClass(benchmark.excess_return));
+    [csi300, star50, chinext].forEach(function (benchmark) {
+      insight(list, "对" + benchmark.name + "超额", percent(benchmark.excess_return, true), "组合 TWR 相对" + benchmark.name + "的累计收益差。", signedClass(benchmark.excess_return));
+    });
     if (analysis.best_period) {
       insight(list, "最佳月份", analysis.best_period.period + " · " + percent(analysis.best_period.portfolio_return, true), "当月超额 " + percent(analysis.best_period.excess_return, true) + "。", signedClass(analysis.best_period.portfolio_return));
     }
@@ -710,6 +741,8 @@
       makeCell(row, number(point.portfolio_unit_nav), "numeric");
       makeCell(row, percent(point.portfolio_cumulative_return, true), "numeric " + signedClass(point.portfolio_cumulative_return));
       makeCell(row, percent(point.csi300_cumulative_return, true), "numeric " + signedClass(point.csi300_cumulative_return));
+      makeCell(row, percent(point.star50_cumulative_return, true), "numeric " + signedClass(point.star50_cumulative_return));
+      makeCell(row, percent(point.chinext_cumulative_return, true), "numeric " + signedClass(point.chinext_cumulative_return));
       makeCell(row, percent(point.cumulative_excess_return, true), "numeric " + signedClass(point.cumulative_excess_return));
       makeCell(row, historyEvidenceLabel(point.evidence_status), "evidence-value");
       body.appendChild(row);
@@ -747,7 +780,9 @@
       ["P&L", bundle.current_evidence.pnl_path, bundle.current_evidence.pnl_sha256],
       ["Archive baseline manifest", bundle.history.baseline_manifest_path, bundle.history.baseline_manifest_sha256],
       ["Archive baseline ledger", bundle.history.baseline_ledger_path, bundle.history.baseline_ledger_sha256],
-      ["CSI300", bundle.benchmarks[0].source_path, bundle.benchmarks[0].source_sha256]
+      ["沪深300", benchmarkById(bundle, "CSI300").source_path, benchmarkById(bundle, "CSI300").source_sha256],
+      ["科创50", benchmarkById(bundle, "STAR50").source_path, benchmarkById(bundle, "STAR50").source_sha256],
+      ["创业板指", benchmarkById(bundle, "CHINEXT").source_path, benchmarkById(bundle, "CHINEXT").source_sha256]
     ];
     bundle.history.funding_events.forEach(function (event) {
       entries.push(["Funding " + event.record, event.evidence_path, event.evidence_sha256]);
@@ -774,7 +809,9 @@
   }
 
   function renderBundle(bundle) {
-    var benchmark = bundle.benchmarks[0];
+    var csi300 = benchmarkById(bundle, "CSI300");
+    var star50 = benchmarkById(bundle, "STAR50");
+    var chinext = benchmarkById(bundle, "CHINEXT");
     var analysis = Analysis.buildAnalysis(bundle);
     activeBundle = bundle;
     activeAnalysis = analysis;
@@ -786,11 +823,15 @@
     setText("headerPeriod", bundle.portfolio.performance_start_date + " — " + bundle.portfolio.performance_end_date);
     setText("freshnessLabel", "截至 " + bundle.portfolio.performance_end_date);
     setText("twrValue", percent(bundle.portfolio.cumulative_twr, true));
-    setText("benchmarkReturnValue", percent(benchmark.return, true));
-    setText("excessValue", percent(benchmark.excess_return, true));
+    setText("benchmarkReturnValue", percent(csi300.return, true));
+    setText("star50ReturnValue", percent(star50.return, true));
+    setText("chinextReturnValue", percent(chinext.return, true));
+    setText("excessValue", percent(csi300.excess_return, true));
     setText("drawdownValue", percent(bundle.portfolio.max_drawdown));
     setText("portfolioDrawdownValue", percent(bundle.portfolio.max_drawdown));
-    setText("benchmarkDrawdownValue", percent(benchmark.max_drawdown));
+    setText("benchmarkDrawdownValue", percent(csi300.max_drawdown));
+    setText("star50DrawdownValue", percent(star50.max_drawdown));
+    setText("chinextDrawdownValue", percent(chinext.max_drawdown));
     setText("performanceInsight", "净值与回撤");
     setText("performanceSubtitle", bundle.portfolio.performance_start_date + " — " + bundle.portfolio.performance_end_date + " · " + analysis.points.length + " 个验证估值点 · funding-aware TWR");
     renderPositions(bundle);

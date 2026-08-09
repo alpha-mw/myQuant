@@ -20,7 +20,7 @@
             <p class="eyebrow">MYQUANT · CN PERFORMANCE</p>
             <h1>Alpha-mw's科技创新组合001号</h1>
             <p class="strategy-line"><code>aggressive_tech_manufacturing</code></p>
-            <p class="subtitle"><span id="headerPeriod">2026-03-17 起</span> · 归档业绩与沪深300对照</p>
+            <p class="subtitle"><span id="headerPeriod">2026-03-17 起</span> · 归档业绩与三项科技基准对照</p>
           </div>
         </div>
         <div class="status-stack">
@@ -46,6 +46,8 @@
               <div class="chart-key" aria-label="图表图例">
                 <span><i class="key-line portfolio"></i>组合单位净值</span>
                 <span><i class="key-line benchmark"></i>沪深300</span>
+                <span><i class="key-line star50"></i>科创50</span>
+                <span><i class="key-line chinext"></i>创业板指</span>
                 <span><i class="key-line excess"></i>累计超额</span>
               </div>
             </div>
@@ -53,21 +55,23 @@
             <div class="return-summary" aria-label="累计收益摘要">
               <div><span>组合 TWR</span><strong id="twrValue">—</strong></div>
               <div><span>沪深300</span><strong id="benchmarkReturnValue">—</strong></div>
-              <div><span>累计超额</span><strong id="excessValue">—</strong></div>
+              <div><span>科创50</span><strong id="star50ReturnValue">—</strong></div>
+              <div><span>创业板指</span><strong id="chinextReturnValue">—</strong></div>
+              <div><span>对沪深300超额</span><strong id="excessValue">—</strong></div>
               <div><span>组合最大回撤</span><strong id="drawdownValue">—</strong></div>
             </div>
 
             <figure class="chart-figure">
-              <div id="growthChart" class="chart-host growth-chart" role="group" aria-label="组合、沪深300与累计超额的互动历史收益折线图"></div>
-              <figcaption>指数以首个共同有效日为 100；移动鼠标或使用左右方向键查看日期与净值。</figcaption>
+              <div id="growthChart" class="chart-host growth-chart" role="group" aria-label="组合、沪深300、科创50、创业板指与累计超额的互动历史收益折线图"></div>
+              <figcaption>四条净值线以首个共同有效日为 100；移动鼠标或使用左右方向键查看具体日期与净值，累计超额仍以沪深300为主要基准。</figcaption>
             </figure>
 
             <figure class="chart-figure drawdown-figure">
               <div class="subchart-heading">
                 <div><p class="eyebrow">UNDERWATER</p><h3>历史回撤</h3></div>
-                <div class="drawdown-values"><span>组合 <strong id="portfolioDrawdownValue">—</strong></span><span>沪深300 <strong id="benchmarkDrawdownValue">—</strong></span></div>
+                <div class="drawdown-values"><span>组合 <strong id="portfolioDrawdownValue">—</strong></span><span>沪深300 <strong id="benchmarkDrawdownValue">—</strong></span><span>科创50 <strong id="star50DrawdownValue">—</strong></span><span>创业板指 <strong id="chinextDrawdownValue">—</strong></span></div>
               </div>
-              <div id="drawdownChart" class="chart-host drawdown-chart" role="group" aria-label="组合与沪深300互动历史回撤图"></div>
+              <div id="drawdownChart" class="chart-host drawdown-chart" role="group" aria-label="组合与三项基准互动历史回撤图"></div>
               <figcaption>从各自历史高点计算；移动鼠标或使用左右方向键查看同日回撤。</figcaption>
             </figure>
           </section>
@@ -80,7 +84,7 @@
               </div>
               <div class="table-wrap">
                 <table class="performance-table">
-                  <thead><tr><th>月份</th><th>覆盖区间</th><th class="numeric">组合</th><th class="numeric">沪深300</th><th class="numeric">超额</th><th class="numeric">月内最大回撤</th></tr></thead>
+                  <thead><tr><th>月份</th><th>覆盖区间</th><th class="numeric">组合</th><th class="numeric">沪深300</th><th class="numeric">科创50</th><th class="numeric">创业板指</th><th class="numeric">对沪深300超额</th><th class="numeric">月内最大回撤</th></tr></thead>
                   <tbody id="monthlyPerformanceRows"></tbody>
                 </table>
               </div>

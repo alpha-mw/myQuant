@@ -89,7 +89,7 @@
           errors.push("historical performance start is inconsistent");
         }
         value.portfolio.performance_points.forEach(function (point, index) {
-          ["total_value", "portfolio_unit_nav", "portfolio_cumulative_return", "csi300_nav", "csi300_cumulative_return", "cumulative_excess_return"].forEach(function (key) {
+          ["total_value", "portfolio_unit_nav", "portfolio_cumulative_return", "csi300_nav", "csi300_cumulative_return", "star50_nav", "star50_cumulative_return", "chinext_nav", "chinext_cumulative_return", "cumulative_excess_return"].forEach(function (key) {
             if (!finite(point[key])) errors.push("performance_points[" + index + "]." + key + " is invalid");
           });
         });
@@ -100,10 +100,25 @@
           if (!SHA256_RE.test(event.evidence_sha256 || "")) errors.push("funding_events[" + index + "] evidence SHA is invalid");
         });
       }
-      if (!Array.isArray(value.benchmarks) || !value.benchmarks.some(function (row) {
-        return row.id === "CSI300" && Array.isArray(row.missing_dates) && row.missing_dates.length === 0;
-      })) {
-        errors.push("verified CSI300 benchmark is missing");
+      var expectedBenchmarks = {
+        CSI300: "沪深300|000300.SH",
+        STAR50: "科创50|000688.SH",
+        CHINEXT: "创业板指|399006.SZ"
+      };
+      if (!Array.isArray(value.benchmarks) || value.benchmarks.length !== 3) {
+        errors.push("verified benchmark set is missing");
+      } else {
+        var actualBenchmarks = {};
+        value.benchmarks.forEach(function (row) {
+          if (!isObject(row) || !Array.isArray(row.missing_dates) || row.missing_dates.length !== 0) return;
+          actualBenchmarks[row.id] = row.name + "|" + row.ts_code;
+        });
+        var benchmarkSetValid = Object.keys(expectedBenchmarks).every(function (id) {
+          return actualBenchmarks[id] === expectedBenchmarks[id];
+        }) && Object.keys(actualBenchmarks).length === Object.keys(expectedBenchmarks).length;
+        if (!benchmarkSetValid) {
+          errors.push("verified benchmark set is invalid");
+        }
       }
       if (value.i1_research === null && value.i1_display_status !== "NOT_DISPLAYED_NO_EXACT_HASH_BOUND_I1_ARTIFACT") {
         errors.push("I1 absence status is invalid");
