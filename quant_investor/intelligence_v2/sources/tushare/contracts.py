@@ -78,8 +78,9 @@ def _transport_implementation_sha256(*, strict_decimal_decode: bool) -> str:
                 "decoder": "json.loads",
                 "integer_decode": "int",
                 "nonfinite": "REJECT",
+                "reported_count": "ZERO_SENTINEL_TO_ITEMS_LENGTH_IN_STRICT_MODE",
                 "strict_decimal_decode": strict_decimal_decode,
-                "transport": "OfficialTushareHttpsClient.v1",
+                "transport": "OfficialTushareHttpsClient.v2",
             }
         )
     ).hexdigest()

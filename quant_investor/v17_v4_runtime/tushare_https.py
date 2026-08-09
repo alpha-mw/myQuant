@@ -234,10 +234,16 @@ def _decode_response(
                 strict_decimal_decode=strict_decimal_decode,
             )
         rows.append(tuple(row))
+    normalized_reported_count = reported_count
+    if strict_decimal_decode and reported_count == 0 and rows:
+        # Official batch endpoints use zero as a count placeholder even when
+        # ``items`` is non-empty. Strict v2 consumers bind the accepted row
+        # count to item cardinality; legacy decoding retains the provider value.
+        normalized_reported_count = len(rows)
     return TushareResponse(
         api_name=api_name,
         request_id=request_id,
-        reported_count=reported_count,
+        reported_count=normalized_reported_count,
         has_more=has_more,
         fields=expected_fields,
         rows=tuple(rows),

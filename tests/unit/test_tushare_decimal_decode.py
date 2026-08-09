@@ -43,9 +43,9 @@ class Connection:
         pass
 
 
-def envelope(items: str) -> bytes:
+def envelope(items: str, *, count: int = 1) -> bytes:
     return (
-        '{"code":0,"data":{"count":1,"fields":'
+        f'{{"code":0,"data":{{"count":{count},"fields":'
         + json.dumps(list(FIELDS), separators=(",", ":"))
         + ',"has_more":false,"items":'
         + items
@@ -94,6 +94,30 @@ def test_strict_decode_preserves_decimal_and_integer_exactness() -> None:
         Decimal("-0.0"),
     )
     assert type(row[1]) is int
+
+
+def test_strict_decode_normalizes_official_zero_count_sentinel() -> None:
+    Connection.body = envelope(
+        '[["first",1,2,3],["second",4,5,6]]',
+        count=0,
+    )
+    strict = OfficialTushareHttpsClient(strict_decimal_decode=True).request(
+        api_name="daily_basic",
+        params={},
+        expected_fields=FIELDS,
+    )
+    assert strict.reported_count == 2
+
+    Connection.body = envelope(
+        '[["first",1,2,3],["second",4,5,6]]',
+        count=0,
+    )
+    legacy = OfficialTushareHttpsClient().request(
+        api_name="daily_basic",
+        params={},
+        expected_fields=FIELDS,
+    )
+    assert legacy.reported_count == 0
 
 
 @pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
