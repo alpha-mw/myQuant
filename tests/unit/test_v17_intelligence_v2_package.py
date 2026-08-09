@@ -33,6 +33,8 @@ def test_v2_package_manifest_verifies_exact_source_and_frozen_v1_sets() -> None:
     assert "llm_research/safety_collector.py" in source_paths
     assert "portfolio/constructor.py" in source_paths
     assert "publication/permits.py" in source_paths
+    assert "sources/tushare/contracts.py" in source_paths
+    assert "sources/tushare/probe.py" in source_paths
     assert receipt["resource_paths"] == [
         {
             "byte_sha256": "abf722ada40d4b12803321eb904351f77958e4763b2c5de6c665d0a2c8c3889d",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
 import http.client
 import json
 import math
@@ -141,10 +142,18 @@ def _reject_constant(_: str) -> None:
     _fail("TUSHARE_RESPONSE_INVALID")
 
 
-def _validate_response_cell(value: Any) -> None:
+def _validate_response_cell(
+    value: Any,
+    *,
+    strict_decimal_decode: bool,
+) -> None:
     if value is None or type(value) in {bool, int, str}:
         return
+    if strict_decimal_decode and type(value) is Decimal and value.is_finite():
+        return
     if type(value) is float and math.isfinite(value):
+        if strict_decimal_decode:
+            _fail("TUSHARE_RESPONSE_INVALID")
         return
     _fail("TUSHARE_RESPONSE_INVALID")
 
@@ -154,12 +163,18 @@ def _decode_response(
     *,
     api_name: str,
     expected_fields: tuple[str, ...],
+    strict_decimal_decode: bool = False,
 ) -> TushareResponse:
     try:
+        decode_options: dict[str, Any] = {
+            "object_pairs_hook": _unique_object,
+            "parse_constant": _reject_constant,
+        }
+        if strict_decimal_decode:
+            decode_options["parse_float"] = Decimal
         payload = json.loads(
             raw.decode("utf-8", errors="strict"),
-            object_pairs_hook=_unique_object,
-            parse_constant=_reject_constant,
+            **decode_options,
         )
     except TushareHttpsError:
         raise
@@ -214,7 +229,10 @@ def _decode_response(
         if type(row) is not list or len(row) != len(expected_fields):
             _fail("TUSHARE_RESPONSE_INVALID")
         for value in row:
-            _validate_response_cell(value)
+            _validate_response_cell(
+                value,
+                strict_decimal_decode=strict_decimal_decode,
+            )
         rows.append(tuple(row))
     return TushareResponse(
         api_name=api_name,
@@ -229,7 +247,12 @@ def _decode_response(
 class OfficialTushareHttpsClient:
     """No-redirect client whose credential source is only ``TUSHARE_TOKEN``."""
 
-    def __init__(self, *, timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS) -> None:
+    def __init__(
+        self,
+        *,
+        timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+        strict_decimal_decode: bool = False,
+    ) -> None:
         if (
             type(timeout_seconds) not in {int, float}
             or not math.isfinite(float(timeout_seconds))
@@ -237,7 +260,10 @@ class OfficialTushareHttpsClient:
             or float(timeout_seconds) > 120
         ):
             _fail("TUSHARE_CLIENT_CONFIG_INVALID")
+        if type(strict_decimal_decode) is not bool:
+            _fail("TUSHARE_CLIENT_CONFIG_INVALID")
         self._timeout_seconds = float(timeout_seconds)
+        self._strict_decimal_decode = strict_decimal_decode
 
     def request(
         self,
@@ -313,6 +339,7 @@ class OfficialTushareHttpsClient:
                 raw,
                 api_name=api_name,
                 expected_fields=fields,
+                strict_decimal_decode=self._strict_decimal_decode,
             )
         except TushareHttpsError:
             raise
