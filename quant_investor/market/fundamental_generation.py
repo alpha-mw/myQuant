@@ -19,12 +19,23 @@ from dataclasses import dataclass
 from functools import lru_cache
 from numbers import Real
 from pathlib import Path
-from typing import Any, Collection, Iterator, Mapping
+from typing import Any, Callable, Collection, Iterator, Mapping
 
 import pandas as pd
 import pyarrow.parquet as pq
 import pyarrow.types as patypes
 
+from ..intelligence_v2.sources.tushare.fundamental_v4 import (
+    capture_provider_evidence_directory,
+    validate_fundamental_comparison_policy,
+    validate_fundamental_execution_closure_v4,
+    validate_fundamental_provider_manifest_v4,
+    validate_fundamental_reconciliation_receipt,
+    validate_provider_evidence_fileset_manifest,
+)
+from ..intelligence_v2.sources.tushare.fundamental_v4.models import (
+    PROVIDER_MANIFEST_V4,
+)
 from .fundamental_provider_contract import (
     FUNDAMENTAL_DERIVATION_CONTRACT,
     FUNDAMENTAL_ENDPOINT_AUDIT_SCHEMA,
@@ -130,6 +141,7 @@ class _CapturedFundamentalGeneration:
     manifest_bytes: bytes
     table_bytes: dict[str, bytes]
     replay_projection_fingerprints: dict[str, str]
+    provider_evidence_bytes: dict[str, bytes] | None
 
 
 @dataclass(frozen=True)
@@ -2212,6 +2224,23 @@ def _capture_staged_fundamental_generation(
         manifest_bytes,
         label="staged manifest",
     )
+    provider = dict(
+        dict(manifest.get("metadata", {}) or {}).get(
+            "provider_manifest", {}
+        )
+        or {}
+    )
+    provider_evidence_bytes = None
+    if provider.get("schema_version") == PROVIDER_MANIFEST_V4:
+        try:
+            provider_evidence_bytes = capture_provider_evidence_directory(
+                manifest_path.parent / "provider_evidence"
+            )
+        except Exception as exc:
+            raise FundamentalGenerationError(
+                "staged Fundamental v4 provider evidence is invalid: "
+                f"{exc}"
+            ) from exc
     if manifest != dict(validated.get("manifest", {}) or {}):
         raise FundamentalGenerationError("staged fundamental manifest changed after validation")
     if (
@@ -2264,6 +2293,7 @@ def _capture_staged_fundamental_generation(
         manifest_bytes=manifest_bytes,
         table_bytes=captured_tables,
         replay_projection_fingerprints=replay_projection_fingerprints,
+        provider_evidence_bytes=provider_evidence_bytes,
     )
 
 
@@ -3166,7 +3196,238 @@ def _validate_raw_to_derived_replay_v3(
     )
 
 
-def _validate_primary_rebuild_capture(
+def _provider_evidence_json(
+    captured: _CapturedFundamentalGeneration,
+    relative_path: str,
+) -> dict[str, Any]:
+    payloads = captured.provider_evidence_bytes
+    if payloads is None or relative_path not in payloads:
+        raise FundamentalGenerationError(
+            f"Fundamental v4 provider evidence is missing: {relative_path}"
+        )
+    payload = payloads[relative_path]
+    document = _json_object_from_bytes(
+        payload,
+        label=f"provider evidence {relative_path}",
+    )
+    try:
+        from ..intelligence_v2._core import canonical_bytes
+
+        expected = canonical_bytes(document)
+    except Exception as exc:
+        raise FundamentalGenerationError(
+            "Fundamental v4 provider evidence is not canonical: "
+            f"{relative_path}"
+        ) from exc
+    if payload != expected:
+        raise FundamentalGenerationError(
+            "Fundamental v4 provider evidence bytes are not canonical: "
+            f"{relative_path}"
+        )
+    return document
+
+
+def _provider_evidence_jsonl(
+    captured: _CapturedFundamentalGeneration,
+    relative_path: str,
+) -> list[dict[str, Any]]:
+    payloads = captured.provider_evidence_bytes
+    if payloads is None or relative_path not in payloads:
+        raise FundamentalGenerationError(
+            f"Fundamental v4 provider evidence is missing: {relative_path}"
+        )
+    payload = payloads[relative_path]
+    try:
+        from ..intelligence_v2._core import canonical_bytes
+
+        rows = [
+            _json_object_from_bytes(
+                line,
+                label=f"provider evidence {relative_path}",
+            )
+            for line in payload.splitlines()
+            if line
+        ]
+        expected = b"".join(
+            canonical_bytes(row) + b"\n" for row in rows
+        )
+    except Exception as exc:
+        raise FundamentalGenerationError(
+            "Fundamental v4 provider evidence JSONL is invalid: "
+            f"{relative_path}"
+        ) from exc
+    if not rows or payload != expected:
+        raise FundamentalGenerationError(
+            "Fundamental v4 provider evidence JSONL is not canonical: "
+            f"{relative_path}"
+        )
+    return rows
+
+
+def _provider_evidence_document_parquet(
+    captured: _CapturedFundamentalGeneration,
+    relative_path: str,
+) -> list[dict[str, Any]]:
+    payloads = captured.provider_evidence_bytes
+    if payloads is None or relative_path not in payloads:
+        raise FundamentalGenerationError(
+            f"Fundamental v4 provider evidence is missing: {relative_path}"
+        )
+    try:
+        from ..intelligence_v2._core import canonical_bytes
+
+        frame = pd.read_parquet(io.BytesIO(payloads[relative_path]))
+        if list(frame.columns) != ["document_json"] or frame.empty:
+            raise ValueError("document parquet shape mismatch")
+        rows = []
+        for text in frame["document_json"].tolist():
+            if type(text) is not str:
+                raise ValueError("document parquet value is not text")
+            document = _json_object_from_bytes(
+                text.encode("utf-8"),
+                label=f"provider evidence {relative_path}",
+            )
+            if canonical_bytes(document).decode("utf-8") != text:
+                raise ValueError("document parquet value is not canonical")
+            rows.append(document)
+    except Exception as exc:
+        raise FundamentalGenerationError(
+            "Fundamental v4 provider document parquet is invalid: "
+            f"{relative_path}"
+        ) from exc
+    return rows
+
+
+def _provider_evidence_raw_tables(
+    captured: _CapturedFundamentalGeneration,
+    lane: str,
+) -> dict[str, pd.DataFrame]:
+    payloads = captured.provider_evidence_bytes
+    if payloads is None:
+        raise FundamentalGenerationError(
+            "Fundamental v4 provider evidence is missing"
+        )
+    result: dict[str, pd.DataFrame] = {}
+    for table_name in FUNDAMENTAL_RAW_TABLES:
+        relative_path = f"{lane}_raw/{table_name}.parquet"
+        try:
+            result[table_name] = pd.read_parquet(
+                io.BytesIO(payloads[relative_path])
+            )
+        except Exception as exc:
+            raise FundamentalGenerationError(
+                f"Fundamental v4 raw table is invalid: {relative_path}"
+            ) from exc
+    return result
+
+
+def _validate_primary_rebuild_capture_v4(
+    captured: _CapturedFundamentalGeneration,
+    *,
+    provider: Mapping[str, Any],
+) -> str:
+    if captured.provider_evidence_bytes is None:
+        raise FundamentalGenerationError(
+            "Fundamental v4 provider evidence is missing"
+        )
+    execution = _provider_evidence_json(captured, "execution_plan.json")
+    try:
+        execution = validate_fundamental_execution_closure_v4(execution)
+        fileset = validate_provider_evidence_fileset_manifest(
+            _provider_evidence_json(captured, "fileset_manifest.json")
+        )
+        policy = validate_fundamental_comparison_policy(
+            _provider_evidence_json(captured, "comparison_policy.json")
+        )
+        reconciliation = _provider_evidence_json(
+            captured,
+            "reconciliation.json",
+        )
+        physical_receipts = _provider_evidence_jsonl(
+            captured,
+            "request_receipts.jsonl",
+        )
+        logical_coverages = _provider_evidence_document_parquet(
+            captured,
+            "logical_coverage.parquet",
+        )
+        baseline_tables = _provider_evidence_raw_tables(
+            captured,
+            "baseline",
+        )
+        vip_tables = _provider_evidence_raw_tables(captured, "vip")
+        derived_fingerprints = _provider_evidence_json(
+            captured,
+            "comparison_outputs/derived_fingerprints.json",
+        )
+        reconciliation_closure = {
+            "baseline_raw_evidence": provider[
+                "baseline_raw_evidence"
+            ],
+            "baseline_tables": baseline_tables,
+            "comparison_output_refs": reconciliation[
+                "comparison_output_refs"
+            ],
+            "comparison_policy": policy,
+            "derived_fingerprints": derived_fingerprints,
+            "endpoint_plans": execution["endpoint_plans"],
+            "logical_coverages": logical_coverages,
+            "physical_receipts": physical_receipts,
+            "plan": execution["request_plan"],
+            "vip_raw_evidence": provider["vip_raw_evidence"],
+            "vip_tables": vip_tables,
+        }
+        validate_fundamental_reconciliation_receipt(
+            reconciliation,
+            **reconciliation_closure,
+        )
+        validate_fundamental_provider_manifest_v4(
+            provider,
+            execution_closure=execution,
+            reconciliation=reconciliation,
+            reconciliation_closure=reconciliation_closure,
+            fileset=fileset,
+            request_receipts_ref=provider["request_receipts_ref"],
+            logical_coverage_ref=provider["logical_coverage_ref"],
+        )
+    except Exception as exc:
+        raise FundamentalGenerationError(
+            f"Fundamental v4 provider closure replay failed: {exc}"
+        ) from exc
+    projection_map = {
+        "fundamental_daily": "fundamental_daily",
+        "fundamental_period": "fundamental_period",
+        "fundamental_quarantine": "quarantine",
+    }
+    for table_name, fingerprint_name in projection_map.items():
+        if (
+            captured.replay_projection_fingerprints[table_name]
+            != derived_fingerprints[fingerprint_name]["vip_sha256"]
+        ):
+            raise FundamentalGenerationError(
+                f"Fundamental v4 derived output mismatch: {table_name}"
+            )
+    return _metadata_sha256(
+        {
+            "fileset_sha256": fileset["fileset_sha256"],
+            "generation_id": captured.generation_id,
+            "manifest_sha256": hashlib.sha256(
+                captured.manifest_bytes
+            ).hexdigest(),
+            "reconciliation_semantic_sha256": reconciliation[
+                "semantic_sha256"
+            ],
+            "table_sha256": {
+                table_name: hashlib.sha256(
+                    captured.table_bytes[table_name]
+                ).hexdigest()
+                for table_name in FUNDAMENTAL_TABLES
+            },
+        }
+    )
+
+
+def _validate_primary_rebuild_capture_v3(
     captured: _CapturedFundamentalGeneration,
 ) -> str:
     manifest = _json_object_from_bytes(
@@ -3645,6 +3906,27 @@ def _validate_primary_rebuild_capture(
     return _metadata_sha256(aggregate)
 
 
+def _validate_primary_rebuild_capture(
+    captured: _CapturedFundamentalGeneration,
+) -> str:
+    manifest = _json_object_from_bytes(
+        captured.manifest_bytes,
+        label="staged manifest",
+    )
+    provider = dict(
+        dict(manifest.get("metadata", {}) or {}).get(
+            "provider_manifest", {}
+        )
+        or {}
+    )
+    if provider.get("schema_version") == PROVIDER_MANIFEST_V4:
+        return _validate_primary_rebuild_capture_v4(
+            captured,
+            provider=provider,
+        )
+    return _validate_primary_rebuild_capture_v3(captured)
+
+
 def _revalidate_captured_primary_scope(
     captured: _CapturedFundamentalGeneration,
 ) -> str:
@@ -3657,6 +3939,27 @@ def _revalidate_captured_primary_scope(
     provider = dict(
         dict(manifest.get("metadata", {}) or {}).get("provider_manifest", {}) or {}
     )
+    if provider.get("schema_version") == PROVIDER_MANIFEST_V4:
+        execution = _provider_evidence_json(
+            captured,
+            "execution_plan.json",
+        )
+        try:
+            validated = validate_fundamental_execution_closure_v4(
+                execution
+            )
+        except Exception as exc:
+            raise FundamentalGenerationError(
+                f"Fundamental v4 scope closure replay failed: {exc}"
+            ) from exc
+        plan = validated["request_plan"]
+        return _metadata_sha256(
+            {
+                "market_scope_ref": plan["market_scope_ref"],
+                "pit_cutoff": plan["pit_cutoff"],
+                "symbol_set_sha256": plan["symbol_set_sha256"],
+            }
+        )
     scope = dict(provider.get("canonical_scope_evidence", {}) or {})
     outcomes = provider.get("symbol_table_outcomes")
     if not isinstance(outcomes, list):
@@ -3725,6 +4028,55 @@ def _write_private_generation_file(path: Path, payload: bytes) -> None:
         or hashlib.sha256(readback).digest() != hashlib.sha256(payload).digest()
     ):
         raise FundamentalGenerationError("fundamental generation staging readback mismatch")
+
+
+def _write_captured_provider_evidence(
+    generation_root: Path,
+    payloads: Mapping[str, bytes],
+) -> None:
+    evidence_root = generation_root / "provider_evidence"
+    evidence_root.mkdir(mode=0o700)
+    directories = sorted(
+        {
+            Path(relative_path).parent
+            for relative_path in payloads
+            if Path(relative_path).parent != Path(".")
+        },
+        key=lambda value: (len(value.parts), value.as_posix()),
+    )
+    for relative in directories:
+        path = evidence_root / relative
+        path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(path, 0o700)
+    for relative_path in sorted(payloads):
+        _write_private_generation_file(
+            evidence_root / relative_path,
+            payloads[relative_path],
+        )
+    for relative in reversed(directories):
+        _fsync_directory(evidence_root / relative)
+    _fsync_directory(evidence_root)
+
+
+def _validate_installed_provider_evidence(
+    final_root: Path,
+    captured: _CapturedFundamentalGeneration,
+) -> None:
+    if captured.provider_evidence_bytes is None:
+        return
+    try:
+        installed = capture_provider_evidence_directory(
+            final_root / "provider_evidence"
+        )
+    except Exception as exc:
+        raise FundamentalGenerationError(
+            "promoted Fundamental v4 provider evidence is invalid: "
+            f"{exc}"
+        ) from exc
+    if installed != captured.provider_evidence_bytes:
+        raise FundamentalGenerationError(
+            "promoted Fundamental v4 provider evidence identity mismatch"
+        )
 
 
 def _validated_canonical_pointer_bytes(
@@ -3835,6 +4187,8 @@ def _validate_installed_promotion_identity(
         )
         del installed_table_bytes, readback
 
+    _validate_installed_provider_evidence(final_root, captured)
+
     installed = load_fundamental_pointer(canonical_base)
     if (
         installed is None
@@ -3855,6 +4209,7 @@ def promote_staged_fundamental_generation(
     staging_root: str | Path,
     canonical_root: str | Path,
     expected_pointer_sha256: str,
+    phase_recorder: Callable[[str, Mapping[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """CAS-promote one verified primary staging generation into canonical data."""
 
@@ -3886,6 +4241,17 @@ def promote_staged_fundamental_generation(
         else:
             raise FundamentalGenerationError("fundamental canonical generation already exists")
 
+        if phase_recorder is not None:
+            phase_recorder(
+                "PRECAS_VALIDATED",
+                {
+                    "expected_pointer_sha256": expected_hash,
+                    "generation_aggregate_sha256": generation_aggregate_sha256,
+                    "generation_id": captured.generation_id,
+                    "scope_sha256": pre_switch_scope_sha256,
+                },
+            )
+
         staging_directory = Path(
             tempfile.mkdtemp(
                 prefix=f".{captured.generation_id}.promotion.",
@@ -3903,6 +4269,11 @@ def promote_staged_fundamental_generation(
                 _write_private_generation_file(
                     staging_directory / f"{table_name}.parquet",
                     captured.table_bytes[table_name],
+                )
+            if captured.provider_evidence_bytes is not None:
+                _write_captured_provider_evidence(
+                    staging_directory,
+                    captured.provider_evidence_bytes,
                 )
             _fsync_directory(staging_directory)
             if pointer_sha256(canonical_base) != expected_hash:
@@ -3927,6 +4298,19 @@ def promote_staged_fundamental_generation(
                 canonical_base / FUNDAMENTAL_POINTER_FILENAME,
                 next_pointer_bytes,
             )
+            if pointer_sha256(canonical_base) != next_pointer_hash:
+                raise FundamentalGenerationError(
+                    "fundamental promoted pointer immediate readback failed"
+                )
+            if phase_recorder is not None:
+                phase_recorder(
+                    "CAS_COMMITTED",
+                    {
+                        "generation_id": captured.generation_id,
+                        "pointer_sha256": next_pointer_hash,
+                        "previous_pointer_sha256": expected_hash,
+                    },
+                )
 
             try:
                 installed = _validate_installed_promotion_identity(
@@ -3942,6 +4326,15 @@ def promote_staged_fundamental_generation(
                 if post_switch_scope_sha256 != pre_switch_scope_sha256:
                     raise FundamentalGenerationError(
                         "fundamental canonical scope changed during promotion"
+                    )
+                if phase_recorder is not None:
+                    phase_recorder(
+                        "POSTCHECK_PASSED",
+                        {
+                            "generation_id": captured.generation_id,
+                            "pointer_sha256": next_pointer_hash,
+                            "scope_sha256": post_switch_scope_sha256,
+                        },
                     )
             except Exception as exc:
                 try:
@@ -3966,6 +4359,15 @@ def promote_staged_fundamental_generation(
                         canonical_base,
                         expected_sha256=expected_hash,
                     )
+                    if phase_recorder is not None:
+                        phase_recorder(
+                            "ROLLBACK_COMMITTED",
+                            {
+                                "generation_id": captured.generation_id,
+                                "pointer_sha256": expected_hash,
+                                "rolled_back_from_sha256": next_pointer_hash,
+                            },
+                        )
                 except Exception as rollback_exc:
                     raise FundamentalGenerationError(
                         "fundamental post-switch validation and CAS rollback failed"
