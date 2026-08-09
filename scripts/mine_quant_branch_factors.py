@@ -149,6 +149,95 @@ class MiningCandidate:
     params: Mapping[str, Any] | None = None
 
 
+def _preregistration_primaries(
+    payload: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    candidates = payload.get("candidates")
+    if not isinstance(candidates, list):
+        raise ValueError("preregistration candidates must be a list")
+    primaries = [
+        row
+        for row in candidates
+        if isinstance(row, dict) and row.get("role") == "primary"
+    ]
+    if not primaries:
+        raise ValueError("no primary candidates")
+    trial_accounting = payload.get("trial_accounting")
+    if not isinstance(trial_accounting, dict):
+        raise ValueError("trial_accounting must be an object")
+    declared_trial_count = trial_accounting.get("declared_trial_count")
+    if declared_trial_count != len(primaries):
+        raise ValueError("declared_trial_count must equal the primary count")
+
+    primary_count = payload.get("primary_count")
+    if primary_count != len(primaries):
+        raise ValueError("primary_count must equal the primary count")
+    names = [row.get("candidate_id") for row in primaries]
+    families = [row.get("family") for row in primaries]
+    if any(not isinstance(value, str) or not value for value in names):
+        raise ValueError("every primary must have a candidate_id")
+    if any(not isinstance(value, str) or not value for value in families):
+        raise ValueError("every primary must have a family")
+    if len(set(names)) != len(names):
+        raise ValueError("primary candidate_id values must be unique")
+    if len(set(families)) != len(families):
+        raise ValueError("primary families must be unique")
+    return primaries
+
+
+def _preregistration_sha256(payload: Mapping[str, Any]) -> str:
+    hash_body = dict(payload)
+    hash_body.pop("record_sha256", None)
+    return hashlib.sha256(
+        json.dumps(
+            hash_body,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _preregistered_candidate(
+    row: Mapping[str, Any],
+    *,
+    record_sha256: str,
+) -> MiningCandidate:
+    expression = row.get("expression")
+    hypothesis = row.get("hypothesis")
+    if not isinstance(expression, str) or not expression:
+        raise ValueError("every primary must have an expression")
+    if not isinstance(hypothesis, str) or not hypothesis:
+        raise ValueError("every primary must have a hypothesis")
+    return MiningCandidate(
+        name=str(row["candidate_id"]),
+        family=str(row["family"]),
+        category="preregistered",
+        implementation=expression,
+        description=hypothesis,
+        expression=expression,
+        params={"preregistration_sha256": record_sha256},
+    )
+
+
+def preregistered_candidates(path: Path) -> list[MiningCandidate]:
+    """Load only the sealed primary trials from a preregistration record."""
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("preregistration record must be a JSON object")
+    primaries = _preregistration_primaries(payload)
+
+    recorded_sha256 = payload.get("record_sha256")
+    actual_sha256 = _preregistration_sha256(payload)
+    if recorded_sha256 != actual_sha256:
+        raise ValueError("record_sha256 does not match the preregistration body")
+    return [
+        _preregistered_candidate(row, record_sha256=actual_sha256)
+        for row in primaries
+    ]
+
+
 _FUNDAMENTAL_PRIMITIVES = {
     "fin_roe",
     "fin_roa",
