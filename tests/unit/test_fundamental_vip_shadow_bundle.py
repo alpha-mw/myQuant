@@ -145,6 +145,9 @@ def _comparison_policy(tables: dict[str, pd.DataFrame]) -> dict[str, Any]:
     for table in SOURCE_TABLES:
         date_column = "trade_date" if table == "daily_basic" else "end_date"
         table_policies[table] = {
+            "baseline_source_only_columns": [],
+            "baseline_source_only_reason": None,
+            "baseline_source_schema_evidence_ref": None,
             "canonical_key_columns": ["ts_code", date_column],
             "column_rows": [
                 {"column": "ts_code", "kind": "TEXT"},

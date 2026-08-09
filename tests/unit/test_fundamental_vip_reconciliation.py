@@ -42,6 +42,9 @@ def policy() -> dict[str, Any]:
     return build_fundamental_comparison_policy(
         table_policies={
             table: {
+                "baseline_source_only_columns": [],
+                "baseline_source_only_reason": None,
+                "baseline_source_schema_evidence_ref": None,
                 "canonical_key_columns": ["ts_code", "period"],
                 "column_rows": [
                     {"column": "ts_code", "kind": "TEXT"},
@@ -85,6 +88,101 @@ def test_policy_is_sealed_replayable_and_owner_order_is_semantic() -> None:
     forged["table_policies"][0]["winner_order_columns"].reverse()
     with pytest.raises(FundamentalV4ContractError):
         validate_fundamental_comparison_policy(forged)
+
+
+def schema_diagnostic_ref() -> dict[str, str]:
+    return {
+        "artifact_id": "b" * 64,
+        "artifact_version": ("myquant.v17.intelligence-v2.tushare-schema-diagnostic-receipt.v1"),
+        "byte_sha256": "c" * 64,
+        "semantic_sha256": "d" * 64,
+    }
+
+
+def forecast_source_only_policy() -> dict[str, Any]:
+    table_policies = {row["table"]: copy.deepcopy(row) for row in policy()["table_policies"]}
+    table_policies["forecast"].update(
+        {
+            "baseline_source_only_columns": ["update_flag"],
+            "baseline_source_only_reason": "ENDPOINT_SCHEMA_NOT_EXPOSED",
+            "baseline_source_schema_evidence_ref": schema_diagnostic_ref(),
+        }
+    )
+    return build_fundamental_comparison_policy(
+        table_policies=table_policies,
+        created_at=NOW,
+    )
+
+
+def test_forecast_baseline_update_flag_is_the_only_source_only_exception() -> None:
+    baseline = tables()
+    vip = tables()
+    baseline["forecast"] = frame().assign(update_flag="1")
+
+    result = compare_fundamental_raw_tables(
+        baseline_tables=baseline,
+        vip_tables=vip,
+        policy=forecast_source_only_policy(),
+    )
+
+    assert result["passed"] is True
+    assert result["table_evidence"]["forecast"]["baseline_source_only_columns"] == ["update_flag"]
+    assert "update_flag" in baseline["forecast"].columns
+
+
+@pytest.mark.parametrize(
+    ("table", "columns", "reason", "ref"),
+    [
+        ("income", ["update_flag"], "ENDPOINT_SCHEMA_NOT_EXPOSED", schema_diagnostic_ref()),
+        ("forecast", ["other"], "ENDPOINT_SCHEMA_NOT_EXPOSED", schema_diagnostic_ref()),
+        ("forecast", ["update_flag"], "OTHER_REASON", schema_diagnostic_ref()),
+        ("forecast", ["update_flag"], "ENDPOINT_SCHEMA_NOT_EXPOSED", None),
+        (
+            "forecast",
+            ["update_flag"],
+            "ENDPOINT_SCHEMA_NOT_EXPOSED",
+            {**schema_diagnostic_ref(), "artifact_version": "wrong.v1"},
+        ),
+    ],
+)
+def test_source_only_contract_rejects_every_unapproved_shape(
+    table: str,
+    columns: list[str],
+    reason: str,
+    ref: dict[str, str] | None,
+) -> None:
+    table_policies = {row["table"]: copy.deepcopy(row) for row in policy()["table_policies"]}
+    table_policies[table].update(
+        {
+            "baseline_source_only_columns": columns,
+            "baseline_source_only_reason": reason,
+            "baseline_source_schema_evidence_ref": ref,
+        }
+    )
+    with pytest.raises(FundamentalV4ContractError):
+        build_fundamental_comparison_policy(table_policies=table_policies, created_at=NOW)
+
+
+def test_source_only_contract_does_not_allow_vip_or_unlisted_baseline_columns() -> None:
+    baseline = tables()
+    vip = tables()
+    baseline["forecast"] = frame().assign(update_flag="1")
+    vip["forecast"] = frame().assign(update_flag="1")
+    with pytest.raises(FundamentalV4ContractError, match="column order changed"):
+        compare_fundamental_raw_tables(
+            baseline_tables=baseline,
+            vip_tables=vip,
+            policy=forecast_source_only_policy(),
+        )
+
+    vip["forecast"] = frame()
+    baseline["forecast"] = frame().assign(other="1")
+    with pytest.raises(FundamentalV4ContractError, match="column order changed"):
+        compare_fundamental_raw_tables(
+            baseline_tables=baseline,
+            vip_tables=vip,
+            policy=forecast_source_only_policy(),
+        )
 
 
 def test_equivalent_order_dtype_null_and_decimal_forms_compare_equal() -> None:

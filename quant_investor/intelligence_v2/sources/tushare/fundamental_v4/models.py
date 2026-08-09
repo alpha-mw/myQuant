@@ -13,7 +13,7 @@ EXECUTION_CLOSURE_V4: Final = "myquant.v17.fundamental-execution-closure.v4"
 PHYSICAL_REQUEST_RECEIPT_V4: Final = "myquant.v17.provider-physical-request-receipt.v4"
 LOGICAL_COVERAGE_V4: Final = "myquant.v17.logical-symbol-table-coverage.v4"
 RAW_TABLE_EVIDENCE_V4: Final = "myquant.v17.raw-table-evidence.v4"
-COMPARISON_POLICY_V1: Final = "myquant.v17.fundamental-comparison-policy.v1"
+COMPARISON_POLICY_V2: Final = "myquant.v17.fundamental-comparison-policy.v2"
 RECONCILIATION_RECEIPT_V1: Final = "myquant.v17.fundamental-reconciliation-receipt.v1"
 PROVIDER_EVIDENCE_FILESET_V1: Final = "myquant.v17.provider-evidence-fileset.v1"
 PROMOTION_EVENT_V1: Final = "myquant.v17.fundamental-promotion-event.v1"
@@ -66,7 +66,7 @@ def fundamental_v4_contract(function: Callable[_P, _R]) -> Callable[_P, _R]:
 
 
 __all__ = [
-    "COMPARISON_POLICY_V1",
+    "COMPARISON_POLICY_V2",
     "FINANCIAL_ENDPOINTS",
     "FundamentalV4ContractError",
     "LANES",

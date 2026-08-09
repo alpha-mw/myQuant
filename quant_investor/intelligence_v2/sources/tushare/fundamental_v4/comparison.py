@@ -22,10 +22,11 @@ from ...._core import (
     seal,
     sha256,
     timestamp,
+    validate_content_ref,
     validate_seal,
 )
 from .models import (
-    COMPARISON_POLICY_V1,
+    COMPARISON_POLICY_V2,
     SCALAR_KINDS,
     SOURCE_TABLES,
     FundamentalV4ContractError,
@@ -48,6 +49,9 @@ _POLICY_FIELDS = {
     "version",
 }
 _TABLE_POLICY_FIELDS = {
+    "baseline_source_only_columns",
+    "baseline_source_only_reason",
+    "baseline_source_schema_evidence_ref",
     "canonical_key_columns",
     "column_rows",
     "table",
@@ -57,6 +61,7 @@ _TABLE_POLICY_FIELDS = {
 }
 _COLUMN_ROW_FIELDS = {"column", "kind"}
 _DECIMAL_QUANTUM = Decimal("0.000000000001")
+_SCHEMA_DIAGNOSTIC_VERSION = "myquant.v17.intelligence-v2.tushare-schema-diagnostic-receipt.v1"
 
 
 def _sequence(value: Any, *, label: str, maximum: int) -> list[Any]:
@@ -78,6 +83,35 @@ def _column_names(value: Any, *, label: str, allowed: set[str]) -> list[str]:
     if len(normalized) != len(set(normalized)):
         raise FundamentalV4ContractError(f"{label} contains duplicates")
     return normalized
+
+
+def _baseline_source_only_contract(
+    row: Mapping[str, Any],
+    *,
+    expected_table: str,
+    common_columns: set[str],
+) -> tuple[list[str], str | None, dict[str, str] | None]:
+    value = row["baseline_source_only_columns"]
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        raise FundamentalV4ContractError("baseline source-only columns must be a sequence")
+    columns = list(value)
+    reason = row["baseline_source_only_reason"]
+    evidence = row["baseline_source_schema_evidence_ref"]
+    if not columns:
+        if reason is not None or evidence is not None:
+            raise FundamentalV4ContractError("empty source-only contract has authority fields")
+        return [], None, None
+    if (
+        expected_table != "forecast"
+        or columns != ["update_flag"]
+        or "update_flag" in common_columns
+        or reason != "ENDPOINT_SCHEMA_NOT_EXPOSED"
+    ):
+        raise FundamentalV4ContractError("baseline source-only contract is not allowlisted")
+    validated_ref = validate_content_ref(evidence, label="source schema evidence ref")
+    if validated_ref["artifact_version"] != _SCHEMA_DIAGNOSTIC_VERSION:
+        raise FundamentalV4ContractError("source schema evidence version is invalid")
+    return columns, reason, validated_ref
 
 
 def _table_policy(value: Any, *, expected_table: str) -> dict[str, Any]:
@@ -106,6 +140,11 @@ def _table_policy(value: Any, *, expected_table: str) -> dict[str, Any]:
     if len(column_names) != len(set(column_names)):
         raise FundamentalV4ContractError("table policy has duplicate columns")
     allowed = set(column_names)
+    source_only_columns, source_only_reason, source_schema_ref = _baseline_source_only_contract(
+        row,
+        expected_table=expected_table,
+        common_columns=allowed,
+    )
     key_columns = _column_names(
         row["canonical_key_columns"],
         label="canonical_key_columns",
@@ -119,6 +158,9 @@ def _table_policy(value: Any, *, expected_table: str) -> dict[str, Any]:
     if row.get("winner_rule") != "ASCII_CANONICAL_LAST":
         raise FundamentalV4ContractError("winner rule is invalid")
     return {
+        "baseline_source_only_columns": source_only_columns,
+        "baseline_source_only_reason": source_only_reason,
+        "baseline_source_schema_evidence_ref": source_schema_ref,
         "canonical_key_columns": key_columns,
         "column_rows": normalized_columns,
         "table": expected_table,
@@ -149,6 +191,7 @@ def build_fundamental_comparison_policy(
         **common_fields(timestamp_value=created),
         "array_order_semantics": {
             "/table_policies": "table ASCII ascending",
+            "/table_policies/*/baseline_source_only_columns": "source column order",
             "/table_policies/*/canonical_key_columns": "owner semantic order",
             "/table_policies/*/column_rows": "source column order",
             "/table_policies/*/winner_order_columns": "owner semantic order",
@@ -167,7 +210,7 @@ def build_fundamental_comparison_policy(
         },
         "created_at": created,
         "table_policies": normalized,
-        "version": COMPARISON_POLICY_V1,
+        "version": COMPARISON_POLICY_V2,
     }
     return seal(body, identity_field="policy_id")
 
@@ -178,7 +221,7 @@ def validate_fundamental_comparison_policy(
 ) -> dict[str, Any]:
     value = validate_seal(document, identity_field="policy_id")
     require_exact_keys(value, _POLICY_FIELDS, label="Fundamental comparison policy")
-    if value.get("version") != COMPARISON_POLICY_V1:
+    if value.get("version") != COMPARISON_POLICY_V2:
         raise FundamentalV4ContractError("comparison policy version mismatch")
     policies = {
         row["table"]: row
@@ -290,17 +333,22 @@ def _table_projection(
     frame: pd.DataFrame,
     *,
     table_policy: Mapping[str, Any],
+    lane: str,
 ) -> dict[str, Any]:
     if not isinstance(frame, pd.DataFrame):
         raise FundamentalV4ContractError("raw table must be a DataFrame")
     column_rows = list(table_policy["column_rows"])
     columns = [row["column"] for row in column_rows]
-    if list(frame.columns) != columns:
+    if lane not in {"BASELINE", "VIP"}:
+        raise FundamentalV4ContractError("raw table lane is invalid")
+    source_only = list(table_policy["baseline_source_only_columns"])
+    expected_columns = columns + source_only if lane == "BASELINE" else columns
+    if list(frame.columns) != expected_columns:
         raise FundamentalV4ContractError("raw table column order changed")
     kinds = [row["kind"] for row in column_rows]
     rows = [
         tuple(_canonical_scalar(value, kind=kinds[index]) for index, value in enumerate(raw_row))
-        for raw_row in frame.itertuples(index=False, name=None)
+        for raw_row in frame.loc[:, columns].itertuples(index=False, name=None)
     ]
     counter = Counter(rows)
     ordered_rows = sorted(counter, key=_row_bytes)
@@ -401,10 +449,12 @@ def compare_fundamental_raw_tables(
         baseline = _table_projection(
             baseline_tables[table],
             table_policy=policy_by_table[table],
+            lane="BASELINE",
         )
         vip = _table_projection(
             vip_tables[table],
             table_policy=policy_by_table[table],
+            lane="VIP",
         )
         row_diff[table] = _row_diffs(baseline, vip)
         value_diff[table] = _winner_diffs(baseline, vip)
@@ -413,6 +463,11 @@ def compare_fundamental_raw_tables(
             "vip_duplicate_row_count": vip["duplicate_row_count"],
         }
         evidence[table] = {
+            "baseline_source_only_columns": policy_by_table[table]["baseline_source_only_columns"],
+            "baseline_source_only_reason": policy_by_table[table]["baseline_source_only_reason"],
+            "baseline_source_schema_evidence_ref": policy_by_table[table][
+                "baseline_source_schema_evidence_ref"
+            ],
             "baseline_multiset_sha256": baseline["multiset_sha256"],
             "baseline_row_count": baseline["row_count"],
             "vip_multiset_sha256": vip["multiset_sha256"],
