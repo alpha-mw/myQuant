@@ -22,13 +22,6 @@
     var parsed = Number(value);
     return Number.isFinite(parsed) ? "¥" + parsed.toLocaleString("zh-CN", { maximumFractionDigits: 2 }) : "UNKNOWN";
   }
-  function compactMoney(value) {
-    var parsed = Number(value);
-    if (!Number.isFinite(parsed)) return "UNKNOWN";
-    if (Math.abs(parsed) >= 100000000) return "¥" + (parsed / 100000000).toFixed(2) + "亿";
-    if (Math.abs(parsed) >= 10000) return "¥" + (parsed / 10000).toFixed(1) + "万";
-    return money(parsed);
-  }
   function number(value) {
     var parsed = Number(value);
     return Number.isFinite(parsed) ? parsed.toLocaleString("zh-CN", { maximumFractionDigits: 4 }) : "UNKNOWN";
@@ -332,20 +325,6 @@
       d: areaPath(portfolioValues, function (point) { return xScale(parseDate(point.date)); }, function (point) { return yScale(point.value); }, yScale(100)),
       class: "chart-area portfolio"
     }));
-
-    (bundle.history.funding_events || []).forEach(function (event) {
-      var eventTime = parseDate(event.date);
-      if (eventTime < start || eventTime > end) return;
-      var x = xScale(eventTime);
-      svg.appendChild(svgNode("line", { x1: x, x2: x, y1: dimensions.top, y2: height - dimensions.bottom, class: "chart-funding-line" }));
-      var fundingOnRight = x > width * 0.68;
-      svg.appendChild(svgNode("text", {
-        x: x + (fundingOnRight ? -5 : 5),
-        y: dimensions.top + 12,
-        "text-anchor": fundingOnRight ? "end" : "start",
-        class: "chart-funding-label"
-      }, PublicMode ? event.date.slice(5) + " 剔除外部入金" : event.date.slice(5) + " 剔除入金 " + compactMoney(event.amount)));
-    });
 
     series.forEach(function (item) {
       svg.appendChild(svgNode("path", {
@@ -690,7 +669,7 @@
     var list = byId("historyInsightList");
     list.replaceChildren();
     [csi300, star50, chinext].forEach(function (benchmark) {
-      insight(list, "对" + benchmark.name + "超额", percent(benchmark.excess_return, true), "组合自 3 月起、剔除外部入金后的累计收益相对" + benchmark.name + "的收益差。", signedClass(benchmark.excess_return));
+      insight(list, "对" + benchmark.name + "超额", percent(benchmark.excess_return, true), "组合自 3 月起的累计收益相对" + benchmark.name + "的收益差。", signedClass(benchmark.excess_return));
     });
     if (analysis.best_period) {
       insight(list, "最佳月份", analysis.best_period.period + " · " + percent(analysis.best_period.portfolio_return, true), "当月超额 " + percent(analysis.best_period.excess_return, true) + "。", signedClass(analysis.best_period.portfolio_return));
@@ -699,7 +678,7 @@
       insight(list, "最弱月份", analysis.weakest_period.period + " · " + percent(analysis.weakest_period.portfolio_return, true), "月内最大回撤 " + percent(analysis.weakest_period.portfolio_max_drawdown) + "。", signedClass(analysis.weakest_period.portfolio_return));
     }
     if (analysis.deepest_portfolio_drawdown) {
-      insight(list, "最深历史回撤", percent(analysis.deepest_portfolio_drawdown.value) + " · " + analysis.deepest_portfolio_drawdown.date, "从此前剔除入金后净值高点计算。", "negative");
+      insight(list, "最深历史回撤", percent(analysis.deepest_portfolio_drawdown.value) + " · " + analysis.deepest_portfolio_drawdown.date, "从此前组合净值高点计算。", "negative");
     }
 
     var funding = byId("fundingEventList");
@@ -838,7 +817,7 @@
     setText("star50DrawdownValue", percent(star50.max_drawdown));
     setText("chinextDrawdownValue", percent(chinext.max_drawdown));
     setText("performanceInsight", "净值与回撤");
-    setText("performanceSubtitle", bundle.portfolio.performance_start_date + " — " + bundle.portfolio.performance_end_date + " · 100 万起点 · 已剔除 7 月 9 日外部入金");
+    setText("performanceSubtitle", bundle.portfolio.performance_start_date + " — " + bundle.portfolio.performance_end_date + " · 100 万起点");
     renderPositions(bundle);
     renderAllocation(bundle);
     renderChanges(bundle);

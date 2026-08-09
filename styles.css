@@ -205,8 +205,6 @@ h3 { margin-bottom: 0; font-size: 15px; }
 .chart-area.portfolio { fill: color-mix(in srgb, var(--portfolio) 9%, transparent); }
 .chart-area.drawdown-portfolio { fill: color-mix(in srgb, var(--drawdown) 16%, transparent); }
 .chart-area.drawdown-benchmark { fill: color-mix(in srgb, var(--benchmark) 9%, transparent); }
-.chart-funding-line { stroke: var(--ink); stroke-width: 1; stroke-dasharray: 3 4; opacity: 0.62; }
-.chart-funding-label { fill: var(--ink); font-size: 11px; font-weight: 700; font-family: inherit; }
 .chart-end-dot.portfolio { fill: var(--portfolio); }
 .chart-end-dot.benchmark { fill: var(--benchmark); }
 .chart-end-dot.star50 { fill: var(--star50); }
