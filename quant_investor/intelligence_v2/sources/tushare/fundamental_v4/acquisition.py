@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 from collections.abc import Callable, Mapping
 from decimal import Decimal
 import hashlib
@@ -12,6 +14,7 @@ import stat
 import tempfile
 import time
 from typing import Any
+import unicodedata
 
 import pandas as pd
 
@@ -173,8 +176,44 @@ def _scalar(value: Any) -> list[Any]:
     if type(value) is Decimal and value.is_finite():
         return ["DECIMAL", format(value, "f")]
     if type(value) is str:
+        encoded = value.encode("utf-8", errors="strict")
+        if len(encoded) > 4000:
+            if unicodedata.normalize("NFC", value) != value:
+                raise FundamentalV4ContractError("VIP checkpoint text is not Unicode NFC")
+            offsets = range(0, len(encoded), 3000)
+            return [
+                "TEXT_UTF8_CHUNKS",
+                [
+                    base64.b64encode(encoded[slice(offset, offset + 3000)]).decode("ascii")
+                    for offset in offsets
+                ],
+            ]
         return ["TEXT", value]
     raise FundamentalV4ContractError("VIP checkpoint row scalar is invalid")
+
+
+def _restore_text_chunks(value: Any) -> str:
+    if type(value) is not list or not value:
+        raise FundamentalV4ContractError("VIP checkpoint text chunks are invalid")
+    chunks: list[bytes] = []
+    for chunk in value:
+        if type(chunk) is not str or not chunk.isascii() or len(chunk) > 4000:
+            raise FundamentalV4ContractError("VIP checkpoint text chunk is invalid")
+        try:
+            decoded = base64.b64decode(chunk, validate=True)
+        except (binascii.Error, ValueError, TypeError) as exc:
+            raise FundamentalV4ContractError("VIP checkpoint text chunk is invalid") from exc
+        if base64.b64encode(decoded).decode("ascii") != chunk:
+            raise FundamentalV4ContractError("VIP checkpoint text chunk is not canonical")
+        chunks.append(decoded)
+    encoded = b"".join(chunks)
+    try:
+        restored = encoded.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise FundamentalV4ContractError("VIP checkpoint text is not UTF-8") from exc
+    if len(encoded) <= 4000 or unicodedata.normalize("NFC", restored) != restored:
+        raise FundamentalV4ContractError("VIP checkpoint chunked text is invalid")
+    return restored
 
 
 def _restore_scalar(value: Any) -> Any:
@@ -193,6 +232,8 @@ def _restore_scalar(value: Any) -> Any:
             return result
     if kind == "TEXT" and type(scalar) is str:
         return scalar
+    if kind == "TEXT_UTF8_CHUNKS":
+        return _restore_text_chunks(scalar)
     raise FundamentalV4ContractError("VIP checkpoint scalar is invalid")
 
 

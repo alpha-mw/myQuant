@@ -216,7 +216,25 @@ def test_endpoint_partition_policy_must_cover_full_schedule() -> None:
 def test_private_checkpoint_resume_replays_without_network(tmp_path: Path) -> None:
     closure = execution()
     checkpoint = tmp_path / "vip-checkpoint"
-    client = FakeClient()
+    long_text = "超长业绩预告摘要" * 400
+
+    class LongTextClient(FakeClient):
+        def request(self, **kwargs: Any) -> TushareResponse:
+            response = super().request(**kwargs)
+            if response.api_name != "forecast_vip":
+                return response
+            row = list(response.rows[0])
+            row[response.fields.index("type")] = long_text
+            return TushareResponse(
+                api_name=response.api_name,
+                request_id=response.request_id,
+                reported_count=response.reported_count,
+                has_more=response.has_more,
+                fields=response.fields,
+                rows=(tuple(row),),
+            )
+
+    client = LongTextClient()
     first = acquire_fundamental_vip_v4(
         execution_closure=closure,
         client=client,
@@ -238,6 +256,9 @@ def test_private_checkpoint_resume_replays_without_network(tmp_path: Path) -> No
         sleeper=lambda _seconds: None,
     )
     assert first["network_attempts"] == second["network_attempts"] == first_calls
+    assert first["raw_tables"]["forecast"].iloc[0]["type"] == long_text
+    assert second["raw_tables"]["forecast"].iloc[0]["type"] == long_text
+    assert b"TEXT_UTF8_CHUNKS" in (checkpoint / "partition_records" / "000084.json").read_bytes()
     assert all(path.stat().st_mode & 0o777 == 0o600 for path in checkpoint.rglob("*.json"))
     assert checkpoint.stat().st_mode & 0o777 == 0o700
     assert (checkpoint / "partition_records").stat().st_mode & 0o777 == 0o700
