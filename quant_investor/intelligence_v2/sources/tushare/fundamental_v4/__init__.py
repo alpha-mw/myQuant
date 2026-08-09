@@ -1,5 +1,6 @@
 """Bulk Tushare Fundamental v4 evidence and reconciliation contracts."""
 
+from .acquisition import acquire_fundamental_vip_v4
 from .contracts import (
     build_logical_symbol_table_coverage_v4,
     build_provider_physical_request_receipt_v4,
@@ -27,6 +28,15 @@ from .reconciliation import (
     build_fundamental_reconciliation_receipt,
     validate_fundamental_reconciliation_receipt,
 )
+from .promotion import (
+    append_promotion_journal_event,
+    build_promotion_event,
+    classify_promotion_recovery,
+    create_promotion_journal,
+    read_promotion_journal,
+    validate_promotion_event,
+    validate_promotion_event_chain,
+)
 from .schedule import (
     build_fundamental_execution_closure_v4,
     build_fundamental_request_plan_v4,
@@ -38,16 +48,22 @@ from .storage import capture_provider_evidence_directory
 __all__ = [
     "FundamentalV4ContractError",
     "REQUIRED_EVIDENCE_PATHS",
+    "acquire_fundamental_vip_v4",
     "build_fundamental_comparison_policy",
     "build_fundamental_execution_closure_v4",
     "build_fundamental_provider_manifest_v4",
     "build_fundamental_request_plan_v4",
     "build_fundamental_reconciliation_receipt",
     "build_provider_evidence_fileset_manifest",
+    "build_promotion_event",
     "build_logical_symbol_table_coverage_v4",
     "build_provider_physical_request_receipt_v4",
     "build_raw_table_evidence_v4",
     "capture_provider_evidence_directory",
+    "classify_promotion_recovery",
+    "create_promotion_journal",
+    "append_promotion_journal_event",
+    "read_promotion_journal",
     "compare_fundamental_raw_tables",
     "validate_fundamental_comparison_policy",
     "validate_fundamental_execution_closure_v4",
@@ -55,6 +71,8 @@ __all__ = [
     "validate_fundamental_request_plan_v4",
     "validate_fundamental_reconciliation_receipt",
     "validate_provider_evidence_fileset_manifest",
+    "validate_promotion_event",
+    "validate_promotion_event_chain",
     "validate_logical_symbol_table_coverage_v4",
     "validate_provider_physical_request_receipt_v4",
     "validate_raw_table_evidence_v4",

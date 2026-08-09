@@ -16,6 +16,7 @@ RAW_TABLE_EVIDENCE_V4: Final = "myquant.v17.raw-table-evidence.v4"
 COMPARISON_POLICY_V1: Final = "myquant.v17.fundamental-comparison-policy.v1"
 RECONCILIATION_RECEIPT_V1: Final = "myquant.v17.fundamental-reconciliation-receipt.v1"
 PROVIDER_EVIDENCE_FILESET_V1: Final = "myquant.v17.provider-evidence-fileset.v1"
+PROMOTION_EVENT_V1: Final = "myquant.v17.fundamental-promotion-event.v1"
 
 FINANCIAL_ENDPOINTS: Final = {
     "balancesheet": "balancesheet_vip",

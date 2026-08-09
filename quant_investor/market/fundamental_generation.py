@@ -4204,6 +4204,81 @@ def _validate_installed_promotion_identity(
     return installed
 
 
+def preflight_staged_fundamental_promotion(
+    *,
+    staging_root: str | Path,
+    canonical_root: str | Path,
+    expected_pointer_sha256: str,
+) -> dict[str, Any]:
+    """Replay a staged promotion and derive its target pointer without writing."""
+
+    expected_hash = str(expected_pointer_sha256 or "").strip().lower()
+    if not _valid_sha256(expected_hash):
+        raise FundamentalGenerationError(
+            "fundamental expected pointer SHA256 is invalid"
+        )
+    staging_base, captured = _capture_staged_fundamental_generation(staging_root)
+    generation_aggregate_sha256 = _validate_primary_rebuild_capture(captured)
+    canonical_base = _read_data_root(canonical_root)
+    if staging_base == canonical_base:
+        raise FundamentalGenerationError(
+            "fundamental staging and canonical roots must differ"
+        )
+    _validated_canonical_pointer_bytes(
+        canonical_base,
+        expected_sha256=expected_hash,
+    )
+    scope_sha256 = _revalidate_captured_primary_scope(captured)
+    final_root = (
+        canonical_base / FUNDAMENTAL_GENERATIONS_DIRNAME / captured.generation_id
+    )
+    try:
+        os.lstat(final_root)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise FundamentalGenerationError(
+            "fundamental canonical generation path is unsafe"
+        ) from exc
+    else:
+        raise FundamentalGenerationError(
+            "fundamental canonical generation already exists"
+        )
+
+    relative_root = final_root.relative_to(canonical_base)
+    next_pointer = deepcopy(captured.pointer)
+    next_pointer["manifest_path"] = str(relative_root / "manifest.json")
+    next_pointer["tables"] = {
+        table_name: str(relative_root / f"{table_name}.parquet")
+        for table_name in FUNDAMENTAL_TABLES
+    }
+    provider_evidence = None
+    if captured.provider_evidence_bytes is not None:
+        execution = _provider_evidence_json(captured, "execution_plan.json")
+        reconciliation = _provider_evidence_json(captured, "reconciliation.json")
+        provider_evidence = {
+            "implementation_sha256": str(
+                dict(execution.get("request_plan", {}) or {}).get(
+                    "implementation_sha256", ""
+                )
+            ),
+            "reconciliation_sha256": str(
+                reconciliation.get("semantic_sha256", "")
+            ),
+        }
+    next_pointer_bytes = _json_bytes(next_pointer)
+    return {
+        "candidate_generation_id": captured.generation_id,
+        "candidate_pointer": next_pointer,
+        "candidate_pointer_sha256": hashlib.sha256(next_pointer_bytes).hexdigest(),
+        "expected_pointer_sha256": expected_hash,
+        "generation_aggregate_sha256": generation_aggregate_sha256,
+        "manifest_sha256": hashlib.sha256(captured.manifest_bytes).hexdigest(),
+        "provider_evidence": provider_evidence,
+        "scope_sha256": scope_sha256,
+    }
+
+
 def promote_staged_fundamental_generation(
     *,
     staging_root: str | Path,

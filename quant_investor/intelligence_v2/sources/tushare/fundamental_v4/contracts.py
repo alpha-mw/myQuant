@@ -211,11 +211,11 @@ def _validate_physical_status(
         raise FundamentalV4ContractError("failed physical request claims response data")
 
 
-@fundamental_v4_contract
-def build_provider_physical_request_receipt_v4(
+def _build_physical_request_receipt_validated(
     *,
-    plan: Mapping[str, Any],
-    endpoint_plans: Mapping[str, Mapping[str, Any]],
+    validated_plan: Mapping[str, Any],
+    validated_plan_ref: Mapping[str, str],
+    endpoints: Mapping[str, Mapping[str, Any]],
     table: str,
     partition_id: str,
     sanitized_params_sha256: str,
@@ -229,12 +229,6 @@ def build_provider_physical_request_receipt_v4(
     raw_response_projection_sha256: str | None,
     captured_at: str,
 ) -> dict[str, Any]:
-    """Seal one actual VIP physical request without embedding params or secrets."""
-
-    validated_plan, endpoints = _plan_and_endpoints(
-        plan=plan,
-        endpoint_plans=endpoint_plans,
-    )
     if table not in SOURCE_TABLES or status not in PHYSICAL_STATUSES:
         raise FundamentalV4ContractError("physical table or status is invalid")
     partition = _partition(validated_plan, table=table, partition_id=partition_id)
@@ -287,7 +281,7 @@ def build_provider_physical_request_receipt_v4(
         "has_more": has_more,
         "partition_id": partition["partition_id"],
         "partition_type": partition["partition_type"],
-        "plan_ref": content_ref(validated_plan, identity_field="plan_id"),
+        "plan_ref": dict(validated_plan_ref),
         "provider_request_id": provider_request_id,
         "raw_response_projection_sha256": projection_sha,
         "reported_count": reported,
@@ -304,19 +298,82 @@ def build_provider_physical_request_receipt_v4(
 
 
 @fundamental_v4_contract
+def build_provider_physical_request_receipt_v4(
+    *,
+    plan: Mapping[str, Any],
+    endpoint_plans: Mapping[str, Mapping[str, Any]],
+    table: str,
+    partition_id: str,
+    sanitized_params_sha256: str,
+    attempts: int,
+    provider_request_id: str | None,
+    reported_count: int,
+    accepted_count: int,
+    has_more: bool,
+    status: str,
+    blocker_codes: Sequence[str],
+    raw_response_projection_sha256: str | None,
+    captured_at: str,
+) -> dict[str, Any]:
+    """Seal one actual VIP physical request without embedding params or secrets."""
+
+    validated_plan, endpoints = _plan_and_endpoints(
+        plan=plan,
+        endpoint_plans=endpoint_plans,
+    )
+    return _build_physical_request_receipt_validated(
+        validated_plan=validated_plan,
+        validated_plan_ref=content_ref(validated_plan, identity_field="plan_id"),
+        endpoints=endpoints,
+        table=table,
+        partition_id=partition_id,
+        sanitized_params_sha256=sanitized_params_sha256,
+        attempts=attempts,
+        provider_request_id=provider_request_id,
+        reported_count=reported_count,
+        accepted_count=accepted_count,
+        has_more=has_more,
+        status=status,
+        blocker_codes=blocker_codes,
+        raw_response_projection_sha256=raw_response_projection_sha256,
+        captured_at=captured_at,
+    )
+
+
+@fundamental_v4_contract
 def validate_provider_physical_request_receipt_v4(
     document: Mapping[str, Any],
     *,
     plan: Mapping[str, Any],
     endpoint_plans: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, Any]:
+    validated_plan, endpoints = _plan_and_endpoints(
+        plan=plan,
+        endpoint_plans=endpoint_plans,
+    )
+    return _validate_physical_request_receipt_validated(
+        document,
+        validated_plan=validated_plan,
+        validated_plan_ref=content_ref(validated_plan, identity_field="plan_id"),
+        endpoints=endpoints,
+    )
+
+
+def _validate_physical_request_receipt_validated(
+    document: Mapping[str, Any],
+    *,
+    validated_plan: Mapping[str, Any],
+    validated_plan_ref: Mapping[str, str],
+    endpoints: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
     value = validate_seal(document, identity_field="receipt_id")
     require_exact_keys(value, _PHYSICAL_FIELDS, label="physical request receipt v4")
     if value.get("version") != PHYSICAL_REQUEST_RECEIPT_V4:
         raise FundamentalV4ContractError("physical request receipt version mismatch")
-    expected = build_provider_physical_request_receipt_v4(
-        plan=plan,
-        endpoint_plans=endpoint_plans,
+    expected = _build_physical_request_receipt_validated(
+        validated_plan=validated_plan,
+        validated_plan_ref=validated_plan_ref,
+        endpoints=endpoints,
         table=value["table"],
         partition_id=value["partition_id"],
         sanitized_params_sha256=value["sanitized_params_sha256"],
