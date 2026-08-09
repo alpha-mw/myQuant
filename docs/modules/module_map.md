@@ -103,10 +103,16 @@ the later research path:
   graduation receipts;
 - `publication/`: pure Ed25519 permit and research-mainline publication
   contracts. It does not sign, publish or invoke pointer CAS by itself.
+- `sources/tushare/`: strict-decimal capability receipts, Fundamental VIP v4
+  acquisition/reconciliation, and source-bound Industry/Theme compilers;
+- `market_risk/`: exact same-session I6 risk projection that can only tighten
+  gross, cash, security-cap and veto constraints.
 
 The v2 package has its own exact package manifest and binds the frozen-v1
 manifest SHA. It adds no public builder CLI, Web endpoint, scheduler or daemon.
 See `docs/architecture/v17_i2_i6_investment_intelligence_v2.md`.
+The Tushare source and Fundamental promotion boundary is documented in
+`docs/architecture/tushare_10000_investment_intelligence.md`.
 
 ## Standalone legacy automation
 

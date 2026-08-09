@@ -247,6 +247,7 @@ research diagnosis behind the statistical and set-level design.
 - [I0 Investment Intelligence](docs/architecture/v17_i0_investment_intelligence.md)
 - [R2.2 Forward Research Evaluator](docs/architecture/v17_r22_forward_research_evaluator.md)
 - [I1 Investment Decision Intelligence](docs/architecture/v17_i1_investment_decision_intelligence.md)
+- [Tushare 10,000 investment-intelligence flow](docs/architecture/tushare_10000_investment_intelligence.md)
 - [Portfolio-cycle foundation](docs/architecture/v17_portfolio_cycle_foundation.md)
 - [Tushare data cleaning](docs/tushare_data_cleaning.md)
 - [Trading discipline](docs/trading_discipline.md)

@@ -118,6 +118,24 @@ coordinator, so it remains `CAPABILITY_PARTIAL`. It does not sign with, load or
 store an owner private key. No pointer is written without a later exact-target
 display and fresh user confirmation.
 
+### Tushare 10,000 governed source path
+
+The v2 source package reuses the official V4 HTTPS transport in strict-decimal
+mode. It separates a dry-run capability probe, same-as-of Fundamental VIP
+shadow acquisition, exact v3/VIP reconciliation, isolated staging and the
+journaled Fundamental-only CAS. Physical network attempts, including retries,
+must satisfy `vip_attempts * 10 <= baseline_provider_calls_attempted`.
+
+I2 consumes sealed SW2021 taxonomy and membership partitions. I3 uses complete
+DC snapshots first and TDX only for a sealed DC-incomplete company keyset.
+Neither compiler permits display labels or diagnostics to become identity or
+Decision authority. `MarketRiskProjection.v1` accepts only same-session daily,
+daily-basic, suspension and price-limit refs and can only tighten I6 risk.
+
+The Fundamental promotion authorization does not authorize a V17 active
+pointer write. See
+[Tushare 10,000 Investment Intelligence Flow](tushare_10000_investment_intelligence.md).
+
 ## Causal Regime contract
 
 The current Markov implementation is under

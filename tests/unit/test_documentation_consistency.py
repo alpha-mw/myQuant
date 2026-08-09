@@ -12,6 +12,7 @@ CURRENT_DOCS = [
     ROOT / "docs" / "README.md",
     ROOT / "docs" / "architecture" / "entrypoints_and_versioning.md",
     ROOT / "docs" / "architecture" / "research_pipeline_and_protocols.md",
+    ROOT / "docs" / "architecture" / "tushare_10000_investment_intelligence.md",
     ROOT / "docs" / "architecture" / "v17_i0_investment_intelligence.md",
     ROOT / "docs" / "architecture" / "v17_i1_investment_decision_intelligence.md",
     ROOT / "docs" / "architecture" / "v17_i2_i6_investment_intelligence_v2.md",
@@ -124,6 +125,9 @@ def test_public_docs_describe_the_live_entrypoints_and_contracts():
     r22 = _read(ROOT / "docs" / "architecture" / "v17_r22_forward_research_evaluator.md")
     i1 = _read(ROOT / "docs" / "architecture" / "v17_i1_investment_decision_intelligence.md")
     i2_i6 = _read(ROOT / "docs" / "architecture" / "v17_i2_i6_investment_intelligence_v2.md")
+    tushare_10000 = _read(
+        ROOT / "docs" / "architecture" / "tushare_10000_investment_intelligence.md"
+    )
     mainline_contract = _read(
         ROOT / "docs" / "architecture" / "v17_v4_production_research_contract.md"
     )
@@ -148,6 +152,9 @@ def test_public_docs_describe_the_live_entrypoints_and_contracts():
     assert "怀疑型 AI 投委会" in i2_i6
     assert "RESEARCH_MAINLINE_CANDIDATE_BLOCKED" in i2_i6
     assert "active pointer unchanged" in i2_i6
+    assert "vip_network_attempts * 10 <= baseline_provider_calls_attempted" in tushare_10000
+    assert "run_tushare_vip_fundamental_shadow.py" in tushare_10000
+    assert "never writes the V17 active pointer" in tushare_10000
     assert "low-level exact-once and compare-and-swap storage" in mainline_contract
     assert "do not constitute a governed operator workflow" in mainline_contract
 
