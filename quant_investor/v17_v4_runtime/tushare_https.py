@@ -11,6 +11,7 @@ import math
 import os
 import re
 import ssl
+import unicodedata
 from types import MappingProxyType
 from typing import Any, Final, Mapping, NoReturn, Sequence
 
@@ -73,6 +74,9 @@ class TushareSchemaDiagnostic:
     expected_fields_match: bool
     row_widths: tuple[int, ...]
     cell_types: tuple[str, ...]
+    text_cell_count: int
+    non_nfc_text_count: int
+    max_text_utf8_bytes: int
 
 
 def _fail(code: str) -> NoReturn:
@@ -256,12 +260,21 @@ def _decode_schema_diagnostic(
         _fail("TUSHARE_RESPONSE_INVALID")
     row_widths: set[int] = set()
     cell_types: set[str] = set()
+    text_cell_count = 0
+    non_nfc_text_count = 0
+    max_text_utf8_bytes = 0
     for row in items:
         if type(row) is not list or len(row) > MAX_CONTAINER_ITEMS:
             _fail("TUSHARE_RESPONSE_INVALID")
         row_widths.add(len(row))
         for value in row:
             cell_types.add(_diagnostic_cell_type(value))
+            if type(value) is str:
+                text_cell_count += 1
+                encoded_length = len(value.encode("utf-8", errors="strict"))
+                max_text_utf8_bytes = max(max_text_utf8_bytes, encoded_length)
+                if unicodedata.normalize("NFC", value) != value:
+                    non_nfc_text_count += 1
     request_id_sha256 = hashlib.sha256(payload["request_id"].encode("utf-8")).hexdigest()
     return TushareSchemaDiagnostic(
         api_name=api_name,
@@ -276,6 +289,9 @@ def _decode_schema_diagnostic(
         expected_fields_match=tuple(response_fields) == expected_fields,
         row_widths=tuple(sorted(row_widths)),
         cell_types=tuple(sorted(cell_types)),
+        text_cell_count=text_cell_count,
+        non_nfc_text_count=non_nfc_text_count,
+        max_text_utf8_bytes=max_text_utf8_bytes,
     )
 
 

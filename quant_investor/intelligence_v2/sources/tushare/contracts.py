@@ -841,6 +841,17 @@ def _diagnostic_rows(value: Any, *, label: str) -> list[str]:
     return rows
 
 
+def _diagnostic_text_stats(diagnostic: Mapping[str, Any]) -> tuple[int, int, int]:
+    text_count = _nonnegative_int(diagnostic["text_cell_count"], label="text_cell_count")
+    non_nfc_count = _nonnegative_int(diagnostic["non_nfc_text_count"], label="non_nfc_text_count")
+    max_bytes = _nonnegative_int(diagnostic["max_text_utf8_bytes"], label="max_text_utf8_bytes")
+    if non_nfc_count > text_count:
+        raise TushareContractError("non-NFC text count exceeds text cell count")
+    if (text_count == 0 and max_bytes != 0) or (text_count > 0 and max_bytes == 0):
+        raise TushareContractError("maximum text size does not match text cell count")
+    return text_count, non_nfc_count, max_bytes
+
+
 @_tushare_contract
 def build_tushare_schema_diagnostic_receipt(
     *,
@@ -867,6 +878,8 @@ def build_tushare_schema_diagnostic_receipt(
         "expected_fields_match",
         "has_more",
         "item_count",
+        "max_text_utf8_bytes",
+        "non_nfc_text_count",
         "observed_fields",
         "provider_code",
         "provider_reported_count",
@@ -874,6 +887,7 @@ def build_tushare_schema_diagnostic_receipt(
         "response_body_sha256",
         "row_widths",
         "status",
+        "text_cell_count",
     }
     if type(diagnostic) is not dict or set(diagnostic) != expected_keys:
         raise TushareContractError("schema diagnostic shape is invalid")
@@ -910,6 +924,7 @@ def build_tushare_schema_diagnostic_receipt(
         raise TushareContractError("cell_types contain an invalid type")
     if (item_count == 0 and cell_types) or (item_count > 0 and not cell_types):
         raise TushareContractError("cell_types do not match item_count")
+    text_cell_count, non_nfc_text_count, max_text_utf8_bytes = _diagnostic_text_stats(diagnostic)
     body = {
         **common_fields(timestamp_value=captured),
         "api_name": validated_plan["api_name"],
@@ -917,6 +932,8 @@ def build_tushare_schema_diagnostic_receipt(
         "expected_fields_match": expected_match,
         "has_more": diagnostic["has_more"],
         "item_count": item_count,
+        "max_text_utf8_bytes": max_text_utf8_bytes,
+        "non_nfc_text_count": non_nfc_text_count,
         "observed_fields": observed_fields,
         "plan_ref": content_ref(validated_plan, identity_field="plan_id"),
         "provider_code": 0,
@@ -932,6 +949,7 @@ def build_tushare_schema_diagnostic_receipt(
         "row_widths": row_widths,
         "status": "OBSERVED",
         "strict_decimal_decode": True,
+        "text_cell_count": text_cell_count,
         "version": SCHEMA_DIAGNOSTIC_RECEIPT_VERSION,
     }
     return seal(body, identity_field="schema_diagnostic_receipt_id")
@@ -956,6 +974,8 @@ def validate_tushare_schema_diagnostic_receipt(
             "expected_fields_match",
             "has_more",
             "item_count",
+            "max_text_utf8_bytes",
+            "non_nfc_text_count",
             "observed_fields",
             "plan_ref",
             "provider_code",
@@ -967,6 +987,7 @@ def validate_tushare_schema_diagnostic_receipt(
             "schema_diagnostic_receipt_id",
             "status",
             "strict_decimal_decode",
+            "text_cell_count",
             "version",
         },
         label="Tushare schema diagnostic receipt",

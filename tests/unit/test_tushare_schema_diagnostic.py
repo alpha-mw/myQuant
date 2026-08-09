@@ -137,6 +137,9 @@ def test_transport_projects_schema_without_business_values() -> None:
     assert diagnostic.item_count == 1
     assert diagnostic.row_widths == (3,)
     assert diagnostic.cell_types == ("TEXT",)
+    assert diagnostic.text_cell_count == 3
+    assert diagnostic.non_nfc_text_count == 0
+    assert diagnostic.max_text_utf8_bytes == len(CANARY.encode())
     assert diagnostic.request_id_sha256 == hashlib.sha256(b"provider-request-secret").hexdigest()
     diagnostic_bytes = json.dumps(
         asdict(diagnostic), default=list, separators=(",", ":"), sort_keys=True
@@ -201,6 +204,8 @@ def test_receipt_is_sealed_replayed_and_rejects_business_values() -> None:
         "frozen_v1_manifest_sha256",
         "has_more",
         "item_count",
+        "max_text_utf8_bytes",
+        "non_nfc_text_count",
         "observed_fields",
         "plan_ref",
         "production",
@@ -215,6 +220,7 @@ def test_receipt_is_sealed_replayed_and_rejects_business_values() -> None:
         "semantic_sha256",
         "status",
         "strict_decimal_decode",
+        "text_cell_count",
         "timestamp",
         "version",
     }
