@@ -18,6 +18,9 @@ from quant_investor.intelligence_v2.sources.tushare import (
     build_tushare_schema_diagnostic_receipt,
     validate_tushare_schema_diagnostic_receipt,
 )
+from quant_investor.intelligence_v2.sources.tushare.contracts import (
+    response_projection_sha256,
+)
 from quant_investor.v17_v4_runtime import tushare_https
 from quant_investor.v17_v4_runtime.tushare_https import (
     OfficialTushareHttpsClient,
@@ -164,6 +167,21 @@ def test_schema_diagnostic_requires_explicit_strict_mode() -> None:
             expected_fields=EXPECTED_FIELDS,
         )
     assert Connection.calls == 0
+
+
+def test_response_projection_hashes_long_text_without_truncation() -> None:
+    first = "甲" * 1704
+    second = first[:-1] + "乙"
+
+    first_sha = response_projection_sha256(((first,),))
+    second_sha = response_projection_sha256(((second,),))
+
+    assert len(first.encode()) > 4000
+    assert len(first_sha) == 64
+    assert first_sha != second_sha
+
+    with pytest.raises(TushareContractError, match="Unicode NFC"):
+        response_projection_sha256((("e\N{COMBINING ACUTE ACCENT}",),))
 
 
 def test_receipt_is_sealed_replayed_and_rejects_business_values() -> None:

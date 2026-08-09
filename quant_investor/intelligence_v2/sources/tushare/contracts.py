@@ -7,6 +7,7 @@ from decimal import Decimal
 from functools import wraps
 import hashlib
 import re
+import unicodedata
 from typing import Any, Callable, Final, ParamSpec, TypeVar
 from urllib.parse import urlsplit
 
@@ -1006,25 +1007,39 @@ def validate_tushare_schema_diagnostic_receipt(
     return value
 
 
+def _response_scalar_projection(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {"kind": "NULL", "value": None}
+    if type(value) is bool:
+        return {"kind": "BOOL", "value": value}
+    if type(value) is int:
+        return {"kind": "INT", "value": str(value)}
+    if type(value) is Decimal and value.is_finite():
+        return {"kind": "DECIMAL", "value": format(value, "f")}
+    if type(value) is str:
+        if unicodedata.normalize("NFC", value) != value:
+            raise TushareContractError("response projection text must be Unicode NFC")
+        encoded = value.encode("utf-8", errors="strict")
+        return {
+            "kind": "TEXT_SHA256",
+            "utf8_bytes": len(encoded),
+            "value_sha256": hashlib.sha256(encoded).hexdigest(),
+        }
+    raise TushareContractError("response projection contains invalid scalar")
+
+
 def response_projection_sha256(rows: Sequence[Sequence[Any]]) -> str:
-    projections: list[list[dict[str, Any]]] = []
-    for row in rows:
-        projected_row: list[dict[str, Any]] = []
-        for value in row:
-            if value is None:
-                projected_row.append({"kind": "NULL", "value": None})
-            elif type(value) is bool:
-                projected_row.append({"kind": "BOOL", "value": value})
-            elif type(value) is int:
-                projected_row.append({"kind": "INT", "value": str(value)})
-            elif type(value) is Decimal and value.is_finite():
-                projected_row.append({"kind": "DECIMAL", "value": format(value, "f")})
-            elif type(value) is str:
-                projected_row.append({"kind": "TEXT", "value": value})
-            else:
-                raise TushareContractError("response projection contains invalid scalar")
-        projections.append(projected_row)
-    return hashlib.sha256(canonical_bytes(projections)).hexdigest()
+    """Hash exact row order without embedding provider text in a v2 artifact."""
+
+    digest = hashlib.sha256()
+    digest.update(b"[")
+    for index, row in enumerate(rows):
+        if index:
+            digest.update(b",")
+        projection = [_response_scalar_projection(value) for value in row]
+        digest.update(canonical_bytes(projection))
+    digest.update(b"]")
+    return digest.hexdigest()
 
 
 __all__ = [
