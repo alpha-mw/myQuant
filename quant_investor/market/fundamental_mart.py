@@ -248,6 +248,33 @@ def _issue_live_tushare_attestation(
     )
 
 
+def _issue_live_tushare_v4_attestation(
+    source: str,
+    provider_manifest: Mapping[str, Any],
+    raw_tables: Mapping[str, pd.DataFrame],
+) -> _LiveTushareAttestation:
+    """Issue the internal capability only after the sealed v4 replay passed."""
+
+    manifest = dict(provider_manifest)
+    if (
+        source != "live_tushare_vip"
+        or manifest.get("schema_version")
+        != "cn-fundamental-provider-manifest.v4"
+        or manifest.get("authoritative_full_rebuild") is not True
+        or manifest.get("performance_gate_passed") is not True
+        or set(dict(manifest.get("raw_table_fingerprints", {}) or {}))
+        != set(SOURCE_TABLES)
+        or set(raw_tables) != set(SOURCE_TABLES)
+    ):
+        raise ValueError("live Tushare v4 provenance attestation failed")
+    return _LiveTushareAttestation(
+        capability=_LIVE_TUSHARE_CAPABILITY,
+        source=source,
+        provider_manifest_sha256=_canonical_mapping_sha256(manifest),
+        raw_table_fingerprints=_raw_table_fingerprints(raw_tables),
+    )
+
+
 def _live_tushare_attestation_matches(
     attestation: _LiveTushareAttestation | None,
     *,
@@ -279,6 +306,17 @@ def _provider_source_priority(
     manifest = dict(provider_manifest or {})
     explicit = str(manifest.get("source_priority") or "").strip()
     source_is_tushare = "tushare" in str(source or "").lower()
+    if manifest.get("schema_version") == "cn-fundamental-provider-manifest.v4":
+        if _live_tushare_attestation_matches(
+            live_tushare_attestation,
+            source=source,
+            provider_manifest=manifest,
+            raw_tables=raw_tables,
+        ):
+            return "tushare_primary"
+        raise ValueError(
+            "Fundamental v4 requires an internal live Tushare attestation"
+        )
     if explicit == "tushare_primary":
         if _live_tushare_attestation_matches(
             live_tushare_attestation,
@@ -1718,6 +1756,7 @@ def write_fundamental_mart(
     publish_on_gate_failure: bool = True,
     _live_tushare_attestation: _LiveTushareAttestation | None = None,
     _derived_tables_v3: Mapping[str, pd.DataFrame] | None = None,
+    _provider_evidence_bytes: Mapping[str, bytes] | None = None,
     _published_pointer_out: dict[str, Any] | None = None,
 ) -> tuple[FundamentalMartArtifacts, dict[str, Any]]:
     run_id = run_id or _run_id()
@@ -1925,6 +1964,31 @@ def write_fundamental_mart(
         _primary_attestation=primary_generation_attestation,
         expected_pointer_sha256=predecessor_pointer_sha256,
     )
+    if _provider_evidence_bytes is not None:
+        if dict(provider_manifest or {}).get("schema_version") != (
+            "cn-fundamental-provider-manifest.v4"
+        ):
+            raise ValueError("provider evidence bytes require a v4 manifest")
+        from ..intelligence_v2.sources.tushare.fundamental_v4.storage import (
+            capture_provider_evidence_directory,
+        )
+        from .fundamental_generation import (
+            _write_captured_provider_evidence,
+        )
+
+        generation_root = data_dir / Path(
+            str(pointer["manifest_path"])
+        ).parent
+        _write_captured_provider_evidence(
+            generation_root,
+            _provider_evidence_bytes,
+        )
+        if capture_provider_evidence_directory(
+            generation_root / "provider_evidence"
+        ) != dict(_provider_evidence_bytes):
+            raise ValueError(
+                "Fundamental v4 provider evidence readback failed"
+            )
     if _published_pointer_out is not None:
         _published_pointer_out.clear()
         _published_pointer_out.update(pointer)

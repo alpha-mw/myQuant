@@ -44,6 +44,13 @@ from .schedule import (
     validate_fundamental_request_plan_v4,
 )
 from .storage import capture_provider_evidence_directory
+from .shadow import (
+    build_fundamental_shadow_bundle_v4,
+    build_logical_coverages_from_shadow_v4,
+    derive_fundamental_shadow_v4,
+    materialize_fundamental_v4_staging_generation,
+    write_fundamental_shadow_bundle_v4,
+)
 
 __all__ = [
     "FundamentalV4ContractError",
@@ -53,6 +60,10 @@ __all__ = [
     "build_fundamental_execution_closure_v4",
     "build_fundamental_provider_manifest_v4",
     "build_fundamental_request_plan_v4",
+    "build_fundamental_shadow_bundle_v4",
+    "build_logical_coverages_from_shadow_v4",
+    "derive_fundamental_shadow_v4",
+    "materialize_fundamental_v4_staging_generation",
     "build_fundamental_reconciliation_receipt",
     "build_provider_evidence_fileset_manifest",
     "build_promotion_event",
@@ -76,4 +87,5 @@ __all__ = [
     "validate_logical_symbol_table_coverage_v4",
     "validate_provider_physical_request_receipt_v4",
     "validate_raw_table_evidence_v4",
+    "write_fundamental_shadow_bundle_v4",
 ]

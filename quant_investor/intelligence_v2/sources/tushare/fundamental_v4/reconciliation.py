@@ -24,8 +24,10 @@ from .comparison import (
     validate_fundamental_comparison_policy,
 )
 from .contracts import (
-    validate_logical_symbol_table_coverage_v4,
-    validate_provider_physical_request_receipt_v4,
+    _plan_and_endpoints,
+    _partition_ids,
+    _validate_logical_coverage_validated,
+    _validate_physical_request_receipt_validated,
     validate_raw_table_evidence_v4,
 )
 from .models import (
@@ -97,11 +99,17 @@ def _physical_receipts(
     plan: Mapping[str, Any],
     endpoint_plans: Mapping[str, Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
+    validated_plan, endpoints = _plan_and_endpoints(
+        plan=plan,
+        endpoint_plans=endpoint_plans,
+    )
+    plan_ref = content_ref(validated_plan, identity_field="plan_id")
     rows = [
-        validate_provider_physical_request_receipt_v4(
+        _validate_physical_request_receipt_validated(
             value,
-            plan=plan,
-            endpoint_plans=endpoint_plans,
+            validated_plan=validated_plan,
+            validated_plan_ref=plan_ref,
+            endpoints=endpoints,
         )
         for value in _documents(values, label="physical_receipts", maximum=2_000)
     ]
@@ -119,15 +127,47 @@ def _logical_coverages(
     endpoint_plans: Mapping[str, Mapping[str, Any]],
     physical_receipts: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
-    rows = [
-        validate_logical_symbol_table_coverage_v4(
-            value,
-            plan=plan,
-            endpoint_plans=endpoint_plans,
-            physical_receipts=physical_receipts,
+    del endpoint_plans
+    validated_plan = plan
+    physical_by_table = {
+        table: [row for row in physical_receipts if row["table"] == table]
+        for table in SOURCE_TABLES
+    }
+    cache: dict[
+        tuple[str, str, str],
+        tuple[list[Mapping[str, Any]], set[str]],
+    ] = {}
+    rows: list[dict[str, Any]] = []
+    for value in _documents(values, label="logical_coverages", maximum=60_000):
+        key = (value.get("table"), value.get("expected_start"), value.get("expected_end"))
+        if any(type(item) is not str for item in key) or key[0] not in SOURCE_TABLES:
+            raise FundamentalV4ContractError("logical coverage interval identity is invalid")
+        typed_key = (key[0], key[1], key[2])
+        if typed_key not in cache:
+            table, start, end = typed_key
+            selected = [
+                row
+                for row in physical_by_table[table]
+                if start <= row["partition_id"].split("=", 1)[1] <= end
+            ]
+            cache[typed_key] = (
+                selected,
+                _partition_ids(
+                    validated_plan,
+                    table=table,
+                    expected_start=start,
+                    expected_end=end,
+                ),
+            )
+        receipts, partition_ids = cache[typed_key]
+        rows.append(
+            _validate_logical_coverage_validated(
+                value,
+                validated_plan=validated_plan,
+                receipts=receipts,
+                expected_partition_ids=partition_ids,
+            )
         )
-        for value in _documents(values, label="logical_coverages", maximum=12_000)
-    ]
     identities = [(row["company_code"], row["table"]) for row in rows]
     expected = [(symbol, table) for symbol in plan["symbols"] for table in SOURCE_TABLES]
     if sorted(identities) != sorted(expected) or len(identities) != len(set(identities)):

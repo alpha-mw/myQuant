@@ -401,27 +401,29 @@ def _physical_receipts(
     expected_start: str,
     expected_end: str,
 ) -> list[dict[str, Any]]:
-    rows = [
-        validate_provider_physical_request_receipt_v4(
-            value,
-            plan=plan,
-            endpoint_plans=endpoint_plans,
-        )
-        for value in _sequence(values, label="physical_receipts", maximum=2_000)
+    validated_plan, endpoints = _plan_and_endpoints(
+        plan=plan,
+        endpoint_plans=endpoint_plans,
+    )
+    plan_ref = content_ref(validated_plan, identity_field="plan_id")
+    candidates = _sequence(values, label="physical_receipts", maximum=2_000)
+    selected = [
+        value
+        for value in candidates
+        if isinstance(value, Mapping)
+        and value.get("table") == table
+        and type(value.get("partition_id")) is str
+        and expected_start <= value["partition_id"].split("=", 1)[-1] <= expected_end
     ]
-    rows = [row for row in rows if row["table"] == table]
-    if table == "daily_basic":
-        rows = [
-            row
-            for row in rows
-            if expected_start <= row["partition_id"].split("=", 1)[1] <= expected_end
-        ]
-    else:
-        rows = [
-            row
-            for row in rows
-            if expected_start <= row["partition_id"].split("=", 1)[1] <= expected_end
-        ]
+    rows = [
+        _validate_physical_request_receipt_validated(
+            value,
+            validated_plan=validated_plan,
+            validated_plan_ref=plan_ref,
+            endpoints=endpoints,
+        )
+        for value in selected
+    ]
     return sorted(rows, key=lambda row: row["receipt_id"].encode("ascii"))
 
 
@@ -450,12 +452,11 @@ def _observed_interval(
     return normalized_start, normalized_end
 
 
-@fundamental_v4_contract
-def build_logical_symbol_table_coverage_v4(
+def _build_logical_coverage_validated(
     *,
-    plan: Mapping[str, Any],
-    endpoint_plans: Mapping[str, Mapping[str, Any]],
-    physical_receipts: Sequence[Mapping[str, Any]],
+    validated_plan: Mapping[str, Any],
+    receipts: Sequence[Mapping[str, Any]],
+    expected_partition_ids: set[str],
     company_code: str,
     table: str,
     expected_start: str,
@@ -469,12 +470,6 @@ def build_logical_symbol_table_coverage_v4(
     status: str,
     assessed_at: str,
 ) -> dict[str, Any]:
-    """Project batch partitions into one explicit logical symbol/table closure."""
-
-    validated_plan = validate_fundamental_request_plan_v4(
-        plan,
-        endpoint_plans=endpoint_plans,
-    )
     if company_code not in validated_plan["symbols"] or table not in SOURCE_TABLES:
         raise FundamentalV4ContractError("logical coverage subject is outside plan")
     if status not in LOGICAL_STATUSES:
@@ -489,20 +484,6 @@ def build_logical_symbol_table_coverage_v4(
         observed_start=observed_start,
         observed_end=observed_end,
     )
-    receipts = _physical_receipts(
-        physical_receipts,
-        plan=validated_plan,
-        endpoint_plans=endpoint_plans,
-        table=table,
-        expected_start=start,
-        expected_end=end,
-    )
-    expected_partitions = [
-        row
-        for row in validated_plan["partition_rows"]
-        if row["table"] == table and start <= row["partition_id"].split("=", 1)[1] <= end
-    ]
-    expected_partition_ids = {row["partition_id"] for row in expected_partitions}
     if {row["partition_id"] for row in receipts} != expected_partition_ids:
         raise FundamentalV4ContractError("logical physical partition keyset is incomplete")
     receipt_ids = [row["receipt_id"] for row in receipts]
@@ -545,13 +526,86 @@ def build_logical_symbol_table_coverage_v4(
     return seal(body, identity_field="coverage_id")
 
 
+def _partition_ids(
+    plan: Mapping[str, Any],
+    *,
+    table: str,
+    expected_start: str,
+    expected_end: str,
+) -> set[str]:
+    return {
+        row["partition_id"]
+        for row in plan["partition_rows"]
+        if row["table"] == table
+        and expected_start <= row["partition_id"].split("=", 1)[1] <= expected_end
+    }
+
+
 @fundamental_v4_contract
-def validate_logical_symbol_table_coverage_v4(
-    document: Mapping[str, Any],
+def build_logical_symbol_table_coverage_v4(
     *,
     plan: Mapping[str, Any],
     endpoint_plans: Mapping[str, Mapping[str, Any]],
     physical_receipts: Sequence[Mapping[str, Any]],
+    company_code: str,
+    table: str,
+    expected_start: str,
+    expected_end: str,
+    observed_start: str | None,
+    observed_end: str | None,
+    row_count: int,
+    missing_reason_codes: Sequence[str],
+    duplicate_reason_codes: Sequence[str],
+    restatement_reason_codes: Sequence[str],
+    status: str,
+    assessed_at: str,
+) -> dict[str, Any]:
+    """Project batch partitions into one explicit logical symbol/table closure."""
+
+    validated_plan = validate_fundamental_request_plan_v4(
+        plan,
+        endpoint_plans=endpoint_plans,
+    )
+    start = session_date(expected_start, label="expected_start")
+    end = session_date(expected_end, label="expected_end")
+    receipts = _physical_receipts(
+        physical_receipts,
+        plan=validated_plan,
+        endpoint_plans=endpoint_plans,
+        table=table,
+        expected_start=start,
+        expected_end=end,
+    )
+    return _build_logical_coverage_validated(
+        validated_plan=validated_plan,
+        receipts=receipts,
+        expected_partition_ids=_partition_ids(
+            validated_plan,
+            table=table,
+            expected_start=start,
+            expected_end=end,
+        ),
+        company_code=company_code,
+        table=table,
+        expected_start=start,
+        expected_end=end,
+        observed_start=observed_start,
+        observed_end=observed_end,
+        row_count=row_count,
+        missing_reason_codes=missing_reason_codes,
+        duplicate_reason_codes=duplicate_reason_codes,
+        restatement_reason_codes=restatement_reason_codes,
+        status=status,
+        assessed_at=assessed_at,
+    )
+
+
+def _validate_logical_coverage_validated(
+    document: Mapping[str, Any],
+    *,
+    validated_plan: Mapping[str, Any],
+    receipts: Sequence[Mapping[str, Any]],
+    expected_partition_ids: set[str],
 ) -> dict[str, Any]:
     value = validate_seal(document, identity_field="coverage_id")
     require_exact_keys(value, _LOGICAL_FIELDS, label="logical coverage v4")
@@ -559,12 +613,15 @@ def validate_logical_symbol_table_coverage_v4(
         raise FundamentalV4ContractError("logical coverage version mismatch")
     _receipt_ids(value["expected_partition_refs"], label="expected_partition_refs")
     _receipt_ids(value["physical_receipt_refs"], label="physical_receipt_refs")
-    expected = build_logical_symbol_table_coverage_v4(
-        plan=plan,
-        endpoint_plans=endpoint_plans,
-        physical_receipts=physical_receipts,
+    table = value["table"]
+    if table not in SOURCE_TABLES:
+        raise FundamentalV4ContractError("logical coverage table is invalid")
+    expected = _build_logical_coverage_validated(
+        validated_plan=validated_plan,
+        receipts=receipts,
+        expected_partition_ids=expected_partition_ids,
         company_code=value["company_code"],
-        table=value["table"],
+        table=table,
         expected_start=value["expected_start"],
         expected_end=value["expected_end"],
         observed_start=value["observed_start"],
@@ -579,6 +636,44 @@ def validate_logical_symbol_table_coverage_v4(
     if value != expected:
         raise FundamentalV4ContractError("logical coverage replay mismatch")
     return value
+
+
+@fundamental_v4_contract
+def validate_logical_symbol_table_coverage_v4(
+    document: Mapping[str, Any],
+    *,
+    plan: Mapping[str, Any],
+    endpoint_plans: Mapping[str, Mapping[str, Any]],
+    physical_receipts: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    validated_plan = validate_fundamental_request_plan_v4(
+        plan,
+        endpoint_plans=endpoint_plans,
+    )
+    table = document.get("table")
+    if table not in SOURCE_TABLES:
+        raise FundamentalV4ContractError("logical coverage table is invalid")
+    start = session_date(document.get("expected_start"), label="expected_start")
+    end = session_date(document.get("expected_end"), label="expected_end")
+    receipts = _physical_receipts(
+        physical_receipts,
+        plan=validated_plan,
+        endpoint_plans=endpoint_plans,
+        table=table,
+        expected_start=start,
+        expected_end=end,
+    )
+    return _validate_logical_coverage_validated(
+        document,
+        validated_plan=validated_plan,
+        receipts=receipts,
+        expected_partition_ids=_partition_ids(
+            validated_plan,
+            table=table,
+            expected_start=start,
+            expected_end=end,
+        ),
+    )
 
 
 def _columns(value: Any) -> list[str]:

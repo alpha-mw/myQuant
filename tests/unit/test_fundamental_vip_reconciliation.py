@@ -282,6 +282,8 @@ def reconciliation_closure(
             "coverage.fixture.v1",
             "coverage_id",
             company_code="000001.SZ",
+            expected_end="20200101",
+            expected_start="20200101",
             status="COMPLETE",
             table=table,
         )
@@ -308,12 +310,17 @@ def reconciliation_closure(
     monkeypatch.setattr(module, "validate_fundamental_request_plan_v4", lambda *a, **k: plan)
     monkeypatch.setattr(
         module,
-        "validate_provider_physical_request_receipt_v4",
+        "_plan_and_endpoints",
+        lambda **kwargs: (plan, {}),
+    )
+    monkeypatch.setattr(
+        module,
+        "_validate_physical_request_receipt_validated",
         lambda value, **kwargs: value,
     )
     monkeypatch.setattr(
         module,
-        "validate_logical_symbol_table_coverage_v4",
+        "_validate_logical_coverage_validated",
         lambda value, **kwargs: value,
     )
     monkeypatch.setattr(
