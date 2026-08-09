@@ -99,10 +99,27 @@ def test_unreferenced_modules_are_removed() -> None:
         "quant_investor/_vendor",
         "quant_investor/data/storage",
         "quant_investor/monitoring",
-        "quant_investor/intelligence/decision",
         "quant_investor/market/resources",
     ):
         assert not (ROOT / relative_path).exists(), relative_path
+
+
+def test_i1_decision_layer_is_library_only() -> None:
+    decision = ROOT / "quant_investor" / "intelligence" / "decision"
+    assert decision.is_dir()
+
+    for relative_path in (
+        "quant_investor/cli/main.py",
+        "quant_investor/intelligence/evaluator/cli.py",
+        "quant_investor/automation/daily_runner.py",
+    ):
+        source = (ROOT / relative_path).read_text(encoding="utf-8")
+        assert "intelligence.decision" not in source, relative_path
+
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert "investment-decision" not in pyproject
+    assert not (ROOT / "web").exists()
+    assert not (ROOT / "frontend").exists()
 
 
 def test_runtime_entrypoints_do_not_import_the_evidence_archive() -> None:

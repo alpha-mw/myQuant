@@ -72,8 +72,10 @@ implemented in this repository.
 
 ## Public resolution
 
-All CLI, Web, Dashboard, and scheduled read surfaces resolve the same active
-pointer. Resolution is read-only and deterministic:
+The Python facade and CLI compatibility commands resolve the same active
+pointer. Dashboard v1 is a separate historical display surface, and the
+current repository has no Web or scheduled V17 reader. Mainline resolution is
+read-only and deterministic:
 
 ```text
 read exact pointer

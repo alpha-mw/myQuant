@@ -63,9 +63,9 @@ quant-investor market run \
   --strategy-id <strategy-id>
 ```
 
-Web readers use `GET /api/research/{strategy_id}` and may pin
-`expected_pointer_sha256`. A stale expected SHA is a blocker, not permission to
-read another generation.
+The current repository has no Web reader. Python and CLI readers resolve the
+same exact pointer. When a caller supplies an expected pointer SHA, a stale
+value is a blocker, not permission to read another generation.
 
 ## 5. Expected fail-closed states
 

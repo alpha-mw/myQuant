@@ -12,7 +12,13 @@ import secrets
 import stat
 from typing import Final
 
-from .constants import EMPTY_SHA256, FORMAL_ROOT, MAINLINE_ROOT, SOURCE_ROOT
+from .constants import (
+    EMPTY_SHA256,
+    FORMAL_ROOT,
+    INTELLIGENCE_V2_ROOT,
+    MAINLINE_ROOT,
+    SOURCE_ROOT,
+)
 from .contracts import require_sha256
 
 _DIRECTORY_FLAGS: Final = (
@@ -26,7 +32,8 @@ _CREATE_FLAGS: Final = (
     os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
 )
 _GOVERNED_ROOTS: Final = tuple(
-    PurePosixPath(value) for value in (MAINLINE_ROOT, FORMAL_ROOT, SOURCE_ROOT)
+    PurePosixPath(value)
+    for value in (MAINLINE_ROOT, FORMAL_ROOT, SOURCE_ROOT, INTELLIGENCE_V2_ROOT)
 )
 
 
@@ -168,7 +175,9 @@ class MainlineStore:
                 os.close(fd)
             raise
 
-    def _open_directory(self, parts: tuple[str, ...], *, create: bool) -> int:
+    def _open_directory(  # noqa: C901 - security checks intentionally stay descriptor-local
+        self, parts: tuple[str, ...], *, create: bool
+    ) -> int:
         fd = self._open_workspace()
         traversed: list[str] = []
         try:
@@ -217,7 +226,9 @@ class MainlineStore:
             raise MainlineStorageSecurityError("mainline store cannot publish external authority")
         return path
 
-    def read(self, value: str | PurePosixPath, expected_sha256: str | None = None) -> StoredBytes:
+    def read(  # noqa: C901 - exact read keeps all race checks in one descriptor lifetime
+        self, value: str | PurePosixPath, expected_sha256: str | None = None
+    ) -> StoredBytes:
         parent, leaf, path = self._parent_leaf(value, create=False)
         fd: int | None = None
         try:

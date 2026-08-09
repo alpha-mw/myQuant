@@ -46,6 +46,25 @@ data/private/research_intelligence/evaluation_inputs/
 - 排障先检查 exact request path/SHA、origin closure、cutoff、artifact refs 和
   blocker code，不扫描目录找“最近一次”。
 
+## Investment Intelligence v2
+
+I2-I6 不扫描 runtime 目录。准备发布的 immutable v2 artifact root 是：
+
+```text
+results/v17_intelligence_v2/
+```
+
+ACTIVATE permit 与 quarantine marker 使用从 exact pointer/run 派生的固定路径：
+
+```text
+results/v17_mainline/strategies/<strategy-id>/activation_permits/<pointer-sha>.json
+results/v17_mainline/strategies/<strategy-id>/quarantine/<run-id>.json
+```
+
+这些路径是契约，不是执行授权。缺少真实 Factor v5 prospective evidence、
+Industry/Theme catalog、owner policy、ZDR capability、签名或成熟 Paper outcome 时，
+保持 `RESEARCH_MAINLINE_CANDIDATE_BLOCKED`，不得用 fixture 替代。
+
 ## Canonical market data
 
 生产/评审路径使用严格 Parquet canonical pointer、manifest 和 readback。常见

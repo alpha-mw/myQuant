@@ -17,6 +17,8 @@
 | R2.2 评价 | `quant-investor-v17-v4 research-evaluate` | 离线、stdout-only |
 
 仓库当前没有 production mainline publisher 或 activation command。
+I2-I6 没有新增 public builder CLI；相关能力只能通过显式 Python library closure
+构建和复放。I5 live search/model 与 I6 pointer activation 都需要后续单独授权。
 
 ## Exact mainline read
 

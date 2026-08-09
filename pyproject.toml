@@ -24,6 +24,8 @@ classifiers = [
 # Earlier interpreters raise TypeError, so 3.13 is the true floor.
 requires-python = ">=3.13"
 dependencies = [
+    "Brotli>=1.1.0",
+    "cryptography>=44.0.0",
     "pandas>=2.0.0",
     "pyarrow>=24.0.0",
     "numpy>=1.24.0",
@@ -47,12 +49,14 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "hatchling>=1.27.0",
     "pytest>=7.4.0",
     "pytest-cov>=4.1.0",
     "pytest-asyncio>=0.21.0",
     "black>=23.0.0",
     "flake8>=6.0.0",
     "mypy>=1.5.0",
+    "twine>=6.1.0",
 ]
 backtest = [
     "backtrader>=1.9.78",

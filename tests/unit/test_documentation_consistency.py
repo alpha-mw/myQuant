@@ -13,11 +13,16 @@ CURRENT_DOCS = [
     ROOT / "docs" / "architecture" / "entrypoints_and_versioning.md",
     ROOT / "docs" / "architecture" / "research_pipeline_and_protocols.md",
     ROOT / "docs" / "architecture" / "v17_i0_investment_intelligence.md",
+    ROOT / "docs" / "architecture" / "v17_i1_investment_decision_intelligence.md",
+    ROOT / "docs" / "architecture" / "v17_i2_i6_investment_intelligence_v2.md",
+    ROOT / "docs" / "architecture" / "v17_portfolio_cycle_foundation.md",
     ROOT / "docs" / "architecture" / "v17_r22_forward_research_evaluator.md",
     ROOT / "docs" / "architecture" / "v17_v4_production_research_contract.md",
+    ROOT / "docs" / "dependency_profiles.md",
     ROOT / "docs" / "modules" / "module_map.md",
     ROOT / "docs" / "runbooks" / "v17_legacy_configuration_cleanup.md",
     ROOT / "docs" / "runbooks" / "v17_v4_operations.md",
+    ROOT / "portfolio_dashboard" / "README.md",
 ]
 REPO_SKILL_DOCS = [
     ROOT / "skill" / "myquant-backend-ops" / "SKILL.md",
@@ -80,6 +85,19 @@ def test_current_docs_do_not_reference_removed_public_routes():
             ), f"{path.relative_to(ROOT)} still references removed route: {token}"
 
 
+def test_current_docs_do_not_restore_removed_web_or_retired_test_claims():
+    stale_claims = {
+        "GET /api/research/{strategy_id}",
+        "`workspace-api`",
+        "tests/unit/test_v17_public_web.py",
+        "All CLI, Web, Dashboard, and scheduled read surfaces",
+    }
+    for path in [*CURRENT_DOCS, *REPO_SKILL_DOCS]:
+        text = _read(path)
+        for claim in stale_claims:
+            assert claim not in text, f"{path.relative_to(ROOT)} contains stale claim: {claim}"
+
+
 def test_root_navigation_does_not_link_to_history_docs():
     for path in [ROOT / "README.md", ROOT / "docs" / "README.md"]:
         for _label, target in MARKDOWN_LINK_RE.findall(_read(path)):
@@ -104,6 +122,8 @@ def test_public_docs_describe_the_live_entrypoints_and_contracts():
     pipeline = _read(ROOT / "docs" / "architecture" / "research_pipeline_and_protocols.md")
     i0 = _read(ROOT / "docs" / "architecture" / "v17_i0_investment_intelligence.md")
     r22 = _read(ROOT / "docs" / "architecture" / "v17_r22_forward_research_evaluator.md")
+    i1 = _read(ROOT / "docs" / "architecture" / "v17_i1_investment_decision_intelligence.md")
+    i2_i6 = _read(ROOT / "docs" / "architecture" / "v17_i2_i6_investment_intelligence_v2.md")
     mainline_contract = _read(
         ROOT / "docs" / "architecture" / "v17_v4_production_research_contract.md"
     )
@@ -123,6 +143,11 @@ def test_public_docs_describe_the_live_entrypoints_and_contracts():
     assert "exactly one forward Markov filter step" in i0
     assert "recursively authorized V4 source closure" in r22
     assert "Both binding scope fields" in r22
+    assert "PAPER_CANDIDATE" in i1
+    assert "research-only" in i1
+    assert "怀疑型 AI 投委会" in i2_i6
+    assert "RESEARCH_MAINLINE_CANDIDATE_BLOCKED" in i2_i6
+    assert "active pointer unchanged" in i2_i6
     assert "low-level exact-once and compare-and-swap storage" in mainline_contract
     assert "do not constitute a governed operator workflow" in mainline_contract
 

@@ -194,6 +194,7 @@ quant-investor market storage-validate --help
 quant-investor research run --help
 quant-investor portfolio cycle-status --help
 quant-investor-v17-v4 run-forward --help
+quant-investor-v17-v4 research-evaluate --help
 ```
 
 需要 Python 3.13+。CI 的本地等价检查：

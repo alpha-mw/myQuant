@@ -157,6 +157,8 @@ explicit strategy, holdings and policy inputs without writing a portfolio.
 
 These surfaces let operators consume a governed result and diagnose missing
 inputs while keeping publication, activation and portfolio mutation separate.
+Every exposed result is a read-only public run; none of these commands builds or
+activates a replacement.
 
 ## Why researchers use this design
 
@@ -222,6 +224,7 @@ quant-investor market storage-validate --help
 quant-investor research run --help
 quant-investor portfolio cycle-status --help
 quant-investor-v17-v4 run-forward --help
+quant-investor-v17-v4 research-evaluate --help
 ```
 
 Python 3.13+. The local equivalent of CI:

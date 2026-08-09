@@ -8,7 +8,7 @@ description: Use for repository-local myQuant backend inspection and operation: 
 ## Overview
 
 把这个 skill 当作仓库内后端工作的路由入口。先确认用户要处理的是主线读取、
-数据维护、Forward/Shadow、I0/R2.2，还是独立旧 automation；这些 lane 不能
+数据维护、Forward/Shadow、I0/R2.2/I1、I2-I6 v2，还是独立旧 automation；这些 lane 不能
 互相替代。
 
 ## 核心边界
@@ -20,6 +20,11 @@ description: Use for repository-local myQuant backend inspection and operation: 
 - V4 `run-forward` 是 research-only Shadow evidence；不推进 mainline。
 - I0 的 Markov 模型是 Market/Industry/Theme 三层、严格单步、因果过滤。
 - R2.2 `research-evaluate` 离线、stdout-only；memory 只是 append proposal。
+- I1 是完整复放 I0/可选 R2.2 的 library-only 决策审查层；没有公开 CLI、Web、
+  Provider、模型调用、持久化 writer 或组合权限。
+- I2-I6 位于 `quant_investor/intelligence_v2`，仍是 library-only。I5 公开搜索
+  不设域名白名单，但本地安全固证和确定性准入保持权威；I6 只提供研究组合、Paper
+  和签名发布契约，普通任务不得调用 pointer CAS。
 - `market maintain` 等维护命令和主线读取分开；严格 Parquet canonical 数据
   不能被 CSV 静默替代。
 - LLM 只允许 advisory；deterministic gate 和风险 veto 保持权威。
@@ -34,7 +39,10 @@ description: Use for repository-local myQuant backend inspection and operation: 
 - `maintenance`：维护、验证或物化本地 CN canonical 数据。
 - `forward-research`：运行或检查 V4 Forward/Shadow evidence。
 - `intelligence-evaluation`：运行 I0/R2.2 的显式、内容绑定研究评价。
-- `workspace-api`：定位当前 FastAPI 的只读研究、设置、universe 或 data 面。
+- `decision-review`：构建或验证 library-only I1 决策、memo、discipline 或
+  external paper-review proposal。
+- `intelligence-v2`：验证 B0/I2-I6 闭包；默认离线，不调用 live Web/model，
+  不生成真实候选，不激活 pointer。
 - `legacy-diagnostic`：用户明确指定旧 API 或 standalone automation 后才进入。
 
 ### 2. 先读公开面
