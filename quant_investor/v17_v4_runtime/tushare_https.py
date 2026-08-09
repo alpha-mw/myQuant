@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
+import hashlib
 import http.client
 import json
 import math
@@ -54,6 +55,24 @@ class TushareResponse:
     has_more: bool
     fields: tuple[str, ...]
     rows: tuple[tuple[Any, ...], ...]
+
+
+@dataclass(frozen=True)
+class TushareSchemaDiagnostic:
+    """Sanitized response-shape metadata with no business cell values."""
+
+    api_name: str
+    status: str
+    provider_code: int
+    request_id_sha256: str
+    response_body_sha256: str
+    provider_reported_count: int
+    item_count: int
+    has_more: bool
+    observed_fields: tuple[str, ...]
+    expected_fields_match: bool
+    row_widths: tuple[int, ...]
+    cell_types: tuple[str, ...]
 
 
 def _fail(code: str) -> NoReturn:
@@ -156,6 +175,108 @@ def _validate_response_cell(
             _fail("TUSHARE_RESPONSE_INVALID")
         return
     _fail("TUSHARE_RESPONSE_INVALID")
+
+
+def _diagnostic_cell_type(value: Any) -> str:
+    if value is None:
+        return "NULL"
+    if type(value) is bool:
+        return "BOOLEAN"
+    if type(value) is int:
+        return "INTEGER"
+    if type(value) is Decimal and value.is_finite():
+        return "DECIMAL"
+    if type(value) is str:
+        return "TEXT"
+    _fail("TUSHARE_RESPONSE_INVALID")
+
+
+def _decode_schema_diagnostic(
+    raw: bytes,
+    *,
+    api_name: str,
+    expected_fields: tuple[str, ...],
+) -> TushareSchemaDiagnostic:
+    """Project response shape while irreversibly discarding business values."""
+
+    try:
+        payload = json.loads(
+            raw.decode("utf-8", errors="strict"),
+            object_pairs_hook=_unique_object,
+            parse_constant=_reject_constant,
+            parse_float=Decimal,
+        )
+    except TushareHttpsError:
+        raise
+    except (UnicodeError, TypeError, ValueError, json.JSONDecodeError):
+        _fail("TUSHARE_RESPONSE_INVALID")
+    if type(payload) is not dict or set(payload) != {
+        "code",
+        "data",
+        "detail",
+        "msg",
+        "request_id",
+    }:
+        _fail("TUSHARE_RESPONSE_INVALID")
+    if (
+        type(payload["code"]) is not int
+        or type(payload["detail"]) is not str
+        or type(payload["msg"]) is not str
+        or type(payload["request_id"]) is not str
+        or not payload["request_id"]
+    ):
+        _fail("TUSHARE_RESPONSE_INVALID")
+    if payload["code"] != 0:
+        _fail("TUSHARE_API_ERROR")
+    data = payload["data"]
+    if type(data) is not dict or set(data) != {
+        "count",
+        "fields",
+        "has_more",
+        "items",
+    }:
+        _fail("TUSHARE_RESPONSE_INVALID")
+    reported_count = data["count"]
+    has_more = data["has_more"]
+    response_fields = data["fields"]
+    items = data["items"]
+    if (
+        type(reported_count) is not int
+        or reported_count < 0
+        or type(has_more) is not bool
+        or type(response_fields) is not list
+        or any(
+            type(field) is not str or _FIELD_RE.fullmatch(field) is None
+            for field in response_fields
+        )
+        or len(response_fields) != len(set(response_fields))
+        or type(items) is not list
+        or len(items) > MAX_CONTAINER_ITEMS
+    ):
+        _fail("TUSHARE_RESPONSE_INVALID")
+    row_widths: set[int] = set()
+    cell_types: set[str] = set()
+    for row in items:
+        if type(row) is not list or len(row) > MAX_CONTAINER_ITEMS:
+            _fail("TUSHARE_RESPONSE_INVALID")
+        row_widths.add(len(row))
+        for value in row:
+            cell_types.add(_diagnostic_cell_type(value))
+    request_id_sha256 = hashlib.sha256(payload["request_id"].encode("utf-8")).hexdigest()
+    return TushareSchemaDiagnostic(
+        api_name=api_name,
+        status="OBSERVED",
+        provider_code=payload["code"],
+        request_id_sha256=request_id_sha256,
+        response_body_sha256=hashlib.sha256(raw).hexdigest(),
+        provider_reported_count=reported_count,
+        item_count=len(items),
+        has_more=has_more,
+        observed_fields=tuple(response_fields),
+        expected_fields_match=tuple(response_fields) == expected_fields,
+        row_widths=tuple(sorted(row_widths)),
+        cell_types=tuple(sorted(cell_types)),
+    )
 
 
 def _decode_response(
@@ -271,13 +392,13 @@ class OfficialTushareHttpsClient:
         self._timeout_seconds = float(timeout_seconds)
         self._strict_decimal_decode = strict_decimal_decode
 
-    def request(
+    def _prepare_request(
         self,
         *,
         api_name: str,
         params: Mapping[str, Any],
         expected_fields: Sequence[str],
-    ) -> TushareResponse:
+    ) -> tuple[tuple[str, ...], bytes]:
         try:
             validate_official_endpoint(OFFICIAL_TUSHARE_URL)
             if (
@@ -309,10 +430,13 @@ class OfficialTushareHttpsClient:
                 params=MappingProxyType(params_copy),
                 fields=fields,
             )
+            return fields, body
         except TushareHttpsError:
             raise
         except BaseException:
             _fail("TUSHARE_REQUEST_INVALID")
+
+    def _fetch_raw(self, body: bytes) -> bytes:
         connection: http.client.HTTPSConnection | None = None
         try:
             context = _CREATE_DEFAULT_CONTEXT()
@@ -341,12 +465,7 @@ class OfficialTushareHttpsClient:
             raw = response.read(MAX_RESPONSE_BYTES + 1)
             if len(raw) > MAX_RESPONSE_BYTES:
                 _fail("TUSHARE_RESPONSE_TOO_LARGE")
-            return _decode_response(
-                raw,
-                api_name=api_name,
-                expected_fields=fields,
-                strict_decimal_decode=self._strict_decimal_decode,
-            )
+            return raw
         except TushareHttpsError:
             raise
         except BaseException:
@@ -357,6 +476,49 @@ class OfficialTushareHttpsClient:
                     connection.close()
                 except BaseException:
                     pass
+
+    def request(
+        self,
+        *,
+        api_name: str,
+        params: Mapping[str, Any],
+        expected_fields: Sequence[str],
+    ) -> TushareResponse:
+        fields, body = self._prepare_request(
+            api_name=api_name,
+            params=params,
+            expected_fields=expected_fields,
+        )
+        raw = self._fetch_raw(body)
+        return _decode_response(
+            raw,
+            api_name=api_name,
+            expected_fields=fields,
+            strict_decimal_decode=self._strict_decimal_decode,
+        )
+
+    def diagnose_schema(
+        self,
+        *,
+        api_name: str,
+        params: Mapping[str, Any],
+        expected_fields: Sequence[str],
+    ) -> TushareSchemaDiagnostic:
+        """Make one strict request and discard all business values after projection."""
+
+        if self._strict_decimal_decode is not True:
+            _fail("TUSHARE_CLIENT_CONFIG_INVALID")
+        fields, body = self._prepare_request(
+            api_name=api_name,
+            params=params,
+            expected_fields=expected_fields,
+        )
+        raw = self._fetch_raw(body)
+        return _decode_schema_diagnostic(
+            raw,
+            api_name=api_name,
+            expected_fields=fields,
+        )
 
 
 __all__ = [
@@ -369,5 +531,6 @@ __all__ = [
     "OfficialTushareHttpsClient",
     "TushareHttpsError",
     "TushareResponse",
+    "TushareSchemaDiagnostic",
     "validate_official_endpoint",
 ]

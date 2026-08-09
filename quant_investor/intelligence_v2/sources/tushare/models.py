@@ -13,6 +13,9 @@ EXECUTION_PLAN_VERSION: Final = "myquant.v17.intelligence-v2.tushare-endpoint-ex
 CAPABILITY_RECEIPT_VERSION: Final = "myquant.v17.intelligence-v2.tushare-capability-receipt.v1"
 REQUEST_RECEIPT_VERSION: Final = "myquant.v17.intelligence-v2.tushare-request-receipt.v1"
 EXECUTION_RECEIPT_VERSION: Final = "myquant.v17.intelligence-v2.tushare-execution-receipt.v1"
+SCHEMA_DIAGNOSTIC_RECEIPT_VERSION: Final = (
+    "myquant.v17.intelligence-v2.tushare-schema-diagnostic-receipt.v1"
+)
 
 PERMISSION_CLASSES: Final = frozenset({"POINTS", "SEPARATE"})
 CAPABILITY_STATUSES: Final = frozenset(
@@ -66,6 +69,7 @@ __all__ = [
     "LANES",
     "PERMISSION_CLASSES",
     "REQUEST_RECEIPT_VERSION",
+    "SCHEMA_DIAGNOSTIC_RECEIPT_VERSION",
     "TushareContractError",
     "TushareRequestClient",
 ]

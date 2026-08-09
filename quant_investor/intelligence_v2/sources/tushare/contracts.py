@@ -34,6 +34,7 @@ from .models import (
     LANES,
     PERMISSION_CLASSES,
     REQUEST_RECEIPT_VERSION,
+    SCHEMA_DIAGNOSTIC_RECEIPT_VERSION,
     TushareContractError,
 )
 
@@ -833,6 +834,157 @@ def validate_tushare_execution_receipt(
     return value
 
 
+def _diagnostic_rows(value: Any, *, label: str) -> list[str]:
+    rows = _unique_text_rows(value, label=label, allow_empty=True)
+    if rows != sorted(rows, key=lambda item: item.encode("ascii")):
+        raise TushareContractError(f"{label} must be ASCII sorted")
+    return rows
+
+
+@_tushare_contract
+def build_tushare_schema_diagnostic_receipt(
+    *,
+    plan: Mapping[str, Any],
+    request_receipt: Mapping[str, Any],
+    sanitized_params: Mapping[str, Any],
+    diagnostic: Mapping[str, Any],
+    captured_at: str,
+) -> dict[str, Any]:
+    """Seal response-shape metadata without admitting any business cell value."""
+
+    validated_plan = validate_endpoint_execution_plan(plan)
+    request = validate_tushare_request_receipt(
+        request_receipt,
+        plan=validated_plan,
+        sanitized_params=sanitized_params,
+    )
+    captured = timestamp(captured_at, label="captured_at")
+    if captured < request["timestamp"]:
+        raise TushareContractError("schema diagnostic predates its request")
+    expected_keys = {
+        "api_name",
+        "cell_types",
+        "expected_fields_match",
+        "has_more",
+        "item_count",
+        "observed_fields",
+        "provider_code",
+        "provider_reported_count",
+        "request_id_sha256",
+        "response_body_sha256",
+        "row_widths",
+        "status",
+    }
+    if type(diagnostic) is not dict or set(diagnostic) != expected_keys:
+        raise TushareContractError("schema diagnostic shape is invalid")
+    if (
+        diagnostic["api_name"] != validated_plan["api_name"]
+        or diagnostic["status"] != "OBSERVED"
+        or diagnostic["provider_code"] != 0
+        or type(diagnostic["has_more"]) is not bool
+        or type(diagnostic["expected_fields_match"]) is not bool
+    ):
+        raise TushareContractError("schema diagnostic authority is invalid")
+    observed_fields = _unique_text_rows(
+        diagnostic["observed_fields"],
+        label="observed_fields",
+        allow_empty=True,
+    )
+    if any(_FIELD_RE.fullmatch(field) is None for field in observed_fields):
+        raise TushareContractError("observed_fields contain an invalid field")
+    expected_match = observed_fields == validated_plan["expected_fields"]
+    if diagnostic["expected_fields_match"] is not expected_match:
+        raise TushareContractError("expected_fields_match is inconsistent")
+    row_widths = _sequence(diagnostic["row_widths"], label="row_widths", maximum=256)
+    if (
+        any(type(width) is not int or width < 0 or width > 10_000 for width in row_widths)
+        or len(row_widths) != len(set(row_widths))
+        or row_widths != sorted(row_widths)
+    ):
+        raise TushareContractError("row_widths are invalid")
+    item_count = _nonnegative_int(diagnostic["item_count"], label="item_count")
+    if (item_count == 0 and row_widths) or (item_count > 0 and not row_widths):
+        raise TushareContractError("row_widths do not match item_count")
+    cell_types = _diagnostic_rows(diagnostic["cell_types"], label="cell_types")
+    if any(value not in {"BOOLEAN", "DECIMAL", "INTEGER", "NULL", "TEXT"} for value in cell_types):
+        raise TushareContractError("cell_types contain an invalid type")
+    if (item_count == 0 and cell_types) or (item_count > 0 and not cell_types):
+        raise TushareContractError("cell_types do not match item_count")
+    body = {
+        **common_fields(timestamp_value=captured),
+        "api_name": validated_plan["api_name"],
+        "cell_types": cell_types,
+        "expected_fields_match": expected_match,
+        "has_more": diagnostic["has_more"],
+        "item_count": item_count,
+        "observed_fields": observed_fields,
+        "plan_ref": content_ref(validated_plan, identity_field="plan_id"),
+        "provider_code": 0,
+        "provider_reported_count": _nonnegative_int(
+            diagnostic["provider_reported_count"],
+            label="provider_reported_count",
+        ),
+        "request_id_sha256": sha256(diagnostic["request_id_sha256"], label="request_id_sha256"),
+        "request_ref": content_ref(request, identity_field="request_receipt_id"),
+        "response_body_sha256": sha256(
+            diagnostic["response_body_sha256"], label="response_body_sha256"
+        ),
+        "row_widths": row_widths,
+        "status": "OBSERVED",
+        "strict_decimal_decode": True,
+        "version": SCHEMA_DIAGNOSTIC_RECEIPT_VERSION,
+    }
+    return seal(body, identity_field="schema_diagnostic_receipt_id")
+
+
+@_tushare_contract
+def validate_tushare_schema_diagnostic_receipt(
+    document: Mapping[str, Any],
+    *,
+    plan: Mapping[str, Any],
+    request_receipt: Mapping[str, Any],
+    sanitized_params: Mapping[str, Any],
+    diagnostic: Mapping[str, Any],
+) -> dict[str, Any]:
+    value = validate_seal(document, identity_field="schema_diagnostic_receipt_id")
+    require_exact_keys(
+        value,
+        _COMMON_FIELDS
+        | {
+            "api_name",
+            "cell_types",
+            "expected_fields_match",
+            "has_more",
+            "item_count",
+            "observed_fields",
+            "plan_ref",
+            "provider_code",
+            "provider_reported_count",
+            "request_id_sha256",
+            "request_ref",
+            "response_body_sha256",
+            "row_widths",
+            "schema_diagnostic_receipt_id",
+            "status",
+            "strict_decimal_decode",
+            "version",
+        },
+        label="Tushare schema diagnostic receipt",
+    )
+    if value.get("version") != SCHEMA_DIAGNOSTIC_RECEIPT_VERSION:
+        raise TushareContractError("schema diagnostic receipt version mismatch")
+    expected = build_tushare_schema_diagnostic_receipt(
+        plan=plan,
+        request_receipt=request_receipt,
+        sanitized_params=sanitized_params,
+        diagnostic=diagnostic,
+        captured_at=value["timestamp"],
+    )
+    if value != expected:
+        raise TushareContractError("schema diagnostic receipt replay mismatch")
+    return value
+
+
 def response_projection_sha256(rows: Sequence[Sequence[Any]]) -> str:
     projections: list[list[dict[str, Any]]] = []
     for row in rows:
@@ -860,10 +1012,12 @@ __all__ = [
     "build_tushare_endpoint_policy",
     "build_tushare_execution_receipt",
     "build_tushare_request_receipt",
+    "build_tushare_schema_diagnostic_receipt",
     "response_projection_sha256",
     "validate_endpoint_execution_plan",
     "validate_tushare_capability_receipt",
     "validate_tushare_endpoint_policy",
     "validate_tushare_execution_receipt",
     "validate_tushare_request_receipt",
+    "validate_tushare_schema_diagnostic_receipt",
 ]
