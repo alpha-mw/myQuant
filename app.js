@@ -593,6 +593,7 @@
     metric(performance, "统计区间", portfolio.performance_start_date + " → " + portfolio.performance_end_date);
     metric(performance, "收益方法", "funding-aware TWR");
     metric(performance, "最新有效记录区间收益", percent(portfolio.latest_record_interval_return, true));
+    metric(performance, "最近一次账本数量换手", percent(portfolio.latest_interval_turnover));
     metric(performance, "组合 P&L", publicRedacted(money(portfolio.portfolio_pnl)));
     metric(performance, "当前未实现 P&L", publicRedacted(money(portfolio.current_unrealized_pnl)));
     metric(performance, "最新调仓已实现 P&L", publicRedacted(money(portfolio.latest_record_realized_pnl_from_rebalance)));
