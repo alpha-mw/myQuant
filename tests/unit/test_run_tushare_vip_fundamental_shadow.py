@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.util
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -223,3 +224,40 @@ def test_baseline_manifest_binds_actual_provider_calls(
     )
     with pytest.raises(module.ShadowSafetyError, match="BASELINE_MANIFEST_MISMATCH"):
         module._baseline_tables(manifest, plan=plan, manifest_bytes=raw)
+
+
+def test_legacy_provider_manifest_uses_legacy_canonical_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load_script()
+    manifest = {
+        "provider_calls_attempted": 33012,
+        "schema_version": "myquant-fundamental-provider-manifest.v3",
+        "symbol_table_outcomes": [{"status": "success"}],
+    }
+    raw = (
+        json.dumps(
+            manifest,
+            ensure_ascii=False,
+            sort_keys=True,
+            indent=2,
+            allow_nan=False,
+        )
+        + "\n"
+    ).encode()
+    path = tmp_path / "provider-manifest.json"
+    path.write_bytes(raw)
+    monkeypatch.setattr(
+        module,
+        "canonical_bytes",
+        lambda _value: (_ for _ in ()).throw(AssertionError("v2 artifact cap")),
+    )
+
+    loaded, loaded_raw = module._load_legacy_provider_manifest(
+        path,
+        hashlib.sha256(raw).hexdigest(),
+    )
+
+    assert loaded == manifest
+    assert loaded_raw == raw

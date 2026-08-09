@@ -40,7 +40,7 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
-def _load_exact_json(path: Path, expected_sha256: str) -> tuple[dict[str, Any], bytes]:
+def _read_exact_json(path: Path, expected_sha256: str) -> tuple[dict[str, Any], bytes]:
     if not path.is_absolute() or path.is_symlink() or not path.is_file():
         raise ShadowSafetyError("VIP_SHADOW_INPUT_PATH_INVALID")
     metadata = os.lstat(path)
@@ -61,8 +61,32 @@ def _load_exact_json(path: Path, expected_sha256: str) -> tuple[dict[str, Any], 
         raise
     except (UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
         raise ShadowSafetyError("VIP_SHADOW_INPUT_INVALID") from exc
-    if type(value) is not dict or canonical_bytes(value) != raw:
+    if type(value) is not dict:
+        raise ShadowSafetyError("VIP_SHADOW_INPUT_NOT_OBJECT")
+    return value, raw
+
+
+def _load_exact_json(path: Path, expected_sha256: str) -> tuple[dict[str, Any], bytes]:
+    value, raw = _read_exact_json(path, expected_sha256)
+    if canonical_bytes(value) != raw:
         raise ShadowSafetyError("VIP_SHADOW_INPUT_NOT_CANONICAL")
+    return value, raw
+
+
+def _load_legacy_provider_manifest(
+    path: Path,
+    expected_sha256: str,
+) -> tuple[dict[str, Any], bytes]:
+    """Validate legacy v3 canonical bytes without applying the v2 8 MiB cap."""
+
+    from quant_investor.market.fundamental_generation import _json_bytes
+
+    value, raw = _read_exact_json(path, expected_sha256)
+    if (
+        value.get("schema_version") != "myquant-fundamental-provider-manifest.v3"
+        or _json_bytes(value) != raw
+    ):
+        raise ShadowSafetyError("VIP_SHADOW_LEGACY_BASELINE_NOT_CANONICAL")
     return value, raw
 
 
@@ -147,7 +171,7 @@ def _inputs(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any], d
         args.comparison_policy_sha256,
     )
     comparison = validate_fundamental_comparison_policy(comparison_raw)
-    baseline, baseline_bytes = _load_exact_json(
+    baseline, baseline_bytes = _load_legacy_provider_manifest(
         Path(args.baseline_provider_manifest_path),
         args.baseline_provider_manifest_sha256,
     )
