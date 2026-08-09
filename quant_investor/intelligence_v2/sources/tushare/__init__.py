@@ -14,6 +14,7 @@ from .contracts import (
 )
 from .models import TushareContractError, TushareRequestClient
 from .probe import probe_tushare_capabilities
+from .industry import compile_tushare_sw2021_industry_source
 
 __all__ = [
     "TushareContractError",
@@ -23,6 +24,7 @@ __all__ = [
     "build_tushare_endpoint_policy",
     "build_tushare_execution_receipt",
     "build_tushare_request_receipt",
+    "compile_tushare_sw2021_industry_source",
     "probe_tushare_capabilities",
     "validate_endpoint_execution_plan",
     "validate_tushare_capability_receipt",
