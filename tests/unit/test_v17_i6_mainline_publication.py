@@ -9,6 +9,10 @@ import pytest
 
 from quant_investor.intelligence_v2._core import canonical_bytes as v2_canonical_bytes
 from quant_investor.intelligence_v2._core import common_fields, content_ref, seal
+from quant_investor.intelligence_v2.portfolio import (
+    build_market_risk_projection,
+    build_portfolio_risk_policy,
+)
 from quant_investor.intelligence_v2.publication import (
     PUBLICATION_CLOSURE_VERSION,
     PUBLICATION_CLOSURE_VERSIONS,
@@ -48,6 +52,7 @@ _IDENTITY_FIELDS = {
     "I5_ADVISORY_RANK": "advisory_rank_id",
     "I5_PRIVATE_CAPABILITY": "private_capability_id",
     "LEGACY_MARKER_PROFILE": "profile_id",
+    "MARKET_RISK_PROJECTION": "projection_id",
     "PAPER_CAPITAL_GATE": "receipt_id",
     "PAPER_EXECUTION_POLICY": "policy_id",
     "PAPER_LEDGER": "ledger_id",
@@ -197,19 +202,84 @@ def _research_nodes(tmp_path: Path) -> tuple[dict[str, dict], dict, object, str]
             ],
         },
     )
+    graduation_policy = _generic_v2("GRADUATION_POLICY")
+    paper_policy = _generic_v2("PAPER_EXECUTION_POLICY")
+    portfolio_policy = build_portfolio_risk_policy(
+        created_at=AT,
+        target_positions=2,
+        target_gross="0.40",
+        cash_floor="0.60",
+        per_security_cap="0.25",
+        industry_cap="0.40",
+        theme_cap="0.40",
+        max_adv_participation="0.10",
+        turnover_cap="1",
+        weight_quantum="0.01",
+        drawdown_threshold="0.30",
+        risk_threshold="0.80",
+        hard_veto_codes=[],
+        macro_regime_rules=[
+            {
+                "cash_floor": "0.60",
+                "gross_cap": "0.40",
+                "regime": "NORMAL",
+                "risk_multiplier": "1",
+                "veto_codes": [],
+            }
+        ],
+        fundamental_staleness_allowance_sessions=1,
+        paper_execution_policy_ref=content_ref(paper_policy, identity_field="policy_id"),
+        graduation_policy_ref=content_ref(graduation_policy, identity_field="policy_id"),
+    )
+    market_inputs = []
+    for kind in (
+        "CANONICAL_DAILY",
+        "CANONICAL_DAILY_BASIC",
+        "CANONICAL_LIMIT",
+        "CANONICAL_SUSPEND",
+    ):
+        digest = hashlib.sha256(kind.encode()).hexdigest()
+        market_inputs.append(
+            {
+                "freshness": "FRESH",
+                "kind": kind,
+                "source_ref": {
+                    "artifact_id": kind.lower(),
+                    "artifact_version": "myquant.test.market-source.v1",
+                    "available_at": AT,
+                    "byte_sha256": digest,
+                    "cutoff": AT,
+                    "relative_path": f"results/v17_intelligence_v2/fixtures/{kind.lower()}.json",
+                    "semantic_sha256": digest,
+                },
+                "status": "COMPLETE",
+                "target_session": "20260809",
+            }
+        )
+    market_projection = build_market_risk_projection(
+        portfolio_policy=portfolio_policy,
+        target_session="20260809",
+        input_rows=market_inputs,
+        projected_gross_cap="0.40",
+        projected_cash_floor="0.60",
+        projected_security_cap="0.25",
+        projected_veto_codes=[],
+        as_of=AT,
+    )
     documents = {
         "DECISION_V2": decision_one,
         "EVIDENCE_GRAPH_V2": graph_one,
         "GRADUATION": _generic_v2("GRADUATION", status="GRADUATED"),
-        "GRADUATION_POLICY": _generic_v2("GRADUATION_POLICY"),
+        "GRADUATION_POLICY": graduation_policy,
         "I5_ADVISORY_RANK": _generic_v2("I5_ADVISORY_RANK"),
         "I5_PRIVATE_CAPABILITY": _generic_v2("I5_PRIVATE_CAPABILITY"),
         "LEGACY_MARKER_PROFILE": profile,
+        "MARKET_RISK_PROJECTION": market_projection,
         "PAPER_CAPITAL_GATE": _generic_v2("PAPER_CAPITAL_GATE"),
-        "PAPER_EXECUTION_POLICY": _generic_v2("PAPER_EXECUTION_POLICY"),
+        "PAPER_EXECUTION_POLICY": paper_policy,
         "PAPER_LEDGER": _generic_v2("PAPER_LEDGER"),
         "PORTFOLIO": portfolio,
-        "PORTFOLIO_POLICY": _generic_v2("PORTFOLIO_POLICY"),
+        "PORTFOLIO_POLICY": portfolio_policy,
         "PUBLICATION_OWNER_POLICY": owner_policy,
     }
     refs: dict[str, dict] = {}

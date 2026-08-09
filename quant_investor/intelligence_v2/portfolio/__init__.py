@@ -13,6 +13,11 @@ from .graduation import (
     validate_graduation_policy,
     validate_graduation_receipt,
 )
+from .market_risk import (
+    build_market_risk_projection,
+    project_portfolio_limits,
+    validate_market_risk_projection,
+)
 from .paper import (
     build_paper_execution_policy,
     build_paper_fill,
@@ -34,6 +39,7 @@ __all__ = [
     "PortfolioContractError",
     "build_graduation_policy",
     "build_graduation_receipt",
+    "build_market_risk_projection",
     "build_paper_execution_policy",
     "build_paper_capital_gate",
     "build_paper_fill",
@@ -42,8 +48,10 @@ __all__ = [
     "build_paper_outcome",
     "build_portfolio_construction",
     "build_portfolio_risk_policy",
+    "project_portfolio_limits",
     "validate_graduation_policy",
     "validate_graduation_receipt",
+    "validate_market_risk_projection",
     "validate_paper_execution_policy",
     "validate_paper_capital_gate",
     "validate_paper_fill",

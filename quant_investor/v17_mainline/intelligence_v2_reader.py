@@ -18,6 +18,7 @@ from ..intelligence_v2._core import (
 from ..intelligence_v2.llm_research import validate_private_capability
 from ..intelligence_v2.portfolio import (
     validate_graduation_policy,
+    validate_market_risk_projection,
     validate_paper_execution_policy,
     validate_portfolio_risk_policy,
 )
@@ -57,6 +58,7 @@ _IDENTITY_FIELDS: Final = {
     "I5_ADVISORY_RANK": "advisory_rank_id",
     "I5_PRIVATE_CAPABILITY": "private_capability_id",
     "LEGACY_MARKER_PROFILE": "profile_id",
+    "MARKET_RISK_PROJECTION": "projection_id",
     "PAPER_CAPITAL_GATE": "receipt_id",
     "PAPER_EXECUTION_POLICY": "policy_id",
     "PAPER_LEDGER": "ledger_id",
@@ -175,6 +177,18 @@ def _validate_self_closed_nodes(nodes: Mapping[str, Mapping[str, Any]]) -> None:
             raise IntelligenceV2PublicationError(f"{key} replay validation failed") from exc
 
 
+def _validate_market_risk_node(nodes: Mapping[str, Mapping[str, Any]]) -> None:
+    try:
+        projection = validate_market_risk_projection(
+            nodes["MARKET_RISK_PROJECTION"],
+            portfolio_policy=nodes["PORTFOLIO_POLICY"],
+        )
+    except Exception as exc:
+        raise IntelligenceV2PublicationError("market risk projection replay failed") from exc
+    if projection.get("status") != "AVAILABLE" or projection.get("blocker_codes") != []:
+        raise IntelligenceV2PublicationError("market risk projection is not AVAILABLE")
+
+
 def _validate_preactivation(document: Mapping[str, Any]) -> dict[str, Any]:
     closure = {
         "candidate_refs": document.get("candidate_refs"),
@@ -210,6 +224,7 @@ def _read_publication_nodes(
         )
         nodes[key] = document
     _validate_self_closed_nodes(nodes)
+    _validate_market_risk_node(nodes)
     nodes["PREACTIVATION"] = _validate_preactivation(nodes["PREACTIVATION"])
     return nodes
 

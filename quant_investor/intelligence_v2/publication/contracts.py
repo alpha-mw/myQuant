@@ -55,6 +55,7 @@ PUBLICATION_CLOSURE_VERSIONS: Final = {
     "I5_ADVISORY_RANK": "myquant.v17.research-intelligence-v2.i5-advisory-rank.v1",
     "I5_PRIVATE_CAPABILITY": "myquant.v17.research-intelligence-v2.i5-private-capability.v1",
     "LEGACY_MARKER_PROFILE": LEGACY_MARKER_PROFILE_VERSION,
+    "MARKET_RISK_PROJECTION": "myquant.v17.intelligence-v2.market-risk-projection.v1",
     "PAPER_EXECUTION_POLICY": "myquant.v17.intelligence-v2.paper-execution-policy.v2",
     "PAPER_LEDGER": "myquant.v17.intelligence-v2.paper-ledger.v2",
     "PAPER_CAPITAL_GATE": "myquant.v17.intelligence-v2.paper-capital-gate-receipt.v1",
