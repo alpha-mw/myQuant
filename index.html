@@ -41,10 +41,10 @@
               <div>
                 <p class="eyebrow">PERFORMANCE LEDGER</p>
                 <h2 id="performanceInsight">净值与回撤</h2>
-                <p id="performanceSubtitle" class="section-note">共同起点归一化，组合收益使用 funding-aware TWR。</p>
+                <p id="performanceSubtitle" class="section-note">2026-03-17 以 100 万为起点，剔除后续外部入金。</p>
               </div>
               <div class="chart-key" aria-label="图表图例">
-                <span><i class="key-line portfolio"></i>组合单位净值</span>
+                <span><i class="key-line portfolio"></i>剔除入金后净值</span>
                 <span><i class="key-line benchmark"></i>沪深300</span>
                 <span><i class="key-line star50"></i>科创50</span>
                 <span><i class="key-line chinext"></i>创业板指</span>
@@ -53,7 +53,7 @@
             </div>
 
             <div class="return-summary" aria-label="累计收益摘要">
-              <div><span>组合 TWR</span><strong id="twrValue">—</strong></div>
+              <div><span>组合累计收益</span><strong id="portfolioReturnValue">—</strong></div>
               <div><span>沪深300</span><strong id="benchmarkReturnValue">—</strong></div>
               <div><span>科创50</span><strong id="star50ReturnValue">—</strong></div>
               <div><span>创业板指</span><strong id="chinextReturnValue">—</strong></div>
@@ -63,7 +63,7 @@
 
             <figure class="chart-figure">
               <div id="growthChart" class="chart-host growth-chart" role="group" aria-label="组合、沪深300、科创50、创业板指与累计超额的互动历史收益折线图"></div>
-              <figcaption>四条净值线以首个共同有效日为 100；移动鼠标或使用左右方向键查看具体日期与净值，累计超额仍以沪深300为主要基准。</figcaption>
+              <figcaption>组合以 2026-03-17 的 100 万为起点，并剔除 7 月 9 日外部入金；三项基准在共同起点归一化为 100。移动鼠标或使用左右方向键查看具体日期与净值。</figcaption>
             </figure>
 
             <figure class="chart-figure drawdown-figure">
@@ -80,7 +80,7 @@
             <div class="history-table-panel public-section-monthly">
               <div class="section-heading">
                 <div><p class="eyebrow">PERIOD ATTRIBUTION</p><h2 id="historyAnalysisTitle">月度业绩拆解</h2></div>
-                <p>按已验证估值点和 funding-aware 单位净值计算，不把入金计为收益。</p>
+                <p>按已验证估值点计算；组合净值以 100 万为基准，并剔除 7 月 9 日外部入金。</p>
               </div>
               <div class="table-wrap">
                 <table class="performance-table">

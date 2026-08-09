@@ -344,7 +344,7 @@
         y: dimensions.top + 12,
         "text-anchor": fundingOnRight ? "end" : "start",
         class: "chart-funding-label"
-      }, PublicMode ? event.date.slice(5) + " 外部资金流" : event.date.slice(5) + " 入金 " + compactMoney(event.amount)));
+      }, PublicMode ? event.date.slice(5) + " 剔除外部入金" : event.date.slice(5) + " 剔除入金 " + compactMoney(event.amount)));
     });
 
     series.forEach(function (item) {
@@ -591,10 +591,14 @@
     if (!performance) return;
     performance.replaceChildren();
     metric(performance, "统计区间", portfolio.performance_start_date + " → " + portfolio.performance_end_date);
-    metric(performance, "收益方法", "funding-aware TWR");
+    metric(performance, "收益方法", "3 月 100 万起点 · 剔除外部入金");
+    metric(performance, "起始资本", publicRedacted(money(portfolio.performance_initial_capital)));
+    metric(performance, "已剔除外部入金", publicRedacted(money(portfolio.excluded_external_flow)));
+    metric(performance, "剔除入金后资产", publicRedacted(money(portfolio.adjusted_total_value)));
+    metric(performance, "剔除入金后累计利润", publicRedacted(money(portfolio.cumulative_profit_excluding_external_flow)));
     metric(performance, "最新有效记录区间收益", percent(portfolio.latest_record_interval_return, true));
     metric(performance, "最近一次账本数量换手", percent(portfolio.latest_interval_turnover));
-    metric(performance, "组合 P&L", publicRedacted(money(portfolio.portfolio_pnl)));
+    metric(performance, "归档会计 P&L（当前资本基准）", publicRedacted(money(portfolio.portfolio_pnl)));
     metric(performance, "当前未实现 P&L", publicRedacted(money(portfolio.current_unrealized_pnl)));
     metric(performance, "最新调仓已实现 P&L", publicRedacted(money(portfolio.latest_record_realized_pnl_from_rebalance)));
     metric(performance, "累计已实现 P&L", "UNKNOWN");
@@ -686,7 +690,7 @@
     var list = byId("historyInsightList");
     list.replaceChildren();
     [csi300, star50, chinext].forEach(function (benchmark) {
-      insight(list, "对" + benchmark.name + "超额", percent(benchmark.excess_return, true), "组合 TWR 相对" + benchmark.name + "的累计收益差。", signedClass(benchmark.excess_return));
+      insight(list, "对" + benchmark.name + "超额", percent(benchmark.excess_return, true), "组合自 3 月起、剔除外部入金后的累计收益相对" + benchmark.name + "的收益差。", signedClass(benchmark.excess_return));
     });
     if (analysis.best_period) {
       insight(list, "最佳月份", analysis.best_period.period + " · " + percent(analysis.best_period.portfolio_return, true), "当月超额 " + percent(analysis.best_period.excess_return, true) + "。", signedClass(analysis.best_period.portfolio_return));
@@ -695,7 +699,7 @@
       insight(list, "最弱月份", analysis.weakest_period.period + " · " + percent(analysis.weakest_period.portfolio_return, true), "月内最大回撤 " + percent(analysis.weakest_period.portfolio_max_drawdown) + "。", signedClass(analysis.weakest_period.portfolio_return));
     }
     if (analysis.deepest_portfolio_drawdown) {
-      insight(list, "最深历史回撤", percent(analysis.deepest_portfolio_drawdown.value) + " · " + analysis.deepest_portfolio_drawdown.date, "从此前组合单位净值高点计算。", "negative");
+      insight(list, "最深历史回撤", percent(analysis.deepest_portfolio_drawdown.value) + " · " + analysis.deepest_portfolio_drawdown.date, "从此前剔除入金后净值高点计算。", "negative");
     }
 
     var funding = byId("fundingEventList");
@@ -711,8 +715,8 @@
       var title = document.createElement("strong");
       var detail = document.createElement("span");
       item.className = "funding-event";
-      title.textContent = PublicMode ? event.date + " · 已验证外部资金流" : event.date + " · 入金 " + money(event.amount);
-      detail.textContent = PublicMode ? "绝对金额已隐藏 · 不计入投资收益" : money(event.total_value_before) + " → " + money(event.total_value_after) + " · 不计入投资收益";
+      title.textContent = PublicMode ? event.date + " · 已剔除外部入金" : event.date + " · 剔除入金 " + money(event.amount);
+      detail.textContent = PublicMode ? "绝对金额已隐藏 · 已从收益资产中扣除" : money(event.total_value_before) + " → " + money(event.total_value_after) + " · 自该点起从收益资产中持续扣除";
       item.appendChild(title);
       item.appendChild(detail);
       funding.appendChild(item);
@@ -823,7 +827,7 @@
     setText("performancePeriod", bundle.portfolio.performance_start_date + " → " + bundle.portfolio.performance_end_date);
     setText("headerPeriod", bundle.portfolio.performance_start_date + " — " + bundle.portfolio.performance_end_date);
     setText("freshnessLabel", "截至 " + bundle.portfolio.performance_end_date);
-    setText("twrValue", percent(bundle.portfolio.cumulative_twr, true));
+    setText("portfolioReturnValue", percent(bundle.portfolio.cumulative_return, true));
     setText("benchmarkReturnValue", percent(csi300.return, true));
     setText("star50ReturnValue", percent(star50.return, true));
     setText("chinextReturnValue", percent(chinext.return, true));
@@ -834,7 +838,7 @@
     setText("star50DrawdownValue", percent(star50.max_drawdown));
     setText("chinextDrawdownValue", percent(chinext.max_drawdown));
     setText("performanceInsight", "净值与回撤");
-    setText("performanceSubtitle", bundle.portfolio.performance_start_date + " — " + bundle.portfolio.performance_end_date + " · " + analysis.points.length + " 个验证估值点 · funding-aware TWR");
+    setText("performanceSubtitle", bundle.portfolio.performance_start_date + " — " + bundle.portfolio.performance_end_date + " · 100 万起点 · 已剔除 7 月 9 日外部入金");
     renderPositions(bundle);
     renderAllocation(bundle);
     renderChanges(bundle);

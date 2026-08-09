@@ -74,8 +74,12 @@
           }
         });
       }
-      if (!isObject(value.portfolio) || value.portfolio.return_method !== "funding_aware_time_weighted_unitization") {
+      if (!isObject(value.portfolio) || value.portfolio.return_method !== "initial_capital_return_excluding_external_flows") {
         errors.push("portfolio return method is invalid");
+      } else {
+        ["performance_initial_capital", "excluded_external_flow", "adjusted_total_value", "cumulative_profit_excluding_external_flow", "cumulative_return"].forEach(function (key) {
+          if (!finite(value.portfolio[key])) errors.push("portfolio." + key + " is invalid");
+        });
       }
       if (!isObject(value.history) || !RECORD_RE.test(value.history.archive_start_record || "")) {
         errors.push("historical performance summary is missing");
@@ -89,10 +93,19 @@
           errors.push("historical performance start is inconsistent");
         }
         value.portfolio.performance_points.forEach(function (point, index) {
-          ["total_value", "portfolio_unit_nav", "portfolio_cumulative_return", "csi300_nav", "csi300_cumulative_return", "star50_nav", "star50_cumulative_return", "chinext_nav", "chinext_cumulative_return", "cumulative_excess_return"].forEach(function (key) {
+          ["total_value", "excluded_external_flow", "adjusted_total_value", "portfolio_unit_nav", "portfolio_cumulative_return", "csi300_nav", "csi300_cumulative_return", "star50_nav", "star50_cumulative_return", "chinext_nav", "chinext_cumulative_return", "cumulative_excess_return"].forEach(function (key) {
             if (!finite(point[key])) errors.push("performance_points[" + index + "]." + key + " is invalid");
           });
         });
+        if (finite(value.portfolio.performance_initial_capital) && (
+          Math.abs(firstPoint.adjusted_total_value - value.portfolio.performance_initial_capital) > 0.01 ||
+          Math.abs(firstPoint.portfolio_unit_nav - 1) > 1e-9
+        )) errors.push("performance initial capital baseline is inconsistent");
+        var lastPoint = value.portfolio.performance_points[value.portfolio.performance_points.length - 1];
+        if (finite(lastPoint.adjusted_total_value) && finite(lastPoint.total_value) && finite(lastPoint.excluded_external_flow) &&
+            Math.abs(lastPoint.adjusted_total_value - (lastPoint.total_value - lastPoint.excluded_external_flow)) > 0.01) {
+          errors.push("performance external flow exclusion is inconsistent");
+        }
         value.history.funding_events.forEach(function (event, index) {
           ["amount", "total_value_before", "total_value_after"].forEach(function (key) {
             if (!finite(event[key])) errors.push("funding_events[" + index + "]." + key + " is invalid");

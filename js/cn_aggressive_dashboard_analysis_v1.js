@@ -78,7 +78,7 @@
         benchmark_max_drawdown: maximumDrawdown(group.points, "csi300_nav", base.csi300_nav),
         star50_max_drawdown: maximumDrawdown(group.points, "star50_nav", base.star50_nav),
         chinext_max_drawdown: maximumDrawdown(group.points, "chinext_nav", base.chinext_nav),
-        ending_total_value: last.total_value,
+        ending_total_value: last.adjusted_total_value,
         point_count: group.points.length,
         evidence_status: group.points.some(function (point) {
           return point.evidence_status !== "HASH_BOUND_CURRENT_CLOSURE" &&
