@@ -86,6 +86,7 @@ def build_plan(**overrides: Any) -> dict[str, Any]:
         "market_scope_ref": exact_ref("market-scope"),
         "market_calendar_ref": exact_ref("market-calendar"),
         "baseline_provider_manifest_ref": exact_ref("baseline-provider-manifest"),
+        "baseline_network_attempts": 12,
         "baseline_empty_partition_keyset": [],
         "endpoint_plans": endpoint_plans(),
         "max_attempts_per_partition": 2,
@@ -105,7 +106,7 @@ def test_exact_inclusive_window_schedule_and_replay() -> None:
     assert plan["financial_periods"][0] == "20190930"
     assert plan["financial_periods"][-1] == "20260630"
     assert plan["window_years"] == {"daily": 5, "financial": 7}
-    assert plan["baseline_planned_network_attempts"] == 12
+    assert plan["baseline_network_attempts"] == 12
     assert plan["planned_terminal_request_count"] == (
         len(plan["financial_periods"]) * 5 + len(plan["daily_open_sessions"])
     )
@@ -163,6 +164,8 @@ def test_dateoffset_uses_calendar_year_semantics_on_leap_day() -> None:
         {"canonical_open_sessions": ["20260807"]},
         {"canonical_open_sessions": ["20260807", "20210809"]},
         {"max_attempts_per_partition": 0},
+        {"baseline_network_attempts": 0},
+        {"baseline_network_attempts": True},
         {"baseline_empty_partition_keyset": ["income|period=19990101"]},
         {"pit_cutoff": "2026-08-10T00:00:00Z"},
     ],

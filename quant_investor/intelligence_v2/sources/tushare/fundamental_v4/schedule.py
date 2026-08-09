@@ -49,7 +49,7 @@ _FIELDS = {
     "as_of",
     "authority",
     "baseline_empty_partition_keyset",
-    "baseline_planned_network_attempts",
+    "baseline_network_attempts",
     "baseline_provider_manifest_ref",
     "created_at",
     "daily_open_sessions",
@@ -214,6 +214,7 @@ def build_fundamental_request_plan_v4(
     market_scope_ref: Mapping[str, Any],
     market_calendar_ref: Mapping[str, Any],
     baseline_provider_manifest_ref: Mapping[str, Any],
+    baseline_network_attempts: int,
     baseline_empty_partition_keyset: Sequence[str],
     endpoint_plans: Mapping[str, Mapping[str, Any]],
     max_attempts_per_partition: int,
@@ -241,6 +242,8 @@ def build_fundamental_request_plan_v4(
     periods = _quarter_ends(start=financial_start, end=target)
     if type(max_attempts_per_partition) is not int or not (1 <= max_attempts_per_partition <= 64):
         raise FundamentalV4ContractError("max_attempts_per_partition is invalid")
+    if type(baseline_network_attempts) is not int or baseline_network_attempts < 1:
+        raise FundamentalV4ContractError("baseline network attempts are invalid")
     plans, endpoint_refs = _validated_endpoint_plans(endpoint_plans)
     if any(plan["created_at"] > created for plan in plans.values()):
         raise FundamentalV4ContractError("request plan contains future endpoint policy")
@@ -271,7 +274,7 @@ def build_fundamental_request_plan_v4(
             baseline_empty_partition_keyset,
             partitions=partitions,
         ),
-        "baseline_planned_network_attempts": len(normalized_symbols) * len(SOURCE_ENDPOINTS),
+        "baseline_network_attempts": baseline_network_attempts,
         "baseline_provider_manifest_ref": baseline_ref,
         "created_at": created,
         "daily_open_sessions": sessions,
@@ -319,6 +322,7 @@ def validate_fundamental_request_plan_v4(
         market_scope_ref=value["market_scope_ref"],
         market_calendar_ref=value["market_calendar_ref"],
         baseline_provider_manifest_ref=value["baseline_provider_manifest_ref"],
+        baseline_network_attempts=value["baseline_network_attempts"],
         baseline_empty_partition_keyset=value["baseline_empty_partition_keyset"],
         endpoint_plans=endpoint_plans,
         max_attempts_per_partition=value["max_attempts_per_partition"],

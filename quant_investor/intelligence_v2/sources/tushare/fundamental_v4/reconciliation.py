@@ -330,7 +330,7 @@ def build_fundamental_reconciliation_receipt(
     if any(outputs[name]["byte_sha256"] != output_hashes[name] for name in _OUTPUT_PATHS):
         raise FundamentalV4ContractError("comparison output bytes do not match replay")
     vip_attempts = sum(row["attempts"] for row in physical)
-    baseline_attempts = validated_plan["baseline_planned_network_attempts"]
+    baseline_attempts = validated_plan["baseline_network_attempts"]
     performance_passed = vip_attempts * 10 <= baseline_attempts
     blockers: list[str] = []
     if not comparison["passed"]:

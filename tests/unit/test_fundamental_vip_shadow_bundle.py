@@ -107,6 +107,7 @@ def _execution() -> dict[str, Any]:
         market_scope_ref=_exact_ref("scope"),
         market_calendar_ref=_exact_ref("calendar"),
         baseline_provider_manifest_ref=_exact_ref("baseline"),
+        baseline_network_attempts=12,
         baseline_empty_partition_keyset=[],
         endpoint_plans=endpoints,
         max_attempts_per_partition=1,

@@ -262,7 +262,7 @@ def reconciliation_closure(
     plan = sealed_fixture(
         "request-plan.fixture.v1",
         "plan_id",
-        baseline_planned_network_attempts=baseline_attempts,
+        baseline_network_attempts=baseline_attempts,
         created_at=NOW,
         partition_rows=partition_rows,
         symbols=["000001.SZ"],
