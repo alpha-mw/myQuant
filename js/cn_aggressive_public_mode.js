@@ -1,0 +1,1 @@
+window.CNPublicDashboard = true;
