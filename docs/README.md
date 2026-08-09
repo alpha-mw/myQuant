@@ -12,6 +12,7 @@ and the separate Shadow forward-evidence lane.
 - [Forward-evidence runtime](architecture/v17_v4_forward_evidence_runtime.md)
 - [Investment Intelligence I0](architecture/v17_i0_investment_intelligence.md)
 - [Forward Research Evaluator R2.2](architecture/v17_r22_forward_research_evaluator.md)
+- [Investment Decision Intelligence I1](architecture/v17_i1_investment_decision_intelligence.md)
 - [Legacy configuration cleanup and migration](runbooks/v17_legacy_configuration_cleanup.md)
 
 ## Supporting contracts
@@ -37,3 +38,7 @@ The repository has no public production publisher or activation command. I0
 and R2.2 are explicit research-only consumers: the I0 regime model is a causal,
 one-step Market/Industry/Theme Markov filter, and `research-evaluate` is an
 offline stdout-only evaluator rather than a daily scheduler or memory writer.
+I1 is a library-only decision layer above exact I0 and optional R2.2 replay. Its
+five states are research workflow states; `PAPER_CANDIDATE` means eligibility
+for external paper review only. I1 adds no selector, portfolio, public CLI, Web,
+scheduler, writer, broker, order, execution or trade authority.
