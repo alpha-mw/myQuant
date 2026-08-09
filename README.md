@@ -2,11 +2,10 @@
 
 <img src="assets/logo.svg" alt="Quant-Investor" width="520"/>
 
-**An A-share research system built to say no.**
+**A rigorous A-share quantitative research system, from market data to investment decisions.**
 
-*Most quant platforms are optimised to find signals. This one is optimised to
-disqualify them. In A-shares, that is the scarcer capability — and the one that
-decides whether research survives contact with the market.*
+*myQuant brings point-in-time data, factor validation, forward evidence and
+deterministic risk assessment into one reproducible research workflow.*
 
 [![Python](https://img.shields.io/badge/Python-3.13%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org)
 [![Version](https://img.shields.io/badge/Version-17.0.0-FF6B35?style=flat-square)](pyproject.toml)
@@ -14,161 +13,196 @@ decides whether research survives contact with the market.*
 
 **English** · [简体中文](README.zh-CN.md)
 
-[Problem](#the-problem) · [Thesis](#the-thesis) · [What we built](#what-we-built) ·
-[The funnel](#how-it-researches-a-shares) · [Why it's different](#why-this-is-different) ·
-[Evidence](#evidence-to-date) · [Status](#where-it-stands)
+[Advantages](#what-myquant-is-good-at) · [Workflow](#from-the-full-market-to-a-decision) ·
+[Capabilities](#core-capabilities) · [Evidence](#evidence-from-self-audit) ·
+[Scope](#current-scope) · [Run](#running-it)
 
 </div>
 
 ---
 
-## The problem
+## What myQuant is good at
 
-A-share factor research has an abundance problem, not a scarcity problem.
-Hundreds of plausible signals are a morning's work. What almost nobody has is a
-defensible way to tell which of them survive contact with reality.
+myQuant helps a researcher move from a broad A-share market to a small set of
+defensible conclusions. It keeps the data date, investable universe, factor
+definition, validation path, forward evidence and decision rationale connected,
+so another researcher can replay the work and challenge the result.
 
-Reality, here, means five things at once: fundamentals that get restated after
-the fact, stocks that were suspended or locked at a limit board when your
-backtest happily traded them, return windows that overlap and inflate every
-significance test built on them, a search process that makes your best result
-look better the harder you look, and a candidate list that is usually one idea
-wearing two hundred different parameter settings.
-
-None of these throw an error. Each of them returns a perfectly plausible number.
-The industry-wide failure mode is not a crash — it is research that backtests
-beautifully and loses money quietly.
-
-## The thesis
-
-**The bottleneck in quant is adjudication, not generation.**
-
-Every serious source of error in factor research is some version of accidentally
-seeing the future. Each has a known correction in the literature. Every one of
-those corrections is expensive to compute, unglamorous to build, and trivially
-easy to skip — so almost everyone skips them, and the skipping is invisible in
-the output.
-
-A system that runs those corrections by default, and refuses to return a
-conclusion when it cannot, is worth more than a system that returns conclusions
-faster.
-
-> So the deliverable is not an equity curve. It is a verdict with its evidence
-> attached — or an explicit, named refusal.
-
-## What we built
-
-| Pillar | What it is | Why it matters |
+| Advantage | How it works | What you gain |
 |---|---|---|
-| **A market record that cannot lie about time** | Every price, fundamental and index membership is stored with the date it actually became knowable, alongside suspension, limit-board and ST state | Removes look-ahead and survivorship at the source, rather than trusting each researcher to remember |
-| **An adjudication engine** | Eight independent admission tests, from "was this knowable?" through cost, capacity, neutralisation and portfolio contribution | A factor must answer all eight; missing evidence counts as failure, never as a pass |
-| **Honest statistics, on by default** | Corrections for overlapping return windows, for the size of the search, and for the fact that most candidates are the same candidate | This is the layer almost every project omits, and the one that changes the answer most often |
-| **A pre-registration protocol** | Candidates are declared and sealed *before* the outcome exists; a historical backtest can support a case but can never close one | Makes hindsight structurally impossible instead of merely discouraged |
-| **A decision layer humans can argue with** | Risk assessed on four dimensions, one of five explicit research states, and a memo that may only cite validated evidence | Turns a number into a reviewable investment case — that stops short of being a trade |
+| **Time-consistent research** | Prices, fundamentals, membership and tradability are bound to when they became knowable | Backtests and reviews use the information available on the decision date |
+| **Full-market factor evaluation** | Price, volume, liquidity, fundamental and formula candidates are measured on a governed A-share panel | One research process can compare ideas across the same universe and calendar |
+| **Eight independent admission tests** | Data safety, coverage, predictive value, group returns, cost, neutralisation, out-of-sample stability and portfolio contribution are checked separately | A strong headline metric cannot hide a weak or missing part of the case |
+| **Trial-aware statistics** | The pipeline corrects overlapping return windows, repeated searches and correlated variants | The best result must beat the cost of finding it |
+| **Incremental alpha as the objective** | Candidate factors are compared with the factors already in the set | The system rewards new information instead of another version of the same exposure |
+| **Forward evidence before maturity** | A candidate is declared and sealed before its outcome exists | Historical fit cannot quietly become prospective proof |
+| **Reviewable investment decisions** | Four risk dimensions, five research states and a deterministic memo bind each conclusion to validated evidence | A reviewer can see what passed, what failed and what remains unknown |
+| **Controlled AI assistance** | Models may summarise, extract and challenge evidence; deterministic policies keep decision authority | AI adds research capacity without changing scores, thresholds, weights or states |
 
-Around all of it sits one rule: **AI reviews, deterministic logic decides.** A
-model can summarise evidence, challenge a conclusion, or draft a hypothesis. It
-cannot set a score, a threshold, a weight, or a decision. There is always a
-mechanical answer to "why this position?".
+The result is a research system that can explain both a positive conclusion and
+a refusal. Missing evidence produces a named blocker, not a substitute value.
 
-## How it researches A-shares
+## From the full market to a decision
 
-One funnel. Start with every A-share; at each step discard whatever cannot be
-justified. Almost everything is discarded — that is the design working.
+The workflow starts with the point-in-time A-share universe and narrows it through
+data, factor, statistical and decision checks. Each stage preserves the exact
+inputs needed to reproduce the next one.
 
 ```mermaid
 flowchart TD
-    U["<b>Every A-share, every day</b><br/>~5,000 names"]
-    P["<b>What was actually buyable that day</b><br/>listed? suspended? ST?<br/>locked at a limit board?"]
-    S["<b>Turn it into a signal</b><br/>price · volume · liquidity · fundamentals,<br/>each dated by when it became knowable"]
-    E["<b>Is the signal real?</b><br/>does it rank stocks correctly for years —<br/>or only in one good year, in names too small to trade?"]
-    K["<b>Would it survive being traded?</b><br/>after turnover, slippage, and the size you can actually fill"]
-    N["<b>Is it alpha, or just a small-cap bet?</b><br/>strip out sector and size, see what remains"]
-    X["<b>Does it add anything we don't already own?</b><br/>project the existing factors out, measure the remainder"]
-    W["<b>Commit before you look</b><br/>declare the candidate, wait for the real forward return,<br/>then score it on what actually happened"]
-    R["<b>A handful of surviving factors</b><br/>weighted, diversified across families"]
-    J["<b>A research verdict you can argue with</b><br/>risk on four dimensions · one of five states · a memo"]
-    Z(["<b>Not an order.</b><br/>No broker, no position, no trade"])
+    U["<b>Point-in-time A-share universe</b><br/>listed, active and tradable on the date"]
+    D["<b>Governed market record</b><br/>price · volume · liquidity · fundamentals<br/>membership · suspension · limit state"]
+    F["<b>Factor research</b><br/>price-volume · liquidity · fundamental<br/>formula and research candidates"]
+    G["<b>Eight admission tests</b><br/>quality · stability · cost · capacity<br/>neutralisation · out-of-sample evidence"]
+    T["<b>Trial-aware statistics</b><br/>overlap correction · purged validation<br/>search cost · effective trial count"]
+    I["<b>Incremental contribution</b><br/>measure what the candidate adds<br/>after the current factor set is removed"]
+    W["<b>Pre-registered forward evidence</b><br/>seal the question first,<br/>evaluate the realised outcome later"]
+    J["<b>Investment decision intelligence</b><br/>four risk dimensions · five research states<br/>evidence-bound memo"]
+    O["<b>Read-only research output</b><br/>Python · CLI · mainline reader<br/>portfolio readiness diagnosis"]
+    Z(["<b>Research boundary</b><br/>no broker, order, execution or trade authority"])
 
-    U --> P --> S --> E --> K --> N --> X --> W --> R --> J --> Z
+    U --> D --> F --> G --> T --> I --> W --> J --> O --> Z
 
-    LLM["AI reviewer"] -. "may challenge and summarise,<br/>may not decide" .-> J
+    LLM["AI reviewer"] -. "summarises and challenges<br/>without decision authority" .-> J
 ```
 
-Two features of that shape matter more than any single step.
+The same time-consistent data supports factor comparison across the market. Every
+conclusion that reaches the end carries enough evidence for an independent review,
+and unresolved uncertainty remains visible in the result.
 
-**The narrow part is in the middle.** Most projects spend their effort at the
-top — more data, more candidates — and at the bottom, on a better optimiser.
-This one spends it on the four questions in the middle, because that is where a
-plausible number becomes a false one.
+## Core capabilities
 
-**The last arrow is a wall.** Surviving the funnel produces a research verdict,
-not a position. Converting research into a live portfolio is a separate step
-that is deliberately not built, so nothing here can quietly graduate from
-"interesting" to "traded".
+### Point-in-time A-share data foundation
 
-## Why this is different
+The CN data layer uses canonical Parquet snapshots and explicit pointers for
+market, membership and fundamental data. It keeps trading-calendar coverage,
+suspension, ST and limit-board state separate from observed prices. Fundamental
+and exposure data carry their source and effective date, which allows a research
+run to reconstruct what was knowable at its cutoff.
 
-Qlib, backtrader, vectorbt and zipline are excellent at *"what would this have
-returned?"*. This system is built for *"should I believe it?"* — and the two
-questions need opposite defaults.
+Maintenance and validation are separate operations. A data update can advance a
+snapshot only after its own checks pass; a reader does not silently replace a
+missing or invalid source with CSV, cached or inferred data.
 
-| | Backtest-first platforms | This system |
-|---|---|---|
-| The deliverable | An equity curve and a ranked factor list | A verdict with its evidence, or a named refusal |
-| When evidence is missing | Fill a default, warn, continue | Stop. Missing evidence is a failure, not a gap |
-| Multiple testing | An afterthought, if present | An admission bar the candidate must clear |
-| What a backtest proves | Everything — it *is* the decision | Nothing on its own. It can support a case; it cannot close one |
-| Search objective | The strongest signal | The signal that adds most to what we already hold |
-| Research → production | The same script; a good backtest is the decision | Two separate systems, and the bridge is deliberately unbuilt |
-| Negative results | Not published | Published, dated, and left in this README |
+### Factor research with governed admission
 
-The trade-off is explicit: **this system is slower to say yes**, and will hold
-back a factor a permissive pipeline would already be trading. That asymmetry is
-chosen. In a market where the same overlapping-window mistake passes five
-factors that should have passed three, the expensive error is not the one you
-miss.
+myQuant evaluates factor candidates from price, volume, liquidity, fundamentals
+and formula families on a common full-market panel. The governance layer asks
+eight separate questions before a candidate can advance:
 
-## Evidence to date
+1. Were all inputs knowable on the evaluation date?
+2. Is coverage broad and stable across the market?
+3. Is cross-sectional predictive value persistent?
+4. Are ranked group returns directionally coherent?
+5. Does the effect survive turnover, cost and capacity pressure?
+6. Does it remain after sector and size neutralisation?
+7. Does it hold across purged out-of-sample paths and nearby parameters?
+8. Does it improve the existing factor set rather than duplicate it?
 
-The most useful thing a research system can produce is a credible negative, and
-this one has produced several — on its own prior work.
+Unknown evidence fails the relevant test. That rule keeps a high ICIR or an
+attractive equity curve from overriding missing data, unrealistic capacity or
+redundant exposure.
 
-- **Two of five factors already in production stop being significant** once the
-  overlap in their return windows is corrected properly. They had previously
-  passed every test the system had.
-- **Of 230 candidates in a full mining run, zero cleared the search-cost bar.**
-  The selection process was stable and not fitting noise; the effects were
-  simply too small to justify a search that wide. The conclusion drawn was to
-  *narrow the search*, not to widen it.
-- **The highest-scoring candidate in that run turned out to be something we
-  already owned.** Ranking on what a candidate adds, rather than on how strong
-  it looks alone, moved it from first place to the middle of the pack — and
-  surfaced a genuinely different one in its place.
-- **A market-cap field that had quietly been reconstructed, not observed,** went
-  undetected for months and was found and removed. Roughly a quarter of the
-  values had been affected.
+### Statistics that account for the research process
 
-Under current standards no new factor is admissible, and the system says so
-rather than lowering a threshold. That is the intended behaviour, not a defect
-report.
+The validation layer measures more than one backtest path:
 
-## Where it stands
+- combinatorial purged cross-validation separates overlapping labels;
+- non-overlapping cohorts and Newey-West-style corrections address inflated
+  significance from forward-return windows;
+- deflated performance statistics and probability-of-overfitting diagnostics
+  charge the result for the number of candidates searched;
+- correlation-based effective trial counts identify parameter variants that
+  represent the same underlying bet;
+- residualised IC and portfolio-increment tests rank candidates by new
+  information, not standalone strength alone.
 
-CN A-shares only. No broker, order, execution or trade authority — by design,
-not by omission.
+These checks make the research budget visible. A wider search raises the burden
+of proof instead of increasing the chance that a lucky winner is accepted.
 
-**Working today:** the point-in-time market record; the eight-test adjudication
-engine with its statistical corrections; the pre-registration protocol; the
-research decision layer; and read-only reporting through Python, a CLI and a
-dashboard.
+### Pre-registration and forward evidence
 
-**Deliberately not built:** the bridge from research to a live portfolio. That
-means no automated candidate search, no production publisher, no scheduler, no
-paper-trading ledger and no broker connection. Each is a governed step that
-should not appear by accident, and building a wider search before the
-adjudication is complete would only manufacture the factor zoo this project
-exists to avoid.
+Forward research starts from an explicit request whose bytes and SHA-256 are
+sealed before the outcome exists. Later evaluation binds the realised outcome
+to that request and produces immutable receipts. Shadow and Forward sessions can
+accumulate evidence without changing the public mainline or granting production
+authority.
+
+This separation lets a historical backtest support a hypothesis while reserving
+maturity for evidence that did not exist when the hypothesis was declared.
+
+### Deterministic decision intelligence
+
+The I1 decision library replays an exact research closure, assesses risk across
+`BUSINESS`, `FINANCIAL`, `MARKET` and `THESIS`, and returns one of five states:
+
+| State | Research meaning |
+|---|---|
+| `THESIS_INVALIDATED` | A pre-registered forward hypothesis failed |
+| `INSUFFICIENT_EVIDENCE` | A required evidence class or risk dimension is unavailable |
+| `WATCHLIST` | The evidence exists, but a confidence, posterior, risk or veto gate did not pass |
+| `RESEARCH_APPROVED` | Research gates passed; a stricter paper-review requirement remains open |
+| `PAPER_CANDIDATE` | The case is eligible for a separately governed external paper review |
+
+The memo can quote validated hypotheses, evidence, risks and allowlisted research
+notes. It cannot invent a score, a target price or an action. This makes the
+decision readable without weakening the evidence chain behind it.
+
+### Read-only public and readiness surfaces
+
+The public `QuantInvestor` Python API and the `research run`, `market analyze`
+and `market run` commands resolve one exact V17 active pointer. They never scan
+for the newest result or build a replacement. `portfolio cycle-status` checks
+explicit strategy, holdings and policy inputs without writing a portfolio.
+
+These surfaces let operators consume a governed result and diagnose missing
+inputs while keeping publication, activation and portfolio mutation separate.
+
+## Why researchers use this design
+
+| Research need | myQuant default |
+|---|---|
+| Compare many ideas fairly | Use one universe, calendar, cost model and evidence vocabulary |
+| Avoid look-ahead and survivorship | Bind market and fundamental observations to their actual availability |
+| Control factor-zoo risk | Count searches, cluster correlated variants and raise the statistical hurdle |
+| Build a diversified factor set | Measure residual contribution after removing current exposures |
+| Separate history from proof | Pre-register the question and wait for the forward outcome |
+| Explain a conclusion | Emit named states, blockers, evidence references and a deterministic memo |
+| Add model assistance safely | Restrict AI to advisory text while deterministic controls decide |
+| Reproduce a result | Bind canonical artifacts, exact paths and hashes through the research chain |
+
+## Evidence from self-audit
+
+The system has already changed conclusions about its own earlier research:
+
+- **Two of five previously admitted factors lost statistical significance**
+  after their overlapping return windows were corrected.
+- **Zero of 230 candidates cleared the search-cost bar** in a full mining run.
+  The result redirected research toward a narrower, theory-led search rather
+  than a larger enumeration.
+- **The highest standalone candidate duplicated an existing exposure.** Ranking
+  by incremental contribution moved it down and surfaced a less redundant lead.
+- **A reconstructed market-cap field affected roughly one quarter of values.**
+  Point-in-time source validation found the issue and removed the field from the
+  governed path.
+
+Each finding stopped weak evidence from entering the factor set. Current admission
+standards remain unchanged when a run produces no qualified candidate.
+
+## Current scope
+
+myQuant currently supports CN A-shares and research-only decision workflows.
+
+**Available in the repository:** canonical market and fundamental maintenance,
+strict storage validation, factor research and governance, trial-aware
+statistics, forward-evidence and Shadow tooling, the deterministic I1 decision
+library, read-only public V17 readers, portfolio-readiness diagnostics and a
+read-only dashboard surface.
+
+**Outside the current public authority:** a governed production publisher,
+active-pointer activation CLI, automatic live portfolio construction, paper
+ledger, broker connection, order creation, execution and trading. A research
+state such as `PAPER_CANDIDATE` never implies a market action.
 
 ## Running it
 
@@ -179,13 +213,16 @@ quant-investor --help
 quant-investor-v17-v4 --help
 ```
 
-Local work is offline by default. The main surfaces are market maintenance
-(`quant-investor market maintain`), the read-only public run
-(`quant-investor research run --strategy-id <id>`), forward-evidence collection
-and evaluation (`quant-investor-v17-v4 research-evaluate`), and portfolio
-readiness diagnostics (`quant-investor portfolio cycle-status`). Each requires
-explicit inputs and returns a named state rather than a substitute result when
-something is missing.
+Local work is offline by default. Inspect the exact command contract before a
+run:
+
+```bash
+quant-investor market maintain --help
+quant-investor market storage-validate --help
+quant-investor research run --help
+quant-investor portfolio cycle-status --help
+quant-investor-v17-v4 run-forward --help
+```
 
 Python 3.13+. The local equivalent of CI:
 
@@ -197,12 +234,11 @@ uv run mypy quant_investor/factors --ignore-missing-imports
 
 ## Documentation
 
-Start with [Factor mining mechanism](docs/factor_mining_mechanism.md) — the
-diagnosis behind most of the design decisions above, written as a research note
-rather than a manual.
+Start with [Factor mining mechanism](docs/factor_mining_mechanism.md) for the
+research diagnosis behind the statistical and set-level design.
 
 - [Documentation index](docs/README.md)
-- [Factor Governance v4](docs/factor_governance_v4.md) — the eight tests, maturity and multiplicity
+- [Factor Governance v4](docs/factor_governance_v4.md)
 - [Research pipeline and protocols](docs/architecture/research_pipeline_and_protocols.md)
 - [V17 v4 mainline contract](docs/architecture/v17_v4_production_research_contract.md)
 - [I0 Investment Intelligence](docs/architecture/v17_i0_investment_intelligence.md)
@@ -214,11 +250,11 @@ rather than a manual.
 - [V17 v4 operations](docs/runbooks/v17_v4_operations.md)
 - [Agent guide](AGENTS.md)
 
-The statistical machinery follows the standard literature rather than inventing
-its own — Harvey, Liu & Zhu on the significance hurdle; Bailey & López de Prado
-on selection bias and backtest overfitting; purged combinatorial cross-validation
-for overlapping labels; AlphaGen and AlphaForge on set-level objectives. Full
-citations sit in the mining note above.
+The statistical design follows Harvey, Liu and Zhu on significance hurdles;
+Bailey and López de Prado on selection bias and backtest overfitting; purged
+combinatorial cross-validation for overlapping labels; and AlphaGen and
+AlphaForge on set-level objectives. Full citations are in the factor-mining
+note.
 
 ## License
 
