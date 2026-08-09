@@ -74,7 +74,8 @@
         ending_total_value: last.total_value,
         point_count: group.points.length,
         evidence_status: group.points.some(function (point) {
-          return point.evidence_status !== "HASH_BOUND_CURRENT_CLOSURE";
+          return point.evidence_status !== "HASH_BOUND_CURRENT_CLOSURE" &&
+            point.evidence_status !== "DASHBOARD_POST_HOC_SHA_REGISTRY_BOUND";
         }) ? "PARTIAL" : "HASH_BOUND"
       };
     });

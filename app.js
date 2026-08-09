@@ -7,7 +7,11 @@
   var activeBundle = null;
   var activeAnalysis = null;
   var resizeTimer = null;
+  var chartInteractions = [];
+  var activeChartIndex = null;
   var SVG_NS = "http://www.w3.org/2000/svg";
+
+  document.documentElement.classList.toggle("public-view", PublicMode);
 
   function byId(id) { return document.getElementById(id); }
   function setText(id, value) {
@@ -149,6 +153,138 @@
   function formatIndex(value) { return value.toFixed(0); }
   function formatDrawdown(value) { return value.toFixed(0) + "%"; }
 
+  function chartTooltip(host) {
+    var tooltip = document.createElement("div");
+    tooltip.className = "chart-tooltip";
+    tooltip.hidden = true;
+    host.appendChild(tooltip);
+    return tooltip;
+  }
+
+  function setTooltipContent(tooltip, dateValue, rows) {
+    tooltip.replaceChildren();
+    var dateNode = document.createElement("strong");
+    dateNode.textContent = dateValue;
+    tooltip.appendChild(dateNode);
+    rows.forEach(function (row) {
+      var line = document.createElement("span");
+      var label = document.createElement("i");
+      var value = document.createElement("b");
+      label.className = "tooltip-key " + row.key;
+      label.textContent = row.label;
+      value.textContent = row.value;
+      line.appendChild(label);
+      line.appendChild(value);
+      tooltip.appendChild(line);
+    });
+  }
+
+  function setActiveChartPoint(index, source) {
+    activeChartIndex = index;
+    chartInteractions.forEach(function (interaction) {
+      interaction.update(index, interaction === source);
+    });
+  }
+
+  function hideChartPoint(source) {
+    if (source.hasFocus()) return;
+    source.hideTooltip();
+  }
+
+  function installChartInteraction(options) {
+    var host = options.host;
+    var svg = options.svg;
+    var points = options.points;
+    var line = svgNode("line", {
+      y1: options.top,
+      y2: options.bottom,
+      class: "chart-crosshair",
+      hidden: "hidden"
+    });
+    var dots = options.series.map(function (series) {
+      var dot = svgNode("circle", {
+        r: 4.5,
+        class: "chart-focus-dot " + series.key,
+        hidden: "hidden"
+      });
+      svg.appendChild(dot);
+      return dot;
+    });
+    svg.appendChild(line);
+    var overlay = svgNode("rect", {
+      x: options.left,
+      y: options.top,
+      width: options.right - options.left,
+      height: options.bottom - options.top,
+      class: "chart-hit-area",
+      tabindex: "0",
+      role: "slider",
+      "aria-valuemin": "1",
+      "aria-valuemax": String(points.length),
+      "aria-label": options.ariaLabel
+    });
+    svg.appendChild(overlay);
+    var tooltip = chartTooltip(host);
+    var controller = {
+      update: function (index, showTooltip) {
+        var bounded = Math.max(0, Math.min(points.length - 1, index));
+        var point = points[bounded];
+        var x = options.xScale(parseDate(point.date));
+        line.setAttribute("x1", x);
+        line.setAttribute("x2", x);
+        line.removeAttribute("hidden");
+        options.series.forEach(function (series, seriesIndex) {
+          dots[seriesIndex].setAttribute("cx", x);
+          dots[seriesIndex].setAttribute("cy", options.yScale(series.value(point, bounded)));
+          dots[seriesIndex].removeAttribute("hidden");
+        });
+        var rows = options.tooltipRows(point, bounded);
+        overlay.setAttribute("aria-valuenow", String(bounded + 1));
+        overlay.setAttribute("aria-valuetext", point.date + "，" + rows.map(function (row) {
+          return row.label + " " + row.value;
+        }).join("，"));
+        if (showTooltip) {
+          setTooltipContent(tooltip, point.date, rows);
+          tooltip.style.left = Math.max(0, Math.min(100, x / options.width * 100)) + "%";
+          tooltip.classList.toggle("align-right", x > options.width * 0.72);
+          tooltip.hidden = false;
+        } else {
+          tooltip.hidden = true;
+        }
+      },
+      hideTooltip: function () { tooltip.hidden = true; },
+      hasFocus: function () { return document.activeElement === overlay; }
+    };
+    function indexFromPointer(event) {
+      var bounds = svg.getBoundingClientRect();
+      var localX = (event.clientX - bounds.left) / Math.max(1, bounds.width) * options.width;
+      var ratio = (localX - options.left) / Math.max(1, options.right - options.left);
+      return Math.round(Math.max(0, Math.min(1, ratio)) * (points.length - 1));
+    }
+    overlay.addEventListener("pointermove", function (event) {
+      setActiveChartPoint(indexFromPointer(event), controller);
+    });
+    overlay.addEventListener("pointerdown", function (event) {
+      setActiveChartPoint(indexFromPointer(event), controller);
+    });
+    overlay.addEventListener("pointerleave", function () { hideChartPoint(controller); });
+    overlay.addEventListener("focus", function () {
+      setActiveChartPoint(activeChartIndex === null ? points.length - 1 : activeChartIndex, controller);
+    });
+    overlay.addEventListener("blur", function () { controller.hideTooltip(); });
+    overlay.addEventListener("keydown", function (event) {
+      var next = activeChartIndex === null ? points.length - 1 : activeChartIndex;
+      if (event.key === "ArrowLeft") next -= 1;
+      else if (event.key === "ArrowRight") next += 1;
+      else if (event.key === "Home") next = 0;
+      else if (event.key === "End") next = points.length - 1;
+      else return;
+      event.preventDefault();
+      setActiveChartPoint(next, controller);
+    });
+    chartInteractions.push(controller);
+  }
+
   function renderGrowthChart(bundle, analysis) {
     var host = byId("growthChart");
     host.replaceChildren();
@@ -222,6 +358,31 @@
       svg.appendChild(svgNode("text", { x: width - 5, y: label.labelY + 4, "text-anchor": "end", class: "chart-direct-label" }, label.label + " " + label.value.toFixed(1)));
     });
     host.appendChild(svg);
+    installChartInteraction({
+      host: host,
+      svg: svg,
+      points: points,
+      width: width,
+      left: dimensions.left,
+      right: width - dimensions.right,
+      top: dimensions.top,
+      bottom: height - dimensions.bottom,
+      xScale: xScale,
+      yScale: yScale,
+      ariaLabel: "按日期查看组合、沪深300与累计超额净值",
+      series: [
+        { key: "portfolio", value: function (point) { return point.portfolio_unit_nav * 100; } },
+        { key: "benchmark", value: function (point) { return point.csi300_nav * 100; } },
+        { key: "excess", value: function (point) { return 100 + point.cumulative_excess_return * 100; } }
+      ],
+      tooltipRows: function (point) {
+        return [
+          { key: "portfolio", label: "组合净值", value: point.portfolio_unit_nav.toFixed(4) + "  (" + percent(point.portfolio_cumulative_return, true) + ")" },
+          { key: "benchmark", label: "沪深300", value: point.csi300_nav.toFixed(4) + "  (" + percent(point.csi300_cumulative_return, true) + ")" },
+          { key: "excess", label: "累计超额", value: percent(point.cumulative_excess_return, true) }
+        ];
+      }
+    });
   }
 
   function renderDrawdownChart(analysis) {
@@ -278,10 +439,35 @@
       }, entry.label + " " + percent(entry.item.value)));
     });
     host.appendChild(svg);
+    installChartInteraction({
+      host: host,
+      svg: svg,
+      points: activeAnalysis.points,
+      width: width,
+      left: dimensions.left,
+      right: width - dimensions.right,
+      top: dimensions.top,
+      bottom: height - dimensions.bottom,
+      xScale: xScale,
+      yScale: yScale,
+      ariaLabel: "按日期查看组合与沪深300回撤",
+      series: [
+        { key: "portfolio", value: function (point, index) { return portfolioValues[index].value; } },
+        { key: "benchmark", value: function (point, index) { return benchmarkValues[index].value; } }
+      ],
+      tooltipRows: function (point, index) {
+        return [
+          { key: "portfolio", label: "组合回撤", value: percent(portfolio[index].value) },
+          { key: "benchmark", label: "沪深300回撤", value: percent(benchmark[index].value) }
+        ];
+      }
+    });
   }
 
   function renderCharts() {
     if (!activeBundle || !activeAnalysis) return;
+    chartInteractions = [];
+    activeChartIndex = null;
     renderGrowthChart(activeBundle, activeAnalysis);
     renderDrawdownChart(activeAnalysis);
   }
@@ -300,6 +486,7 @@
 
   function renderPositions(bundle) {
     var body = byId("positionRows");
+    if (!body) return;
     body.replaceChildren();
     bundle.positions.forEach(function (position) {
       var row = document.createElement("tr");
@@ -329,6 +516,7 @@
   function renderAllocation(bundle) {
     var bar = byId("allocationBar");
     var legend = byId("allocationLegend");
+    if (!bar || !legend) return;
     bar.replaceChildren();
     legend.replaceChildren();
     var items = [{ label: "现金", weight: bundle.portfolio.cash_weight, className: "cash" }];
@@ -356,6 +544,7 @@
   }
 
   function renderChanges(bundle) {
+    if (!byId("changeRows")) return;
     setText("changeSubtitle", bundle.previous_valid_record + " → " + bundle.latest_valid_record);
     var body = byId("changeRows");
     body.replaceChildren();
@@ -376,6 +565,7 @@
     var portfolio = bundle.portfolio;
     var benchmark = bundle.benchmarks[0];
     var performance = byId("performanceList");
+    if (!performance) return;
     performance.replaceChildren();
     metric(performance, "统计区间", portfolio.performance_start_date + " → " + portfolio.performance_end_date);
     metric(performance, "收益方法", "funding-aware TWR");
@@ -417,11 +607,13 @@
     if (value === "ARCHIVE_INCEPTION_EXACT_BYTES_NO_DECLARED_SHA") return "LEGACY BASELINE · exact bytes";
     if (value === "LEGACY_EXACT_BYTES_NO_DECLARED_SHA") return "LEGACY · exact bytes";
     if (value === "HASH_BOUND_CURRENT_CLOSURE") return "CURRENT · hash-bound";
+    if (value === "DASHBOARD_POST_HOC_SHA_REGISTRY_BOUND") return "ARCHIVE · SHA registry";
     return value || "UNKNOWN";
   }
 
   function renderMonthlyPerformance(analysis) {
     var body = byId("monthlyPerformanceRows");
+    if (!body) return;
     body.replaceChildren();
     analysis.monthly.forEach(function (period) {
       var row = document.createElement("tr");
@@ -437,8 +629,8 @@
       makeCell(row, percent(period.benchmark_return, true), "numeric " + signedClass(period.benchmark_return));
       makeCell(row, percent(period.excess_return, true), "numeric " + signedClass(period.excess_return));
       makeCell(row, percent(period.portfolio_max_drawdown), "numeric negative");
-      makeCell(row, publicRedacted(money(period.ending_total_value)), "numeric");
-      makeCell(row, period.evidence_status, "evidence-value");
+      makeCell(row, publicRedacted(money(period.ending_total_value)), "numeric monthly-ending-value");
+      makeCell(row, period.evidence_status, "evidence-value monthly-evidence");
       body.appendChild(row);
     });
   }
@@ -475,14 +667,14 @@
     }
 
     var funding = byId("fundingEventList");
-    funding.replaceChildren();
-    if (!bundle.history.funding_events.length) {
+    if (funding) funding.replaceChildren();
+    if (funding && !bundle.history.funding_events.length) {
       var empty = document.createElement("p");
       empty.className = "section-note";
       empty.textContent = "无已验证外部资金流事件";
       funding.appendChild(empty);
     }
-    bundle.history.funding_events.forEach(function (event) {
+    (funding ? bundle.history.funding_events : []).forEach(function (event) {
       var item = document.createElement("div");
       var title = document.createElement("strong");
       var detail = document.createElement("span");
@@ -495,6 +687,7 @@
     });
 
     var summary = byId("historySummary");
+    if (!summary) return;
     summary.replaceChildren();
     metric(summary, "归档起点", bundle.history.archive_start_date + " · " + bundle.history.archive_start_record);
     metric(summary, "首个 P&L", bundle.history.first_pnl_date + " · " + bundle.history.first_pnl_record);
@@ -505,6 +698,7 @@
   }
 
   function renderHistory(bundle) {
+    if (!byId("performanceRows")) return;
     setText("historyPointCount", bundle.history.performance_point_count + " 个估值点");
     var body = byId("performanceRows");
     body.replaceChildren();
@@ -524,6 +718,7 @@
 
   function renderRisks(bundle) {
     var grid = byId("riskGrid");
+    if (!grid) return;
     grid.replaceChildren();
     bundle.risks.forEach(function (risk) {
       var card = document.createElement("article");
@@ -543,6 +738,7 @@
 
   function renderEvidence(bundle) {
     var body = byId("evidenceRows");
+    if (!body) return;
     body.replaceChildren();
     var entries = [
       ["Manifest", bundle.current_evidence.manifest_path, bundle.current_evidence.manifest_sha256],
@@ -566,6 +762,7 @@
   }
 
   function renderWarnings(bundle) {
+    if (!byId("warningList")) return;
     setText("i1Status", bundle.i1_display_status + " · research-only states cannot change holdings");
     var list = byId("warningList");
     list.replaceChildren();
@@ -586,15 +783,16 @@
     setText("totalValue", publicRedacted(money(bundle.portfolio.total_value)));
     setText("cashExposure", percent(bundle.portfolio.cash_weight) + " / " + percent(bundle.portfolio.gross_exposure));
     setText("performancePeriod", bundle.portfolio.performance_start_date + " → " + bundle.portfolio.performance_end_date);
-    setText("freshnessLabel", bundle.data_age_calendar_days + " calendar days old");
+    setText("headerPeriod", bundle.portfolio.performance_start_date + " — " + bundle.portfolio.performance_end_date);
+    setText("freshnessLabel", "截至 " + bundle.portfolio.performance_end_date);
     setText("twrValue", percent(bundle.portfolio.cumulative_twr, true));
     setText("benchmarkReturnValue", percent(benchmark.return, true));
     setText("excessValue", percent(benchmark.excess_return, true));
     setText("drawdownValue", percent(bundle.portfolio.max_drawdown));
     setText("portfolioDrawdownValue", percent(bundle.portfolio.max_drawdown));
     setText("benchmarkDrawdownValue", percent(benchmark.max_drawdown));
-    setText("performanceInsight", "组合自 3 月以来跑赢沪深300 " + percent(benchmark.excess_return, true) + "，最大回撤 " + percent(bundle.portfolio.max_drawdown));
-    setText("performanceSubtitle", analysis.points.length + " 个有效估值点 · " + bundle.portfolio.performance_start_date + " → " + bundle.portfolio.performance_end_date + " · funding-aware TWR");
+    setText("performanceInsight", "净值与回撤");
+    setText("performanceSubtitle", bundle.portfolio.performance_start_date + " — " + bundle.portfolio.performance_end_date + " · " + analysis.points.length + " 个验证估值点 · funding-aware TWR");
     renderPositions(bundle);
     renderAllocation(bundle);
     renderChanges(bundle);
@@ -605,7 +803,6 @@
     renderRisks(bundle);
     renderEvidence(bundle);
     renderWarnings(bundle);
-    if (PublicMode) byId("evidenceDetails").hidden = true;
     byId("dashboardContent").hidden = false;
     window.requestAnimationFrame(renderCharts);
   }
