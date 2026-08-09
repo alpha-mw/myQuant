@@ -32,6 +32,8 @@ from quant_investor.market.fundamental_generation import (
     FUNDAMENTAL_TABLES,
     _daily_history_coverage_metrics,
     _issue_primary_generation_attestation,
+    _listing_identity_sha256,
+    _validate_daily_history_coverage_intervals,
     load_fundamental_pointer,
     pointer_sha256 as fundamental_pointer_sha256,
     publish_fundamental_generation,
@@ -2266,6 +2268,110 @@ def _canonical_bar_paths(root: Path) -> list[Path]:
     return paths
 
 
+DAILY_BASIC_COVERAGE_BOUNDARY_PATH = (
+    Path("data") / "cn_universe" / "daily_basic_coverage_boundaries.json"
+)
+
+
+def _json_object_without_duplicate_keys(payload: bytes) -> dict[str, Any]:
+    def build(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("daily history coverage declaration has duplicate keys")
+            result[key] = value
+        return result
+
+    try:
+        parsed = json.loads(payload.decode("utf-8"), object_pairs_hook=build)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("daily history coverage declaration is invalid JSON") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("daily history coverage declaration must be an object")
+    return parsed
+
+
+def _declared_coverage_intervals(
+    scope: set[str],
+    *,
+    listing_identities: Mapping[str, str],
+    listing_dates: Mapping[str, str],
+    history_end_dates: Mapping[str, str],
+    membership_sha256: str,
+    cutoff: str,
+) -> dict[str, Any]:
+    """Load exact intervals; legacy response-derived floors are not authority."""
+
+    path = DAILY_BASIC_COVERAGE_BOUNDARY_PATH
+    if not path.is_absolute():
+        path = Path.cwd().resolve(strict=True) / path
+    if not path.is_file():
+        return {
+            "daily_history_coverage_interval_path": "",
+            "daily_history_coverage_interval_source_sha256": "",
+            "daily_history_coverage_intervals": [],
+        }
+    raw = _stable_regular_file_bytes(path, label="daily_basic coverage boundaries")
+    payload = _json_object_without_duplicate_keys(raw)
+    if payload.get("schema_version") != "daily-basic-coverage-intervals.v2":
+        legacy_symbols = {
+            normalize_ts_code(symbol)
+            for symbol in dict(payload.get("coverage_starts", {}) or {})
+        }
+        if scope.intersection(legacy_symbols):
+            raise ValueError(
+                "legacy daily_basic coverage starts are not exact provider authority"
+            )
+        return {
+            "daily_history_coverage_interval_path": "",
+            "daily_history_coverage_interval_source_sha256": "",
+            "daily_history_coverage_intervals": [],
+        }
+    if set(payload) != {"schema_version", "intervals", "record_sha256"}:
+        raise ValueError("daily history coverage declaration shape is invalid")
+    record = {
+        "schema_version": payload["schema_version"],
+        "intervals": payload["intervals"],
+    }
+    if canonical_json_sha256(record) != str(payload["record_sha256"]).strip().lower():
+        raise ValueError("daily history coverage declaration seal is invalid")
+    values = payload.get("intervals")
+    if not isinstance(values, list):
+        raise ValueError("daily history coverage intervals must be a list")
+    relevant = [
+        row
+        for row in values
+        if isinstance(row, Mapping) and normalize_ts_code(row.get("symbol")) in scope
+    ]
+    normalized: list[dict[str, Any]] = []
+    for symbol in sorted(scope):
+        rows = [
+            row
+            for row in relevant
+            if normalize_ts_code(row.get("symbol")) == symbol
+        ]
+        validated = _validate_daily_history_coverage_intervals(
+            rows,
+            symbol=symbol,
+            listing_identity=str(listing_identities.get(symbol) or ""),
+            listing_start=str(listing_dates.get(symbol) or ""),
+            listing_end=str(history_end_dates.get(symbol) or ""),
+            listing_source_sha256=membership_sha256,
+            cutoff=cutoff,
+        )
+        normalized.extend(
+            {key: value for key, value in row.items() if not key.startswith("_")}
+            for row in validated
+        )
+    return {
+        "daily_history_coverage_interval_path": str(path),
+        "daily_history_coverage_interval_source_sha256": hashlib.sha256(raw).hexdigest(),
+        "daily_history_coverage_intervals": sorted(
+            normalized, key=lambda row: str(row["interval_id"])
+        ),
+    }
+
+
 def _canonical_bar_history_bounds(
     pointer_payload: Mapping[str, Any],
     *,
@@ -2590,6 +2696,8 @@ def build_canonical_scope_evidence(
     as_of_ts = pd.Timestamp(pd.to_datetime(requested_as_of, format="%Y%m%d"))
     listing_dates: dict[str, str] = {}
     history_end_dates: dict[str, str] = {}
+    listing_identities: dict[str, str] = {}
+    membership_sha256 = hashlib.sha256(membership_bytes).hexdigest()
     for symbol in normalized:
         rows = membership[
             (membership["_symbol"] == symbol)
@@ -2641,6 +2749,13 @@ def build_canonical_scope_evidence(
                 f"canonical PIT membership date order is invalid: {symbol}"
             )
         history_end_dates[symbol] = history_end
+        listing_identities[symbol] = _listing_identity_sha256(
+            symbol=symbol,
+            listing_date=list_date,
+            effective_from=effective_from,
+            history_end=history_end,
+            membership_sha256=membership_sha256,
+        )
     canonical_bar_first_dates, canonical_bar_last_dates, bar_evidence = (
         _canonical_bar_history_bounds(
             pointer_payload,
@@ -2676,6 +2791,7 @@ def build_canonical_scope_evidence(
         "symbol_set_sha256": scope_sha256,
         "listing_dates": listing_dates,
         "history_end_dates": history_end_dates,
+        "listing_identities": listing_identities,
         "canonical_bar_first_dates": canonical_bar_first_dates,
         "canonical_bar_last_dates": canonical_bar_last_dates,
         **bar_evidence,
@@ -2683,6 +2799,14 @@ def build_canonical_scope_evidence(
             "\n".join(eligibility_lines).encode("utf-8")
         ).hexdigest(),
         "non_blocking_absent_symbols": non_blocking_absent,
+        **_declared_coverage_intervals(
+            normalized_set,
+            listing_identities=listing_identities,
+            listing_dates=listing_dates,
+            history_end_dates=history_end_dates,
+            membership_sha256=membership_sha256,
+            cutoff=requested_as_of,
+        ),
     }
 
 
@@ -2703,6 +2827,7 @@ def _validate_canonical_scope_evidence(
         "symbol_set_sha256",
         "listing_dates",
         "history_end_dates",
+        "listing_identities",
         "canonical_bar_first_dates",
         "canonical_bar_last_dates",
         "canonical_bar_table_root",
@@ -2713,6 +2838,9 @@ def _validate_canonical_scope_evidence(
         "canonical_bar_as_of",
         "history_eligibility_sha256",
         "non_blocking_absent_symbols",
+        "daily_history_coverage_interval_path",
+        "daily_history_coverage_interval_source_sha256",
+        "daily_history_coverage_intervals",
     }
     missing = sorted(required.difference(evidence))
     if missing:
@@ -3061,6 +3189,9 @@ _DAILY_HISTORY_OUTCOME_FIELDS = (
     "observed_history_months",
     "monthly_history_coverage_ratio",
     "max_consecutive_missing_months",
+    "coverage_interval_refs",
+    "coverage_reason_counts",
+    "coverage_blocker_codes",
     "history_start_complete",
     "history_end_complete",
     "history_density_complete",
@@ -3086,6 +3217,10 @@ def _attach_daily_history_coverage(
     evidence = dict(scope_evidence or {})
     listing_dates = dict(evidence.get("listing_dates", {}) or {})
     history_end_dates = dict(evidence.get("history_end_dates", {}) or {})
+    listing_identities = dict(evidence.get("listing_identities", {}) or {})
+    coverage_intervals = list(
+        evidence.get("daily_history_coverage_intervals", []) or []
+    )
     bar_first_dates = dict(evidence.get("canonical_bar_first_dates", {}) or {})
     bar_last_dates = dict(evidence.get("canonical_bar_last_dates", {}) or {})
     by_key = {
@@ -3155,18 +3290,31 @@ def _attach_daily_history_coverage(
         else:
             expected_start = daily_start
             expected_end = as_of
+        symbol_intervals = [
+            interval
+            for interval in coverage_intervals
+            if normalize_ts_code(interval.get("symbol")) == symbol
+        ]
         outcome.update(
             _daily_history_coverage_metrics(
                 dates,
                 expected_start=expected_start,
                 expected_end=expected_end,
                 allow_tail_gap=False,
+                coverage_intervals=symbol_intervals,
+                symbol=symbol,
+                listing_identity=str(listing_identities.get(symbol) or ""),
+                listing_start=str(listing_dates.get(symbol) or expected_start),
+                listing_end=str(history_end_dates.get(symbol) or expected_end),
+                listing_source_sha256=str(
+                    evidence.get("canonical_membership_sha256") or ""
+                ),
+                cutoff=as_of,
                 boundary_tolerance_days=int(
                     policy.daily_history_boundary_tolerance_days
                 ),
             )
         )
-        outcome["history_exception_evidence_bound"] = False
     return sorted(
         by_key.values(),
         key=lambda item: (str(item.get("symbol")), str(item.get("table"))),
@@ -4618,6 +4766,17 @@ def _fetch_tushare_tables(
                                 format="%Y%m%d",
                                 errors="coerce",
                             )
+                            interval_rows = [
+                                interval
+                                for interval in list(
+                                    scope_evidence.get(
+                                        "daily_history_coverage_intervals", []
+                                    )
+                                    or []
+                                )
+                                if normalize_ts_code(interval.get("symbol"))
+                                == symbol
+                            ]
                             history_evidence = {
                                 **_daily_history_coverage_metrics(
                                     dates,
@@ -4627,8 +4786,31 @@ def _fetch_tushare_tables(
                                     boundary_tolerance_days=int(
                                         audit_policy.daily_history_boundary_tolerance_days
                                     ),
+                                    coverage_intervals=interval_rows,
+                                    symbol=symbol,
+                                    listing_identity=str(
+                                        dict(
+                                            scope_evidence.get(
+                                                "listing_identities", {}
+                                            )
+                                            or {}
+                                        ).get(symbol)
+                                        or ""
+                                    ),
+                                    listing_start=str(
+                                        listing_dates.get(symbol) or expected_start
+                                    ),
+                                    listing_end=str(
+                                        history_end_dates.get(symbol) or expected_end
+                                    ),
+                                    listing_source_sha256=str(
+                                        scope_evidence.get(
+                                            "canonical_membership_sha256"
+                                        )
+                                        or ""
+                                    ),
+                                    cutoff=end_text,
                                 ),
-                                "history_exception_evidence_bound": False,
                             }
                         outcome = {
                             "schema_version": FUNDAMENTAL_REQUEST_OUTCOME_SCHEMA,

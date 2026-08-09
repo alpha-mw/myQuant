@@ -359,6 +359,21 @@ def _publish_verified_primary(
         for symbol in symbols
     }
     history_end_dates = {symbol: "20240510" for symbol in symbols}
+    membership_sha256 = hashlib.sha256(membership_path.read_bytes()).hexdigest()
+    listing_identities = {
+        symbol: canonical_json_sha256(
+            {
+                "symbol": symbol,
+                "listing_date": listing_dates[symbol],
+                "effective_from": str(
+                    membership_by_symbol.at[symbol, "effective_from"]
+                ).strip(),
+                "history_end": history_end_dates[symbol],
+                "membership_sha256": membership_sha256,
+            }
+        )
+        for symbol in symbols
+    }
     canonical_bar_first_dates = {symbol: canonical_bar_start for symbol in symbols}
     canonical_bar_last_dates = {symbol: "20240510" for symbol in symbols}
     bar_file_evidence = fundamental_mart._canonical_bar_file_evidence(
@@ -394,19 +409,21 @@ def _publish_verified_primary(
         "canonical_market_snapshot_id": "fixture-market-snapshot",
         "canonical_market_trade_date": "20240510",
         "canonical_membership_path": str(membership_path.resolve()),
-        "canonical_membership_sha256": hashlib.sha256(
-            membership_path.read_bytes()
-        ).hexdigest(),
+        "canonical_membership_sha256": membership_sha256,
         "symbol_count": len(symbols),
         "symbol_set_sha256": symbol_set_sha256,
         "listing_dates": listing_dates,
         "history_end_dates": history_end_dates,
+        "listing_identities": listing_identities,
         "canonical_bar_first_dates": canonical_bar_first_dates,
         "canonical_bar_last_dates": canonical_bar_last_dates,
         "canonical_bar_table_root": str(bars_root.resolve()),
         "canonical_bar_file_count": len(bar_file_evidence),
         "canonical_bar_files_sha256": canonical_json_sha256(bar_file_evidence),
         "canonical_bar_bounds_sha256": bar_bounds_sha,
+        "daily_history_coverage_interval_path": "",
+        "daily_history_coverage_interval_source_sha256": "",
+        "daily_history_coverage_intervals": [],
         "canonical_bar_daily_start": requested_daily_start,
         "canonical_bar_as_of": "20240510",
         "history_eligibility_sha256": eligibility_sha,
