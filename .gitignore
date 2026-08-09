@@ -85,11 +85,9 @@ quant_investor/data/storage/*
 !quant_investor/data/storage/csv_store.py
 reports/
 quant_investor/factor_registry/*.lock
-portfolio_dashboard/generated/
-# Root-anchored: the unanchored `models/` pattern silently blocked the
-# web/models/ source package (Pydantic schemas) from ever being committed.
+# Root-anchored so the pattern only ignores trained-model output at the repo
+# root, never a source package named `models/` somewhere in the tree.
 /models/
-!web/models/
 cache/
 output/
 results/
@@ -105,3 +103,7 @@ tmp/
 temp/
 *.tmp
 .omx/
+
+# Ad-hoc browser-session page dumps. Without this rule five of these were
+# committed in July 2026.
+.playwright-cli/

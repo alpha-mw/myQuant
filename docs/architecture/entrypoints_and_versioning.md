@@ -30,9 +30,6 @@ quant-investor market run \
   --strategy-id <strategy-id>
 ```
 
-The Web result surface is `GET /api/research/{strategy_id}`. It may receive
-`expected_pointer_sha256` to require an exact pointer generation.
-
 `market backtest` is not implemented for the V17 v4 mainline. It fails closed
 with `V17_BACKTEST_UNAVAILABLE` and performs no writes.
 

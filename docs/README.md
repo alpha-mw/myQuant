@@ -19,6 +19,9 @@ and the separate Shadow forward-evidence lane.
 
 - [Research pipeline and protocols](architecture/research_pipeline_and_protocols.md)
 - [Factor Governance v4](factor_governance_v4.md)
+- [Evidence archive boundary](architecture/evidence_archive_boundary.md) — why
+  `factors/governance*` is 32% of the package, unreachable from every entry
+  point, and still must not be deleted, moved or edited
 - [Module map](modules/module_map.md)
 
 ## Standalone and historical references

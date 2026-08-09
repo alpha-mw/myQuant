@@ -1,6 +1,6 @@
 ---
 name: myquant-backend-ops
-description: Use for repository-local myQuant backend inspection and operation: exact V17 mainline readers, CN market maintenance, V4 Forward/Shadow evidence, I0/R2.2 research evaluation, workspace APIs, canonical local data, and fail-closed diagnostics. Do not use for pure frontend work, generic Python tasks, live brokerage/execution, or for treating the standalone legacy automation package as an active V17 workflow.
+description: Use for repository-local myQuant backend inspection and operation: exact V17 mainline readers, CN market maintenance, V4 Forward/Shadow evidence, I0/R2.2 research evaluation, canonical local data, and fail-closed diagnostics. Do not use for generic Python tasks, live brokerage/execution, or for treating the standalone legacy automation package as an active V17 workflow.
 ---
 
 # myQuant Backend Ops
@@ -8,8 +8,8 @@ description: Use for repository-local myQuant backend inspection and operation: 
 ## Overview
 
 把这个 skill 当作仓库内后端工作的路由入口。先确认用户要处理的是主线读取、
-数据维护、Forward/Shadow、I0/R2.2、Web 读取，还是独立旧 automation；这些
-lane 不能互相替代。
+数据维护、Forward/Shadow、I0/R2.2，还是独立旧 automation；这些 lane 不能
+互相替代。
 
 ## 核心边界
 
@@ -45,15 +45,12 @@ lane 不能互相替代。
 2. `quant_investor/cli/main.py`
 3. `quant_investor/v17_v4_runtime/cli.py`
 4. `quant_investor/intelligence/evaluator/cli.py`
-5. `web/main.py`、`web/api/__init__.py`、`web/workspace_app.py`
-6. `web/routers/*.py` 与 `web/api/data.py`
-7. 对应 contract、service 或底层实现
+5. 对应 contract、service 或底层实现
 
 ### 3. 按需读取 references
 
 - 命令：`references/entrypoints-and-commands.md`
 - 路径和产物：`references/runtime-paths-and-artifacts.md`
-- Web API：`references/workspace-api-surface.md`
 
 ### 4. Fail closed
 
@@ -68,13 +65,10 @@ lane 不能互相替代。
   明确要求 live run。
 - 长任务以最终 receipt、result JSON 和 blocker 为准，不以安静 stdout 推断
   成败。
-- Web 入口固定为 `quant-investor web` -> `web.main:app` ->
-  `web.api:app` -> `web.workspace_app:app`。
-- 用户问“接口在哪”时，依次回答 router、model、service、数据/产物来源；若
-  当前 endpoint 是纯读取，明确说明它没有写库职责。
+- 展示面是 `portfolio_dashboard/` 静态页，由 `scripts/export_cn_aggressive_
+  dashboard_data.py` 生成的 JSON bundle 驱动，没有运行中的服务。
 
 ## References
 
 - `references/entrypoints-and-commands.md`
 - `references/runtime-paths-and-artifacts.md`
-- `references/workspace-api-surface.md`

@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from numbers import Real
 from pathlib import Path
-from typing import Any, Iterator, Mapping
+from typing import Any, Collection, Iterator, Mapping
 
 import pandas as pd
 import pyarrow.parquet as pq
@@ -65,6 +65,45 @@ FUNDAMENTAL_HISTORY_MAX_CONSECUTIVE_MISSING_MONTHS = 2
 FUNDAMENTAL_HISTORY_BOUNDARY_TOLERANCE_DAYS = 62
 FUNDAMENTAL_STREAMING_READBACK_MIN_ROWS = 250_000
 FUNDAMENTAL_STREAMING_ROW_GROUP_SIZE = 100_000
+
+DAILY_HISTORY_COVERAGE_REASONS = frozenset(
+    {
+        "PRE_LISTING",
+        "POST_DELISTING",
+        "EXCHANGE_SUSPENDED",
+        "PROVIDER_COVERAGE_BOUNDARY",
+        "TRUE_MISSING",
+        "UNCONFIRMED",
+    }
+)
+_DAILY_HISTORY_COVERAGE_AUTHORITIES = {
+    "PRE_LISTING": "PIT_LISTING_RECORD",
+    "POST_DELISTING": "PIT_LISTING_RECORD",
+    "EXCHANGE_SUSPENDED": "DATED_SUSPENSION_EVIDENCE",
+    "PROVIDER_COVERAGE_BOUNDARY": "PROVIDER_METADATA_RECEIPT",
+    "TRUE_MISSING": "CANONICAL_COVERAGE_AUDIT",
+    "UNCONFIRMED": "NONE",
+}
+_DAILY_HISTORY_COVERAGE_PRECEDENCE = {
+    "PROVIDER_COVERAGE_BOUNDARY": 1,
+    "EXCHANGE_SUSPENDED": 2,
+    "PRE_LISTING": 3,
+    "POST_DELISTING": 3,
+}
+_DAILY_HISTORY_COVERAGE_INTERVAL_FIELDS = frozenset(
+    {
+        "interval_id",
+        "symbol",
+        "listing_identity",
+        "reason",
+        "authority",
+        "effective_from",
+        "effective_to",
+        "available_at",
+        "cutoff",
+        "source_sha256",
+    }
+)
 
 
 class FundamentalGenerationError(ValueError):
@@ -2244,8 +2283,15 @@ def _daily_history_coverage_metrics(
     expected_end: str,
     allow_tail_gap: bool,
     boundary_tolerance_days: int = FUNDAMENTAL_HISTORY_BOUNDARY_TOLERANCE_DAYS,
+    coverage_intervals: Collection[Mapping[str, Any]] = (),
+    symbol: str = "",
+    listing_identity: str = "",
+    listing_start: str = "",
+    listing_end: str = "",
+    listing_source_sha256: str = "",
+    cutoff: str = "",
 ) -> dict[str, Any]:
-    """Measure per-symbol daily history without allowing clustered rows to pass."""
+    """Measure daily history using only an exact reason-coded interval closure."""
 
     parsed = pd.to_datetime(dates, errors="coerce").dropna().drop_duplicates().sort_values()
     start_ts = pd.Timestamp(pd.to_datetime(expected_start, format="%Y%m%d"))
@@ -2261,7 +2307,59 @@ def _daily_history_coverage_metrics(
         evaluation_end = min(end_ts, pd.Timestamp(observed_end))
 
     window = parsed[(parsed >= start_ts) & (parsed <= evaluation_end)]
-    expected_months = pd.period_range(start=start_ts, end=evaluation_end, freq="M")
+    normalized_intervals = _validate_daily_history_coverage_intervals(
+        coverage_intervals,
+        symbol=symbol,
+        listing_identity=listing_identity,
+        listing_start=listing_start or expected_start,
+        listing_end=listing_end or expected_end,
+        listing_source_sha256=listing_source_sha256,
+        cutoff=cutoff or expected_end,
+    )
+    calendar_months = pd.period_range(start=start_ts, end=evaluation_end, freq="M")
+    expected_month_values: list[pd.Period] = []
+    reason_counts: dict[str, int] = {}
+    blocker_codes: set[str] = set()
+    for month in calendar_months:
+        month_start = max(start_ts, month.start_time)
+        month_end = min(evaluation_end, month.end_time.normalize())
+        covering = [
+            row
+            for row in normalized_intervals
+            if row["_effective_from"] <= month_start
+            and row["_effective_to"] >= month_end
+        ]
+        blocking = [
+            row for row in covering if row["reason"] in {"TRUE_MISSING", "UNCONFIRMED"}
+        ]
+        if blocking:
+            blocker_codes.update(f"COVERAGE_{row['reason']}" for row in blocking)
+            expected_month_values.append(month)
+            continue
+        exempting = [
+            row
+            for row in covering
+            if row["reason"] in _DAILY_HISTORY_COVERAGE_PRECEDENCE
+        ]
+        if not exempting:
+            expected_month_values.append(month)
+            continue
+        precedence = max(
+            _DAILY_HISTORY_COVERAGE_PRECEDENCE[row["reason"]]
+            for row in exempting
+        )
+        winners = [
+            row
+            for row in exempting
+            if _DAILY_HISTORY_COVERAGE_PRECEDENCE[row["reason"]] == precedence
+        ]
+        if len(winners) != 1:
+            blocker_codes.add("COVERAGE_UNCONFIRMED")
+            expected_month_values.append(month)
+            continue
+        reason = winners[0]["reason"]
+        reason_counts[reason] = reason_counts.get(reason, 0) + 1
+    expected_months = pd.PeriodIndex(expected_month_values, freq="M")
     observed_months = pd.PeriodIndex(window.dt.to_period("M").unique(), freq="M")
     observed_month_set = set(observed_months)
     missing_months = [month for month in expected_months if month not in observed_month_set]
@@ -2279,31 +2377,56 @@ def _daily_history_coverage_metrics(
     monthly_coverage_ratio = (
         observed_month_count / expected_month_count if expected_month_count else 0.0
     )
-    minimum_rows = max(
-        1,
-        int(max(0, (evaluation_end - start_ts).days) * 100 / 365),
+    expected_days = sum(
+        max(
+            0,
+            (
+                min(evaluation_end, month.end_time.normalize())
+                - max(start_ts, month.start_time)
+            ).days
+            + 1,
+        )
+        for month in expected_months
     )
+    minimum_rows = max(1, int(expected_days * 100 / 365)) if expected_days else 0
     tolerance_days = strict_nonnegative_int(
         boundary_tolerance_days,
         label="daily history boundary tolerance days",
     )
     tolerance = pd.Timedelta(days=tolerance_days)
-    start_ok = bool(
-        not window.empty
-        and ((window >= start_ts) & (window <= start_ts + tolerance)).any()
+    first_expected = (
+        max(start_ts, expected_months[0].start_time)
+        if len(expected_months)
+        else None
     )
-    end_ok = bool(
-        allow_tail_gap
+    last_expected = (
+        min(evaluation_end, expected_months[-1].end_time.normalize())
+        if len(expected_months)
+        else None
+    )
+    start_ok = bool(
+        first_expected is None
         or (
             not window.empty
-            and ((window >= end_ts - tolerance) & (window <= end_ts)).any()
+            and ((window >= first_expected) & (window <= first_expected + tolerance)).any()
         )
     )
-    density_ok = int(window.nunique()) >= minimum_rows
+    end_ok = bool(
+        last_expected is None
+        or allow_tail_gap
+        or (
+            not window.empty
+            and ((window >= last_expected - tolerance) & (window <= last_expected)).any()
+        )
+    )
+    density_ok = bool(minimum_rows == 0 or int(window.nunique()) >= minimum_rows)
     monthly_ok = (
-        monthly_coverage_ratio >= FUNDAMENTAL_HISTORY_MIN_MONTHLY_COVERAGE
-        and max_consecutive_missing
-        <= FUNDAMENTAL_HISTORY_MAX_CONSECUTIVE_MISSING_MONTHS
+        expected_month_count == 0
+        or (
+            monthly_coverage_ratio >= FUNDAMENTAL_HISTORY_MIN_MONTHLY_COVERAGE
+            and max_consecutive_missing
+            <= FUNDAMENTAL_HISTORY_MAX_CONSECUTIVE_MISSING_MONTHS
+        )
     )
     return {
         "expected_history_start": start_ts.strftime("%Y%m%d"),
@@ -2325,13 +2448,162 @@ def _daily_history_coverage_metrics(
         "observed_history_months": observed_month_count,
         "monthly_history_coverage_ratio": float(monthly_coverage_ratio),
         "max_consecutive_missing_months": int(max_consecutive_missing),
+        "coverage_interval_refs": [row["interval_id"] for row in normalized_intervals],
+        "coverage_reason_counts": dict(sorted(reason_counts.items())),
+        "coverage_blocker_codes": sorted(blocker_codes),
         "history_start_complete": start_ok,
         "history_end_complete": end_ok,
         "history_density_complete": density_ok,
         "history_monthly_complete": monthly_ok,
         "history_boundary_tolerance_days": tolerance_days,
-        "history_complete": bool(start_ok and end_ok and density_ok and monthly_ok),
+        "history_exception_evidence_bound": bool(reason_counts),
+        "history_complete": bool(
+            start_ok and end_ok and density_ok and monthly_ok and not blocker_codes
+        ),
     }
+
+
+def _coverage_date(value: Any, *, label: str) -> str:
+    text = str(value or "").strip()
+    if not re.fullmatch(r"\d{8}", text):
+        raise FundamentalGenerationError(f"{label} must be YYYYMMDD")
+    parsed = pd.to_datetime(text, format="%Y%m%d", errors="coerce")
+    if pd.isna(parsed) or pd.Timestamp(parsed).strftime("%Y%m%d") != text:
+        raise FundamentalGenerationError(f"{label} is invalid")
+    return text
+
+
+def _listing_identity_sha256(
+    *,
+    symbol: str,
+    listing_date: str,
+    effective_from: str,
+    history_end: str,
+    membership_sha256: str,
+) -> str:
+    source_sha = str(membership_sha256 or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", source_sha):
+        raise FundamentalGenerationError("listing identity source SHA is invalid")
+    return canonical_json_sha256(
+        {
+            "symbol": str(symbol or "").strip().upper(),
+            "listing_date": _coverage_date(
+                listing_date, label="listing identity listing_date"
+            ),
+            "effective_from": _coverage_date(
+                effective_from, label="listing identity effective_from"
+            ),
+            "history_end": _coverage_date(
+                history_end, label="listing identity history_end"
+            ),
+            "membership_sha256": source_sha,
+        }
+    )
+
+
+def _validate_daily_history_coverage_intervals(
+    intervals: Collection[Mapping[str, Any]],
+    *,
+    symbol: str,
+    listing_identity: str,
+    listing_start: str,
+    listing_end: str,
+    listing_source_sha256: str,
+    cutoff: str,
+) -> tuple[dict[str, Any], ...]:
+    """Validate the immutable authority closure used by history coverage."""
+
+    if isinstance(intervals, (str, bytes, bytearray)):
+        raise FundamentalGenerationError("coverage intervals must be a collection")
+    expected_symbol = str(symbol or "").strip().upper()
+    expected_identity = str(listing_identity or "").strip().lower()
+    listing_source = str(listing_source_sha256 or "").strip().lower()
+    start = _coverage_date(listing_start, label="coverage listing_start")
+    end = _coverage_date(listing_end, label="coverage listing_end")
+    exact_cutoff = _coverage_date(cutoff, label="coverage cutoff")
+    if start > end or end > exact_cutoff:
+        raise FundamentalGenerationError("coverage listing interval is invalid")
+    if intervals and (
+        not expected_symbol or not re.fullmatch(r"[0-9a-f]{64}", expected_identity)
+    ):
+        raise FundamentalGenerationError("coverage listing identity is invalid")
+
+    normalized: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for raw in intervals:
+        if not isinstance(raw, Mapping) or set(raw) != _DAILY_HISTORY_COVERAGE_INTERVAL_FIELDS:
+            raise FundamentalGenerationError("coverage interval shape is invalid")
+        interval_id = str(raw["interval_id"] or "").strip().lower()
+        reason = str(raw["reason"] or "").strip().upper()
+        authority = str(raw["authority"] or "").strip().upper()
+        source_sha = str(raw["source_sha256"] or "").strip().lower()
+        interval_symbol = str(raw["symbol"] or "").strip().upper()
+        interval_identity = str(raw["listing_identity"] or "").strip().lower()
+        effective_from = _coverage_date(
+            raw["effective_from"], label="coverage effective_from"
+        )
+        effective_to = _coverage_date(raw["effective_to"], label="coverage effective_to")
+        available_at = _coverage_date(raw["available_at"], label="coverage available_at")
+        interval_cutoff = _coverage_date(raw["cutoff"], label="coverage cutoff")
+        if interval_symbol != expected_symbol or interval_identity != expected_identity:
+            raise FundamentalGenerationError("coverage interval identity mismatch")
+        if reason not in DAILY_HISTORY_COVERAGE_REASONS:
+            raise FundamentalGenerationError("coverage interval reason is invalid")
+        if authority != _DAILY_HISTORY_COVERAGE_AUTHORITIES[reason]:
+            raise FundamentalGenerationError("coverage interval authority is invalid")
+        if not re.fullmatch(r"[0-9a-f]{64}", source_sha):
+            raise FundamentalGenerationError("coverage interval source SHA is invalid")
+        if reason in {"PRE_LISTING", "POST_DELISTING"} and (
+            source_sha != listing_source
+            or not re.fullmatch(r"[0-9a-f]{64}", listing_source)
+        ):
+            raise FundamentalGenerationError(
+                "listing coverage interval source authority mismatch"
+            )
+        if (
+            effective_from > effective_to
+            or interval_cutoff != exact_cutoff
+            or available_at > exact_cutoff
+            or effective_to > exact_cutoff
+        ):
+            raise FundamentalGenerationError("coverage interval time ordering is invalid")
+        if reason == "PRE_LISTING" and not effective_to < start:
+            raise FundamentalGenerationError("PRE_LISTING interval exceeds listing range")
+        if reason == "POST_DELISTING" and not effective_from > end:
+            raise FundamentalGenerationError("POST_DELISTING interval exceeds listing range")
+        if reason not in {"PRE_LISTING", "POST_DELISTING"} and not (
+            start <= effective_from <= effective_to <= end
+        ):
+            raise FundamentalGenerationError("coverage interval exceeds listing range")
+        canonical = {
+            "symbol": interval_symbol,
+            "listing_identity": interval_identity,
+            "reason": reason,
+            "authority": authority,
+            "effective_from": effective_from,
+            "effective_to": effective_to,
+            "available_at": available_at,
+            "cutoff": interval_cutoff,
+            "source_sha256": source_sha,
+        }
+        if canonical_json_sha256(canonical) != interval_id:
+            raise FundamentalGenerationError("coverage interval identity is invalid")
+        if interval_id in seen_ids:
+            raise FundamentalGenerationError("coverage interval identity is duplicated")
+        seen_ids.add(interval_id)
+        normalized.append(
+            {
+                "interval_id": interval_id,
+                **canonical,
+                "_effective_from": pd.Timestamp(
+                    pd.to_datetime(effective_from, format="%Y%m%d")
+                ),
+                "_effective_to": pd.Timestamp(
+                    pd.to_datetime(effective_to, format="%Y%m%d")
+                ),
+            }
+        )
+    return tuple(sorted(normalized, key=lambda row: row["interval_id"]))
 
 
 def _membership_eligibility_from_bytes(
@@ -2340,7 +2612,7 @@ def _membership_eligibility_from_bytes(
     symbols: list[str],
     as_of: str,
     non_blocking_absent: set[str],
-) -> tuple[dict[str, str], dict[str, str]]:
+) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
     """Recompute PIT listing/history bounds from the exact membership bytes."""
 
     try:
@@ -2440,6 +2712,8 @@ def _membership_eligibility_from_bytes(
     as_of_ts = pd.Timestamp(pd.to_datetime(as_of, format="%Y%m%d"))
     listing_dates: dict[str, str] = {}
     history_end_dates: dict[str, str] = {}
+    listing_identities: dict[str, str] = {}
+    membership_sha256 = hashlib.sha256(payload).hexdigest()
 
     for symbol in symbols:
         rows = membership[
@@ -2500,7 +2774,14 @@ def _membership_eligibility_from_bytes(
             )
         listing_dates[symbol] = list_date
         history_end_dates[symbol] = history_end
-    return listing_dates, history_end_dates
+        listing_identities[symbol] = _listing_identity_sha256(
+            symbol=symbol,
+            listing_date=list_date,
+            effective_from=effective_from,
+            history_end=history_end,
+            membership_sha256=membership_sha256,
+        )
+    return listing_dates, history_end_dates, listing_identities
 
 
 def _deterministic_replay_projection(
@@ -3084,6 +3365,10 @@ def _validate_primary_rebuild_capture(
         str(symbol).strip().upper(): str(value).strip()
         for symbol, value in dict(scope.get("history_end_dates", {}) or {}).items()
     }
+    listing_identities = {
+        str(symbol).strip().upper(): str(value).strip().lower()
+        for symbol, value in dict(scope.get("listing_identities", {}) or {}).items()
+    }
     canonical_bar_first_dates = {
         str(symbol).strip().upper(): str(value).strip()
         for symbol, value in dict(
@@ -3096,6 +3381,7 @@ def _validate_primary_rebuild_capture(
             scope.get("canonical_bar_last_dates", {}) or {}
         ).items()
     }
+    coverage_intervals = list(scope.get("daily_history_coverage_intervals", []) or [])
     non_blocking_absent = {
         str(symbol).strip().upper()
         for symbol in list(scope.get("non_blocking_absent_symbols", []) or [])
@@ -3110,6 +3396,7 @@ def _validate_primary_rebuild_capture(
     (
         recomputed_listing_dates,
         recomputed_history_end_dates,
+        recomputed_listing_identities,
     ) = _membership_eligibility_from_bytes(
         evidence_payloads["canonical_membership_path"],
         symbols=outcome_symbols,
@@ -3135,12 +3422,14 @@ def _validate_primary_rebuild_capture(
     if (
         set(listing_dates) != set(outcome_symbols)
         or set(history_end_dates) != set(outcome_symbols)
+        or set(listing_identities) != set(outcome_symbols)
         or set(canonical_bar_first_dates) != set(outcome_symbols)
         or set(canonical_bar_last_dates) != set(outcome_symbols)
         or not non_blocking_absent.issubset(outcome_symbols)
         or pointer_non_blocking_absent != non_blocking_absent
         or listing_dates != recomputed_listing_dates
         or history_end_dates != recomputed_history_end_dates
+        or listing_identities != recomputed_listing_identities
         or any(
             not re.fullmatch(r"\d{8}", listing_dates[symbol])
             or not re.fullmatch(r"\d{8}", history_end_dates[symbol])
@@ -3293,12 +3582,26 @@ def _validate_primary_rebuild_capture(
             raise FundamentalGenerationError(
                 f"staged fundamental daily history exceeds eligibility: {symbol}"
             )
+        symbol_intervals = [
+            interval
+            for interval in coverage_intervals
+            if str(interval.get("symbol") or "").strip().upper() == symbol
+        ]
         metrics = _daily_history_coverage_metrics(
             daily_by_symbol.get_group(symbol),
             expected_start=expected_start,
             expected_end=expected_end,
             allow_tail_gap=False,
             boundary_tolerance_days=FUNDAMENTAL_HISTORY_BOUNDARY_TOLERANCE_DAYS,
+            coverage_intervals=symbol_intervals,
+            symbol=symbol,
+            listing_identity=listing_identities[symbol],
+            listing_start=listing_dates[symbol],
+            listing_end=history_end_dates[symbol],
+            listing_source_sha256=str(
+                scope.get("canonical_membership_sha256") or ""
+            ),
+            cutoff=as_of,
         )
         if metrics["history_complete"] is not True:
             raise FundamentalGenerationError(

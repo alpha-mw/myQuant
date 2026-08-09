@@ -23,7 +23,6 @@ REPO_SKILL_DOCS = [
     ROOT / "skill" / "myquant-backend-ops" / "SKILL.md",
     ROOT / "skill" / "myquant-backend-ops" / "references" / "entrypoints-and-commands.md",
     ROOT / "skill" / "myquant-backend-ops" / "references" / "runtime-paths-and-artifacts.md",
-    ROOT / "skill" / "myquant-backend-ops" / "references" / "workspace-api-surface.md",
 ]
 MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 AGENTS_TEST_RE = re.compile(r"`pytest ([^`]+?\.py) -v`")
@@ -96,7 +95,7 @@ def test_agents_recommended_tests_exist():
         assert (ROOT / relative).exists(), f"AGENTS.md references missing test: {relative}"
 
 
-def test_workspace_docs_point_to_live_workspace_modules_and_launcher():
+def test_public_docs_describe_the_live_entrypoints_and_contracts():
     readme = _read(ROOT / "README.md")
     readme_cn = _read(ROOT / "README.zh-CN.md")
     docs_index = _read(ROOT / "docs" / "README.md")
@@ -140,10 +139,8 @@ def test_repository_backend_skill_matches_the_current_public_surface():
     skill_text = "\n".join(_read(path) for path in REPO_SKILL_DOCS)
 
     assert "--strategy-id" in skill_text
-    assert "GET /api/research/{strategy_id}" in skill_text
-    assert "expected_pointer_sha256" in skill_text
+    assert "--expected-pointer-sha256" in skill_text
     assert "research-evaluate" in skill_text
     assert "stdout-only" in skill_text
-    assert "没有 POST run" in skill_text
     assert "没有公开 production publisher" in skill_text
     assert "standalone legacy automation" in skill_text

@@ -237,34 +237,10 @@ def _add_v17_public_read_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def run_web_api(
-    *,
-    host: str | None = None,
-    port: int | None = None,
-    reload: bool = False,
-) -> None:
-    import uvicorn
-
-    from web.config import API_HOST, API_PORT, warn_if_insecure_binding
-
-    web_dir = Path(__file__).resolve().parents[2] / "web"
-    warn_if_insecure_binding(host or API_HOST)
-    uvicorn.run(
-        "web.main:app",
-        host=host or API_HOST,
-        port=port or API_PORT,
-        reload=reload,
-        reload_dirs=[str(web_dir)] if reload else None,
-    )
-
-
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="quant-investor",
-        description=(
-            "Quant-Investor 单一主线 CLI。"
-            "启动研究工作台 Web 服务请使用 `quant-investor web`。"
-        ),
+        description="Quant-Investor 单一主线 CLI。",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -593,14 +569,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="统一 decision cutoff（canonical UTC YYYY-MM-DDTHH:MM:SSZ）",
     )
 
-    web_parser = subparsers.add_parser(
-        "web",
-        help="启动研究工作台 Web 服务（/api + workspace）",
-    )
-    web_parser.add_argument("--host", default=None)
-    web_parser.add_argument("--port", type=int, default=None)
-    web_parser.add_argument("--reload", action="store_true")
-
     return parser
 
 
@@ -847,8 +815,4 @@ def main(argv: list[str] | None = None) -> None:
         _print_json(payload)
         if str(payload.get("state")) == "BLOCKED":
             raise SystemExit(2)
-        return
-
-    if args.command == "web":
-        run_web_api(host=args.host, port=args.port, reload=args.reload)
         return

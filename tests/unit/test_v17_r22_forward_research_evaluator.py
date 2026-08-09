@@ -1259,7 +1259,6 @@ def test_cli_requires_exact_request_and_rejects_selector_flags(
 def test_public_script_inventory_is_v17_v4_only() -> None:
     pyproject = tomllib.loads((Path(__file__).parents[2] / "pyproject.toml").read_text())
     assert pyproject["project"]["scripts"] == {
-        "app": "web.main:app",
         "quant-investor": "quant_investor.cli.main:main",
         "quant-investor-v17-v4": "quant_investor.intelligence.evaluator.cli:main",
     }

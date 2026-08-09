@@ -352,17 +352,24 @@ quant_investor/
   v17_v4_contract/           V17 v4 schema 与校验
   v17_v4_runtime/            Forward / Shadow 观测运行时
 portfolio_dashboard/         只读 Dashboard 契约
-web/                         本地研究工作台与 Web reader
 results/v17_mainline/        活跃结果命名空间，仅在状态存在时出现
 results/v17_v4_shadow/       research-only 前瞻证据命名空间
 ```
 
 ## 开发
 
-Python 3.13+。先运行最小相关检查。大范围 staged-upgrade 工作使用：
+Python 3.13+。先运行最小相关检查。与 CI 等价的完整本地校验：
 
 ```bash
-PYTHON=./.venv/bin/python scripts/staged_upgrade_quality_gate.sh
+uv run pytest tests/unit -q
+uv run flake8 quant_investor --count --select=E9,F63,F7,F82 --show-source --statistics
+uv run mypy quant_investor/factors --ignore-missing-imports
+```
+
+清理本地缓存（`__pycache__` 与各工具缓存）：
+
+```bash
+find . -name __pycache__ -type d -not -path './.venv/*' -exec rm -rf {} + ; rm -rf .mypy_cache .pytest_cache .uv-cache results/htmlcov
 ```
 
 除非任务明确授权，本地校验期间不要调用实时 Tushare、yfinance、LLM、券商、下单、

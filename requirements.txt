@@ -7,10 +7,6 @@
 # Source of truth lives in pyproject.toml + uv.lock. Keep this file aligned for
 # external tooling that still expects requirements.txt.
 
-# Web API
-fastapi>=0.115.0
-uvicorn>=0.34.0
-
 # 数据处理
 pandas>=2.0.0
 pyarrow>=24.0.0
@@ -47,10 +43,8 @@ loguru>=0.7.0
 
 # 配置管理
 python-dotenv>=1.0.0
-pydantic>=2.0.0
 
 # 测试
-httpx>=0.28.0
 pytest>=7.4.0
 pytest-cov>=4.1.0
 pytest-asyncio>=0.21.0

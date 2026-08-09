@@ -34,9 +34,10 @@ body {
   gap: 24px;
   margin-bottom: 28px;
 }
+.page-header > div { min-width: 0; max-width: 100%; }
 
 h1, h2, p { margin-top: 0; }
-h1 { margin-bottom: 8px; font-size: clamp(28px, 4vw, 44px); letter-spacing: -0.04em; }
+h1 { margin-bottom: 8px; overflow-wrap: anywhere; word-break: break-word; font-size: clamp(28px, 4vw, 44px); letter-spacing: -0.04em; }
 h2 { margin-bottom: 0; font-size: 20px; }
 .subtitle, .panel-heading p { margin-bottom: 0; color: var(--muted); }
 
@@ -60,6 +61,8 @@ h2 { margin-bottom: 0; font-size: 20px; }
 }
 
 .status-pill.active { color: var(--active); background: var(--active-bg); }
+.status-pill.fresh { color: var(--active); background: var(--active-bg); }
+.status-pill.partial { color: #8a5a00; background: #fff7dc; }
 .status-pill.blocked { color: var(--blocked); background: var(--blocked-bg); }
 
 .state-grid {
@@ -68,6 +71,8 @@ h2 { margin-bottom: 0; font-size: 20px; }
   gap: 12px;
   margin-bottom: 18px;
 }
+
+.dashboard-kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 
 .state-card, .panel {
   border: 1px solid var(--line);
@@ -112,11 +117,40 @@ tbody tr:last-child td { border-bottom: 0; }
 .disabled-value { color: var(--active); font-weight: 700; }
 .compact-table { max-width: 720px; }
 
+.identity-cell { min-width: 150px; font-weight: 700; }
+.evidence-value { color: var(--active); font-size: 11px; font-weight: 700; }
+.positive { color: var(--active); }
+.negative { color: var(--blocked); }
+.two-column { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.two-column .panel { margin-top: 18px; }
+.metric-list { margin: 0; }
+.metric-list > div { display: flex; align-items: baseline; justify-content: space-between; gap: 24px; padding: 11px 0; border-bottom: 1px solid var(--line); }
+.metric-list > div:last-child { border-bottom: 0; }
+.metric-list dt { color: var(--muted); font-size: 12px; }
+.metric-list dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; font-weight: 700; }
+.history-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); column-gap: 28px; margin-bottom: 18px; }
+.history-table-wrap { max-height: 620px; overflow: auto; border: 1px solid var(--line); border-radius: 10px; }
+.history-table-wrap thead { position: sticky; top: 0; z-index: 1; background: var(--surface); }
+.risk-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.risk-card { padding: 16px; border: 1px solid var(--line); border-radius: 12px; }
+.risk-card span { display: block; margin-bottom: 8px; font: 800 10px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.risk-card strong { display: block; margin-bottom: 8px; font-size: 13px; overflow-wrap: anywhere; }
+.risk-card p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.risk-card.high { border-color: #f1b9ab; background: var(--blocked-bg); }
+.risk-card.high span { color: var(--blocked); }
+.risk-card.medium { border-color: #ecd69f; background: #fffaf0; }
+.risk-card.medium span { color: #8a5a00; }
+.muted-panel { background: #fbfcfd; }
+.warning-list { margin: 14px 0 0; padding-left: 22px; color: var(--muted); font: 12px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace; }
+
 [hidden] { display: none !important; }
 
 @media (max-width: 920px) {
   .state-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .contract-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .two-column { grid-template-columns: 1fr; }
+  .history-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .risk-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 620px) {
@@ -124,6 +158,9 @@ tbody tr:last-child td { border-bottom: 0; }
   .page-header, .panel-heading { align-items: flex-start; flex-direction: column; }
   .panel-heading p:last-child { text-align: left; }
   .state-grid, .contract-strip { grid-template-columns: 1fr; }
+  .risk-grid { grid-template-columns: 1fr; }
+  .history-summary { grid-template-columns: 1fr; }
   .status-pill { white-space: normal; }
+  h1 { max-width: 100%; word-break: break-all; font-size: 24px; line-height: 1.15; }
   .panel { padding: 16px; }
 }

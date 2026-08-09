@@ -101,17 +101,12 @@ and still has unresolved lazy runtime dependencies. Do not treat its presence
 as an active V17 workflow or invoke it without an explicit legacy task and
 dependency validation.
 
-## Public workspace
-
-### `web/`
-
-The FastAPI workspace exposes the exact active V17 result through
-`GET /api/research/{strategy_id}`. The optional
-`expected_pointer_sha256` query pins one pointer generation. Settings, universe
-and data endpoints are supporting surfaces; none publishes or activates a V17
-mainline result.
+## Display surface
 
 ### `portfolio_dashboard/`
 
-Renders the read-only V17 mainline DTO. It is a consumer, not an activation or
-result-selection authority.
+A standalone static page with no server and no network calls. It renders the
+read-only CN aggressive `cn_aggressive_dashboard.v1` bundle published by
+`scripts/export_cn_aggressive_dashboard_data.py` and independently re-verified
+by `scripts/check_cn_dashboard_export.py`. It is a consumer, not an activation
+or result-selection authority.

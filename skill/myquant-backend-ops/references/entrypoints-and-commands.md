@@ -15,7 +15,6 @@
 | 主线回测 | `quant-investor market backtest` | 固定 fail closed：不可用 |
 | V4 Forward | `quant-investor-v17-v4 run-forward` | 显式 request 的 Shadow evidence |
 | R2.2 评价 | `quant-investor-v17-v4 research-evaluate` | 离线、stdout-only |
-| Workspace | `quant-investor web` | 启动当前 FastAPI workspace |
 
 仓库当前没有 production mainline publisher 或 activation command。
 
@@ -42,6 +41,9 @@ quant-investor market run \
 ```text
 results/v17_mainline/strategies/<strategy-id>/_active.json
 ```
+
+可选 `--expected-pointer-sha256` 把读取钉死在某一代 pointer 上；实际 pointer
+与之不符时 fail closed，不回退到当前代。
 
 不接受旧的 `--stocks`、`--capital`、`--risk`、`--mode` 或 `--top-k` 运行
 语义，不扫描最新 run，也不写结果。
@@ -85,20 +87,11 @@ quant-investor-v17-v4 research-evaluate \
 该命令只输出一行 canonical JSON envelope。它不写 result、不 append memory、
 不改 factor weight、不选组合、不读写 active pointer。
 
-## Workspace runtime
+## Display surface
 
-```bash
-quant-investor web --reload
-```
-
-装配链：
-
-```text
-web.main:app -> web.api:app -> web.workspace_app:app
-```
-
-健康检查是 `GET /api/health`。不要默认启动 `web.app:app`；它是显式旧 API
-场景才检查的 legacy factory。
+展示面是 `portfolio_dashboard/` 下的静态页，没有运行中的服务。数据由
+`scripts/export_cn_aggressive_dashboard_data.py` 原子发布成 JSON/JS bundle，
+`scripts/check_cn_dashboard_export.py` 独立回读校验。
 
 ## Routing reminders
 

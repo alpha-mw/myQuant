@@ -21,11 +21,11 @@ offline by default, and compatible with the existing public CLI/API contracts.
 - `pytest tests/unit/test_v17_mainline_runtime.py -v`
 - `pytest tests/unit/test_v17_public_python.py -v`
 - `pytest tests/unit/test_v17_public_cli.py -v`
-- `pytest tests/unit/test_v17_public_web.py -v`
 - `pytest tests/unit/test_tushare_url_defaults.py -v`
 - `pytest tests/unit/test_fundamental_provider_contract.py -v`
 - `pytest tests/unit/test_fundamental_live_fetch_resilience.py -v`
 - `pytest tests/unit/test_fundamental_generation_promotion.py -v`
 - `pytest tests/unit/test_v17_v4_forward_evidence.py -v`
 
-For staged upgrade work, run `PYTHON=./.venv/bin/python scripts/staged_upgrade_quality_gate.sh`.
+For a broad change, run the full CI equivalent: `uv run pytest tests/unit -q`,
+then flake8 and mypy as `.github/workflows/ci-cd.yml` invokes them.

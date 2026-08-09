@@ -78,7 +78,7 @@ flowchart TD
     subgraph PR["Implemented public reader"]
         AP["Exact strategy active pointer"] --> MR["Exact immutable mainline run"]
         MR --> CL["Formal + portfolio + source closure"]
-        CL --> PUB["read-only public run<br/>Python · CLI · Web · Dashboard"]
+        CL --> PUB["read-only public run<br/>Python · CLI · Dashboard"]
     end
 
     subgraph RR["Implemented research lane"]
@@ -353,7 +353,7 @@ authority.
 Implemented now:
 
 - exact active-pointer validation and read-only public projection;
-- Python, CLI, Web and Dashboard readers over the same V17 authority chain;
+- Python, CLI and Dashboard readers over the same V17 authority chain;
 - explicit V4 Forward / Shadow observation;
 - deterministic I0 Investment Intelligence and R2.2 evaluation;
 - library-only I1 Investment Decision Intelligence with exact I0/optional R2.2
@@ -391,18 +391,25 @@ quant_investor/
   v17_v4_contract/           V17 v4 schemas and validation
   v17_v4_runtime/            Forward / Shadow observation runtime
 portfolio_dashboard/         read-only Dashboard contract
-web/                         local research workspace and Web reader
 results/v17_mainline/        active-result namespace, when state exists
 results/v17_v4_shadow/       research-only forward-evidence namespace
 ```
 
 ## Development
 
-Python 3.13+. Run the smallest relevant checks first. For broad staged-upgrade
-work, use:
+Python 3.13+. Run the smallest relevant checks first. The full local
+equivalent of CI is:
 
 ```bash
-PYTHON=./.venv/bin/python scripts/staged_upgrade_quality_gate.sh
+uv run pytest tests/unit -q
+uv run flake8 quant_investor --count --select=E9,F63,F7,F82 --show-source --statistics
+uv run mypy quant_investor/factors --ignore-missing-imports
+```
+
+To clear local caches (`__pycache__` and the tool caches):
+
+```bash
+find . -name __pycache__ -type d -not -path './.venv/*' -exec rm -rf {} + ; rm -rf .mypy_cache .pytest_cache .uv-cache results/htmlcov
 ```
 
 Do not call live Tushare, yfinance, LLM, broker, order, execution or trade APIs

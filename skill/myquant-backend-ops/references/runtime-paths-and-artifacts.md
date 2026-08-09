@@ -62,21 +62,18 @@ data/stock_database.db
 decision-mainline read 是不同步骤。单独看到一个验证成功行不能证明整个维护
 或 mainline run 已完成。
 
-## Web data surface
+## Display surface
 
-当前 `GET /api/research/{strategy_id}` 直接读取 V17 mainline authority chain，
-没有 history/job/preset 写库职责。`/api/data` 由 `web/services/data_service.py`
-提供市场数据库读取和显式 import；settings 与 universe 是独立支持面。
+展示面只有 `portfolio_dashboard/` 静态页，读取 exporter 生成的
+`portfolio_dashboard/private/generated/cn_aggressive_dashboard.v1.js`。
+它是只读的，不写 strategy record、不调用 provider。
 
-不要默认把以下旧产物当成当前 public research authority：
+以下是已删除 Web 工作台留下的旧产物，不是当前 authority；不要读取：
 
 - `data/web_runs.db`
 - `data/app.db`
 - `results/web_analysis/`
 - `data/workspace_learning/`
-
-只有用户明确指定 legacy API/历史工作区问题，并且当前源码确实引用这些路径
-时，才进入对应诊断。
 
 ## Configuration
 
@@ -89,7 +86,7 @@ decision-mainline read 是不同步骤。单独看到一个验证成功行不能
 
 ## Diagnostic order
 
-1. 确认 lane：mainline read、maintenance、Forward、R2.2、Web 或 legacy。
+1. 确认 lane：mainline read、maintenance、Forward、R2.2 或 legacy。
 2. 确认 exact path、SHA、schema、strategy、cutoff 和 pointer。
 3. 检查 manifest/readback、receipt 和 blocker。
 4. 确认零写入边界；不要以缓存、旧 run 或可选输入降级掩盖错误。
