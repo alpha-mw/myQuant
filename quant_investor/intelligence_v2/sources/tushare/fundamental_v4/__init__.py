@@ -15,6 +15,11 @@ from .comparison import (
     validate_fundamental_comparison_policy,
 )
 from .models import FundamentalV4ContractError
+from .official_partition_acquisition import (
+    OFFICIAL_PARTITION_REQUEST_RECEIPT_V1,
+    acquire_official_partition_fundamental_vip_v4,
+    validate_official_partition_request_receipt,
+)
 from .official_partition_plan import (
     OFFICIAL_PARTITION_PLAN_V1,
     build_official_partition_execution_plan,
@@ -60,7 +65,9 @@ from .shadow import (
 __all__ = [
     "FundamentalV4ContractError",
     "OFFICIAL_PARTITION_PLAN_V1",
+    "OFFICIAL_PARTITION_REQUEST_RECEIPT_V1",
     "REQUIRED_EVIDENCE_PATHS",
+    "acquire_official_partition_fundamental_vip_v4",
     "acquire_fundamental_vip_v4",
     "build_fundamental_comparison_policy",
     "build_fundamental_execution_closure_v4",
@@ -92,6 +99,7 @@ __all__ = [
     "validate_promotion_event",
     "validate_promotion_event_chain",
     "validate_logical_symbol_table_coverage_v4",
+    "validate_official_partition_request_receipt",
     "validate_official_partition_execution_plan",
     "validate_provider_physical_request_receipt_v4",
     "validate_raw_table_evidence_v4",
