@@ -108,7 +108,12 @@ def _codes(values: Sequence[str]) -> list[str]:
 
 def _baseline_partition_key(request: Mapping[str, Any]) -> str:
     params = request["params"]
-    dimension = "trade_date" if request["table"] == "daily_basic" else "period"
+    if request["table"] == "daily_basic":
+        dimension = "trade_date"
+    elif "ann_date" in params:
+        dimension = "ann_date"
+    else:
+        dimension = "period"
     return f"{dimension}={params[dimension]}"
 
 

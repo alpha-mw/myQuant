@@ -333,6 +333,7 @@ def test_v2_announcement_leaf_enforces_date_and_report_period_scope() -> None:
         if row["table"] == "fina_indicator" and row["params"]["ann_date"] == "20220428"
     )
     fields = EXPECTED_FIELDS["fina_indicator"]
+    assert official_acquisition._baseline_partition_key(request) == "ann_date=20220428"
     valid = ("000001.SZ", "20220428", "20211231", *([Decimal("0.1")] * 5))
     wrong_announcement = ("000001.SZ", "20220429", "20211231", *([Decimal("0.1")] * 5))
     old_period = ("000001.SZ", "20220428", "20181231", *([Decimal("0.1")] * 5))
