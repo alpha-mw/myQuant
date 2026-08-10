@@ -293,7 +293,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 table: frame_fingerprint(frame) for table, frame in baseline_tables.items()
             },
             comparison_policy=comparison,
-            client=OfficialTushareHttpsClient(strict_decimal_decode=True),
+            client=OfficialTushareHttpsClient(
+                strict_decimal_decode=True,
+                max_response_items=plan["local_max_response_items"],
+            ),
             captured_at=args.captured_at,
             checkpoint_root=checkpoint,
         )

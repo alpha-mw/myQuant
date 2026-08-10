@@ -23,6 +23,7 @@ DEFAULT_TIMEOUT_SECONDS: Final = 15.0
 MAX_RESPONSE_BYTES: Final = 64 * 1024 * 1024
 MAX_REQUEST_BYTES: Final = 1024 * 1024
 MAX_CONTAINER_ITEMS: Final = 10_000
+_MAX_CONFIGURED_RESPONSE_ITEMS: Final = 20_000
 MAX_DEPTH: Final = 16
 
 _API_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$", re.ASCII)
@@ -200,6 +201,7 @@ def _decode_schema_diagnostic(
     *,
     api_name: str,
     expected_fields: tuple[str, ...],
+    max_response_items: int = MAX_CONTAINER_ITEMS,
 ) -> TushareSchemaDiagnostic:
     """Project response shape while irreversibly discarding business values."""
 
@@ -255,7 +257,7 @@ def _decode_schema_diagnostic(
         )
         or len(response_fields) != len(set(response_fields))
         or type(items) is not list
-        or len(items) > MAX_CONTAINER_ITEMS
+        or len(items) > max_response_items
     ):
         _fail("TUSHARE_RESPONSE_INVALID")
     row_widths: set[int] = set()
@@ -301,6 +303,7 @@ def _decode_response(
     api_name: str,
     expected_fields: tuple[str, ...],
     strict_decimal_decode: bool = False,
+    max_response_items: int = MAX_CONTAINER_ITEMS,
 ) -> TushareResponse:
     try:
         decode_options: dict[str, Any] = {
@@ -358,7 +361,7 @@ def _decode_response(
         or tuple(response_fields) != expected_fields
         or len(response_fields) != len(set(response_fields))
         or type(items) is not list
-        or len(items) > MAX_CONTAINER_ITEMS
+        or len(items) > max_response_items
     ):
         _fail("TUSHARE_RESPONSE_INVALID")
     rows: list[tuple[Any, ...]] = []
@@ -395,6 +398,7 @@ class OfficialTushareHttpsClient:
         *,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         strict_decimal_decode: bool = False,
+        max_response_items: int = MAX_CONTAINER_ITEMS,
     ) -> None:
         if (
             type(timeout_seconds) not in {int, float}
@@ -405,8 +409,14 @@ class OfficialTushareHttpsClient:
             _fail("TUSHARE_CLIENT_CONFIG_INVALID")
         if type(strict_decimal_decode) is not bool:
             _fail("TUSHARE_CLIENT_CONFIG_INVALID")
+        if (
+            type(max_response_items) is not int
+            or not 1 <= max_response_items <= _MAX_CONFIGURED_RESPONSE_ITEMS
+        ):
+            _fail("TUSHARE_CLIENT_CONFIG_INVALID")
         self._timeout_seconds = float(timeout_seconds)
         self._strict_decimal_decode = strict_decimal_decode
+        self._max_response_items = max_response_items
 
     def _prepare_request(
         self,
@@ -511,6 +521,7 @@ class OfficialTushareHttpsClient:
             api_name=api_name,
             expected_fields=fields,
             strict_decimal_decode=self._strict_decimal_decode,
+            max_response_items=self._max_response_items,
         )
 
     def diagnose_schema(
@@ -534,6 +545,7 @@ class OfficialTushareHttpsClient:
             raw,
             api_name=api_name,
             expected_fields=fields,
+            max_response_items=self._max_response_items,
         )
 
 

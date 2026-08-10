@@ -186,6 +186,7 @@ def test_official_partition_mode_stops_after_exact_reconciliation(
     values.probe_observations_sha256 = "2" * 64
     official_plan = {
         "as_of": "20260807",
+        "local_max_response_items": 20_000,
         "partition_plan_id": "3" * 64,
         "planned_max_network_attempts": 200,
         "planned_terminal_request_count": 100,
@@ -202,7 +203,13 @@ def test_official_partition_mode_stops_after_exact_reconciliation(
     tables = {"daily_basic": pd.DataFrame({"ts_code": ["000001.SZ"]})}
     monkeypatch.setattr(module, "_baseline_tables", lambda *_args, **_kwargs: tables)
     client = object()
-    monkeypatch.setattr(module, "OfficialTushareHttpsClient", lambda **_kwargs: client)
+    client_kwargs: dict[str, Any] = {}
+
+    def build_client(**kwargs: Any) -> object:
+        client_kwargs.update(kwargs)
+        return client
+
+    monkeypatch.setattr(module, "OfficialTushareHttpsClient", build_client)
     calls: list[str] = []
 
     def acquire(**kwargs: Any) -> dict[str, Any]:
@@ -228,6 +235,10 @@ def test_official_partition_mode_stops_after_exact_reconciliation(
 
     result = module.run(values)
 
+    assert client_kwargs == {
+        "max_response_items": 20_000,
+        "strict_decimal_decode": True,
+    }
     assert calls == ["official-acquire"]
     assert result["actual_network_attempts"] == 100
     assert result["official_partition_plan_id"] == "3" * 64

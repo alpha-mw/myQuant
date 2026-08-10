@@ -134,3 +134,31 @@ def test_strict_decode_rejects_nonfinite_constants(constant: str) -> None:
 def test_strict_decode_configuration_requires_exact_bool() -> None:
     with pytest.raises(TushareHttpsError, match="TUSHARE_CLIENT_CONFIG_INVALID"):
         OfficialTushareHttpsClient(strict_decimal_decode=1)  # type: ignore[arg-type]
+
+
+def test_response_item_limit_is_explicit_and_default_compatible() -> None:
+    items = json.dumps([[index, 1, 2, 3] for index in range(10_001)], separators=(",", ":"))
+    Connection.body = envelope(items, count=10_001)
+    with pytest.raises(TushareHttpsError, match="TUSHARE_RESPONSE_INVALID"):
+        OfficialTushareHttpsClient(strict_decimal_decode=True).request(
+            api_name="fina_indicator_vip",
+            params={"period": "20191231"},
+            expected_fields=FIELDS,
+        )
+
+    Connection.body = envelope(items, count=10_001)
+    result = OfficialTushareHttpsClient(
+        strict_decimal_decode=True,
+        max_response_items=20_000,
+    ).request(
+        api_name="fina_indicator_vip",
+        params={"period": "20191231"},
+        expected_fields=FIELDS,
+    )
+    assert result.reported_count == len(result.rows) == 10_001
+
+
+@pytest.mark.parametrize("value", [True, 0, 20_001])
+def test_response_item_limit_rejects_invalid_configuration(value: object) -> None:
+    with pytest.raises(TushareHttpsError, match="TUSHARE_CLIENT_CONFIG_INVALID"):
+        OfficialTushareHttpsClient(max_response_items=value)  # type: ignore[arg-type]
