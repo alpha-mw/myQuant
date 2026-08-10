@@ -19,7 +19,28 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Iterable
 
+from quant_investor.strategy_records.store import (
+    StrategyRecordStoreError,
+    load_archive_binding,
+    load_registered_catalog,
+)
+
 SCHEMA_VERSION = "cn_aggressive_dashboard.v1"
+HISTORY_INTEGRITY_SCHEMA_VERSION = (
+    "cn_aggressive_dashboard_history_integrity.v2"
+)
+ARCHIVE_LOCATOR_SCHEMA_VERSION = (
+    "myquant.strategy_record_archive_locator.v1"
+)
+ARCHIVE_MANIFEST_SCHEMA_VERSION = (
+    "myquant.strategy_record_archive_manifest.v1"
+)
+ARCHIVE_RESTORE_RECEIPT_SCHEMA_VERSION = (
+    "myquant.strategy_record_archive_restore_receipt.v1"
+)
+TRANSACTION_BACKFILL_PROVENANCE_SCHEMA_VERSION = (
+    "cn_aggressive_transaction_backfill_provenance.v1"
+)
 MARKET = "CN"
 STRATEGY = "aggressive_tech_manufacturing"
 RECORD_NAME_RE = re.compile(r"^[0-9]{8}_[0-9]{4}$")
@@ -30,6 +51,31 @@ ALLOWED_BENCHMARK_SOURCES = {
     "tushare.index_daily",
 }
 ALLOWED_BENCHMARK_COVERAGE = {"exact_close", "previous_trading_day_ffill"}
+RISK_FREE_SOURCE = "chinabond.mof_govt_yield_curve"
+RISK_FREE_TENOR = "1Y"
+RISK_FREE_SOURCE_URL = (
+    "https://yield.chinabond.com.cn/cbweb-mn/pgxh/showHistory"
+)
+BENCHMARK_SPECS = (
+    {
+        "id": "CSI300",
+        "name": "沪深300",
+        "ts_code": "000300.SH",
+        "point_prefix": "csi300",
+    },
+    {
+        "id": "STAR50",
+        "name": "科创50",
+        "ts_code": "000688.SH",
+        "point_prefix": "star50",
+    },
+    {
+        "id": "CHINEXT",
+        "name": "创业板指",
+        "ts_code": "399006.SZ",
+        "point_prefix": "chinext",
+    },
+)
 REQUIRED_LEDGER_COLUMNS = {
     "symbol",
     "name",
@@ -122,6 +168,213 @@ def stable_read(path: Path, project_root: Path) -> StableArtifact:
         data=first,
         sha256=sha256_bytes(first),
     )
+
+
+def _stable_stream_ref(
+    ref: dict[str, Any], project_root: Path, *, label: str
+) -> dict[str, str]:
+    """Verify a project-relative physical ref without loading it into RAM."""
+
+    if set(ref) != {"path", "sha256", "bytes", "media_type"}:
+        raise DashboardInputError(f"{label}_shape_invalid")
+    relative_path = ref.get("path")
+    declared_sha = ref.get("sha256")
+    declared_bytes = ref.get("bytes")
+    media_type = ref.get("media_type")
+    if (
+        not isinstance(relative_path, str)
+        or relative_path.startswith("/")
+        or "\\" in relative_path
+        or ".." in Path(relative_path).parts
+        or not isinstance(declared_sha, str)
+        or not SHA256_RE.fullmatch(declared_sha)
+        or not isinstance(declared_bytes, int)
+        or isinstance(declared_bytes, bool)
+        or declared_bytes < 0
+        or not isinstance(media_type, str)
+        or not media_type
+    ):
+        raise DashboardInputError(f"{label}_invalid")
+    path = project_root / relative_path
+    try:
+        resolved = path.resolve(strict=True)
+        resolved.relative_to(project_root.resolve())
+        metadata_before = path.lstat()
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        raise DashboardInputError(
+            f"{label}_unavailable:{relative_path}"
+        ) from exc
+    if (
+        resolved != path.absolute()
+        or stat.S_ISLNK(metadata_before.st_mode)
+        or not stat.S_ISREG(metadata_before.st_mode)
+        or metadata_before.st_nlink != 1
+        or metadata_before.st_size != declared_bytes
+    ):
+        raise DashboardInputError(f"{label}_unsafe:{relative_path}")
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as handle:
+            while True:
+                chunk = handle.read(1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+        metadata_after = path.lstat()
+    except OSError as exc:
+        raise DashboardInputError(
+            f"{label}_unavailable:{relative_path}"
+        ) from exc
+    identity = lambda item: (  # noqa: E731 - exact stable identity
+        item.st_dev,
+        item.st_ino,
+        item.st_mode,
+        item.st_nlink,
+        item.st_size,
+        item.st_mtime_ns,
+        item.st_ctime_ns,
+    )
+    if identity(metadata_before) != identity(metadata_after):
+        raise DashboardInputError(f"{label}_unstable:{relative_path}")
+    if digest.hexdigest() != declared_sha:
+        raise DashboardInputError(f"{label}_sha_mismatch:{relative_path}")
+    return {"path": relative_path, "sha256": declared_sha}
+
+
+def _stable_external_read(
+    path: Path, project_root: Path
+) -> tuple[bytes, str]:
+    """Read an allowlisted external provenance source twice."""
+
+    allowed_roots = (
+        (Path.home() / ".codex" / "automations").resolve(),
+        (project_root / ".codex" / "automations").resolve(),
+    )
+    resolved = path.resolve()
+    if not any(resolved.is_relative_to(root) for root in allowed_roots):
+        raise DashboardInputError(
+            f"backfill_history_path_outside_allowlist:{path}"
+        )
+    try:
+        metadata = resolved.lstat()
+    except FileNotFoundError as exc:
+        raise DashboardInputError(
+            f"backfill_history_missing:{path}"
+        ) from exc
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise DashboardInputError(
+            f"backfill_history_not_regular_non_symlink:{path}"
+        )
+    first = resolved.read_bytes()
+    second = resolved.read_bytes()
+    if first != second:
+        raise DashboardInputError(f"backfill_history_unstable:{path}")
+    return first, sha256_bytes(first)
+
+
+def _validate_transaction_backfill_provenance(
+    record_dir: Path,
+    project_root: Path,
+    source_record: str | None,
+    *,
+    verify_history_source: bool = True,
+) -> tuple[StableArtifact, set[tuple[str, str]]]:
+    """Validate a post-hoc record inventory and its exact history source."""
+
+    artifact = stable_read(
+        record_dir / "backfill_provenance.json", project_root
+    )
+    payload = load_json(artifact)
+    required = {
+        "schema_version",
+        "record",
+        "backfilled_at",
+        "source_record",
+        "history_path",
+        "history_sha256",
+        "history_section",
+        "record_inventory_sha256_before_provenance",
+        "record_files_before_provenance",
+    }
+    if not isinstance(payload, dict) or not required.issubset(payload):
+        raise DashboardInputError("backfill_provenance_shape_invalid")
+    if (
+        payload.get("schema_version")
+        != TRANSACTION_BACKFILL_PROVENANCE_SCHEMA_VERSION
+        or payload.get("record") != record_dir.name
+        or payload.get("source_record") != source_record
+    ):
+        raise DashboardInputError("backfill_provenance_identity_invalid")
+    try:
+        datetime.fromisoformat(str(payload.get("backfilled_at")))
+    except ValueError as exc:
+        raise DashboardInputError(
+            "backfill_provenance_timestamp_invalid"
+        ) from exc
+    for key in (
+        "history_sha256",
+        "record_inventory_sha256_before_provenance",
+    ):
+        value = payload.get(key)
+        if not isinstance(value, str) or not SHA256_RE.fullmatch(value):
+            raise DashboardInputError(f"backfill_provenance_{key}_invalid")
+    history_path = payload.get("history_path")
+    if (
+        not isinstance(history_path, str)
+        or not Path(history_path).is_absolute()
+    ):
+        raise DashboardInputError("backfill_history_path_invalid")
+    history_section = payload.get("history_section")
+    if not isinstance(history_section, str) or not history_section.strip():
+        raise DashboardInputError("backfill_history_section_missing")
+    if verify_history_source:
+        history_bytes, history_sha = _stable_external_read(
+            Path(history_path), project_root
+        )
+        if history_sha != payload["history_sha256"]:
+            raise DashboardInputError("backfill_history_sha_mismatch")
+        try:
+            history_text = history_bytes.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise DashboardInputError("backfill_history_unreadable") from exc
+        if history_section not in history_text:
+            raise DashboardInputError("backfill_history_section_missing")
+
+    rows = payload.get("record_files_before_provenance")
+    if not isinstance(rows, list) or not rows:
+        raise DashboardInputError("backfill_inventory_missing")
+    identities: set[tuple[str, str]] = set()
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != {
+            "relative_path",
+            "size_bytes",
+            "sha256",
+        }:
+            raise DashboardInputError("backfill_inventory_row_invalid")
+        relative_path = row.get("relative_path")
+        declared_sha = row.get("sha256")
+        size_bytes = row.get("size_bytes")
+        if (
+            not isinstance(relative_path, str)
+            or not isinstance(declared_sha, str)
+            or not SHA256_RE.fullmatch(declared_sha)
+            or not isinstance(size_bytes, int)
+            or size_bytes < 0
+        ):
+            raise DashboardInputError("backfill_inventory_row_invalid")
+        source_path = _safe_same_record_path(
+            record_dir, relative_path, "backfill_inventory_ref"
+        )
+        source = stable_read(source_path, project_root)
+        if len(source.data) != size_bytes or source.sha256 != declared_sha:
+            raise DashboardInputError(
+                "backfill_inventory_readback_mismatch:" + relative_path
+            )
+        identity = (source.relative_path, source.sha256)
+        if identity in identities:
+            raise DashboardInputError("backfill_inventory_ref_duplicate")
+        identities.add(identity)
+    return artifact, identities
 
 
 def load_json(artifact: StableArtifact) -> Any:
@@ -290,6 +543,64 @@ def _validate_funding(
     return result, [supplement_artifact]
 
 
+def _validate_funding_correction(
+    manual: dict[str, Any], record_dir: Path
+) -> dict[str, Any] | None:
+    """Validate an explicit owner correction that reverses false funding.
+
+    A correction changes the accounting interpretation of an already archived
+    funding supplement; it is not a trade and must never change position
+    quantities.  Repeated superseding records may carry the same correction,
+    so the performance builder applies it once per reversed record.
+    """
+
+    correction_type = manual.get("correction_type")
+    if correction_type in (None, ""):
+        return None
+    if correction_type != "reverse_erroneous_20260709_manual_funding":
+        raise DashboardInputError("funding_correction_type_invalid")
+    owner = manual.get("owner_correction")
+    if not isinstance(owner, dict):
+        raise DashboardInputError("funding_owner_correction_missing")
+    required = {
+        "declared_on",
+        "declaration",
+        "initial_capital_cny",
+        "erroneous_funding_amount_reversed_cny",
+        "erroneous_funding_record",
+        "position_events_after_20260709_preserved",
+    }
+    if not required.issubset(owner):
+        raise DashboardInputError("funding_owner_correction_incomplete")
+    reversed_record = str(owner["erroneous_funding_record"])
+    if not RECORD_NAME_RE.fullmatch(reversed_record):
+        raise DashboardInputError("funding_correction_record_invalid")
+    initial_capital = _number(
+        owner["initial_capital_cny"], "funding_correction_initial_capital"
+    )
+    reversed_amount = _number(
+        owner["erroneous_funding_amount_reversed_cny"],
+        "funding_correction_reversed_amount",
+    )
+    if initial_capital <= 0 or reversed_amount <= 0:
+        raise DashboardInputError("funding_correction_amount_invalid")
+    if owner["position_events_after_20260709_preserved"] is not True:
+        raise DashboardInputError("funding_correction_position_proof_missing")
+    if manual.get("no_trade_performed") is not True:
+        raise DashboardInputError("funding_correction_no_trade_proof_missing")
+    capital_cny = _number(
+        manual.get("capital_cny"), "funding_correction_manual_capital"
+    )
+    if not _almost_equal(capital_cny, initial_capital):
+        raise DashboardInputError("funding_correction_capital_mismatch")
+    return {
+        "reversed_record": reversed_record,
+        "reversed_amount": reversed_amount,
+        "initial_capital": initial_capital,
+        "correction_record": record_dir.name,
+    }
+
+
 def validate_record(
     record_dir: Path, record_root: Path, project_root: Path
 ) -> dict[str, Any]:
@@ -333,7 +644,8 @@ def validate_record(
     if manual.get("record_timestamp") != record_dir.name:
         raise DashboardInputError("manual_manifest_timestamp_mismatch")
     embedded_manual = manifest.get("manual_execution")
-    if embedded_manual != manual:
+    backfill_provenance_required = embedded_manual is None
+    if embedded_manual is not None and embedded_manual != manual:
         raise DashboardInputError(
             "manifest_manual_execution_readback_mismatch"
         )
@@ -482,15 +794,107 @@ def validate_record(
     ) or not SHA256_RE.fullmatch(manual["financial_state_sha256"]):
         raise DashboardInputError("financial_state_sha_missing_or_invalid")
 
+    backfill_provenance_artifact: StableArtifact | None = None
+    if backfill_provenance_required:
+        backfill_provenance_artifact, inventory = (
+            _validate_transaction_backfill_provenance(
+                record_dir, project_root, source_record
+            )
+        )
+        required_inventory = {
+            (artifact.relative_path, artifact.sha256)
+            for artifact in (
+                manifest_artifact,
+                manual_artifact,
+                ledger_artifact,
+                pnl_artifact,
+            )
+        }
+        if not required_inventory.issubset(inventory):
+            raise DashboardInputError(
+                "backfill_inventory_required_closure_missing"
+            )
+
     data_snapshot = manifest.get("data_snapshot")
     if not isinstance(data_snapshot, dict):
         raise DashboardInputError("manifest_data_snapshot_missing")
-    data_date = _record_date(
-        data_snapshot.get("analysis_trade_date"), "analysis_trade_date"
-    )
+    if backfill_provenance_required:
+        if (
+            data_snapshot.get("freshness_mode")
+            != "strict_parquet_canonical_historical_revaluation"
+            or not re.fullmatch(
+                r"^[0-9]{8}T[0-9]{6}Z$",
+                str(data_snapshot.get("snapshot_id_at_backfill") or ""),
+            )
+            or not SHA256_RE.fullmatch(
+                str(
+                    data_snapshot.get(
+                        "market_pointer_sha256_at_backfill"
+                    )
+                    or ""
+                )
+            )
+        ):
+            raise DashboardInputError(
+                "backfill_data_snapshot_provenance_invalid"
+            )
+        data_date = _record_date(
+            data_snapshot.get("valuation_trade_date"),
+            "valuation_trade_date",
+        )
+    else:
+        data_date = _record_date(
+            data_snapshot.get("analysis_trade_date"),
+            "analysis_trade_date",
+        )
+    valuation_status = data_snapshot.get("valuation_status")
+    manual_valuation_status = manual.get("valuation_status")
+    if (
+        valuation_status not in (None, "")
+        and manual_valuation_status not in (None, "")
+        and valuation_status != manual_valuation_status
+    ):
+        raise DashboardInputError("valuation_status_readback_mismatch")
+    valuation_status = str(
+        manual_valuation_status or valuation_status or ""
+    ).strip() or None
+    if manual.get("official_valuation") is False:
+        fallback_value = data_snapshot.get(
+            "last_strict_completed_trade_date_for_untouched_marks"
+        )
+        fallback_price_date = (
+            _record_date(fallback_value, "last_strict_completed_trade_date")
+            if fallback_value not in (None, "")
+            else None
+        )
+        owner_trade_dates: dict[str, str] = {}
+        for trade in manual.get("applied_owner_declared_trades") or []:
+            if not isinstance(trade, dict):
+                raise DashboardInputError("owner_declared_trade_invalid")
+            symbol = str(trade.get("symbol") or "")
+            if not SYMBOL_RE.fullmatch(symbol) or symbol not in seen_symbols:
+                raise DashboardInputError(
+                    "owner_declared_trade_symbol_invalid:" + symbol
+                )
+            trade_date = _record_date(
+                trade.get("trade_date"), "owner_declared_trade_date"
+            )
+            if (
+                symbol in owner_trade_dates
+                and owner_trade_dates[symbol] != trade_date
+            ):
+                raise DashboardInputError(
+                    "owner_declared_trade_date_ambiguous:" + symbol
+                )
+            owner_trade_dates[symbol] = trade_date
+        for position in positions:
+            position["price_date"] = owner_trade_dates.get(
+                position["symbol"], fallback_price_date
+            )
     funding, funding_artifacts = _validate_funding(
         manual, record_dir, project_root
     )
+    funding_correction = _validate_funding_correction(manual, record_dir)
 
     artifacts = [
         manifest_artifact,
@@ -500,6 +904,8 @@ def validate_record(
     ]
     if parquet_artifact is not None:
         artifacts.append(parquet_artifact)
+    if backfill_provenance_artifact is not None:
+        artifacts.append(backfill_provenance_artifact)
     artifacts.extend(funding_artifacts)
     source_refs = [
         {"path": artifact.relative_path, "sha256": artifact.sha256}
@@ -515,6 +921,12 @@ def validate_record(
             manual.get("status") or manual.get("execution_status")
         ),
         "execution_kind": execution_kind,
+        "valuation_status": valuation_status,
+        "official_valuation": manual.get("official_valuation"),
+        "valuation_completeness_passed": manual.get(
+            "valuation_completeness_passed"
+        ),
+        "price_basis": manual.get("price_basis"),
         "manifest_path": manifest_artifact.relative_path,
         "manifest_sha256": manifest_artifact.sha256,
         "manual_manifest_path": manual_artifact.relative_path,
@@ -527,6 +939,7 @@ def validate_record(
         "positions": positions,
         "accounting": accounting,
         "funding": funding,
+        "funding_correction": funding_correction,
         "source_refs": source_refs,
     }
 
@@ -592,6 +1005,7 @@ def _historical_valuation_date(
     manifest: dict[str, Any],
     pnl: dict[str, Any] | None,
     strict_record: dict[str, Any] | None,
+    backfill_provenance_validated: bool = False,
 ) -> str:
     quote_snapshot = str((pnl or {}).get("quote_snapshot") or "")
     quote_match = re.match(r"^(20[0-9]{6})", quote_snapshot)
@@ -614,6 +1028,19 @@ def _historical_valuation_date(
         ).isoformat()
     if strict_record is not None:
         return strict_record["data_date"]
+    if backfill_provenance_validated:
+        snapshot = manifest.get("data_snapshot") or {}
+        if (
+            snapshot.get("freshness_mode")
+            != "strict_parquet_canonical_historical_revaluation"
+        ):
+            raise DashboardInputError(
+                "historical_backfill_freshness_mode_invalid"
+            )
+        return _record_date(
+            snapshot.get("valuation_trade_date"),
+            "historical_backfill_valuation_trade_date",
+        )
     if pnl is None and manifest.get("source_record") in (None, ""):
         return _record_date(record_dir.name[:8], "historical_baseline_date")
     raise DashboardInputError("historical_valuation_date_unverified")
@@ -675,6 +1102,14 @@ def _validate_historical_record(
     manifest, manifest_artifact, source_record = _validate_historical_manifest(
         record_dir, record_root, project_root
     )
+    if strict_record is not None and (
+        strict_record.get("official_valuation") is False
+        or strict_record.get("valuation_completeness_passed") is False
+        or str(strict_record.get("valuation_status") or "").startswith(
+            "BLOCKED"
+        )
+    ):
+        raise DashboardInputError("historical_official_valuation_incomplete")
     files = manifest["files"]
     source_artifacts = [manifest_artifact]
     ledger_artifact: StableArtifact | None = None
@@ -734,6 +1169,7 @@ def _validate_historical_record(
             },
             "capital_base": capital,
             "funding": None,
+            "funding_correction": None,
             "evidence_status": "ARCHIVE_INCEPTION_EXACT_BYTES_NO_DECLARED_SHA",
             "manifest_path": manifest_artifact.relative_path,
             "manifest_sha256": manifest_artifact.sha256,
@@ -792,11 +1228,72 @@ def _validate_historical_record(
         funding["total_value_after"], accounting["total_value_after"]
     ):
         raise DashboardInputError("historical_funding_total_after_mismatch")
+    backfill_provenance_validated = False
+    snapshot = manifest.get("data_snapshot") or {}
+    if (
+        strict_record is None
+        and snapshot.get("freshness_mode")
+        == "strict_parquet_canonical_historical_revaluation"
+    ):
+        manual_ref = files.get("manual_execution_manifest")
+        if not manual_ref:
+            raise DashboardInputError(
+                "historical_backfill_manual_ref_missing"
+            )
+        manual_artifact = stable_read(
+            _safe_same_record_path(
+                record_dir, manual_ref, "historical_backfill_manual_ref"
+            ),
+            project_root,
+        )
+        if all(
+            artifact.relative_path != manual_artifact.relative_path
+            for artifact in source_artifacts
+        ):
+            source_artifacts.append(manual_artifact)
+        provenance_artifact, inventory = (
+            _validate_transaction_backfill_provenance(
+                record_dir,
+                project_root,
+                source_record,
+                verify_history_source=False,
+            )
+        )
+        required_inventory = {
+            (artifact.relative_path, artifact.sha256)
+            for artifact in source_artifacts
+        }
+        if not required_inventory.issubset(inventory):
+            raise DashboardInputError(
+                "historical_backfill_inventory_closure_missing"
+            )
+        source_artifacts.append(provenance_artifact)
+        backfill_provenance_validated = True
+    funding_correction = (
+        strict_record.get("funding_correction")
+        if strict_record is not None
+        else None
+    )
+    if funding_correction is not None:
+        correction_manual = stable_read(
+            project_root / strict_record["manual_manifest_path"],
+            project_root,
+        )
+        if correction_manual.sha256 != strict_record["manual_manifest_sha256"]:
+            raise DashboardInputError(
+                "historical_funding_correction_manual_sha_mismatch"
+            )
+        if all(
+            artifact.relative_path != correction_manual.relative_path
+            for artifact in source_artifacts
+        ):
+            source_artifacts.append(correction_manual)
     valuation_date = _historical_valuation_date(
         record_dir=record_dir,
         manifest=manifest,
         pnl=pnl,
         strict_record=strict_record,
+        backfill_provenance_validated=backfill_provenance_validated,
     )
     return {
         "record": record_dir.name,
@@ -805,6 +1302,7 @@ def _validate_historical_record(
         "accounting": accounting,
         "capital_base": capital_base,
         "funding": funding,
+        "funding_correction": funding_correction,
         "evidence_status": (
             "HASH_BOUND_CURRENT_CLOSURE"
             if strict_record is not None
@@ -859,14 +1357,39 @@ def scan_historical_performance_records(
         raise DashboardInputError(
             "fewer_than_two_historical_performance_records"
         )
+    funding_by_record = {
+        record["record"]: record["funding"]
+        for record in records
+        if record.get("funding") is not None
+    }
     previous_capital: float | None = None
     for record in records:
         capital = record["capital_base"]
+        correction = record.get("funding_correction")
+        if correction is not None:
+            reversed_funding = funding_by_record.get(
+                correction["reversed_record"]
+            )
+            if reversed_funding is None or not _almost_equal(
+                reversed_funding["amount"], correction["reversed_amount"]
+            ):
+                raise DashboardInputError(
+                    "historical_funding_correction_target_mismatch:"
+                    + record["record"]
+                )
+            if capital is None or not _almost_equal(
+                capital, correction["initial_capital"]
+            ):
+                raise DashboardInputError(
+                    "historical_funding_correction_capital_mismatch:"
+                    + record["record"]
+                )
         if (
             previous_capital is not None
             and capital is not None
             and not _almost_equal(previous_capital, capital)
             and record.get("funding") is None
+            and correction is None
         ):
             raise DashboardInputError(
                 "historical_capital_change_without_funding:"
@@ -875,6 +1398,908 @@ def scan_historical_performance_records(
         if capital is not None:
             previous_capital = capital
     return records, rejected
+
+
+def build_dashboard_catalog_projection(
+    record_root: Path, project_root: Path
+) -> dict[str, Any]:
+    """Build the catalog projection during an explicit legacy bootstrap.
+
+    Registered Dashboard reads must never call the legacy directory scanners.
+    This helper keeps their use visible and limited to migration/bootstrap and
+    unregistered compatibility fixtures.
+    """
+
+    try:
+        registered = load_registered_catalog(record_root)
+    except StrategyRecordStoreError as exc:
+        raise DashboardInputError(f"record_catalog_invalid:{exc}") from exc
+    if registered is not None:
+        raise DashboardInputError(
+            "legacy_dashboard_projection_bootstrap_registered_root"
+        )
+    valid, rejected, latest_seen = scan_valid_records(
+        record_root, project_root
+    )
+    historical_records, historical_rejected = (
+        scan_historical_performance_records(
+            record_root=record_root,
+            project_root=project_root,
+            strict_records=valid,
+        )
+    )
+
+    # Legacy records can name the effective ledger through more than one
+    # manifest field.  The raw scanners preserve those declarations, so the
+    # same exact source may appear twice in one record.  Catalog rows use the
+    # path as the identity and must be canonical before publication.
+    for row in [*valid, *historical_records]:
+        refs = row.get("source_refs")
+        if not isinstance(refs, list):
+            raise DashboardInputError(
+                "dashboard_projection_source_refs_invalid"
+            )
+        by_path: dict[str, dict[str, str]] = {}
+        for ref in refs:
+            if (
+                not isinstance(ref, dict)
+                or set(ref) != {"path", "sha256"}
+                or not isinstance(ref.get("path"), str)
+                or not isinstance(ref.get("sha256"), str)
+            ):
+                raise DashboardInputError(
+                    "dashboard_projection_source_ref_invalid"
+                )
+            existing = by_path.get(ref["path"])
+            if existing is not None and existing != ref:
+                raise DashboardInputError(
+                    "dashboard_projection_source_ref_conflict:"
+                    + ref["path"]
+                )
+            by_path[ref["path"]] = ref
+        row["source_refs"] = [by_path[path] for path in sorted(by_path)]
+    return {
+        "valid_records": valid,
+        "rejected": rejected,
+        "latest_seen": latest_seen,
+        "historical_records": historical_records,
+        "historical_rejected": historical_rejected,
+    }
+
+
+def _projection_string_list(value: Any, label: str) -> list[str]:
+    if not isinstance(value, list) or any(
+        not isinstance(item, str) for item in value
+    ):
+        raise DashboardInputError(
+            f"catalog_dashboard_projection_{label}_invalid"
+        )
+    return list(value)
+
+
+def _projection_records(
+    value: Any, label: str
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    if not isinstance(value, list):
+        raise DashboardInputError(
+            f"catalog_dashboard_projection_{label}_invalid"
+        )
+    records: list[dict[str, Any]] = []
+    by_id: dict[str, dict[str, Any]] = {}
+    for row in value:
+        if not isinstance(row, dict):
+            raise DashboardInputError(
+                f"catalog_dashboard_projection_{label}_invalid"
+            )
+        record_id = row.get("record")
+        if (
+            not isinstance(record_id, str)
+            or not RECORD_NAME_RE.fullmatch(record_id)
+            or record_id in by_id
+            or not isinstance(row.get("source_refs"), list)
+        ):
+            raise DashboardInputError(
+                f"catalog_dashboard_projection_{label}_invalid"
+            )
+        copied = dict(row)
+        records.append(copied)
+        by_id[record_id] = copied
+    if list(by_id) != sorted(by_id):
+        raise DashboardInputError(
+            f"catalog_dashboard_projection_{label}_order_invalid"
+        )
+    return records, by_id
+
+
+def _logical_source_refs(
+    value: Any, *, label: str
+) -> list[dict[str, str]]:
+    if not isinstance(value, list) or not value:
+        raise DashboardInputError(f"{label}_invalid")
+    by_path: dict[str, dict[str, str]] = {}
+    for ref in value:
+        if not isinstance(ref, dict) or set(ref) != {"path", "sha256"}:
+            raise DashboardInputError(f"{label}_invalid")
+        relative_path = ref.get("path")
+        declared_sha = ref.get("sha256")
+        if (
+            not isinstance(relative_path, str)
+            or relative_path.startswith("/")
+            or "\\" in relative_path
+            or ".." in Path(relative_path).parts
+            or not isinstance(declared_sha, str)
+            or not SHA256_RE.fullmatch(declared_sha)
+            or relative_path in by_path
+        ):
+            raise DashboardInputError(f"{label}_invalid")
+        by_path[relative_path] = {
+            "path": relative_path,
+            "sha256": declared_sha,
+        }
+    return [by_path[path] for path in sorted(by_path)]
+
+
+def _archive_catalog_binding(
+    *,
+    record_root: Path,
+    catalog_row: dict[str, Any],
+    logical_refs: list[dict[str, str]],
+    project_root: Path,
+) -> dict[str, Any]:
+    record_id = catalog_row.get("record_id")
+    relative_path = catalog_row.get("relative_path")
+    locator = catalog_row.get("archive_locator")
+    if (
+        not isinstance(record_id, str)
+        or not RECORD_NAME_RE.fullmatch(record_id)
+        or not isinstance(relative_path, str)
+        or not isinstance(locator, dict)
+        or locator.get("schema_id") != ARCHIVE_LOCATOR_SCHEMA_VERSION
+        or not isinstance(locator.get("archive_id"), str)
+        or not locator["archive_id"]
+        or not isinstance(locator.get("member_prefix"), str)
+        or not locator["member_prefix"]
+        or Path(locator["member_prefix"]).is_absolute()
+        or ".." in Path(locator["member_prefix"]).parts
+    ):
+        raise DashboardInputError(
+            "record_catalog_archive_locator_invalid:" + str(record_id)
+        )
+    try:
+        loaded = load_archive_binding(
+            record_root,
+            catalog_row,
+            project_root=project_root,
+        )
+    except StrategyRecordStoreError as exc:
+        raise DashboardInputError(
+            "record_catalog_archive_binding_invalid:"
+            + record_id
+            + ":"
+            + str(exc)
+        ) from exc
+    manifest = loaded["manifest"]
+    receipt = loaded["receipt"]
+    full_refs = [
+        {
+            "path": locator["manifest_path"],
+            "sha256": locator["manifest_sha256"],
+            "bytes": loaded["manifest_path"].stat().st_size,
+            "media_type": "application/json",
+        },
+        {
+            "path": locator["restore_receipt_path"],
+            "sha256": locator["restore_receipt_sha256"],
+            "bytes": loaded["receipt_path"].stat().st_size,
+            "media_type": "application/json",
+        },
+        {
+            "path": locator["archive_path"],
+            "sha256": locator["archive_sha256"],
+            "bytes": locator["archive_bytes"],
+            "media_type": "application/zstd",
+        },
+    ]
+    physical_refs = [
+        _stable_stream_ref(
+            ref,
+            project_root,
+            label="record_catalog_archive_storage_ref",
+        )
+        for ref in full_refs
+    ]
+    matches = [
+        item
+        for item in manifest["records"]
+        if isinstance(item, dict) and item.get("record_id") == record_id
+    ]
+    if len(matches) != 1:
+        raise DashboardInputError(
+            "record_catalog_archive_manifest_record_missing:" + record_id
+        )
+    manifest_row = matches[0]
+    inventory = catalog_row.get("inventory")
+    expected = {
+        "record_id": record_id,
+        "relative_path": relative_path,
+        "member_prefix": locator["member_prefix"],
+        "inventory_sha256": catalog_row.get("inventory_sha256"),
+        "file_count": catalog_row.get("file_count"),
+        "total_bytes": catalog_row.get("total_bytes"),
+        "inventory": inventory,
+        "logical_source_refs": logical_refs,
+    }
+    if any(manifest_row.get(key) != value for key, value in expected.items()):
+        raise DashboardInputError(
+            "record_catalog_archive_manifest_closure_mismatch:" + record_id
+        )
+    if record_id not in receipt.get("record_ids", []):
+        raise DashboardInputError(
+            "record_catalog_archive_restore_receipt_record_missing:"
+            + record_id
+        )
+    return {
+        "archive_id": locator["archive_id"],
+        "storage_state": "ARCHIVED",
+        "record_inventory_sha256": catalog_row.get("inventory_sha256"),
+        "logical_source_refs": logical_refs,
+        "archive_storage_refs": full_refs,
+        "physical_source_refs": physical_refs,
+    }
+
+
+def _catalog_history_registry_binding(
+    catalog: dict[str, Any], project_root: Path
+) -> tuple[dict[str, Any], StableArtifact] | None:
+    if catalog.get("schema_id") != "myquant.strategy_record_catalog.v2":
+        return None
+    ref = catalog.get("history_registry_ref")
+    embedded = catalog.get("history_registry")
+    if (
+        not isinstance(ref, dict)
+        or set(ref) != {"path", "sha256"}
+        or not isinstance(ref.get("path"), str)
+        or ref["path"].startswith("/")
+        or "\\" in ref["path"]
+        or ".." in Path(ref["path"]).parts
+        or not isinstance(ref.get("sha256"), str)
+        or not SHA256_RE.fullmatch(ref["sha256"])
+        or not isinstance(embedded, dict)
+    ):
+        raise DashboardInputError("catalog_history_registry_ref_invalid")
+    registry_path = project_root / ref["path"]
+    try:
+        resolved = registry_path.resolve(strict=True)
+        resolved.relative_to(project_root.resolve())
+    except (OSError, ValueError) as exc:
+        raise DashboardInputError(
+            "catalog_history_registry_ref_invalid"
+        ) from exc
+    if resolved != registry_path.absolute():
+        raise DashboardInputError("catalog_history_registry_ref_invalid")
+    artifact = stable_read(registry_path, project_root)
+    if artifact.sha256 != ref["sha256"]:
+        raise DashboardInputError("catalog_history_registry_sha_mismatch")
+    body = load_json(artifact)
+    if body != embedded:
+        raise DashboardInputError("catalog_history_registry_body_mismatch")
+    return embedded, artifact
+
+
+def _registered_dashboard_projection(
+    *,
+    record_root: Path,
+    project_root: Path,
+    registered_override: tuple[dict[str, Any], dict[str, Any]] | None = None,
+) -> tuple[
+    list[dict[str, Any]],
+    list[str],
+    str | None,
+    list[dict[str, Any]],
+    list[str],
+    dict[str, Any],
+    list[StableArtifact],
+    dict[str, Any],
+] | None:
+    """Load a registered catalog projection without raw-directory fallback."""
+
+    if registered_override is None:
+        try:
+            registered = load_registered_catalog(record_root)
+        except StrategyRecordStoreError as exc:
+            raise DashboardInputError(f"record_catalog_invalid:{exc}") from exc
+    else:
+        registered = registered_override
+    if registered is None:
+        return None
+    pointer, catalog = registered
+    history_registry_binding = _catalog_history_registry_binding(
+        catalog, project_root
+    )
+    projection = catalog.get("dashboard_projection")
+    if not isinstance(projection, dict):
+        raise DashboardInputError("catalog_dashboard_projection_missing")
+    required = {
+        "valid_records",
+        "rejected",
+        "latest_seen",
+        "historical_records",
+        "historical_rejected",
+    }
+    if not required.issubset(projection):
+        raise DashboardInputError("catalog_dashboard_projection_incomplete")
+
+    valid, valid_by_id = _projection_records(
+        projection["valid_records"], "valid_records"
+    )
+    historical_records, historical_by_id = _projection_records(
+        projection["historical_records"], "historical_records"
+    )
+    rejected = _projection_string_list(projection["rejected"], "rejected")
+    historical_rejected = _projection_string_list(
+        projection["historical_rejected"], "historical_rejected"
+    )
+    latest_seen = projection["latest_seen"]
+    if latest_seen is not None and (
+        not isinstance(latest_seen, str)
+        or not RECORD_NAME_RE.fullmatch(latest_seen)
+    ):
+        raise DashboardInputError(
+            "catalog_dashboard_projection_latest_seen_invalid"
+        )
+    normalized_projection = {
+        "valid_records": [
+            {
+                **row,
+                "source_refs": _logical_source_refs(
+                    row["source_refs"],
+                    label="catalog_dashboard_projection_source_ref",
+                ),
+            }
+            for row in valid
+        ],
+        "rejected": rejected,
+        "latest_seen": latest_seen,
+        "historical_records": [
+            {
+                **row,
+                "source_refs": _logical_source_refs(
+                    row["source_refs"],
+                    label="catalog_dashboard_projection_source_ref",
+                ),
+            }
+            for row in historical_records
+        ],
+        "historical_rejected": historical_rejected,
+    }
+    projection_sha256 = sha256_bytes(
+        canonical_json_bytes(normalized_projection)
+    )
+
+    catalog_rows = catalog.get("records")
+    if not isinstance(catalog_rows, list):
+        raise DashboardInputError("record_catalog_records_invalid")
+    catalog_by_id: dict[str, dict[str, Any]] = {}
+    online_paths: dict[str, Path] = {}
+    online_inventory: dict[str, dict[Path, str]] = {}
+    for row in catalog_rows:
+        if not isinstance(row, dict):
+            continue
+        record_id = row.get("record_id")
+        if (
+            isinstance(record_id, str)
+            and RECORD_NAME_RE.fullmatch(record_id)
+            and row.get("state") in {"ONLINE", "ARCHIVED"}
+        ):
+            if record_id in catalog_by_id:
+                raise DashboardInputError("record_catalog_record_duplicate")
+            catalog_by_id[record_id] = row
+        if row.get("state") != "ONLINE":
+            continue
+        relative_path = row.get("relative_path")
+        if (
+            not isinstance(record_id, str)
+            or not RECORD_NAME_RE.fullmatch(record_id)
+            or not isinstance(relative_path, str)
+            or not relative_path
+            or Path(relative_path).is_absolute()
+            or ".." in Path(relative_path).parts
+            or record_id in online_paths
+        ):
+            raise DashboardInputError(
+                "record_catalog_online_inventory_invalid"
+            )
+        resolved = (record_root / relative_path).resolve()
+        try:
+            resolved.relative_to(record_root.resolve())
+        except ValueError as exc:
+            raise DashboardInputError(
+                "record_catalog_online_inventory_invalid"
+            ) from exc
+        if not resolved.is_dir() or resolved.is_symlink():
+            raise DashboardInputError(
+                "record_catalog_online_record_missing:" + record_id
+            )
+        online_paths[record_id] = resolved
+        inventory = row.get("inventory")
+        if not isinstance(inventory, list):
+            raise DashboardInputError(
+                "record_catalog_online_inventory_invalid"
+            )
+        file_inventory: dict[Path, str] = {}
+        for item in inventory:
+            if not isinstance(item, dict) or item.get("type") not in {
+                "file",
+                "directory",
+            }:
+                raise DashboardInputError(
+                    "record_catalog_online_inventory_invalid"
+                )
+            item_path = item.get("path")
+            if (
+                not isinstance(item_path, str)
+                or not item_path
+                or Path(item_path).is_absolute()
+                or ".." in Path(item_path).parts
+            ):
+                raise DashboardInputError(
+                    "record_catalog_online_inventory_invalid"
+                )
+            inventory_path = (resolved / item_path).resolve()
+            try:
+                inventory_path.relative_to(resolved)
+            except ValueError as exc:
+                raise DashboardInputError(
+                    "record_catalog_online_inventory_invalid"
+                ) from exc
+            if item["type"] == "file":
+                inventory_sha = item.get("sha256")
+                if (
+                    not isinstance(inventory_sha, str)
+                    or not SHA256_RE.fullmatch(inventory_sha)
+                    or inventory_path in file_inventory
+                ):
+                    raise DashboardInputError(
+                        "record_catalog_online_inventory_invalid"
+                    )
+                file_inventory[inventory_path] = inventory_sha
+        online_inventory[record_id] = file_inventory
+
+    projected_ids = set(valid_by_id) | set(historical_by_id)
+    missing_storage = sorted(projected_ids - set(catalog_by_id))
+    if missing_storage:
+        raise DashboardInputError(
+            "catalog_dashboard_projection_record_unregistered:"
+            + missing_storage[0]
+        )
+
+    active_record_id = pointer.get("active_record_id")
+    previous_record_id = pointer.get("previous_record_id")
+    if (
+        not isinstance(active_record_id, str)
+        or not isinstance(previous_record_id, str)
+        or active_record_id == previous_record_id
+        or active_record_id not in valid_by_id
+        or previous_record_id not in valid_by_id
+        or active_record_id not in online_paths
+        or previous_record_id not in online_paths
+    ):
+        raise DashboardInputError("record_catalog_pointer_projection_mismatch")
+
+    # The catalog projection preserves logical evidence paths. ONLINE rows are
+    # re-read directly; ARCHIVED rows are closed through their immutable
+    # archive manifest + restore receipt and never touch the old hot path.
+    online_roots = tuple(online_paths.values())
+    inventory_refs = {
+        path: digest
+        for inventory in online_inventory.values()
+        for path, digest in inventory.items()
+    }
+    archive_bindings: dict[str, dict[str, Any]] = {}
+    for row in [*valid, *historical_records]:
+        record_id = row["record"]
+        logical_refs = _logical_source_refs(
+            row["source_refs"],
+            label="catalog_dashboard_projection_source_ref",
+        )
+        row["source_refs"] = logical_refs
+        row["logical_source_refs"] = logical_refs
+        catalog_row = catalog_by_id[record_id]
+        state = catalog_row.get("state")
+        row["storage_state"] = state
+        if state == "ARCHIVED":
+            binding = _archive_catalog_binding(
+                record_root=record_root,
+                catalog_row=catalog_row,
+                logical_refs=logical_refs,
+                project_root=project_root,
+            )
+            archive_bindings[record_id] = binding
+            row["record_inventory_sha256"] = binding[
+                "record_inventory_sha256"
+            ]
+            row["_physical_source_refs"] = binding[
+                "physical_source_refs"
+            ]
+            continue
+        row["record_inventory_sha256"] = catalog_row.get(
+            "inventory_sha256"
+        )
+        row["_physical_source_refs"] = logical_refs
+        for ref in logical_refs:
+            relative_path = ref["path"]
+            declared_sha = ref["sha256"]
+            artifact = stable_read(project_root / relative_path, project_root)
+            if artifact.sha256 != declared_sha:
+                raise DashboardInputError(
+                    "catalog_dashboard_projection_source_sha_mismatch:"
+                    + relative_path
+                )
+            if inventory_refs.get(artifact.path) != declared_sha:
+                raise DashboardInputError(
+                    "catalog_dashboard_projection_source_inventory_mismatch:"
+                    + relative_path
+                )
+            if not any(
+                artifact.path == root or artifact.path.is_relative_to(root)
+                for root in online_roots
+            ):
+                raise DashboardInputError(
+                    "catalog_dashboard_projection_source_not_online:"
+                    + relative_path
+                )
+
+    catalog_artifacts: list[StableArtifact] = []
+    if registered_override is None:
+        pointer_path = record_root / "_record_store" / "current.v1.json"
+        catalog_path_value = pointer.get("catalog_path")
+        if not isinstance(catalog_path_value, str):
+            raise DashboardInputError("record_catalog_pointer_path_invalid")
+        catalog_path = (record_root / catalog_path_value).resolve()
+        pointer_artifact = stable_read(pointer_path, project_root)
+        catalog_artifact = stable_read(catalog_path, project_root)
+        if load_json(pointer_artifact) != pointer:
+            raise DashboardInputError(
+                "record_catalog_pointer_readback_mismatch"
+            )
+        if load_json(catalog_artifact) != catalog:
+            raise DashboardInputError("record_catalog_readback_mismatch")
+        if pointer.get("catalog_sha256") != catalog_artifact.sha256:
+            raise DashboardInputError("record_catalog_pointer_sha_mismatch")
+        catalog_artifacts = [pointer_artifact, catalog_artifact]
+
+    # Put the pointer-selected rows first so callers cannot accidentally
+    # recover current/previous authority from lexicographic ordering.
+    selected = [
+        valid_by_id[active_record_id],
+        valid_by_id[previous_record_id],
+    ]
+    declared_projection_sha = catalog.get("dashboard_projection_sha256")
+    if declared_projection_sha is not None and (
+        declared_projection_sha != projection_sha256
+    ):
+        raise DashboardInputError("catalog_dashboard_projection_sha_mismatch")
+    if history_registry_binding is not None:
+        registry_by_record, _registry_artifact = (
+            load_history_integrity_registry(
+                history_registry_binding[1].path,
+                project_root,
+                intended_generation_id=pointer.get("generation_id"),
+                dashboard_projection_sha256=projection_sha256,
+                archive_bindings=archive_bindings,
+            )
+        )
+        if set(registry_by_record) != set(historical_by_id):
+            raise DashboardInputError(
+                "catalog_history_registry_record_set_mismatch"
+            )
+        for record in historical_records:
+            registry_row = registry_by_record[record["record"]]
+            if (
+                registry_row["logical_source_refs"]
+                != record["logical_source_refs"]
+                or registry_row["storage_state"]
+                != record["storage_state"]
+                or registry_row["record_inventory_sha256"]
+                != record["record_inventory_sha256"]
+            ):
+                raise DashboardInputError(
+                    "catalog_history_registry_projection_mismatch:"
+                    + record["record"]
+                )
+    return (
+        valid,
+        rejected,
+        latest_seen,
+        historical_records,
+        historical_rejected,
+        {
+            "latest": selected[0],
+            "previous": selected[1],
+            "active_record_id": active_record_id,
+            "previous_record_id": previous_record_id,
+        },
+        catalog_artifacts,
+        {
+            "intended_generation_id": pointer.get("generation_id"),
+            "dashboard_projection_sha256": projection_sha256,
+            "archive_bindings": archive_bindings,
+            "history_registry_ref": (
+                {
+                    "path": history_registry_binding[1].relative_path,
+                    "sha256": history_registry_binding[1].sha256,
+                }
+                if history_registry_binding is not None
+                else None
+            ),
+            "history_registry": (
+                history_registry_binding[0]
+                if history_registry_binding is not None
+                else None
+            ),
+        },
+    )
+
+
+def load_dashboard_catalog_projection(
+    record_root: Path, project_root: Path
+) -> dict[str, Any]:
+    """Load the validated projection for operator-side registry refreshes.
+
+    A registered production root is catalog-only.  The legacy scanner remains
+    available solely for an unregistered bootstrap root and test fixtures.
+    """
+
+    registered = _registered_dashboard_projection(
+        record_root=record_root,
+        project_root=project_root,
+    )
+    if registered is None:
+        return build_dashboard_catalog_projection(record_root, project_root)
+    (
+        valid,
+        rejected,
+        latest_seen,
+        historical_records,
+        historical_rejected,
+        _selection,
+        _catalog_artifacts,
+        integrity_context,
+    ) = registered
+    return {
+        "valid_records": valid,
+        "rejected": rejected,
+        "latest_seen": latest_seen,
+        "historical_records": historical_records,
+        "historical_rejected": historical_rejected,
+        "integrity_context": integrity_context,
+    }
+
+
+def load_dashboard_candidate_projection(
+    *,
+    record_root: Path,
+    project_root: Path,
+    pointer: dict[str, Any],
+    catalog: dict[str, Any],
+) -> dict[str, Any]:
+    """Validate a not-yet-active catalog for shadow parity checks."""
+
+    registered = _registered_dashboard_projection(
+        record_root=record_root,
+        project_root=project_root,
+        registered_override=(pointer, catalog),
+    )
+    if registered is None:  # pragma: no cover - explicit override is present
+        raise DashboardInputError("candidate_catalog_missing")
+    (
+        valid,
+        rejected,
+        latest_seen,
+        historical_records,
+        historical_rejected,
+        selection,
+        _catalog_artifacts,
+        integrity_context,
+    ) = registered
+    return {
+        "valid_records": valid,
+        "rejected": rejected,
+        "latest_seen": latest_seen,
+        "historical_records": historical_records,
+        "historical_rejected": historical_rejected,
+        "selection": selection,
+        "integrity_context": integrity_context,
+    }
+
+
+def build_history_integrity_registry(
+    records: list[dict[str, Any]],
+    *,
+    generated_at: str,
+    intended_generation_id: str | None = None,
+    dashboard_projection_sha256: str | None = None,
+    archive_bindings: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Create a candidate-bound Dashboard integrity declaration.
+
+    The registry deliberately binds the intended generation id and normalized
+    projection content, never the candidate catalog byte SHA (which would make
+    catalog publication self-referential).
+    """
+
+    archive_bindings = archive_bindings or {}
+    if intended_generation_id is None:
+        intended_generation_id = "UNREGISTERED_LEGACY"
+    rows: list[dict[str, Any]] = []
+    for record in records:
+        record_id = record["record"]
+        logical_refs = _logical_source_refs(
+            record.get("logical_source_refs", record.get("source_refs")),
+            label="history_integrity_logical_source_refs",
+        )
+        storage_state = record.get("storage_state", "ONLINE")
+        if storage_state not in {"ONLINE", "ARCHIVED"}:
+            raise DashboardInputError(
+                "history_integrity_storage_state_invalid:" + record_id
+            )
+        inventory_sha = record.get("record_inventory_sha256")
+        if not isinstance(inventory_sha, str) or not SHA256_RE.fullmatch(
+            inventory_sha
+        ):
+            inventory_sha = sha256_bytes(canonical_json_bytes(logical_refs))
+        archive_storage_refs: list[dict[str, Any]] = []
+        if storage_state == "ARCHIVED":
+            binding = archive_bindings.get(record_id)
+            if not isinstance(binding, dict):
+                raise DashboardInputError(
+                    "history_integrity_archive_binding_missing:" + record_id
+                )
+            refs = binding.get("archive_storage_refs")
+            if not isinstance(refs, list) or len(refs) != 3:
+                raise DashboardInputError(
+                    "history_integrity_archive_refs_invalid:" + record_id
+                )
+            archive_storage_refs = [dict(ref) for ref in refs]
+        rows.append(
+            {
+                "record": record_id,
+                "storage_state": storage_state,
+                "record_inventory_sha256": inventory_sha,
+                "logical_source_refs": logical_refs,
+                "archive_storage_refs": archive_storage_refs,
+            }
+        )
+    if dashboard_projection_sha256 is None:
+        dashboard_projection_sha256 = sha256_bytes(
+            canonical_json_bytes(rows)
+        )
+
+    payload = {
+        "schema_version": HISTORY_INTEGRITY_SCHEMA_VERSION,
+        "market": MARKET,
+        "strategy_label": STRATEGY,
+        "generated_at": generated_at,
+        "authority": "DASHBOARD_POST_HOC_INTEGRITY_DECLARATION",
+        "intended_generation_id": intended_generation_id,
+        "dashboard_projection_sha256": dashboard_projection_sha256,
+        "record_count": len(rows),
+        "records": rows,
+    }
+    payload["content_sha256"] = sha256_bytes(canonical_json_bytes(payload))
+    return payload
+
+
+def load_history_integrity_registry(
+    path: Path,
+    project_root: Path,
+    *,
+    intended_generation_id: str | None = None,
+    dashboard_projection_sha256: str | None = None,
+    archive_bindings: dict[str, dict[str, Any]] | None = None,
+) -> tuple[dict[str, dict[str, Any]], StableArtifact]:
+    artifact = stable_read(path, project_root)
+    registry = load_json(artifact)
+    if not isinstance(registry, dict):
+        raise DashboardInputError("history_integrity_registry_not_object")
+    if (
+        registry.get("schema_version") != HISTORY_INTEGRITY_SCHEMA_VERSION
+        or registry.get("market") != MARKET
+        or registry.get("strategy_label") != STRATEGY
+        or registry.get("authority")
+        != "DASHBOARD_POST_HOC_INTEGRITY_DECLARATION"
+    ):
+        raise DashboardInputError(
+            "history_integrity_registry_identity_invalid"
+        )
+    if intended_generation_id is not None and (
+        registry.get("intended_generation_id") != intended_generation_id
+    ):
+        raise DashboardInputError(
+            "history_integrity_registry_generation_mismatch"
+        )
+    if dashboard_projection_sha256 is not None and (
+        registry.get("dashboard_projection_sha256")
+        != dashboard_projection_sha256
+    ):
+        raise DashboardInputError(
+            "history_integrity_registry_projection_mismatch"
+        )
+    declared_content_sha = registry.get("content_sha256")
+    without_hash = dict(registry)
+    without_hash.pop("content_sha256", None)
+    actual_content_sha = sha256_bytes(canonical_json_bytes(without_hash))
+    if declared_content_sha != actual_content_sha:
+        raise DashboardInputError("history_integrity_registry_hash_mismatch")
+    rows = registry.get("records")
+    if not isinstance(rows, list) or registry.get("record_count") != len(rows):
+        raise DashboardInputError("history_integrity_registry_records_invalid")
+    archive_bindings = archive_bindings or {}
+    by_record: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != {
+            "record",
+            "storage_state",
+            "record_inventory_sha256",
+            "logical_source_refs",
+            "archive_storage_refs",
+        }:
+            raise DashboardInputError("history_integrity_registry_row_invalid")
+        record = row["record"]
+        refs = row["logical_source_refs"]
+        storage_state = row["storage_state"]
+        inventory_sha = row["record_inventory_sha256"]
+        if (
+            not isinstance(record, str)
+            or not RECORD_NAME_RE.fullmatch(record)
+            or record in by_record
+            or storage_state not in {"ONLINE", "ARCHIVED"}
+            or not isinstance(inventory_sha, str)
+            or not SHA256_RE.fullmatch(inventory_sha)
+        ):
+            raise DashboardInputError("history_integrity_registry_row_invalid")
+        logical_refs = _logical_source_refs(
+            refs, label="history_integrity_registry_ref"
+        )
+        archive_refs = row["archive_storage_refs"]
+        if storage_state == "ONLINE":
+            if archive_refs != []:
+                raise DashboardInputError(
+                    "history_integrity_online_archive_refs_present"
+                )
+            for ref in logical_refs:
+                source = stable_read(project_root / ref["path"], project_root)
+                if source.sha256 != ref["sha256"]:
+                    raise DashboardInputError(
+                        "history_integrity_source_sha_mismatch:" + ref["path"]
+                    )
+        else:
+            binding = archive_bindings.get(record)
+            if (
+                not isinstance(binding, dict)
+                or archive_refs != binding.get("archive_storage_refs")
+                or inventory_sha != binding.get("record_inventory_sha256")
+            ):
+                raise DashboardInputError(
+                    "history_integrity_archive_binding_mismatch:" + record
+                )
+            for index, ref in enumerate(archive_refs):
+                if not isinstance(ref, dict):
+                    raise DashboardInputError(
+                        "history_integrity_archive_ref_invalid"
+                    )
+                _stable_stream_ref(
+                    ref,
+                    project_root,
+                    label=f"history_integrity_archive_ref_{index}",
+                )
+        by_record[record] = {
+            "storage_state": storage_state,
+            "record_inventory_sha256": inventory_sha,
+            "logical_source_refs": logical_refs,
+            "archive_storage_refs": archive_refs,
+        }
+    return by_record, artifact
 
 
 def _read_benchmark_rows(
@@ -937,6 +2362,83 @@ def _read_benchmark_rows(
     return selected
 
 
+def _read_risk_free_rows(
+    artifact: StableArtifact,
+) -> dict[str, dict[str, Any]]:
+    """Read exact official ChinaBond 1Y government-bond curve observations."""
+
+    rows = _csv_rows(artifact)
+    required = {
+        "date",
+        "tenor",
+        "annual_yield_percent",
+        "source_system",
+        "source_url",
+    }
+    if not required.issubset(rows[0]):
+        raise DashboardInputError("risk_free_columns_missing")
+    selected: dict[str, dict[str, Any]] = {}
+    for row_number, row in enumerate(rows, start=2):
+        date_value = str(row.get("date") or "")
+        try:
+            date.fromisoformat(date_value)
+        except ValueError as exc:
+            raise DashboardInputError(
+                f"risk_free_date_invalid:{row_number}"
+            ) from exc
+        if row.get("tenor") != RISK_FREE_TENOR:
+            raise DashboardInputError(f"risk_free_tenor_invalid:{row_number}")
+        if row.get("source_system") != RISK_FREE_SOURCE:
+            raise DashboardInputError(f"risk_free_source_invalid:{row_number}")
+        if row.get("source_url") != RISK_FREE_SOURCE_URL:
+            raise DashboardInputError(f"risk_free_url_invalid:{row_number}")
+        annual_yield = _number(
+            row.get("annual_yield_percent"),
+            f"risk_free_annual_yield_percent:{date_value}",
+        ) / 100.0
+        if annual_yield < 0 or annual_yield >= 1:
+            raise DashboardInputError(
+                f"risk_free_annual_yield_out_of_range:{date_value}"
+            )
+        if date_value in selected:
+            raise DashboardInputError(f"risk_free_duplicate_date:{date_value}")
+        selected[date_value] = {
+            "date": date_value,
+            "annual_yield": annual_yield,
+        }
+    if not selected:
+        raise DashboardInputError("risk_free_rows_missing")
+    return selected
+
+
+def _align_risk_free_rows(
+    rows: dict[str, dict[str, Any]], required_dates: list[str]
+) -> list[dict[str, Any]]:
+    """Align by exact date or the latest previously published workday."""
+
+    published_dates = sorted(rows)
+    aligned: list[dict[str, Any]] = []
+    for required in required_dates:
+        eligible = [value for value in published_dates if value <= required]
+        if not eligible:
+            raise DashboardInputError(
+                "risk_free_missing_prior_date:" + required
+            )
+        value_date = eligible[-1]
+        aligned.append(
+            {
+                "annual_yield": rows[value_date]["annual_yield"],
+                "value_date": value_date,
+                "coverage": (
+                    "exact_published_yield"
+                    if value_date == required
+                    else "previous_published_workday_ffill"
+                ),
+            }
+        )
+    return aligned
+
+
 def _max_drawdown(values: Iterable[float]) -> float:
     peak: float | None = None
     result = 0.0
@@ -987,34 +2489,119 @@ def _changes(
     return result
 
 
-def _unitize(records_by_date: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _ledger_quantity_turnover(
+    changes: list[dict[str, Any]],
+    current: dict[str, Any],
+    previous: dict[str, Any],
+    *,
+    current_total_value: float,
+    previous_total_value: float,
+) -> float:
+    """Estimate two-way turnover from ledger quantity changes only."""
+
+    current_by_symbol = {
+        row["symbol"]: row for row in current["positions"]
+    }
+    previous_by_symbol = {
+        row["symbol"]: row for row in previous["positions"]
+    }
+    gross_notional = 0.0
+    for change in changes:
+        share_delta = abs(change["share_delta"])
+        if share_delta == 0:
+            continue
+        position = current_by_symbol.get(change["symbol"])
+        if position is None:
+            position = previous_by_symbol[change["symbol"]]
+        gross_notional += share_delta * position["recorded_price"]
+    average_nav = 0.5 * (current_total_value + previous_total_value)
+    if average_nav <= 0:
+        raise DashboardInputError("turnover_average_nav_not_positive")
+    return 0.5 * gross_notional / average_nav
+
+
+def _economic_portfolio_view(
+    record: dict[str, Any], performance_point: dict[str, Any]
+) -> tuple[dict[str, Any], float, float]:
+    """Return the one-million-base portfolio view for a strict record.
+
+    The archived accounting closure remains the exact-byte evidence source.
+    Cash and total value exposed to the Dashboard remove cumulative amounts
+    explicitly classified as external to the March 17 portfolio. Holdings and
+    their market values are unchanged.
+    """
+
+    adjusted_total = float(performance_point["adjusted_total_value"])
+    excluded_flow = float(performance_point["excluded_external_flow"])
+    market_value = float(record["accounting"]["market_value_after"])
+    adjusted_cash = float(record["accounting"]["cash_after"]) - excluded_flow
+    if adjusted_cash < 0:
+        raise DashboardInputError(
+            "economic_portfolio_cash_negative:" + record["record"]
+        )
+    if not _almost_equal(adjusted_cash + market_value, adjusted_total):
+        raise DashboardInputError(
+            "economic_portfolio_accounting_mismatch:" + record["record"]
+        )
+    if adjusted_total <= 0:
+        raise DashboardInputError(
+            "economic_portfolio_total_not_positive:" + record["record"]
+        )
+
+    view = dict(record)
+    view["positions"] = []
+    for original in record["positions"]:
+        position = dict(original)
+        position["nav_weight"] = position["market_value"] / adjusted_total
+        view["positions"].append(position)
+    return view, adjusted_cash, adjusted_total
+
+
+def _exclude_external_funding(
+    records_by_date: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Build a March-base return series after subtracting external funding."""
+
     first = records_by_date[0]
+    initial_capital = first.get("capital_base")
     first_total = first["accounting"]["total_value_after"]
-    if first_total <= 0:
-        raise DashboardInputError("unitization_initial_total_not_positive")
-    units = first_total
-    timeline = [
-        {
-            "date": first.get("valuation_date") or first["data_date"],
-            "record": first["record"],
-            "unit_nav": 1.0,
-            "total_value": first_total,
-            "evidence_status": first.get(
-                "evidence_status", "HASH_BOUND_CURRENT_CLOSURE"
-            ),
-        }
-    ]
-    for record in records_by_date[1:]:
-        total_after = record["accounting"]["total_value_after"]
+    if (
+        not isinstance(initial_capital, (int, float))
+        or initial_capital <= 0
+        or not _almost_equal(first_total, float(initial_capital))
+    ):
+        raise DashboardInputError(
+            "performance_initial_capital_baseline_invalid"
+        )
+    cumulative_external_flow = 0.0
+    corrected_funding_records: set[str] = set()
+    timeline: list[dict[str, Any]] = []
+    for record in records_by_date:
         funding = record.get("funding")
         if funding:
-            flow_nav = funding["total_value_before"] / units
-            if flow_nav <= 0:
-                raise DashboardInputError("unitization_flow_nav_not_positive")
-            units += funding["amount"] / flow_nav
-        unit_nav = total_after / units
+            cumulative_external_flow += funding["amount"]
+        correction = record.get("funding_correction")
+        if (
+            correction
+            and correction["reversed_record"]
+            not in corrected_funding_records
+        ):
+            cumulative_external_flow -= correction["reversed_amount"]
+            corrected_funding_records.add(correction["reversed_record"])
+            if _almost_equal(cumulative_external_flow, 0.0):
+                cumulative_external_flow = 0.0
+            if cumulative_external_flow < 0:
+                raise DashboardInputError(
+                    "funding_correction_exceeds_external_flow:"
+                    + record["record"]
+                )
+        total_after = record["accounting"]["total_value_after"]
+        adjusted_total = total_after - cumulative_external_flow
+        unit_nav = adjusted_total / float(initial_capital)
         if unit_nav <= 0 or not math.isfinite(unit_nav):
-            raise DashboardInputError("unitization_nav_invalid")
+            raise DashboardInputError(
+                "external_flow_excluded_nav_invalid"
+            )
         timeline.append(
             {
                 "date": record.get("valuation_date")
@@ -1022,6 +2609,9 @@ def _unitize(records_by_date: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "record": record["record"],
                 "unit_nav": unit_nav,
                 "total_value": total_after,
+                "excluded_external_flow": cumulative_external_flow,
+                "adjusted_total_value": adjusted_total,
+                "performance_initial_capital": float(initial_capital),
                 "evidence_status": record.get(
                     "evidence_status", "HASH_BOUND_CURRENT_CLOSURE"
                 ),
@@ -1035,24 +2625,151 @@ def build_bundle(
     project_root: Path,
     record_root: Path,
     benchmark_path: Path,
+    risk_free_path: Path | None = None,
     generated_at: str,
     today: date,
+    history_integrity_path: Path | None = None,
 ) -> dict[str, Any]:
-    valid, rejected, latest_seen = scan_valid_records(
-        record_root, project_root
+    registered_projection = _registered_dashboard_projection(
+        record_root=record_root, project_root=project_root
     )
+    catalog_artifacts: list[StableArtifact] = []
+    integrity_context: dict[str, Any] = {
+        "intended_generation_id": "UNREGISTERED_LEGACY",
+        "dashboard_projection_sha256": None,
+        "archive_bindings": {},
+    }
+    if registered_projection is None:
+        projection = build_dashboard_catalog_projection(
+            record_root, project_root
+        )
+        valid = projection["valid_records"]
+        rejected = projection["rejected"]
+        latest_seen = projection["latest_seen"]
+        historical_records = projection["historical_records"]
+        historical_rejected = projection["historical_rejected"]
+        latest = valid[-1] if valid else None
+        previous = valid[-2] if len(valid) >= 2 else None
+    else:
+        (
+            valid,
+            rejected,
+            latest_seen,
+            historical_records,
+            historical_rejected,
+            pointer_selection,
+            catalog_artifacts,
+            integrity_context,
+        ) = registered_projection
+        latest = pointer_selection["latest"]
+        previous = pointer_selection["previous"]
     if len(valid) < 2:
         raise DashboardInputError("fewer_than_two_hash_bound_valid_records")
-    latest = valid[-1]
-    previous = valid[-2]
-    historical_records, historical_rejected = (
-        scan_historical_performance_records(
-            record_root=record_root,
-            project_root=project_root,
-            strict_records=valid,
+    assert latest is not None and previous is not None
+    history_integrity_artifact: StableArtifact | None = None
+    history_registry_bound_count = 0
+    required_registry_ref = integrity_context.get("history_registry_ref")
+    if required_registry_ref is not None:
+        if history_integrity_path is None:
+            raise DashboardInputError(
+                "catalog_history_registry_path_required"
+            )
+        try:
+            supplied_registry_path = history_integrity_path.resolve(
+                strict=True
+            ).relative_to(project_root.resolve()).as_posix()
+        except (OSError, ValueError) as exc:
+            raise DashboardInputError(
+                "catalog_history_registry_path_mismatch"
+            ) from exc
+        if supplied_registry_path != required_registry_ref["path"]:
+            raise DashboardInputError(
+                "catalog_history_registry_path_mismatch"
+            )
+    if history_integrity_path is not None:
+        registry_by_record, history_integrity_artifact = (
+            load_history_integrity_registry(
+                history_integrity_path,
+                project_root,
+                intended_generation_id=integrity_context.get(
+                    "intended_generation_id"
+                ),
+                dashboard_projection_sha256=integrity_context.get(
+                    "dashboard_projection_sha256"
+                ),
+                archive_bindings=integrity_context.get("archive_bindings"),
+            )
         )
+        if (
+            required_registry_ref is not None
+            and history_integrity_artifact.sha256
+            != required_registry_ref["sha256"]
+        ):
+            raise DashboardInputError(
+                "catalog_history_registry_sha_mismatch"
+            )
+        expected_records = {record["record"] for record in historical_records}
+        if set(registry_by_record) != expected_records:
+            raise DashboardInputError(
+                "history_integrity_registry_record_set_mismatch"
+            )
+        for record in historical_records:
+            registered_row = registry_by_record[record["record"]]
+            if (
+                registered_row["logical_source_refs"]
+                != record.get("logical_source_refs", record["source_refs"])
+                or registered_row["storage_state"]
+                != record.get("storage_state", "ONLINE")
+                or registered_row["record_inventory_sha256"]
+                != record.get(
+                    "record_inventory_sha256",
+                    registered_row["record_inventory_sha256"],
+                )
+            ):
+                raise DashboardInputError(
+                    "history_integrity_registry_ref_set_mismatch:"
+                    + record["record"]
+                )
+            if record["evidence_status"] != "HASH_BOUND_CURRENT_CLOSURE":
+                record["evidence_status"] = (
+                    "DASHBOARD_POST_HOC_SHA_REGISTRY_BOUND"
+                )
+                history_registry_bound_count += 1
+    unitized_raw = _exclude_external_funding(historical_records)
+    unitized_by_record = {point["record"]: point for point in unitized_raw}
+
+    def economic_point_for(record: dict[str, Any]) -> dict[str, Any]:
+        existing = unitized_by_record.get(record["record"])
+        if existing is not None:
+            return existing
+        if record.get("funding") is not None or record.get(
+            "funding_correction"
+        ) is not None:
+            raise DashboardInputError(
+                "unvalued_current_record_contains_funding_event:"
+                + record["record"]
+            )
+        prior = unitized_raw[-1]
+        excluded_flow = float(prior["excluded_external_flow"])
+        total_value = float(record["accounting"]["total_value_after"])
+        adjusted_total = total_value - excluded_flow
+        if adjusted_total <= 0:
+            raise DashboardInputError(
+                "unvalued_current_record_adjusted_total_invalid:"
+                + record["record"]
+            )
+        return {
+            "adjusted_total_value": adjusted_total,
+            "excluded_external_flow": excluded_flow,
+        }
+
+    latest_economic_point = economic_point_for(latest)
+    latest_view, adjusted_cash, adjusted_total = _economic_portfolio_view(
+        latest, latest_economic_point
     )
-    unitized_raw = _unitize(historical_records)
+    previous_view, _, previous_adjusted_total = _economic_portfolio_view(
+        previous, economic_point_for(previous)
+    )
     collapsed_unitized: dict[str, dict[str, Any]] = {}
     for point in unitized_raw:
         collapsed_unitized[point["date"]] = point
@@ -1064,34 +2781,50 @@ def build_bundle(
             "portfolio_performance_has_no_comparable_interval"
         )
 
-    benchmark_artifact = stable_read(benchmark_path, project_root)
-    benchmark_rows = _read_benchmark_rows(benchmark_artifact, "000300.SH")
     required_dates = [row["date"] for row in unitized]
-    missing_dates = [
-        value for value in required_dates if value not in benchmark_rows
-    ]
-    if missing_dates:
-        raise DashboardInputError(
-            "csi300_benchmark_missing_dates:" + ",".join(missing_dates)
-        )
-    selected_benchmark = [benchmark_rows[value] for value in required_dates]
-    first_close = selected_benchmark[0]["close"]
-    if first_close <= 0:
-        raise DashboardInputError("csi300_initial_close_not_positive")
-    benchmark_nav = [row["close"] / first_close for row in selected_benchmark]
+    benchmark_artifact = stable_read(benchmark_path, project_root)
+    benchmark_series: dict[str, dict[str, Any]] = {}
+    for spec in BENCHMARK_SPECS:
+        rows = _read_benchmark_rows(benchmark_artifact, spec["ts_code"])
+        missing_dates = [
+            value for value in required_dates if value not in rows
+        ]
+        if missing_dates:
+            raise DashboardInputError(
+                spec["id"].lower()
+                + "_benchmark_missing_dates:"
+                + ",".join(missing_dates)
+            )
+        selected = [rows[value] for value in required_dates]
+        first_close = selected[0]["close"]
+        if first_close <= 0:
+            raise DashboardInputError(
+                spec["id"].lower()
+                + "_initial_close_not_positive"
+            )
+        nav = [row["close"] / first_close for row in selected]
+        benchmark_series[spec["id"]] = {
+            "spec": spec,
+            "rows": selected,
+            "nav": nav,
+            "return": nav[-1] / nav[0] - 1.0,
+            "max_drawdown": _max_drawdown(nav),
+        }
+
+    if risk_free_path is None:
+        risk_free_path = benchmark_path.with_name("cn_govt_bond_yield.csv")
+    risk_free_artifact = stable_read(risk_free_path, project_root)
+    risk_free_rows = _read_risk_free_rows(risk_free_artifact)
+    aligned_risk_free = _align_risk_free_rows(risk_free_rows, required_dates)
 
     portfolio_nav = [row["unit_nav"] for row in unitized]
-    cumulative_twr = portfolio_nav[-1] / portfolio_nav[0] - 1.0
-    benchmark_return = benchmark_nav[-1] / benchmark_nav[0] - 1.0
-    changes = _changes(latest, previous)
+    cumulative_return = portfolio_nav[-1] - 1.0
+    changes = _changes(latest_view, previous_view)
     gross = (
         latest["accounting"]["market_value_after"]
-        / latest["accounting"]["total_value_after"]
+        / adjusted_total
     )
-    cash_weight = (
-        latest["accounting"]["cash_after"]
-        / latest["accounting"]["total_value_after"]
-    )
+    cash_weight = adjusted_cash / adjusted_total
     equity_weights = sorted(
         (position["equity_weight"] for position in latest["positions"]),
         reverse=True,
@@ -1103,6 +2836,9 @@ def build_bundle(
         position["unrealized_pnl"] for position in latest["positions"]
     )
     data_age_days = (today - date.fromisoformat(latest["data_date"])).days
+    performance_age_days = (
+        today - date.fromisoformat(required_dates[-1])
+    ).days
     rejection_counts = Counter(
         (item.split(":", 1)[1] if ":" in item else item).split(":", 1)[0]
         for item in rejected
@@ -1119,6 +2855,11 @@ def build_bundle(
         }
         for record in historical_records
     )
+    reversed_funding_records = {
+        record["funding_correction"]["reversed_record"]
+        for record in historical_records
+        if record.get("funding_correction") is not None
+    }
     funding_events = [
         {
             "record": record["record"],
@@ -1132,54 +2873,169 @@ def build_bundle(
         }
         for record in historical_records
         if record.get("funding") is not None
+        and record["record"] not in reversed_funding_records
     ]
+    # Disclosure limitations remain visible, but they do not by themselves
+    # make the core Dashboard stale.  PARTIAL is reserved for a gap in the
+    # selected holdings/performance chain: stale data, a newer unusable
+    # record, or legacy performance bytes that are not bound by the
+    # Dashboard integrity registry.
     warnings = [
         "trade_fee_and_net_of_fee_basis_unknown",
         "per_position_realized_pnl_unavailable",
         "current_quote_unavailable_recorded_prices_only",
         "industry_and_theme_exposure_not_hash_bound_in_effective_ledger",
     ]
-    if data_age_days > 3:
-        warnings.append(f"latest_data_stale_calendar_days:{data_age_days}")
+    status_gaps: list[str] = []
+    if performance_age_days > 0:
+        stale_warning = (
+            "latest_performance_stale_calendar_days:"
+            f"{performance_age_days}"
+        )
+        warnings.append(stale_warning)
+        status_gaps.append(stale_warning)
+    if (
+        latest.get("official_valuation") is False
+        or latest.get("valuation_completeness_passed") is False
+        or str(latest.get("valuation_status") or "").startswith("BLOCKED")
+    ):
+        valuation_warning = (
+            "latest_current_valuation_incomplete:"
+            + str(latest.get("valuation_status") or "UNKNOWN")
+        )
+        warnings.append(valuation_warning)
+        status_gaps.append(valuation_warning)
     if latest_seen != latest["record"]:
-        warnings.append(f"newer_unusable_record_exists:{latest_seen}")
+        unusable_warning = f"newer_unusable_record_exists:{latest_seen}"
+        warnings.append(unusable_warning)
+        status_gaps.append(unusable_warning)
     if rejected:
         warnings.append(f"current_holdings_records_rejected:{len(rejected)}")
     if legacy_history_count:
-        warnings.append(
+        legacy_warning = (
             "historical_performance_legacy_exact_bytes_without_declared_sha:"
             f"{legacy_history_count}"
         )
+        warnings.append(legacy_warning)
+        status_gaps.append(legacy_warning)
     if historical_rejected:
         warnings.append(
             "historical_performance_records_rejected:"
             f"{len(historical_rejected)}"
         )
-    status = "PARTIAL" if warnings else "FRESH"
+    status = "PARTIAL" if status_gaps else "FRESH"
+
+    performance_points: list[dict[str, Any]] = []
+    for index, row in enumerate(unitized):
+        csi300 = benchmark_series["CSI300"]
+        point = {
+            "date": row["date"],
+            "record": row["record"],
+            "total_value": row["total_value"],
+            "excluded_external_flow": row["excluded_external_flow"],
+            "adjusted_total_value": row["adjusted_total_value"],
+            "portfolio_unit_nav": row["unit_nav"],
+            "portfolio_cumulative_return": row["unit_nav"] - 1.0,
+            "csi300_nav": csi300["nav"][index],
+            "csi300_cumulative_return": csi300["nav"][index]
+            / csi300["nav"][0]
+            - 1.0,
+            "cumulative_excess_return": (
+                row["unit_nav"] - csi300["nav"][index]
+            ),
+            "benchmark_coverage": csi300["rows"][index]["coverage"],
+            "benchmark_value_date": csi300["rows"][index]["value_date"],
+            "evidence_status": row["evidence_status"],
+            "risk_free_annual_yield": aligned_risk_free[index][
+                "annual_yield"
+            ],
+            "risk_free_coverage": aligned_risk_free[index]["coverage"],
+            "risk_free_value_date": aligned_risk_free[index]["value_date"],
+        }
+        for spec in BENCHMARK_SPECS[1:]:
+            series = benchmark_series[spec["id"]]
+            prefix = spec["point_prefix"]
+            point[prefix + "_nav"] = series["nav"][index]
+            point[prefix + "_cumulative_return"] = (
+                series["nav"][index] / series["nav"][0] - 1.0
+            )
+            point[prefix + "_benchmark_coverage"] = series["rows"][index][
+                "coverage"
+            ]
+            point[prefix + "_benchmark_value_date"] = series["rows"][index][
+                "value_date"
+            ]
+        performance_points.append(point)
+
+    benchmark_payload = [
+        {
+            "id": spec["id"],
+            "name": spec["name"],
+            "ts_code": spec["ts_code"],
+            "source_path": benchmark_artifact.relative_path,
+            "source_sha256": benchmark_artifact.sha256,
+            "start_date": required_dates[0],
+            "end_date": required_dates[-1],
+            "return": benchmark_series[spec["id"]]["return"],
+            "excess_return": (
+                cumulative_return
+                - benchmark_series[spec["id"]]["return"]
+            ),
+            "max_drawdown": benchmark_series[spec["id"]]["max_drawdown"],
+            "missing_dates": [],
+            "coverage": [
+                row["coverage"]
+                for row in benchmark_series[spec["id"]]["rows"]
+            ],
+        }
+        for spec in BENCHMARK_SPECS
+    ]
 
     source_refs: list[dict[str, str]] = []
     seen_refs: set[tuple[str, str]] = set()
     for record in valid:
-        for ref in record["source_refs"]:
+        for ref in record.get("_physical_source_refs", record["source_refs"]):
             identity = (ref["path"], ref["sha256"])
             if identity not in seen_refs:
                 source_refs.append(ref)
                 seen_refs.add(identity)
     for record in historical_records:
-        for ref in record["source_refs"]:
+        for ref in record.get("_physical_source_refs", record["source_refs"]):
             identity = (ref["path"], ref["sha256"])
             if identity not in seen_refs:
                 source_refs.append(ref)
                 seen_refs.add(identity)
+    if history_integrity_artifact is not None:
+        source_refs.append(
+            {
+                "path": history_integrity_artifact.relative_path,
+                "sha256": history_integrity_artifact.sha256,
+            }
+        )
+    for artifact in catalog_artifacts:
+        identity = (artifact.relative_path, artifact.sha256)
+        if identity not in seen_refs:
+            source_refs.append(
+                {"path": artifact.relative_path, "sha256": artifact.sha256}
+            )
+            seen_refs.add(identity)
     source_refs.append(
         {
             "path": benchmark_artifact.relative_path,
             "sha256": benchmark_artifact.sha256,
         }
     )
+    source_refs.append(
+        {
+            "path": risk_free_artifact.relative_path,
+            "sha256": risk_free_artifact.sha256,
+        }
+    )
 
-    for position in latest["positions"]:
-        position["price_date"] = latest["data_date"]
+    for position in latest_view["positions"]:
+        position["price_date"] = (
+            position.get("price_date") or latest["data_date"]
+        )
         position["evidence_status"] = "HASH_BOUND_EFFECTIVE_LEDGER"
     payload = {
         "schema_version": SCHEMA_VERSION,
@@ -1209,6 +3065,10 @@ def build_bundle(
                 "financial_state_sha256",
                 "execution_status",
                 "execution_kind",
+                "valuation_status",
+                "official_valuation",
+                "valuation_completeness_passed",
+                "price_basis",
             )
         },
         "previous_evidence": {
@@ -1245,6 +3105,9 @@ def build_bundle(
             "included_record_count": len(historical_records),
             "performance_point_count": len(unitized),
             "legacy_exact_byte_record_count": legacy_history_count,
+            "dashboard_integrity_registry_record_count": (
+                history_registry_bound_count
+            ),
             "hash_bound_current_record_count": sum(
                 record["evidence_status"]
                 == "HASH_BOUND_CURRENT_CLOSURE"
@@ -1262,7 +3125,11 @@ def build_bundle(
             "evidence_status": (
                 "PARTIAL_LEGACY_EXACT_BYTES_NO_DECLARED_SHA"
                 if legacy_history_count
-                else "HASH_BOUND_CURRENT_CLOSURE_ONLY"
+                else (
+                    "DASHBOARD_POST_HOC_SHA_REGISTRY_BOUND"
+                    if history_registry_bound_count
+                    else "HASH_BOUND_CURRENT_CLOSURE_ONLY"
+                )
             ),
             "baseline_manifest_path": historical_records[0][
                 "manifest_path"
@@ -1275,78 +3142,73 @@ def build_bundle(
                 "ledger_sha256"
             ],
         },
-        "positions": latest["positions"],
+        "positions": latest_view["positions"],
         "changes": changes,
         "portfolio": {
-            "cash": latest["accounting"]["cash_after"],
+            "cash": adjusted_cash,
             "market_value": latest["accounting"]["market_value_after"],
-            "total_value": latest["accounting"]["total_value_after"],
+            "total_value": adjusted_total,
             "cash_weight": cash_weight,
             "gross_exposure": gross,
-            "portfolio_pnl": latest["accounting"]["portfolio_pnl_after"],
+            "portfolio_pnl": (
+                adjusted_total
+                - unitized[0]["performance_initial_capital"]
+            ),
             "current_unrealized_pnl": current_unrealized,
             "latest_record_realized_pnl_from_rebalance": latest["accounting"][
                 "realized_pnl_from_rebalance"
             ],
             "cumulative_realized_pnl": None,
             "realized_pnl_evidence_status": "UNKNOWN",
-            "cumulative_twr": cumulative_twr,
-            "latest_record_interval_return": latest["accounting"][
-                "total_value_after"
-            ]
-            / previous["accounting"]["total_value_after"]
-            - 1.0,
+            "performance_initial_capital": unitized[0][
+                "performance_initial_capital"
+            ],
+            "excluded_external_flow": latest_economic_point[
+                "excluded_external_flow"
+            ],
+            "adjusted_total_value": adjusted_total,
+            "cumulative_profit_excluding_external_flow": (
+                adjusted_total
+                - unitized[0]["performance_initial_capital"]
+            ),
+            "cumulative_return": cumulative_return,
+            "current_valuation_status": latest.get("valuation_status"),
+            "latest_record_interval_return": (
+                portfolio_nav[-1] / portfolio_nav[-2] - 1.0
+            ),
             "max_drawdown": _max_drawdown(portfolio_nav),
-            "latest_interval_turnover": 0.5
-            * sum(abs(change["nav_weight_delta"]) for change in changes),
-            "return_method": "funding_aware_time_weighted_unitization",
+            "latest_interval_turnover": _ledger_quantity_turnover(
+                changes,
+                latest_view,
+                previous_view,
+                current_total_value=adjusted_total,
+                previous_total_value=previous_adjusted_total,
+            ),
+            "return_method": (
+                "initial_capital_return_excluding_external_flows"
+            ),
             "gross_or_net": "UNKNOWN",
             "fee_basis": "UNKNOWN",
             "performance_start_date": unitized[0]["date"],
             "performance_end_date": unitized[-1]["date"],
-            "performance_points": [
-                {
-                    "date": row["date"],
-                    "record": row["record"],
-                    "total_value": row["total_value"],
-                    "portfolio_unit_nav": row["unit_nav"],
-                    "portfolio_cumulative_return": row["unit_nav"]
-                    / portfolio_nav[0]
-                    - 1.0,
-                    "csi300_nav": benchmark_nav[index],
-                    "csi300_cumulative_return": benchmark_nav[index]
-                    / benchmark_nav[0]
-                    - 1.0,
-                    "cumulative_excess_return": row["unit_nav"]
-                    / portfolio_nav[0]
-                    - benchmark_nav[index] / benchmark_nav[0],
-                    "benchmark_coverage": selected_benchmark[index][
-                        "coverage"
-                    ],
-                    "benchmark_value_date": selected_benchmark[index][
-                        "value_date"
-                    ],
-                    "evidence_status": row["evidence_status"],
-                }
-                for index, row in enumerate(unitized)
-            ],
+            "performance_points": performance_points,
         },
-        "benchmarks": [
-            {
-                "id": "CSI300",
-                "name": "沪深300",
-                "ts_code": "000300.SH",
-                "source_path": benchmark_artifact.relative_path,
-                "source_sha256": benchmark_artifact.sha256,
-                "start_date": required_dates[0],
-                "end_date": required_dates[-1],
-                "return": benchmark_return,
-                "excess_return": cumulative_twr - benchmark_return,
-                "max_drawdown": _max_drawdown(benchmark_nav),
-                "missing_dates": [],
-                "coverage": [row["coverage"] for row in selected_benchmark],
-            }
-        ],
+        "benchmarks": benchmark_payload,
+        "risk_free": {
+            "name": "中国1年期国债收益率",
+            "tenor": RISK_FREE_TENOR,
+            "source_system": RISK_FREE_SOURCE,
+            "source_url": RISK_FREE_SOURCE_URL,
+            "source_path": risk_free_artifact.relative_path,
+            "source_sha256": risk_free_artifact.sha256,
+            "start_date": required_dates[0],
+            "end_date": required_dates[-1],
+            "latest_annual_yield": aligned_risk_free[-1]["annual_yield"],
+            "day_count": "ACT/365",
+            "alignment": "interval_start_previous_published_workday",
+            "missing_dates": [],
+            "coverage": [row["coverage"] for row in aligned_risk_free],
+        },
         "concentration": {
             "top1_equity_weight": top1,
             "top3_equity_weight": top3,
@@ -1384,16 +3246,22 @@ def build_bundle(
                 "severity": "MEDIUM",
                 "detail": "费用毛净口径与累计已实现盈亏缺少 hash-bound 分项证据。",
             },
-            {
-                "code": "LEGACY_HISTORY_EVIDENCE_PARTIAL",
-                "severity": "MEDIUM",
-                "detail": (
-                    f"自归档起点纳入 {legacy_history_count} 条旧记录；"
-                    "文件已 exact-byte 绑定，但旧 manifest 未声明 SHA，"
-                    "不得作为当前持仓权威。"
-                ),
-            },
-        ],
+        ]
+        + (
+            [
+                {
+                    "code": "LEGACY_HISTORY_EVIDENCE_PARTIAL",
+                    "severity": "MEDIUM",
+                    "detail": (
+                        f"自归档起点纳入 {legacy_history_count} 条旧记录；"
+                        "文件已 exact-byte 绑定，但旧 manifest 未声明 SHA，"
+                        "不得作为当前持仓权威。"
+                    ),
+                }
+            ]
+            if legacy_history_count
+            else []
+        ),
         "i1_research": None,
         "i1_display_status": "NOT_DISPLAYED_NO_EXACT_HASH_BOUND_I1_ARTIFACT",
         "blockers": [],
@@ -1433,10 +3301,46 @@ def validate_bundle_shape(bundle: Any) -> list[str]:
     if bundle.get("status") in {"FRESH", "PARTIAL"}:
         if bundle.get("blockers") != []:
             errors.append("usable_bundle_has_blockers")
-        if not bundle.get("positions"):
+        positions = bundle.get("positions")
+        position_nav_weights_valid = bool(positions) and all(
+            isinstance(row, dict)
+            and isinstance(row.get("nav_weight"), (int, float))
+            and math.isfinite(float(row["nav_weight"]))
+            for row in positions
+        )
+        if not positions:
             errors.append("usable_bundle_has_no_positions")
-        if len(bundle.get("benchmarks") or []) < 1:
-            errors.append("usable_bundle_has_no_benchmark")
+        elif not position_nav_weights_valid:
+            errors.append("position_nav_weight_invalid")
+        benchmarks = bundle.get("benchmarks") or []
+        expected_benchmarks = {
+            spec["id"]: (spec["name"], spec["ts_code"])
+            for spec in BENCHMARK_SPECS
+        }
+        actual_benchmarks = {
+            row.get("id"): (row.get("name"), row.get("ts_code"))
+            for row in benchmarks
+            if isinstance(row, dict)
+        }
+        if actual_benchmarks != expected_benchmarks:
+            errors.append("usable_bundle_benchmark_set_invalid")
+        elif any(row.get("missing_dates") for row in benchmarks):
+            errors.append("usable_bundle_benchmark_has_gaps")
+        risk_free = bundle.get("risk_free")
+        if (
+            not isinstance(risk_free, dict)
+            or risk_free.get("tenor") != RISK_FREE_TENOR
+            or risk_free.get("source_system") != RISK_FREE_SOURCE
+            or risk_free.get("source_url") != RISK_FREE_SOURCE_URL
+            or risk_free.get("day_count") != "ACT/365"
+            or risk_free.get("alignment")
+            != "interval_start_previous_published_workday"
+            or risk_free.get("missing_dates") != []
+            or not isinstance(
+                risk_free.get("latest_annual_yield"), (int, float)
+            )
+        ):
+            errors.append("usable_bundle_risk_free_invalid")
         history = bundle.get("history")
         portfolio = bundle.get("portfolio")
         if not isinstance(history, dict):
@@ -1445,8 +3349,50 @@ def validate_bundle_shape(bundle: Any) -> list[str]:
             errors.append("usable_bundle_has_no_portfolio")
         else:
             points = portfolio.get("performance_points")
+            portfolio_numbers = (
+                "cash",
+                "market_value",
+                "total_value",
+                "cash_weight",
+                "gross_exposure",
+                "portfolio_pnl",
+                "performance_initial_capital",
+                "excluded_external_flow",
+                "adjusted_total_value",
+                "cumulative_profit_excluding_external_flow",
+                "cumulative_return",
+            )
+            if portfolio.get("return_method") != (
+                "initial_capital_return_excluding_external_flows"
+            ):
+                errors.append("portfolio_return_method_invalid")
+            elif any(
+                not isinstance(portfolio.get(key), (int, float))
+                or not math.isfinite(float(portfolio[key]))
+                for key in portfolio_numbers
+            ):
+                errors.append("portfolio_return_values_invalid")
             if not isinstance(points, list) or len(points) < 2:
                 errors.append("usable_bundle_has_no_performance_history")
+            elif any(
+                not isinstance(point, dict)
+                or any(
+                    not isinstance(point.get(key), (int, float))
+                    or not math.isfinite(float(point[key]))
+                    for key in (
+                        "total_value",
+                        "excluded_external_flow",
+                        "adjusted_total_value",
+                        "portfolio_unit_nav",
+                        "csi300_nav",
+                        "star50_nav",
+                        "chinext_nav",
+                        "risk_free_annual_yield",
+                    )
+                )
+                for point in points
+            ):
+                errors.append("performance_benchmark_values_invalid")
             elif (
                 portfolio.get("performance_start_date")
                 != history.get("archive_start_date")
@@ -1454,6 +3400,68 @@ def validate_bundle_shape(bundle: Any) -> list[str]:
                 != history.get("archive_start_record")
             ):
                 errors.append("performance_history_start_mismatch")
+            elif not _almost_equal(
+                float(points[0]["adjusted_total_value"]),
+                float(portfolio["performance_initial_capital"]),
+            ) or not _almost_equal(
+                float(points[0]["portfolio_unit_nav"]), 1.0
+            ):
+                errors.append("performance_initial_capital_mismatch")
+            elif any(
+                not _almost_equal(
+                    float(point["adjusted_total_value"]),
+                    float(point["total_value"])
+                    - float(point["excluded_external_flow"]),
+                )
+                for point in points
+            ):
+                errors.append("performance_external_flow_exclusion_invalid")
+            elif not _almost_equal(
+                float(portfolio["cumulative_return"]),
+                float(points[-1]["portfolio_unit_nav"]) - 1.0,
+            ):
+                errors.append("performance_cumulative_return_mismatch")
+            elif not _almost_equal(
+                float(portfolio.get("cash", math.nan))
+                + float(portfolio.get("market_value", math.nan)),
+                float(portfolio.get("total_value", math.nan)),
+            ):
+                errors.append("economic_portfolio_accounting_mismatch")
+            elif not _almost_equal(
+                float(portfolio.get("total_value", math.nan)),
+                float(portfolio["adjusted_total_value"]),
+            ):
+                errors.append("economic_portfolio_total_mismatch")
+            elif (
+                not str(portfolio.get("current_valuation_status") or "")
+                .startswith("BLOCKED")
+                and not _almost_equal(
+                    float(portfolio.get("total_value", math.nan)),
+                    float(points[-1]["adjusted_total_value"]),
+                )
+            ):
+                errors.append("economic_portfolio_performance_total_mismatch")
+            elif not _almost_equal(
+                float(portfolio.get("portfolio_pnl", math.nan)),
+                float(portfolio["total_value"])
+                - float(portfolio["performance_initial_capital"]),
+            ):
+                errors.append("economic_portfolio_pnl_mismatch")
+            elif not _almost_equal(
+                float(portfolio.get("cash_weight", math.nan))
+                + float(portfolio.get("gross_exposure", math.nan)),
+                0.0 if bundle.get("public_redacted") is True else 1.0,
+            ):
+                errors.append("economic_portfolio_weight_mismatch")
+            elif not _almost_equal(
+                (
+                    sum(float(row["nav_weight"]) for row in positions)
+                    if position_nav_weights_valid
+                    else math.nan
+                ),
+                float(portfolio.get("gross_exposure", math.nan)),
+            ):
+                errors.append("position_nav_weight_total_mismatch")
     if bundle.get("i1_research") is None and bundle.get(
         "i1_display_status"
     ) != ("NOT_DISPLAYED_NO_EXACT_HASH_BOUND_I1_ARTIFACT"):
@@ -1478,6 +3486,14 @@ def verify_source_refs(
     refs = bundle.get("source_refs")
     if not isinstance(refs, list) or not refs:
         return ["source_refs_missing"]
+    current_record_dirs = {
+        Path(evidence.get("manifest_path", "")).parent.as_posix()
+        for evidence in (
+            bundle.get("current_evidence"),
+            bundle.get("previous_evidence"),
+        )
+        if isinstance(evidence, dict)
+    }
     seen: set[str] = set()
     for index, ref in enumerate(refs):
         if not isinstance(ref, dict) or set(ref) != {"path", "sha256"}:
@@ -1496,6 +3512,27 @@ def verify_source_refs(
             errors.append(f"source_ref_duplicate:{relative_path}")
             continue
         seen.add(relative_path)
+        if (
+            "results/strategy_record_archives/CN/"
+            "aggressive_tech_manufacturing/monthly/v1/"
+            in relative_path
+            and relative_path.endswith((".tar.zst", ".tzst", ".zst"))
+        ):
+            try:
+                archive_path = project_root / relative_path
+                _stable_stream_ref(
+                    {
+                        "path": relative_path,
+                        "sha256": declared_sha,
+                        "bytes": archive_path.lstat().st_size,
+                        "media_type": "application/zstd",
+                    },
+                    project_root,
+                    label="source_ref_archive",
+                )
+            except (DashboardInputError, OSError) as exc:
+                errors.append(str(exc))
+            continue
         try:
             artifact = stable_read(project_root / relative_path, project_root)
         except DashboardInputError as exc:
@@ -1503,4 +3540,31 @@ def verify_source_refs(
             continue
         if declared_sha != artifact.sha256:
             errors.append(f"source_ref_sha_mismatch:{relative_path}")
+            continue
+        if Path(relative_path).name == "backfill_provenance.json":
+            try:
+                manifest = load_json(
+                    stable_read(
+                        artifact.path.parent / "manifest.json",
+                        project_root,
+                    )
+                )
+                source_record = (
+                    manifest.get("source_record")
+                    if isinstance(manifest, dict)
+                    else None
+                )
+                _validate_transaction_backfill_provenance(
+                    artifact.path.parent,
+                    project_root,
+                    source_record,
+                    verify_history_source=(
+                        artifact.path.parent.relative_to(
+                            project_root
+                        ).as_posix()
+                        in current_record_dirs
+                    ),
+                )
+            except DashboardInputError as exc:
+                errors.append(str(exc))
     return errors

@@ -30,16 +30,8 @@
       </header>
 
       <main>
-        <section class="snapshot-strip internal-only" aria-label="最新组合状态">
-          <div><span>统计区间</span><strong id="performancePeriod">—</strong></div>
-          <div><span>最新有效记录</span><strong id="latestRecord">—</strong></div>
-          <div><span>数据日期</span><strong id="dataDate">—</strong></div>
-          <div><span>总资产</span><strong id="totalValue">—</strong></div>
-          <div><span>现金 / 股票仓位</span><strong id="cashExposure">—</strong></div>
-        </section>
-
         <section id="blockerPanel" class="panel blocker-panel" hidden>
-          <div class="panel-heading"><div><p class="eyebrow">FAIL CLOSED</p><h2>Dashboard 不可用</h2></div></div>
+          <div class="panel-heading"><div><p class="eyebrow">DATA STATUS</p><h2>业绩数据暂不可用</h2></div></div>
           <ul id="blockerList" class="blocker-list"></ul>
         </section>
 
@@ -100,7 +92,7 @@
               </div>
               <div class="table-wrap">
                 <table class="performance-table">
-                  <thead><tr><th>月份</th><th>覆盖区间</th><th class="numeric">组合</th><th class="numeric">沪深300</th><th class="numeric">科创50</th><th class="numeric">创业板指</th><th class="numeric">对沪深300超额</th><th class="numeric">月内最大回撤</th><th class="numeric monthly-ending-value">月末组合总资产</th><th class="monthly-evidence">证据</th></tr></thead>
+                  <thead><tr><th>月份</th><th>覆盖区间</th><th class="numeric">组合</th><th class="numeric">沪深300</th><th class="numeric">科创50</th><th class="numeric">创业板指</th><th class="numeric">对沪深300超额</th><th class="numeric">月内最大回撤</th></tr></thead>
                   <tbody id="monthlyPerformanceRows"></tbody>
                 </table>
               </div>
@@ -109,82 +101,7 @@
               <p class="eyebrow">PERFORMANCE READOUT</p>
               <h2>历史业绩分析</h2>
               <div id="historyInsightList" class="insight-list"></div>
-              <dl id="historySummary" class="metric-list compact-metrics internal-only"></dl>
             </aside>
-          </section>
-
-          <section class="panel holdings-panel internal-only">
-            <div class="panel-heading">
-              <div><p class="eyebrow">CURRENT EFFECTIVE LEDGER</p><h2>当前持仓与资产配置</h2></div>
-              <p>记录价格，不是当前行情；权益权重按股票仓位内部计算。</p>
-            </div>
-            <div class="allocation-layout">
-              <div>
-                <div id="allocationBar" class="allocation-bar" role="img" aria-label="现金和当前持仓的 NAV 权重"></div>
-                <div id="allocationLegend" class="allocation-legend"></div>
-              </div>
-              <dl id="currentStateList" class="metric-list current-state-list"></dl>
-            </div>
-            <div class="table-wrap">
-              <table>
-                <thead><tr><th>代码 公司名</th><th class="numeric">股数</th><th class="numeric">成本</th><th class="numeric">记录价</th><th class="numeric">市值</th><th class="numeric">NAV 权重</th><th>权益权重</th><th class="numeric">未实现 P&amp;L</th><th>证据</th></tr></thead>
-                <tbody id="positionRows"></tbody>
-              </table>
-            </div>
-          </section>
-
-          <section class="panel changes-panel internal-only">
-            <div class="panel-heading">
-              <div><p class="eyebrow">LATEST VS PREVIOUS</p><h2>最近一次持仓变化</h2></div>
-              <p id="changeSubtitle">—</p>
-            </div>
-            <div class="table-wrap">
-              <table>
-                <thead><tr><th>代码 公司名</th><th>变化</th><th class="numeric">前股数</th><th class="numeric">现股数</th><th class="numeric">数量变化</th><th class="numeric">NAV 权重变化</th><th class="numeric">权益权重变化</th></tr></thead>
-                <tbody id="changeRows"></tbody>
-              </table>
-            </div>
-          </section>
-
-          <section class="two-column internal-only">
-            <article class="panel">
-              <div class="panel-heading"><div><p class="eyebrow">ACCOUNTING</p><h2>收益与会计口径</h2></div></div>
-              <dl id="performanceList" class="metric-list"></dl>
-            </article>
-            <article class="panel">
-              <div class="panel-heading"><div><p class="eyebrow">CONCENTRATION</p><h2>集中度与数据新鲜度</h2></div></div>
-              <dl id="concentrationList" class="metric-list"></dl>
-            </article>
-          </section>
-
-          <section class="panel internal-only">
-            <div class="panel-heading"><div><p class="eyebrow">RISK</p><h2>主要风险</h2></div></div>
-            <div id="riskGrid" class="risk-grid"></div>
-          </section>
-
-          <details id="evidenceDetails" class="detail-panel internal-only">
-            <summary><span><b>完整历史估值明细</b><small>逐条查看 3 月以来的组合、三项基准、对沪深300超额与证据状态</small></span><strong id="historyPointCount">—</strong></summary>
-            <div class="detail-content">
-              <div class="table-wrap history-table-wrap">
-                <table>
-                  <thead><tr><th>估值日期</th><th>记录</th><th class="numeric">组合总资产</th><th class="numeric">组合净值</th><th class="numeric">组合累计</th><th class="numeric">沪深300累计</th><th class="numeric">科创50累计</th><th class="numeric">创业板指累计</th><th class="numeric">对沪深300超额</th><th>证据</th></tr></thead>
-                  <tbody id="performanceRows"></tbody>
-                </table>
-              </div>
-            </div>
-          </details>
-
-          <details class="detail-panel internal-only">
-            <summary><span><b>证据路径与 SHA</b><small>当前 closure、归档基线、资本口径调整和基准的 exact-byte readback</small></span></summary>
-            <div class="detail-content">
-              <div class="table-wrap"><table><thead><tr><th>Artifact</th><th>Path</th><th>SHA-256</th></tr></thead><tbody id="evidenceRows"></tbody></table></div>
-            </div>
-          </details>
-
-          <section class="panel evidence-limits internal-only">
-            <div class="panel-heading"><div><p class="eyebrow">EVIDENCE LIMITS</p><h2>未验证口径</h2></div></div>
-            <p id="i1Status" class="mono">—</p>
-            <ul id="warningList" class="warning-list"></ul>
           </section>
         </div>
       </main>

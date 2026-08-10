@@ -28,11 +28,17 @@ DEFAULT_RECORD_ROOT = (
 DEFAULT_BENCHMARK = (
     PROJECT_ROOT / "portfolio_dashboard" / "inputs" / "cn_index_benchmark.csv"
 )
+DEFAULT_RISK_FREE = (
+    PROJECT_ROOT / "portfolio_dashboard" / "inputs" / "cn_govt_bond_yield.csv"
+)
 DEFAULT_OUTPUT_DIR = (
     PROJECT_ROOT / "portfolio_dashboard" / "private" / "generated"
 )
 DEFAULT_JSON = DEFAULT_OUTPUT_DIR / "cn_aggressive_dashboard.v1.json"
 DEFAULT_JS = DEFAULT_OUTPUT_DIR / "cn_aggressive_dashboard.v1.js"
+DEFAULT_HISTORY_INTEGRITY = (
+    DEFAULT_OUTPUT_DIR / "cn_aggressive_history_integrity.v1.json"
+)
 
 
 def _render_json(bundle: dict) -> bytes:
@@ -122,8 +128,14 @@ def parse_args() -> argparse.Namespace:
         "--record-root", type=Path, default=DEFAULT_RECORD_ROOT
     )
     parser.add_argument("--benchmark", type=Path, default=DEFAULT_BENCHMARK)
+    parser.add_argument("--risk-free", type=Path, default=DEFAULT_RISK_FREE)
     parser.add_argument("--json-output", type=Path, default=DEFAULT_JSON)
     parser.add_argument("--js-output", type=Path, default=DEFAULT_JS)
+    parser.add_argument(
+        "--history-integrity",
+        type=Path,
+        default=DEFAULT_HISTORY_INTEGRITY,
+    )
     parser.add_argument("--generated-at", default=None)
     parser.add_argument(
         "--today", default=None, help="Testing override in YYYY-MM-DD format"
@@ -142,8 +154,10 @@ def main() -> int:
             project_root=args.project_root.resolve(),
             record_root=args.record_root.resolve(),
             benchmark_path=args.benchmark.resolve(),
+            risk_free_path=args.risk_free.resolve(),
             generated_at=generated_at,
             today=today,
+            history_integrity_path=args.history_integrity.resolve(),
         )
         if bundle["status"] == "BLOCKED":
             raise DashboardInputError("export_blocked")

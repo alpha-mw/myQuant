@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from typing import Any
 
-from quant_investor.automation import daily_runner as _runner
+from quant_investor.automation.history_loader import HistoryLoader
 from quant_investor.config import config as runtime_config
 
+
+log = logging.getLogger("daily_runner")
 
 _BRANCH_LABEL_MAP = {
     "quant": "量化因子",
@@ -114,7 +117,7 @@ class ReportBuilder:
             from quant_investor.market.analyze import _aggregate_branch_summary
             return _aggregate_branch_summary(all_results)
         except Exception as exc:
-            _runner.log.debug("branch 聚合回退: %s", exc)
+            log.debug("branch 聚合回退: %s", exc)
             return {}
 
     def _build_plan(
@@ -130,7 +133,7 @@ class ReportBuilder:
                 top_k=config["top_k"],
             )
         except Exception as exc:
-            _runner.log.debug("trade plan 构建回退: %s", exc)
+            log.debug("trade plan 构建回退: %s", exc)
             return {"portfolio_plan": {}, "recommendations": [], "market_summary": {}}
 
     # ── 各章节 ───────────────────────────────────────────────────────────────
@@ -154,7 +157,7 @@ class ReportBuilder:
         )
 
     def _history_context(self, history: list[dict[str, Any]]) -> str:
-        loader = _runner.HistoryLoader()
+        loader = HistoryLoader()
         context = loader.format_context_section(history)
         return f"## 📚 历史分析上下文（最近 5 个日期的策略记录）\n\n{context}"
 

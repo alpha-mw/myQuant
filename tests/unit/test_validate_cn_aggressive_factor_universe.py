@@ -23,6 +23,16 @@ def _load_script():
     return module
 
 
+def test_default_output_is_research_only():
+    module = _load_script()
+
+    assert module.DEFAULT_OUTPUT == Path(
+        "results/research/CN/aggressive_tech_manufacturing/"
+        "20260618_broad_factor_validation"
+    )
+    assert "strategy_records" not in module.DEFAULT_OUTPUT.parts
+
+
 def _write_snapshot(
     tmp_path: Path,
     *,

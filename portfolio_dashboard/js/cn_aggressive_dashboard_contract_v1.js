@@ -74,8 +74,35 @@
           }
         });
       }
-      if (!isObject(value.portfolio) || value.portfolio.return_method !== "funding_aware_time_weighted_unitization") {
+      if (!isObject(value.portfolio) || value.portfolio.return_method !== "initial_capital_return_excluding_external_flows") {
         errors.push("portfolio return method is invalid");
+      } else {
+        ["cash", "market_value", "total_value", "cash_weight", "gross_exposure", "portfolio_pnl", "performance_initial_capital", "excluded_external_flow", "adjusted_total_value", "cumulative_profit_excluding_external_flow", "cumulative_return"].forEach(function (key) {
+          if (!finite(value.portfolio[key])) errors.push("portfolio." + key + " is invalid");
+        });
+        if (finite(value.portfolio.cash) && finite(value.portfolio.market_value) && finite(value.portfolio.total_value) &&
+            Math.abs(value.portfolio.cash + value.portfolio.market_value - value.portfolio.total_value) > 0.01) {
+          errors.push("economic portfolio accounting is inconsistent");
+        }
+        if (finite(value.portfolio.total_value) && finite(value.portfolio.adjusted_total_value) &&
+            Math.abs(value.portfolio.total_value - value.portfolio.adjusted_total_value) > 0.01) {
+          errors.push("economic portfolio total is inconsistent");
+        }
+        if (finite(value.portfolio.portfolio_pnl) && finite(value.portfolio.total_value) && finite(value.portfolio.performance_initial_capital) &&
+            Math.abs(value.portfolio.portfolio_pnl - (value.portfolio.total_value - value.portfolio.performance_initial_capital)) > 0.01) {
+          errors.push("economic portfolio P&L is inconsistent");
+        }
+        if (finite(value.portfolio.cash_weight) && finite(value.portfolio.gross_exposure) &&
+            Math.abs(value.portfolio.cash_weight + value.portfolio.gross_exposure - (value.public_redacted ? 0 : 1)) > 1e-9) {
+          errors.push("economic portfolio weights are inconsistent");
+        }
+        var navWeightTotal = Array.isArray(value.positions) ? value.positions.reduce(function (total, position) {
+          return total + (finite(position.nav_weight) ? position.nav_weight : 0);
+        }, 0) : NaN;
+        if (finite(navWeightTotal) && finite(value.portfolio.gross_exposure) &&
+            Math.abs(navWeightTotal - value.portfolio.gross_exposure) > 1e-9) {
+          errors.push("position NAV weights are inconsistent");
+        }
       }
       if (!isObject(value.history) || !RECORD_RE.test(value.history.archive_start_record || "")) {
         errors.push("historical performance summary is missing");
@@ -89,10 +116,41 @@
           errors.push("historical performance start is inconsistent");
         }
         value.portfolio.performance_points.forEach(function (point, index) {
-          ["total_value", "portfolio_unit_nav", "portfolio_cumulative_return", "csi300_nav", "csi300_cumulative_return", "cumulative_excess_return"].forEach(function (key) {
+          ["total_value", "excluded_external_flow", "adjusted_total_value", "portfolio_unit_nav", "portfolio_cumulative_return", "csi300_nav", "csi300_cumulative_return", "star50_nav", "star50_cumulative_return", "chinext_nav", "chinext_cumulative_return", "cumulative_excess_return", "risk_free_annual_yield"].forEach(function (key) {
             if (!finite(point[key])) errors.push("performance_points[" + index + "]." + key + " is invalid");
           });
         });
+        if (finite(value.portfolio.performance_initial_capital) && (
+          Math.abs(firstPoint.adjusted_total_value - value.portfolio.performance_initial_capital) > 0.01 ||
+          Math.abs(firstPoint.portfolio_unit_nav - 1) > 1e-9
+        )) errors.push("performance initial capital baseline is inconsistent");
+        var lastPoint = value.portfolio.performance_points[value.portfolio.performance_points.length - 1];
+        if (finite(lastPoint.adjusted_total_value) && finite(lastPoint.total_value) && finite(lastPoint.excluded_external_flow) &&
+            Math.abs(lastPoint.adjusted_total_value - (lastPoint.total_value - lastPoint.excluded_external_flow)) > 0.01) {
+          errors.push("performance external flow exclusion is inconsistent");
+        }
+        if (lastPoint.date !== value.portfolio.performance_end_date ||
+            (value.history.latest_performance_date && lastPoint.date !== value.history.latest_performance_date)) {
+          errors.push("latest performance date is inconsistent");
+        }
+        if (finite(value.portfolio.cumulative_return) && finite(lastPoint.portfolio_unit_nav) &&
+            Math.abs(value.portfolio.cumulative_return - (lastPoint.portfolio_unit_nav - 1)) > 1e-9) {
+          errors.push("latest performance return is inconsistent");
+        }
+        var currentValuationStatus = String(value.portfolio.current_valuation_status || "");
+        var currentValuationIsExplicitlyIncomplete = value.status === "PARTIAL" &&
+          currentValuationStatus.indexOf("BLOCKED") === 0 &&
+          isObject(value.current_evidence) &&
+          value.current_evidence.official_valuation === false &&
+          value.current_evidence.valuation_completeness_passed === false &&
+          value.current_evidence.valuation_status === currentValuationStatus &&
+          Array.isArray(value.warnings) &&
+          value.warnings.indexOf("latest_current_valuation_incomplete:" + currentValuationStatus) >= 0;
+        if (finite(lastPoint.adjusted_total_value) && finite(value.portfolio.total_value) &&
+            Math.abs(lastPoint.adjusted_total_value - value.portfolio.total_value) > 0.01 &&
+            !currentValuationIsExplicitlyIncomplete) {
+          errors.push("latest performance total is inconsistent");
+        }
         value.history.funding_events.forEach(function (event, index) {
           ["amount", "total_value_before", "total_value_after"].forEach(function (key) {
             if (!finite(event[key])) errors.push("funding_events[" + index + "]." + key + " is invalid");
@@ -100,10 +158,33 @@
           if (!SHA256_RE.test(event.evidence_sha256 || "")) errors.push("funding_events[" + index + "] evidence SHA is invalid");
         });
       }
-      if (!Array.isArray(value.benchmarks) || !value.benchmarks.some(function (row) {
-        return row.id === "CSI300" && Array.isArray(row.missing_dates) && row.missing_dates.length === 0;
-      })) {
-        errors.push("verified CSI300 benchmark is missing");
+      var expectedBenchmarks = {
+        CSI300: "沪深300|000300.SH",
+        STAR50: "科创50|000688.SH",
+        CHINEXT: "创业板指|399006.SZ"
+      };
+      if (!Array.isArray(value.benchmarks) || value.benchmarks.length !== 3) {
+        errors.push("verified benchmark set is missing");
+      } else {
+        var actualBenchmarks = {};
+        value.benchmarks.forEach(function (row) {
+          if (!isObject(row) || !Array.isArray(row.missing_dates) || row.missing_dates.length !== 0) return;
+          actualBenchmarks[row.id] = row.name + "|" + row.ts_code;
+        });
+        var benchmarkSetValid = Object.keys(expectedBenchmarks).every(function (id) {
+          return actualBenchmarks[id] === expectedBenchmarks[id];
+        }) && Object.keys(actualBenchmarks).length === Object.keys(expectedBenchmarks).length;
+        if (!benchmarkSetValid) {
+          errors.push("verified benchmark set is invalid");
+        }
+      }
+      if (!isObject(value.risk_free) || value.risk_free.tenor !== "1Y" ||
+          value.risk_free.source_system !== "chinabond.mof_govt_yield_curve" ||
+          value.risk_free.day_count !== "ACT/365" ||
+          value.risk_free.alignment !== "interval_start_previous_published_workday" ||
+          !finite(value.risk_free.latest_annual_yield) ||
+          !Array.isArray(value.risk_free.missing_dates) || value.risk_free.missing_dates.length !== 0) {
+        errors.push("verified risk-free series is invalid");
       }
       if (value.i1_research === null && value.i1_display_status !== "NOT_DISPLAYED_NO_EXACT_HASH_BOUND_I1_ARTIFACT") {
         errors.push("I1 absence status is invalid");

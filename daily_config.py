@@ -5,6 +5,8 @@ myQuant 每日分析配置文件 — 直接编辑此文件来调整分析参数�
 DAILY_CONFIG = {
     # ── 市场与资金 ──────────────────────────────────────────────────────────────
     "market": "CN",
+    # 历史召回只读取该策略；registered 策略必须通过 strategy-record catalog。
+    "history_strategy": "aggressive_tech_manufacturing",
     "universe": "full_a",         # CN 默认全 A universe；legacy basket 仅作兼容
     "risk_level": "中等",          # 可选: "保守" / "中等" / "积极"
     "total_capital": 1_000_000,   # 总资金（元）

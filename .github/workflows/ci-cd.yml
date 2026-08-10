@@ -39,6 +39,9 @@ jobs:
         uv run python -c 'from quant_investor.intelligence.package import verify_package; verify_package()'
         uv run python -c 'from quant_investor.intelligence_v2.package import verify_package; verify_package()'
 
+    - name: Check strategy-record access governance
+      run: uv run python scripts/check_strategy_record_access.py
+
     - name: Lint with flake8
       run: |
         uv run flake8 quant_investor --count --select=E9,F63,F7,F82 --show-source --statistics

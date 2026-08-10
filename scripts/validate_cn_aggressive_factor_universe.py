@@ -24,7 +24,7 @@ from quant_investor.market.market_data_reader import MarketDataReader
 
 
 DEFAULT_OUTPUT = Path(
-    "results/strategy_records/CN/aggressive_tech_manufacturing/"
+    "results/research/CN/aggressive_tech_manufacturing/"
     "20260618_broad_factor_validation"
 )
 LATEST_PATH = Path("data/parquet/cn/_latest.json")

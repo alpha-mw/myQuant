@@ -9,7 +9,7 @@
     "strategy_id_kind", "read_only", "authority_flags", "latest_record_seen",
     "latest_valid_record", "previous_valid_record", "latest_data_date",
     "data_age_calendar_days", "current_evidence", "previous_evidence", "history", "positions",
-    "changes", "portfolio", "benchmarks", "concentration", "risks", "i1_research",
+    "changes", "portfolio", "benchmarks", "risk_free", "concentration", "risks", "i1_research",
     "i1_display_status", "blockers", "warnings", "valid_record_count",
     "rejected_record_count", "rejected_record_reason_counts", "rejected_record_samples",
     "source_refs", "content_sha256"
@@ -34,7 +34,8 @@
     "positions": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/position"}},
     "changes": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/change"}},
     "portfolio": {"$ref": "#/$defs/portfolio"},
-    "benchmarks": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/benchmark"}},
+    "benchmarks": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"$ref": "#/$defs/benchmark"}},
+    "risk_free": {"$ref": "#/$defs/riskFree"},
     "concentration": {"$ref": "#/$defs/concentration"},
     "risks": {"type": "array", "items": {"$ref": "#/$defs/risk"}},
     "i1_research": {"type": ["object", "null"]},
@@ -87,7 +88,11 @@
         "pnl_path": {"type": "string"}, "pnl_sha256": {"$ref": "#/$defs/sha256"},
         "financial_state_sha256": {"$ref": "#/$defs/sha256"},
         "execution_status": {"type": "string"},
-        "execution_kind": {"enum": ["carry_forward", "applied_effective_ledger"]}
+        "execution_kind": {"enum": ["carry_forward", "applied_effective_ledger"]},
+        "valuation_status": {"type": ["string", "null"]},
+        "official_valuation": {"type": ["boolean", "null"]},
+        "valuation_completeness_passed": {"type": ["boolean", "null"]},
+        "price_basis": {"type": ["string", "null"]}
       }
     },
     "position": {
@@ -116,18 +121,31 @@
     },
     "performancePoint": {
       "type": "object", "additionalProperties": false,
-      "required": ["date", "record", "total_value", "portfolio_unit_nav", "portfolio_cumulative_return", "csi300_nav", "csi300_cumulative_return", "cumulative_excess_return", "benchmark_coverage", "benchmark_value_date", "evidence_status"],
+      "required": ["date", "record", "total_value", "excluded_external_flow", "adjusted_total_value", "portfolio_unit_nav", "portfolio_cumulative_return", "csi300_nav", "csi300_cumulative_return", "star50_nav", "star50_cumulative_return", "star50_benchmark_coverage", "star50_benchmark_value_date", "chinext_nav", "chinext_cumulative_return", "chinext_benchmark_coverage", "chinext_benchmark_value_date", "cumulative_excess_return", "benchmark_coverage", "benchmark_value_date", "risk_free_annual_yield", "risk_free_coverage", "risk_free_value_date", "evidence_status"],
       "properties": {
         "date": {"$ref": "#/$defs/date"}, "record": {"$ref": "#/$defs/record"},
         "total_value": {"$ref": "#/$defs/finiteNumber"},
+        "excluded_external_flow": {"$ref": "#/$defs/finiteNumber"},
+        "adjusted_total_value": {"$ref": "#/$defs/finiteNumber"},
         "portfolio_unit_nav": {"$ref": "#/$defs/finiteNumber"},
         "portfolio_cumulative_return": {"$ref": "#/$defs/finiteNumber"},
         "csi300_nav": {"$ref": "#/$defs/finiteNumber"},
         "csi300_cumulative_return": {"$ref": "#/$defs/finiteNumber"},
+        "star50_nav": {"$ref": "#/$defs/finiteNumber"},
+        "star50_cumulative_return": {"$ref": "#/$defs/finiteNumber"},
+        "star50_benchmark_coverage": {"enum": ["exact_close", "previous_trading_day_ffill"]},
+        "star50_benchmark_value_date": {"$ref": "#/$defs/date"},
+        "chinext_nav": {"$ref": "#/$defs/finiteNumber"},
+        "chinext_cumulative_return": {"$ref": "#/$defs/finiteNumber"},
+        "chinext_benchmark_coverage": {"enum": ["exact_close", "previous_trading_day_ffill"]},
+        "chinext_benchmark_value_date": {"$ref": "#/$defs/date"},
         "cumulative_excess_return": {"$ref": "#/$defs/finiteNumber"},
         "benchmark_coverage": {"enum": ["exact_close", "previous_trading_day_ffill"]},
         "benchmark_value_date": {"$ref": "#/$defs/date"},
-        "evidence_status": {"enum": ["ARCHIVE_INCEPTION_EXACT_BYTES_NO_DECLARED_SHA", "LEGACY_EXACT_BYTES_NO_DECLARED_SHA", "HASH_BOUND_CURRENT_CLOSURE"]}
+        "risk_free_annual_yield": {"$ref": "#/$defs/finiteNumber"},
+        "risk_free_coverage": {"enum": ["exact_published_yield", "previous_published_workday_ffill"]},
+        "risk_free_value_date": {"$ref": "#/$defs/date"},
+        "evidence_status": {"enum": ["ARCHIVE_INCEPTION_EXACT_BYTES_NO_DECLARED_SHA", "LEGACY_EXACT_BYTES_NO_DECLARED_SHA", "HASH_BOUND_CURRENT_CLOSURE", "DASHBOARD_POST_HOC_SHA_REGISTRY_BOUND"]}
       }
     },
     "history": {
@@ -146,7 +164,7 @@
         "rejected_record_count": {"type": "integer", "minimum": 0},
         "rejected_record_reason_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 1}},
         "rejected_record_samples": {"type": "array", "maxItems": 12, "items": {"type": "string", "minLength": 1}},
-        "evidence_status": {"enum": ["PARTIAL_LEGACY_EXACT_BYTES_NO_DECLARED_SHA", "HASH_BOUND_CURRENT_CLOSURE_ONLY"]},
+        "evidence_status": {"enum": ["PARTIAL_LEGACY_EXACT_BYTES_NO_DECLARED_SHA", "HASH_BOUND_CURRENT_CLOSURE_ONLY", "DASHBOARD_POST_HOC_SHA_REGISTRY_BOUND"]},
         "baseline_manifest_path": {"type": "string", "minLength": 1}, "baseline_manifest_sha256": {"$ref": "#/$defs/sha256"},
         "baseline_ledger_path": {"type": ["string", "null"]}, "baseline_ledger_sha256": {"anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]}
       }
@@ -164,7 +182,7 @@
     },
     "portfolio": {
       "type": "object", "additionalProperties": false,
-      "required": ["cash", "market_value", "total_value", "cash_weight", "gross_exposure", "portfolio_pnl", "current_unrealized_pnl", "latest_record_realized_pnl_from_rebalance", "cumulative_realized_pnl", "realized_pnl_evidence_status", "cumulative_twr", "latest_record_interval_return", "max_drawdown", "latest_interval_turnover", "return_method", "gross_or_net", "fee_basis", "performance_start_date", "performance_end_date", "performance_points"],
+      "required": ["cash", "market_value", "total_value", "cash_weight", "gross_exposure", "portfolio_pnl", "current_unrealized_pnl", "latest_record_realized_pnl_from_rebalance", "cumulative_realized_pnl", "realized_pnl_evidence_status", "performance_initial_capital", "excluded_external_flow", "adjusted_total_value", "cumulative_profit_excluding_external_flow", "cumulative_return", "latest_record_interval_return", "max_drawdown", "latest_interval_turnover", "return_method", "gross_or_net", "fee_basis", "performance_start_date", "performance_end_date", "performance_points"],
       "properties": {
         "cash": {"$ref": "#/$defs/finiteNumber"}, "market_value": {"$ref": "#/$defs/finiteNumber"},
         "total_value": {"$ref": "#/$defs/finiteNumber"}, "cash_weight": {"$ref": "#/$defs/finiteNumber"},
@@ -173,9 +191,15 @@
         "latest_record_realized_pnl_from_rebalance": {"$ref": "#/$defs/finiteNumber"},
         "cumulative_realized_pnl": {"$ref": "#/$defs/nullableNumber"},
         "realized_pnl_evidence_status": {"enum": ["VERIFIED", "UNKNOWN"]},
-        "cumulative_twr": {"$ref": "#/$defs/finiteNumber"}, "latest_record_interval_return": {"$ref": "#/$defs/finiteNumber"},
+        "performance_initial_capital": {"$ref": "#/$defs/finiteNumber"},
+        "excluded_external_flow": {"$ref": "#/$defs/finiteNumber"},
+        "adjusted_total_value": {"$ref": "#/$defs/finiteNumber"},
+        "cumulative_profit_excluding_external_flow": {"$ref": "#/$defs/finiteNumber"},
+        "cumulative_return": {"$ref": "#/$defs/finiteNumber"},
+        "current_valuation_status": {"type": ["string", "null"]},
+        "latest_record_interval_return": {"$ref": "#/$defs/finiteNumber"},
         "max_drawdown": {"$ref": "#/$defs/finiteNumber"}, "latest_interval_turnover": {"$ref": "#/$defs/finiteNumber"},
-        "return_method": {"const": "funding_aware_time_weighted_unitization"},
+        "return_method": {"const": "initial_capital_return_excluding_external_flows"},
         "gross_or_net": {"type": "string"}, "fee_basis": {"type": "string"},
         "performance_start_date": {"$ref": "#/$defs/date"}, "performance_end_date": {"$ref": "#/$defs/date"},
         "performance_points": {"type": "array", "minItems": 2, "items": {"$ref": "#/$defs/performancePoint"}}
@@ -185,13 +209,30 @@
       "type": "object", "additionalProperties": false,
       "required": ["id", "name", "ts_code", "source_path", "source_sha256", "start_date", "end_date", "return", "excess_return", "max_drawdown", "missing_dates", "coverage"],
       "properties": {
-        "id": {"const": "CSI300"}, "name": {"const": "沪深300"}, "ts_code": {"const": "000300.SH"},
+        "id": {"enum": ["CSI300", "STAR50", "CHINEXT"]}, "name": {"enum": ["沪深300", "科创50", "创业板指"]}, "ts_code": {"enum": ["000300.SH", "000688.SH", "399006.SZ"]},
         "source_path": {"type": "string"}, "source_sha256": {"$ref": "#/$defs/sha256"},
         "start_date": {"$ref": "#/$defs/date"}, "end_date": {"$ref": "#/$defs/date"},
         "return": {"$ref": "#/$defs/finiteNumber"}, "excess_return": {"$ref": "#/$defs/finiteNumber"},
         "max_drawdown": {"$ref": "#/$defs/finiteNumber"},
         "missing_dates": {"type": "array", "maxItems": 0},
         "coverage": {"type": "array", "minItems": 2, "items": {"enum": ["exact_close", "previous_trading_day_ffill"]}}
+      }
+    },
+    "riskFree": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "tenor", "source_system", "source_url", "source_path", "source_sha256", "start_date", "end_date", "latest_annual_yield", "day_count", "alignment", "missing_dates", "coverage"],
+      "properties": {
+        "name": {"const": "中国1年期国债收益率"},
+        "tenor": {"const": "1Y"},
+        "source_system": {"const": "chinabond.mof_govt_yield_curve"},
+        "source_url": {"const": "https://yield.chinabond.com.cn/cbweb-mn/pgxh/showHistory"},
+        "source_path": {"type": "string"}, "source_sha256": {"$ref": "#/$defs/sha256"},
+        "start_date": {"$ref": "#/$defs/date"}, "end_date": {"$ref": "#/$defs/date"},
+        "latest_annual_yield": {"$ref": "#/$defs/finiteNumber"},
+        "day_count": {"const": "ACT/365"},
+        "alignment": {"const": "interval_start_previous_published_workday"},
+        "missing_dates": {"type": "array", "maxItems": 0},
+        "coverage": {"type": "array", "minItems": 2, "items": {"enum": ["exact_published_yield", "previous_published_workday_ffill"]}}
       }
     },
     "concentration": {
