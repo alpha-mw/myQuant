@@ -494,6 +494,42 @@ def _attach_dashboard_closure(
         }
 
 
+def _normalize_dashboard_projection_source_refs(
+    projection: dict[str, Any],
+) -> None:
+    for key in ("valid_records", "historical_records"):
+        rows = projection.get(key)
+        if not isinstance(rows, list):
+            raise StrategyRecordStoreError(
+                "Dashboard projection is incomplete"
+            )
+        for row in rows:
+            if not isinstance(row, dict) or not isinstance(
+                row.get("source_refs"), list
+            ):
+                raise StrategyRecordStoreError(
+                    "Dashboard projection source refs are invalid"
+                )
+            refs_by_path: dict[str, str] = {}
+            for ref in row["source_refs"]:
+                path = ref.get("path") if isinstance(ref, dict) else None
+                digest = ref.get("sha256") if isinstance(ref, dict) else None
+                if not isinstance(path, str) or not isinstance(digest, str):
+                    raise StrategyRecordStoreError(
+                        "Dashboard projection source ref is invalid"
+                    )
+                previous = refs_by_path.get(path)
+                if previous is not None and previous != digest:
+                    raise StrategyRecordStoreError(
+                        "Dashboard projection source refs conflict"
+                    )
+                refs_by_path[path] = digest
+            row["source_refs"] = [
+                {"path": path, "sha256": refs_by_path[path]}
+                for path in sorted(refs_by_path)
+            ]
+
+
 def _legacy_record_paths(root: Path, requested: list[str]) -> list[str]:
     if requested:
         return [_safe_relative(value) for value in requested]
@@ -731,7 +767,7 @@ def _same_inventory(left: dict[str, Any], right: dict[str, Any]) -> bool:
 
 
 def command_seal_publish(args: argparse.Namespace) -> dict[str, Any]:
-    root = Path(args.record_root)
+    root = Path(args.record_root).resolve(strict=True)
     loaded = load_registered_catalog(root)
     if loaded is None:
         raise StrategyRecordStoreError(
@@ -750,6 +786,7 @@ def command_seal_publish(args: argparse.Namespace) -> dict[str, Any]:
     record_id = _strict_run_id(args.record_id)
     stage = root / STORE_DIRECTORY / "staging" / record_id
     target = root / record_id
+    adopting_existing = not stage.exists() and target.exists()
     sealed_at = _timestamp(args.published_at)
     if stage.exists():
         staged_inventory = build_inventory(
@@ -795,7 +832,10 @@ def command_seal_publish(args: argparse.Namespace) -> dict[str, Any]:
     if matches:
         if not _same_inventory(matches[0], new_record):
             raise StrategyRecordConflict("catalog record identity collision")
-        if pointer.get("active_record_id") == record_id:
+        if (
+            pointer.get("active_record_id") == record_id
+            and not getattr(args, "project_root", None)
+        ):
             return {
                 "idempotent": True,
                 "pointer": pointer,
@@ -837,6 +877,46 @@ def command_seal_publish(args: argparse.Namespace) -> dict[str, Any]:
             "historical_records": historical,
             "historical_rejected": historical_rejected,
         }
+        _normalize_dashboard_projection_source_refs(dashboard_projection)
+        if adopting_existing:
+            valid_by_id = {row["record"]: row for row in valid}
+            registered_ids = {row["record_id"] for row in records}
+            source_id = valid_by_id.get(record_id, {}).get("source_record")
+            visited = {record_id}
+            adopted: list[dict[str, Any]] = []
+            while source_id and source_id not in registered_ids:
+                if source_id in visited:
+                    raise StrategyRecordStoreError(
+                        "existing record source chain contains a cycle"
+                    )
+                visited.add(source_id)
+                source_row = valid_by_id.get(source_id)
+                if source_row is None:
+                    raise StrategyRecordStoreError(
+                        "existing record source chain is not Dashboard-valid"
+                    )
+                source_path = root / _strict_run_id(source_id)
+                source_inventory = build_inventory(
+                    source_path, enforce_new_record_budget=True
+                )
+                adopted.append(
+                    {
+                        "record_id": source_id,
+                        "relative_path": source_id,
+                        "state": "ONLINE",
+                        "storage_state": "ONLINE",
+                        "sealed_at": sealed_at,
+                        **source_inventory,
+                    }
+                )
+                registered_ids.add(source_id)
+                source_id = source_row.get("source_record")
+            if adopted:
+                records = [
+                    row for row in records if row["record_id"] != record_id
+                ]
+                records.extend(reversed(adopted))
+                records.append(new_record)
         _attach_dashboard_closure(
             records,
             dashboard_projection,
@@ -849,13 +929,22 @@ def command_seal_publish(args: argparse.Namespace) -> dict[str, Any]:
             raise StrategyRecordStoreError(
                 "sealed record did not pass Dashboard current-record validation"
             )
+    previous_record_id = pointer.get("active_record_id")
+    if adopting_existing and dashboard_projection is not None:
+        valid_by_id = {
+            row["record"]: row
+            for row in dashboard_projection["valid_records"]
+        }
+        direct_source = valid_by_id[record_id].get("source_record")
+        if direct_source in {row["record_id"] for row in records}:
+            previous_record_id = direct_source
     return publish_catalog(
         root,
         expected_pointer_sha256=args.expected_pointer_sha,
         records=records,
         dashboard_projection=dashboard_projection,
         active_record_id=record_id,
-        previous_record_id=pointer.get("active_record_id"),
+        previous_record_id=previous_record_id,
         generation_id=args.generation_id,
         published_at=sealed_at,
     )

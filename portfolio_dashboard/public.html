@@ -107,11 +107,13 @@
       </main>
     </div>
 
-    <script src="private/generated/cn_aggressive_dashboard.v1.js"></script>
+    <script>
+      document.write('<script src="private/generated/cn_aggressive_dashboard.v1.js?cache=' + Date.now() + '"><\/script>');
+    </script>
     <script src="js/cn_aggressive_input.js"></script>
     <script src="js/cn_aggressive_dashboard_contract_v1.js"></script>
     <script src="js/cn_aggressive_dashboard_analysis_v1.js"></script>
-    <script src="js/cn_aggressive_public_mode.js"></script>
+    <script src="js/cn_aggressive_public_mode.js?mode=public-v1"></script>
     <script src="app.js"></script>
   </body>
 </html>

@@ -140,6 +140,136 @@ def test_stage_seal_exact_once_and_collision(tmp_path: Path) -> None:
         )
 
 
+def test_seal_publish_normalizes_relative_record_root_for_dashboard(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "records"
+    _bootstrap(root)
+    target = root / "20260810_1000"
+    target.mkdir()
+    (target / "payload.json").write_text('{"value":1}\n', encoding="utf-8")
+    observed: list[Path] = []
+
+    def scan_valid(record_root: Path, project_root: Path) -> tuple[list, list, str]:
+        observed.append(record_root)
+        return (
+            [
+                {"record": "20260809_1000", "source_refs": []},
+                {"record": "20260810_1000", "source_refs": []},
+            ],
+            [],
+            "20260810_1000",
+        )
+
+    def scan_historical(**values: object) -> tuple[list, list]:
+        observed.append(values["record_root"])
+        return ([{"record": "20260809_1000", "source_refs": []}], [])
+
+    monkeypatch.setattr(
+        "scripts.cn_dashboard_common.scan_valid_records", scan_valid
+    )
+    monkeypatch.setattr(
+        "scripts.cn_dashboard_common.scan_historical_performance_records",
+        scan_historical,
+    )
+    monkeypatch.setattr(manager, "_attach_dashboard_closure", lambda *a, **k: None)
+    relative_root = Path(os.path.relpath(root, Path.cwd()))
+    result = manager.command_seal_publish(
+        _args(
+            record_root=str(relative_root),
+            record_id="20260810_1000",
+            expected_pointer_sha=_pointer_sha(root),
+            project_root=str(tmp_path),
+            generation_id="g-relative",
+        )
+    )
+    assert result["pointer"]["active_record_id"] == "20260810_1000"
+    assert observed == [root.resolve(), root.resolve()]
+
+
+def test_seal_publish_atomically_adopts_existing_source_chain(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "records"
+    _bootstrap(root)
+    for record_id in ("20260810_1943", "20260810_1948"):
+        target = root / record_id
+        target.mkdir()
+        (target / "payload.json").write_text(
+            '{"value":1}\n', encoding="utf-8"
+        )
+
+    valid = [
+        {
+            "record": "20260809_1000",
+            "source_record": None,
+            "source_refs": [],
+        },
+        {
+            "record": "20260810_1943",
+            "source_record": "20260809_1000",
+            "source_refs": [],
+        },
+        {
+            "record": "20260810_1948",
+            "source_record": "20260810_1943",
+            "source_refs": [],
+        },
+    ]
+    monkeypatch.setattr(
+        "scripts.cn_dashboard_common.scan_valid_records",
+        lambda *args: (valid, [], "20260810_1948"),
+    )
+    monkeypatch.setattr(
+        "scripts.cn_dashboard_common.scan_historical_performance_records",
+        lambda **kwargs: ([], []),
+    )
+    monkeypatch.setattr(
+        manager, "_attach_dashboard_closure", lambda *args, **kwargs: None
+    )
+    result = manager.command_seal_publish(
+        _args(
+            record_root=str(root),
+            record_id="20260810_1948",
+            expected_pointer_sha=_pointer_sha(root),
+            project_root=str(tmp_path),
+            generation_id="g-adopt-chain",
+        )
+    )
+    assert result["pointer"]["active_record_id"] == "20260810_1948"
+    assert result["pointer"]["previous_record_id"] == "20260810_1943"
+    by_id = {row["record_id"]: row for row in result["catalog"]["records"]}
+    assert {"20260810_1943", "20260810_1948"} <= set(by_id)
+
+
+def test_dashboard_projection_source_refs_deduplicate_and_conflict() -> None:
+    projection = {
+        "valid_records": [
+            {
+                "record": "20260810_1948",
+                "source_refs": [
+                    {"path": "b", "sha256": "2" * 64},
+                    {"path": "a", "sha256": "1" * 64},
+                    {"path": "a", "sha256": "1" * 64},
+                ],
+            }
+        ],
+        "historical_records": [],
+    }
+    manager._normalize_dashboard_projection_source_refs(projection)
+    assert projection["valid_records"][0]["source_refs"] == [
+        {"path": "a", "sha256": "1" * 64},
+        {"path": "b", "sha256": "2" * 64},
+    ]
+    projection["valid_records"][0]["source_refs"].append(
+        {"path": "a", "sha256": "3" * 64}
+    )
+    with pytest.raises(StrategyRecordStoreError, match="refs conflict"):
+        manager._normalize_dashboard_projection_source_refs(projection)
+
+
 def test_stage_rejects_noncanonical_new_record_id(tmp_path: Path) -> None:
     _bootstrap(tmp_path)
     with pytest.raises(
