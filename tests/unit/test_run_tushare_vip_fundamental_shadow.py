@@ -77,6 +77,11 @@ def test_dry_run_does_not_read_token_checkpoint_or_provider(
     )
     monkeypatch.setattr(
         module,
+        "load_env_file",
+        lambda: (_ for _ in ()).throw(AssertionError("credential file")),
+    )
+    monkeypatch.setattr(
+        module,
         "_baseline_tables",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("checkpoint")),
     )
@@ -106,6 +111,7 @@ def test_live_shadow_composes_once_without_promotion(
         lambda: {"semantic_sha256": "f" * 64},
     )
     monkeypatch.setattr(module, "_disk_preflight", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(module, "load_env_file", lambda: {})
     tables = {"daily_basic": pd.DataFrame({"ts_code": ["000001.SZ"]})}
     monkeypatch.setattr(module, "_baseline_tables", lambda *_args, **_kwargs: tables)
     client = object()
@@ -192,6 +198,7 @@ def test_official_partition_mode_stops_after_exact_reconciliation(
     )
     monkeypatch.setattr(module, "verify_package", lambda: {"semantic_sha256": "f" * 64})
     monkeypatch.setattr(module, "_disk_preflight", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(module, "load_env_file", lambda: {})
     tables = {"daily_basic": pd.DataFrame({"ts_code": ["000001.SZ"]})}
     monkeypatch.setattr(module, "_baseline_tables", lambda *_args, **_kwargs: tables)
     client = object()
@@ -255,6 +262,11 @@ def test_official_partition_dry_run_does_not_construct_provider(
         "OfficialTushareHttpsClient",
         lambda **_kwargs: (_ for _ in ()).throw(AssertionError("provider client")),
     )
+    monkeypatch.setattr(
+        module,
+        "load_env_file",
+        lambda: (_ for _ in ()).throw(AssertionError("credential file")),
+    )
 
     result = module.run(values)
 
@@ -272,6 +284,7 @@ def test_incomplete_acquisition_preserves_checkpoint_and_stops(
     monkeypatch.setattr(module, "_inputs", lambda _args: inputs())
     monkeypatch.setattr(module, "verify_package", lambda: {"semantic_sha256": "f" * 64})
     monkeypatch.setattr(module, "_disk_preflight", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(module, "load_env_file", lambda: {})
     monkeypatch.setattr(module, "_baseline_tables", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(
         module,

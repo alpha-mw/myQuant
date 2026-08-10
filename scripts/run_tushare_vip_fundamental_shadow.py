@@ -26,6 +26,7 @@ from quant_investor.intelligence_v2.sources.tushare.fundamental_v4 import (
     validate_official_partition_execution_plan,
     write_fundamental_shadow_bundle_v4,
 )
+from quant_investor.env_loading import load_env_file
 from quant_investor.market.fundamental_provider_contract import frame_fingerprint
 from quant_investor.v17_v4_runtime.tushare_https import OfficialTushareHttpsClient
 
@@ -274,6 +275,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     )
     if any(not getattr(args, name) for name in required):
         raise ShadowSafetyError("VIP_SHADOW_LIVE_ARGUMENT_MISSING")
+    load_env_file()
     checkpoint = _checkpoint_path(args.checkpoint_root)
     if official is not None:
         _disk_preflight([checkpoint], required_free_bytes=args.required_free_bytes)
