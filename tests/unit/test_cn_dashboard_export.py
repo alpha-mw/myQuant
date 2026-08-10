@@ -27,6 +27,7 @@ from cn_dashboard_common import (  # noqa: E402
     canonical_json_bytes,
     scan_historical_performance_records,
     scan_valid_records,
+    validate_record,
     validate_bundle_shape,
     verify_source_refs,
 )
@@ -1145,11 +1146,8 @@ def test_public_bundle_keeps_performance_and_removes_holdings_detail(
     assert public["portfolio"]["performance_points"][-1][
         "chinext_nav"
     ] == source["portfolio"]["performance_points"][-1]["chinext_nav"]
-    assert public["positions"][0]["symbol"] == "000001.SZ"
-    assert public["positions"][0]["name"] == "PUBLIC_REDACTED"
-    assert public["positions"][0]["shares"] == 0
-    assert public["positions"][0]["nav_weight"] == 0
-    assert public["positions"][0]["price_date"] == "PUBLIC_REDACTED"
+    assert public["positions"] == []
+    assert public["changes"] == []
     assert public["concentration"] == {
         "equity_hhi": 0,
         "holding_count": 0,
@@ -1275,6 +1273,97 @@ def test_unvalued_current_holdings_do_not_create_performance_point(
         "latest_current_valuation_incomplete:BLOCKED_PENDING_STRICT_CLOSE"
         in bundle["warnings"]
     )
+
+
+def test_official_tushare_valuation_requires_hash_bound_close_evidence(
+    tmp_path: Path,
+) -> None:
+    project_root, record_root, _ = _fixture(tmp_path)
+    record = "20990104_1200"
+    record_dir = _write_record(
+        tmp_path,
+        record,
+        "2099-01-04",
+        23200,
+        source_record="20990103_1200",
+        capital_base=20000,
+        official_valuation=True,
+        valuation_status="OFFICIAL_TUSHARE_EOD_CLOSE_COMPLETE",
+    )
+    source_dir = record_root / "20990103_1200"
+    source_manual_path = source_dir / "manual_execution_manifest.json"
+    source_manual = json.loads(source_manual_path.read_text(encoding="utf-8"))
+    source_ledger = source_dir / source_manual["effective_manual_ledger_path"]
+    evidence = {
+        "schema_version": "cn_dashboard_tushare_close_evidence.v1",
+        "provider": "tushare.pro",
+        "stock_api": "daily",
+        "index_api": "index_daily",
+        "trade_date": "20990104",
+        "coverage": "exact_close",
+        "previous_trading_day_ffill": False,
+        "stocks": [
+            {
+                "ts_code": "000001.SZ",
+                "trade_date": "20990104",
+                "close": 11,
+            }
+        ],
+        "indices": [
+            {
+                "ts_code": code,
+                "trade_date": "20990104",
+                "close": 100,
+            }
+            for code in ("000300.SH", "000688.SH", "399006.SZ")
+        ],
+    }
+    evidence_path = record_dir / "tushare_close_evidence.json"
+    evidence_path.write_text(
+        json.dumps(evidence, ensure_ascii=False, sort_keys=True),
+        encoding="utf-8",
+    )
+    evidence_sha = _sha(evidence_path)
+    manual_path = record_dir / "manual_execution_manifest.json"
+    manual = json.loads(manual_path.read_text(encoding="utf-8"))
+    manual.update(
+        {
+            "valuation_evidence_sha256": evidence_sha,
+            "source_manifest_sha256": _sha(source_dir / "manifest.json"),
+            "source_manual_manifest_sha256": _sha(source_manual_path),
+            "source_contained_ledger_sha256": _sha(source_ledger),
+        }
+    )
+    manual_path.write_text(
+        json.dumps(manual, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    manifest_path = record_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["source_manifest_sha256"] = _sha(source_dir / "manifest.json")
+    manifest["manual_execution"] = manual
+    manifest["files"]["valuation_evidence"] = evidence_path.name
+    manifest["data_snapshot"]["valuation_evidence_sha256"] = evidence_sha
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    closed = validate_record(record_dir, record_root, project_root)
+    assert closed["official_valuation"] is True
+    assert closed["positions"][0]["price_date"] == "2099-01-04"
+    assert any(
+        ref["sha256"] == evidence_sha for ref in closed["source_refs"]
+    )
+
+    evidence["stocks"][0]["close"] = 12
+    evidence_path.write_text(
+        json.dumps(evidence, ensure_ascii=False, sort_keys=True),
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        DashboardInputError,
+        match="official_valuation_evidence_sha_mismatch",
+    ):
+        validate_record(record_dir, record_root, project_root)
 
 
 def test_registered_catalog_projection_preserves_dashboard_parity(

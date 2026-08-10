@@ -55,7 +55,8 @@
     if (value.status !== "BLOCKED") {
       if (!RECORD_RE.test(value.latest_valid_record || "")) errors.push("latest_valid_record is invalid");
       if (!RECORD_RE.test(value.previous_valid_record || "")) errors.push("previous_valid_record is invalid");
-      if (!Array.isArray(value.positions) || value.positions.length < 1) {
+      if (!Array.isArray(value.positions) ||
+          (!value.public_redacted && value.positions.length < 1)) {
         errors.push("positions are missing");
       } else {
         var seen = {};

@@ -891,6 +891,125 @@ def validate_record(
             position["price_date"] = owner_trade_dates.get(
                 position["symbol"], fallback_price_date
             )
+    valuation_evidence_artifact: StableArtifact | None = None
+    if manual.get("official_valuation") is True:
+        if manual.get("valuation_completeness_passed") is not True:
+            raise DashboardInputError(
+                "official_valuation_completeness_missing"
+            )
+        if str(valuation_status or "").startswith("BLOCKED"):
+            raise DashboardInputError("official_valuation_status_blocked")
+        evidence_path = _safe_same_record_path(
+            record_dir,
+            files.get("valuation_evidence"),
+            "official_valuation_evidence",
+        )
+        valuation_evidence_artifact = stable_read(
+            evidence_path, project_root
+        )
+        if (
+            manual.get("valuation_evidence_sha256")
+            != valuation_evidence_artifact.sha256
+            or data_snapshot.get("valuation_evidence_sha256")
+            != valuation_evidence_artifact.sha256
+        ):
+            raise DashboardInputError(
+                "official_valuation_evidence_sha_mismatch"
+            )
+        evidence = load_json(valuation_evidence_artifact)
+        if (
+            not isinstance(evidence, dict)
+            or evidence.get("schema_version")
+            != "cn_dashboard_tushare_close_evidence.v1"
+            or evidence.get("provider") != "tushare.pro"
+            or evidence.get("stock_api") != "daily"
+            or evidence.get("index_api") != "index_daily"
+            or evidence.get("coverage") != "exact_close"
+            or evidence.get("previous_trading_day_ffill") is not False
+            or _record_date(
+                evidence.get("trade_date"),
+                "official_valuation_evidence_trade_date",
+            )
+            != data_date
+        ):
+            raise DashboardInputError(
+                "official_valuation_evidence_contract_invalid"
+            )
+        stock_rows = evidence.get("stocks")
+        index_rows = evidence.get("indices")
+        if not isinstance(stock_rows, list) or not isinstance(
+            index_rows, list
+        ):
+            raise DashboardInputError(
+                "official_valuation_evidence_rows_invalid"
+            )
+        stocks = {str(row.get("ts_code")): row for row in stock_rows}
+        indices = {str(row.get("ts_code")): row for row in index_rows}
+        if set(stocks) != seen_symbols or set(indices) != {
+            "000300.SH",
+            "000688.SH",
+            "399006.SZ",
+        }:
+            raise DashboardInputError(
+                "official_valuation_evidence_coverage_invalid"
+            )
+        for position in positions:
+            row = stocks[position["symbol"]]
+            if (
+                _record_date(
+                    row.get("trade_date"),
+                    "official_valuation_stock_trade_date",
+                )
+                != data_date
+                or not _almost_equal(
+                    row.get("close"), position["recorded_price"]
+                )
+            ):
+                raise DashboardInputError(
+                    "official_valuation_stock_close_mismatch:"
+                    + position["symbol"]
+                )
+            position["price_date"] = data_date
+        for code, row in indices.items():
+            if (
+                _record_date(
+                    row.get("trade_date"),
+                    "official_valuation_index_trade_date",
+                )
+                != data_date
+                or _number(row.get("close"), f"index_close:{code}") <= 0
+            ):
+                raise DashboardInputError(
+                    "official_valuation_index_close_invalid:" + code
+                )
+        if source_record:
+            source_dir = record_root / source_record
+            source_manifest = stable_read(
+                source_dir / "manifest.json", project_root
+            )
+            source_manual = stable_read(
+                source_dir / "manual_execution_manifest.json", project_root
+            )
+            source_manual_value = load_json(source_manual)
+            source_ledger = stable_read(
+                source_dir
+                / str(source_manual_value.get("effective_manual_ledger_path")),
+                project_root,
+            )
+            if (
+                manifest.get("source_manifest_sha256")
+                != source_manifest.sha256
+                or manual.get("source_manifest_sha256")
+                != source_manifest.sha256
+                or manual.get("source_manual_manifest_sha256")
+                != source_manual.sha256
+                or manual.get("source_contained_ledger_sha256")
+                != source_ledger.sha256
+            ):
+                raise DashboardInputError(
+                    "official_valuation_source_closure_sha_mismatch"
+                )
+
     funding, funding_artifacts = _validate_funding(
         manual, record_dir, project_root
     )
@@ -906,6 +1025,8 @@ def validate_record(
         artifacts.append(parquet_artifact)
     if backfill_provenance_artifact is not None:
         artifacts.append(backfill_provenance_artifact)
+    if valuation_evidence_artifact is not None:
+        artifacts.append(valuation_evidence_artifact)
     artifacts.extend(funding_artifacts)
     source_refs = [
         {"path": artifact.relative_path, "sha256": artifact.sha256}
@@ -1353,6 +1474,32 @@ def scan_historical_performance_records(
             )
         except DashboardInputError as exc:
             rejected.append(f"{record_dir.name}:{exc}")
+    validate_historical_performance_sequence(records)
+    return records, rejected
+
+
+def validate_historical_record(
+    *,
+    record_dir: Path,
+    record_root: Path,
+    project_root: Path,
+    strict_record: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Validate one new history row without scanning archived hot paths."""
+
+    return _validate_historical_record(
+        record_dir=record_dir,
+        record_root=record_root,
+        project_root=project_root,
+        strict_record=strict_record,
+    )
+
+
+def validate_historical_performance_sequence(
+    records: list[dict[str, Any]],
+) -> None:
+    """Validate funding/capital continuity for a merged history projection."""
+
     if len(records) < 2:
         raise DashboardInputError(
             "fewer_than_two_historical_performance_records"
@@ -1397,7 +1544,6 @@ def scan_historical_performance_records(
             )
         if capital is not None:
             previous_capital = capital
-    return records, rejected
 
 
 def build_dashboard_catalog_projection(
@@ -3302,13 +3448,14 @@ def validate_bundle_shape(bundle: Any) -> list[str]:
         if bundle.get("blockers") != []:
             errors.append("usable_bundle_has_blockers")
         positions = bundle.get("positions")
-        position_nav_weights_valid = bool(positions) and all(
+        public_redacted = bundle.get("public_redacted") is True
+        position_nav_weights_valid = isinstance(positions, list) and all(
             isinstance(row, dict)
             and isinstance(row.get("nav_weight"), (int, float))
             and math.isfinite(float(row["nav_weight"]))
             for row in positions
         )
-        if not positions:
+        if not positions and not public_redacted:
             errors.append("usable_bundle_has_no_positions")
         elif not position_nav_weights_valid:
             errors.append("position_nav_weight_invalid")

@@ -33,6 +33,7 @@ from quant_investor.strategy_records.store import (  # noqa: E402
     ARCHIVE_LOCATOR_SCHEMA,
     ARCHIVE_MANIFEST_SCHEMA,
     ARCHIVE_RESTORE_RECEIPT_SCHEMA,
+    CATALOG_SCHEMA_V1,
     CATALOG_SCHEMA_V2,
     NEW_RECORD_MAX_FILE_BYTES,
     NEW_RECORD_MAX_FILES,
@@ -452,7 +453,13 @@ def _attach_dashboard_closure(
             )
         record_id = projected.get("record")
         catalog_row = by_id.get(record_id)
-        if catalog_row is None or catalog_row.get("state") != "ONLINE":
+        if catalog_row is None:
+            raise StrategyRecordStoreError(
+                f"dashboard projection record is not ONLINE: {record_id}"
+            )
+        if catalog_row.get("state") == "ARCHIVED":
+            continue
+        if catalog_row.get("state") != "ONLINE":
             raise StrategyRecordStoreError(
                 f"dashboard projection record is not ONLINE: {record_id}"
             )
@@ -852,34 +859,99 @@ def command_seal_publish(args: argparse.Namespace) -> dict[str, Any]:
     if getattr(args, "project_root", None):
         try:
             from scripts.cn_dashboard_common import (
+                DashboardInputError,
                 scan_historical_performance_records,
                 scan_valid_records,
+                validate_historical_performance_sequence,
+                validate_historical_record,
+                validate_record,
             )
         except ImportError as exc:
             raise StrategyRecordStoreError(
                 "Dashboard validation is unavailable"
             ) from exc
         project_root = Path(args.project_root)
-        valid, rejected, latest_seen = scan_valid_records(
-            root, project_root
+        archive_aware = any(
+            row.get("state") == "ARCHIVED" for row in records
         )
-        historical, historical_rejected = (
-            scan_historical_performance_records(
-                record_root=root,
-                project_root=project_root,
-                strict_records=valid,
+        if archive_aware:
+            existing_projection = catalog.get("dashboard_projection")
+            if not isinstance(existing_projection, dict):
+                raise StrategyRecordStoreError(
+                    "archive-aware publication requires Dashboard projection"
+                )
+            dashboard_projection = json.loads(
+                json.dumps(existing_projection, ensure_ascii=False)
             )
-        )
-        dashboard_projection = {
-            "valid_records": valid,
-            "rejected": rejected,
-            "latest_seen": latest_seen,
-            "historical_records": historical,
-            "historical_rejected": historical_rejected,
-        }
+            current_row = validate_record(target, root, project_root)
+            valid_by_id = {
+                row["record"]: row
+                for row in dashboard_projection["valid_records"]
+            }
+            valid_by_id[record_id] = current_row
+            dashboard_projection["valid_records"] = [
+                valid_by_id[key] for key in sorted(valid_by_id)
+            ]
+            dashboard_projection["rejected"] = [
+                value
+                for value in dashboard_projection["rejected"]
+                if not value.startswith(record_id + ":")
+            ]
+            dashboard_projection["latest_seen"] = max(
+                str(dashboard_projection.get("latest_seen") or record_id),
+                record_id,
+            )
+            historical_by_id = {
+                row["record"]: row
+                for row in dashboard_projection["historical_records"]
+            }
+            historical_rejected = [
+                value
+                for value in dashboard_projection["historical_rejected"]
+                if not value.startswith(record_id + ":")
+            ]
+            try:
+                historical_by_id[record_id] = validate_historical_record(
+                    record_dir=target,
+                    record_root=root,
+                    project_root=project_root,
+                    strict_record=current_row,
+                )
+            except DashboardInputError as exc:
+                historical_by_id.pop(record_id, None)
+                historical_rejected.append(f"{record_id}:{exc}")
+            historical = [
+                historical_by_id[key] for key in sorted(historical_by_id)
+            ]
+            validate_historical_performance_sequence(historical)
+            dashboard_projection["historical_records"] = historical
+            dashboard_projection["historical_rejected"] = sorted(
+                historical_rejected
+            )
+        else:
+            valid, rejected, latest_seen = scan_valid_records(
+                root, project_root
+            )
+            historical, historical_rejected = (
+                scan_historical_performance_records(
+                    record_root=root,
+                    project_root=project_root,
+                    strict_records=valid,
+                )
+            )
+            dashboard_projection = {
+                "valid_records": valid,
+                "rejected": rejected,
+                "latest_seen": latest_seen,
+                "historical_records": historical,
+                "historical_rejected": historical_rejected,
+            }
         _normalize_dashboard_projection_source_refs(dashboard_projection)
         if adopting_existing:
-            valid_by_id = {row["record"]: row for row in valid}
+            valid_by_id = {
+                row["record"]: row
+                for row in dashboard_projection["valid_records"]
+            }
             registered_ids = {row["record_id"] for row in records}
             source_id = valid_by_id.get(record_id, {}).get("source_record")
             visited = {record_id}
@@ -938,6 +1010,36 @@ def command_seal_publish(args: argparse.Namespace) -> dict[str, Any]:
         direct_source = valid_by_id[record_id].get("source_record")
         if direct_source in {row["record_id"] for row in records}:
             previous_record_id = direct_source
+    catalog_schema = (
+        CATALOG_SCHEMA_V2
+        if any(row.get("state") == "ARCHIVED" for row in records)
+        else CATALOG_SCHEMA_V1
+    )
+    history_registry = None
+    history_registry_ref = None
+    if catalog_schema == CATALOG_SCHEMA_V2:
+        if not args.generation_id:
+            raise StrategyRecordStoreError(
+                "archive-aware seal-publish requires generation_id"
+            )
+        registry_output = (
+            root
+            / STORE_DIRECTORY
+            / "history_integrity"
+            / f"{args.generation_id}.v2.json"
+        )
+        history_registry, history_registry_ref = (
+            _build_candidate_history_registry(
+                project=Path(args.project_root),
+                root=root,
+                txid=args.generation_id,
+                generation_id=args.generation_id,
+                projection=dashboard_projection,
+                transformed=records,
+                output=str(registry_output),
+                generated_at=sealed_at,
+            )
+        )
     return publish_catalog(
         root,
         expected_pointer_sha256=args.expected_pointer_sha,
@@ -947,6 +1049,10 @@ def command_seal_publish(args: argparse.Namespace) -> dict[str, Any]:
         previous_record_id=previous_record_id,
         generation_id=args.generation_id,
         published_at=sealed_at,
+        catalog_schema=catalog_schema,
+        history_registry=history_registry,
+        history_registry_ref=history_registry_ref,
+        inherit_history_registry=False,
     )
 
 
@@ -2037,6 +2143,17 @@ def command_archive_quarantine_resume(args: argparse.Namespace) -> dict[str, Any
     if loaded is None or loaded[0]["generation_id"] != plan["candidate_generation_id"]:
         raise StrategyRecordStoreError("resume requires the archive-aware candidate pointer")
     moved = _move_records(plan, direction="cutover")
+    _write_exact_once(
+        _transaction_root(root, args.transaction_id) / "complete.v1.json",
+        {
+            "schema_id": TRANSACTION_EVENT_SCHEMA,
+            "transaction_id": args.transaction_id,
+            "phase": "complete",
+            "candidate_pointer_sha256": _pointer_sha(root),
+            "record_count": plan["record_count"],
+            "created_at": _timestamp(args.published_at),
+        },
+    )
     return {"valid": True, "transaction_id": args.transaction_id, "moved_records": moved}
 
 
@@ -2055,11 +2172,19 @@ def command_archive_quarantine_rollback(args: argparse.Namespace) -> dict[str, A
         dashboard_projection=plan["source_catalog"].get("dashboard_projection"),
         history_registry=plan["source_catalog"].get("history_registry"),
         history_registry_ref=plan["source_catalog"].get("history_registry_ref"),
+        inherit_history_registry=False,
         active_record_id=source["active_record_id"],
         previous_record_id=source["previous_record_id"],
         generation_id=args.generation_id,
         published_at=_timestamp(args.published_at),
-        catalog_schema=CATALOG_SCHEMA_V2,
+        catalog_schema=(
+            CATALOG_SCHEMA_V2
+            if any(
+                row.get("archive_locator") is not None
+                for row in plan["source_catalog"]["records"]
+            )
+            else CATALOG_SCHEMA_V1
+        ),
     )
     _write_exact_once(
         _transaction_root(root, args.transaction_id) / "rollback-complete.v1.json",
@@ -2082,6 +2207,19 @@ def command_archive_quarantine_verify(args: argparse.Namespace) -> dict[str, Any
     counts = {"SOURCE": 0, "QUARANTINE": 0}
     for record_id in plan["record_ids"]:
         counts[_verify_location(root, quarantine, source_rows[record_id])] += 1
+    if counts["QUARANTINE"] == plan["record_count"]:
+        complete = _read_canonical_transaction(
+            _transaction_root(root, args.transaction_id) / "complete.v1.json",
+            label="quarantine completion receipt",
+        )
+        if (
+            complete.get("phase") != "complete"
+            or complete.get("candidate_pointer_sha256") != _pointer_sha(root)
+            or complete.get("record_count") != plan["record_count"]
+        ):
+            raise StrategyRecordStoreError(
+                "quarantine completion receipt mismatch"
+            )
     return {
         "valid": True,
         "transaction_id": args.transaction_id,

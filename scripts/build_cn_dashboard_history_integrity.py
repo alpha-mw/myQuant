@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 
 from cn_dashboard_common import (
+    DashboardInputError,
     build_history_integrity_registry,
     canonical_json_bytes,
     load_dashboard_catalog_projection,
@@ -98,6 +99,51 @@ def main() -> int:
     records = projection["historical_records"]
     rejected = projection["historical_rejected"]
     integrity_context = projection.get("integrity_context", {})
+    registry_ref = integrity_context.get("history_registry_ref")
+    if registry_ref is not None:
+        if not isinstance(registry_ref, dict) or not isinstance(
+            registry_ref.get("path"), str
+        ):
+            raise DashboardInputError(
+                "catalog_history_registry_ref_invalid"
+            )
+        bound_output = (project_root / registry_ref["path"]).resolve()
+        legacy_default = (
+            project_root
+            / "portfolio_dashboard/private/generated/"
+            "cn_aggressive_history_integrity.v1.json"
+        ).resolve()
+        requested_output = args.output.resolve()
+        if requested_output not in {legacy_default, bound_output}:
+            raise DashboardInputError(
+                "catalog_history_registry_path_mismatch"
+            )
+        registry, artifact = load_history_integrity_registry(
+            bound_output,
+            project_root,
+            intended_generation_id=integrity_context.get(
+                "intended_generation_id"
+            ),
+            dashboard_projection_sha256=integrity_context.get(
+                "dashboard_projection_sha256"
+            ),
+            archive_bindings=integrity_context.get("archive_bindings"),
+        )
+        print(
+            canonical_json_bytes(
+                {
+                    "published": False,
+                    "reused_catalog_binding": True,
+                    "record_count": len(registry),
+                    "content_sha256": integrity_context[
+                        "history_registry"
+                    ]["content_sha256"],
+                    "artifact_sha256": artifact.sha256,
+                    "output": str(bound_output),
+                }
+            ).decode("utf-8")
+        )
+        return 0
     generated_at = args.generated_at or datetime.now().astimezone().isoformat(
         timespec="seconds"
     )

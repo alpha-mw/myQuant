@@ -338,3 +338,20 @@ filesystem, the cutover reduces the production directory footprint but does
 not release disk space. Deletion may only be proposed in a future, separately
 authorized maintenance after at least one real scheduled automation soak and a
 new full restore verification.
+
+### 2026-08-10 completed cutover
+
+Transaction `cn-aggressive-archive-cutover-20260810-v2` published catalog
+generation `cn-aggressive-archive-cutover-20260810-v2` and moved exactly 118
+pre-July records into the recoverable quarantine. Its terminal verification is
+`source_records=0`, `quarantine_records=118`, `dual_records=0`, and
+`lost_records=0`. The catalog contains 118 ARCHIVED and 66 ONLINE records;
+active/previous are `20260810_1948` / `20260810_1943`.
+
+Catalog-v2 writers extend the existing normalized projection one validated
+record at a time and publish a generation-bound history registry. They never
+rescan missing archived hot directories. The legacy default history-registry
+CLI path resolves to the immutable catalog binding; an explicitly different
+path still fails closed. Rollback clears candidate registry inheritance when
+returning to an all-ONLINE v1 catalog. Quarantine remains retained and must not
+be deleted before the separately authorized soak and restore gate.

@@ -84,32 +84,10 @@ def sanitize_bundle(source: dict[str, Any]) -> dict[str, Any]:
     if "current_valuation_status" in portfolio:
         portfolio["current_valuation_status"] = REDACTED
 
-    for index, position in enumerate(bundle["positions"], start=1):
-        for key in (
-            "shares",
-            "avg_cost",
-            "cost_basis",
-            "recorded_price",
-            "market_value",
-            "unrealized_pnl",
-            "nav_weight",
-            "equity_weight",
-        ):
-            position[key] = 0.0
-        position["name"] = REDACTED
-        position["symbol"] = f"{index:06d}.SZ"
-        position["price_date"] = REDACTED
-        position["realized_pnl"] = None
-        position["thesis_status"] = REDACTED
-
-    for index, change in enumerate(bundle["changes"], start=1):
-        change["symbol"] = f"{index:06d}.SZ"
-        change["name"] = REDACTED
-        change["previous_shares"] = 0.0
-        change["current_shares"] = 0.0
-        change["share_delta"] = 0.0
-        change["nav_weight_delta"] = 0.0
-        change["equity_weight_delta"] = 0.0
+    # Empty arrays avoid leaking even the number of holdings or changes.
+    # Public mode renders only the approved performance sections.
+    bundle["positions"] = []
+    bundle["changes"] = []
 
     for key in (
         "equity_hhi",

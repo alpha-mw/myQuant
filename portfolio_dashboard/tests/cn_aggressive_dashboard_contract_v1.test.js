@@ -35,7 +35,9 @@ assert.match(html, /id="historySummary"/);
 assert.match(html, /id="performanceRows"/);
 assert.match(html, /cn_aggressive_dashboard\.v1\.js\?cache=/);
 assert.match(publicHtml, /cn_aggressive_dashboard\.v1\.js\?cache=/);
-assert.match(html, /js\/cn_aggressive_dashboard_analysis_v1\.js/);
+assert.match(html, /js\/cn_aggressive_dashboard_analysis_v1\.js\?v=dashboard-v2/);
+assert.match(html, /js\/cn_aggressive_dashboard_contract_v1\.js\?v=dashboard-v2/);
+assert.match(html, /app\.js\?v=dashboard-v2/);
 assert.match(html, /js\/cn_aggressive_public_mode\.js\?mode=internal-v1/);
 assert.match(publicHtml, /js\/cn_aggressive_public_mode\.js\?mode=public-v1/);
 assert.match(html, /id="evidenceDetails"/);
@@ -172,6 +174,26 @@ assert.deepStrictEqual(
   { valid: true, errors: [] }
 );
 assert.strictEqual(Contract.deriveSnapshot(incompleteCurrentValuation).status, "PARTIAL");
+
+const publicRedacted = structuredClone(sample);
+publicRedacted.public_redacted = true;
+publicRedacted.positions = [];
+publicRedacted.changes = [];
+publicRedacted.portfolio.cash = 0;
+publicRedacted.portfolio.market_value = 0;
+publicRedacted.portfolio.total_value = 0;
+publicRedacted.portfolio.adjusted_total_value = 0;
+publicRedacted.portfolio.portfolio_pnl = 0;
+publicRedacted.portfolio.performance_initial_capital = 0;
+publicRedacted.portfolio.cash_weight = 0;
+publicRedacted.portfolio.gross_exposure = 0;
+publicRedacted.portfolio.cumulative_profit_excluding_external_flow = 0;
+publicRedacted.portfolio.performance_points.forEach((point) => {
+  point.total_value = 0;
+  point.adjusted_total_value = 0;
+  point.excluded_external_flow = 0;
+});
+assert.strictEqual(Contract.deriveSnapshot(publicRedacted).status, "PARTIAL");
 
 const unjustifiedCurrentMismatch = structuredClone(incompleteCurrentValuation);
 delete unjustifiedCurrentMismatch.current_evidence.official_valuation;

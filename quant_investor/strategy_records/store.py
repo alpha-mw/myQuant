@@ -949,6 +949,7 @@ def publish_catalog(
     catalog_schema: str | None = None,
     history_registry: Mapping[str, Any] | None = None,
     history_registry_ref: Mapping[str, Any] | None = None,
+    inherit_history_registry: bool = True,
 ) -> dict[str, Any]:
     root = Path(record_root)
     _lstat_directory(root, label="record root")
@@ -997,11 +998,11 @@ def publish_catalog(
         catalog_body["dashboard_projection"] = old_catalog["dashboard_projection"]
     if history_registry is not None:
         catalog_body["history_registry"] = dict(history_registry)
-    elif "history_registry" in old_catalog:
+    elif inherit_history_registry and "history_registry" in old_catalog:
         catalog_body["history_registry"] = old_catalog["history_registry"]
     if history_registry_ref is not None:
         catalog_body["history_registry_ref"] = dict(history_registry_ref)
-    elif "history_registry_ref" in old_catalog:
+    elif inherit_history_registry and "history_registry_ref" in old_catalog:
         catalog_body["history_registry_ref"] = old_catalog["history_registry_ref"]
     catalog = _seal(catalog_body)
     _validate_catalog(catalog, generation_id=generation)

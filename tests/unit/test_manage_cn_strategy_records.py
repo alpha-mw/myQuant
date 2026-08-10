@@ -17,6 +17,7 @@ from quant_investor.strategy_records.store import (
     load_registered_catalog,
 )
 from scripts import manage_cn_strategy_records as manager
+from scripts.cn_dashboard_common import DashboardInputError
 
 
 def _args(**values: object) -> argparse.Namespace:
@@ -268,6 +269,111 @@ def test_dashboard_projection_source_refs_deduplicate_and_conflict() -> None:
     )
     with pytest.raises(StrategyRecordStoreError, match="refs conflict"):
         manager._normalize_dashboard_projection_source_refs(projection)
+
+
+def test_archive_aware_seal_publish_extends_catalog_without_hot_scan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "records"
+    target = root / "20260810_2000"
+    target.mkdir(parents=True)
+    (target / "payload").write_text("new", encoding="utf-8")
+    pointer = {
+        "active_record_id": "20260810_1948",
+        "previous_record_id": "20260810_1943",
+    }
+    catalog = {
+        "schema_id": "myquant.strategy_record_catalog.v2",
+        "records": [
+            {
+                "record_id": "20260810_1948",
+                "relative_path": "20260810_1948",
+                "state": "ONLINE",
+                "storage_state": "ONLINE",
+            },
+            {
+                "record_id": "20260630_1614",
+                "relative_path": "20260630_1614",
+                "state": "ARCHIVED",
+                "storage_state": "ARCHIVED",
+            },
+        ],
+        "dashboard_projection": {
+            "valid_records": [
+                {
+                    "record": "20260810_1948",
+                    "source_record": "20260810_1943",
+                    "source_refs": [],
+                }
+            ],
+            "rejected": [],
+            "latest_seen": "20260810_1948",
+            "historical_records": [
+                {"record": "20260630_1614", "source_refs": []}
+            ],
+            "historical_rejected": [],
+        },
+    }
+    monkeypatch.setattr(
+        manager, "load_registered_catalog", lambda value: (pointer, catalog)
+    )
+    monkeypatch.setattr(manager, "_pointer_sha", lambda value: "a" * 64)
+    new_valid = {
+        "record": "20260810_2000",
+        "source_record": "20260810_1948",
+        "source_refs": [{"path": "new", "sha256": "b" * 64}],
+    }
+    monkeypatch.setattr(
+        "scripts.cn_dashboard_common.validate_record",
+        lambda *args: new_valid,
+    )
+    monkeypatch.setattr(
+        "scripts.cn_dashboard_common.validate_historical_record",
+        lambda **kwargs: (_ for _ in ()).throw(
+            DashboardInputError("historical_official_valuation_incomplete")
+        ),
+    )
+    monkeypatch.setattr(
+        "scripts.cn_dashboard_common.validate_historical_performance_sequence",
+        lambda rows: None,
+    )
+    monkeypatch.setattr(manager, "_attach_dashboard_closure", lambda *a, **k: None)
+    registry_calls: list[dict[str, object]] = []
+
+    def build_registry(**kwargs: object) -> tuple[dict, dict]:
+        registry_calls.append(kwargs)
+        return ({"schema_id": "registry"}, {"path": "registry", "sha256": "c" * 64})
+
+    monkeypatch.setattr(manager, "_build_candidate_history_registry", build_registry)
+    published: dict[str, object] = {}
+
+    def publish(*args: object, **kwargs: object) -> dict:
+        published.update(kwargs)
+        return {"pointer": {"active_record_id": "20260810_2000"}}
+
+    monkeypatch.setattr(manager, "publish_catalog", publish)
+    result = manager.command_seal_publish(
+        _args(
+            record_root=str(root),
+            record_id="20260810_2000",
+            expected_pointer_sha="a" * 64,
+            project_root=str(tmp_path),
+            generation_id="g-archive-aware",
+        )
+    )
+    assert result["pointer"]["active_record_id"] == "20260810_2000"
+    assert published["catalog_schema"] == manager.CATALOG_SCHEMA_V2
+    assert published["inherit_history_registry"] is False
+    assert published["previous_record_id"] == "20260810_1948"
+    projection = published["dashboard_projection"]
+    assert [row["record"] for row in projection["historical_records"]] == [
+        "20260630_1614"
+    ]
+    assert projection["historical_rejected"] == [
+        "20260810_2000:historical_official_valuation_incomplete"
+    ]
+    assert registry_calls[0]["generation_id"] == "g-archive-aware"
 
 
 def test_stage_rejects_noncanonical_new_record_id(tmp_path: Path) -> None:
