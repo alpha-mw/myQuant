@@ -279,11 +279,17 @@ def test_plan_uses_baseline_exact_scope_and_provider_has_more_semantics() -> Non
     fina = [row for row in plan["request_rows"] if row["table"] == "fina_indicator"]
     assert fina
     assert all(row["official_row_limit"] is None for row in fina)
+    assert {row["exact_duplicate_mode"] for row in fina} == {"PRESERVE_CANONICAL_MULTISET"}
     daily = [row for row in plan["request_rows"] if row["table"] == "daily_basic"]
     assert all(row["official_row_limit"] == 6000 for row in daily)
     forecast = [row for row in plan["request_rows"] if row["table"] == "forecast"]
     assert all(row["official_row_limit"] is None for row in forecast)
     assert all(row["local_max_response_items"] == 20_000 for row in plan["request_rows"])
+    assert {
+        row["exact_duplicate_mode"]
+        for row in plan["request_rows"]
+        if row["table"] != "fina_indicator"
+    } == {"REJECT_EXACT_DUPLICATES"}
 
 
 def test_resealed_request_topology_and_probe_forgeries_are_rejected() -> None:
@@ -410,10 +416,12 @@ class _OfficialClient:
         source: dict[str, Any],
         first_has_more: bool = False,
         changed: bool = False,
+        duplicate_table: str | None = None,
     ) -> None:
         self.calls = 0
         self._changed = changed
         self._first_has_more = first_has_more
+        self._duplicate_table = duplicate_table
         self._requests = {
             (row["endpoint"], hashlib.sha256(canonical_bytes(row["params"])).hexdigest()): row
             for row in plan["request_rows"]
@@ -434,13 +442,14 @@ class _OfficialClient:
         request = self._requests[(api_name, hashlib.sha256(canonical_bytes(params)).hexdigest())]
         assert expected_fields == self._fields[api_name]
         row = _row(request, expected_fields, changed=self._changed)
+        rows = (row, row) if request["table"] == self._duplicate_table else (row,)
         return TushareResponse(
             api_name=api_name,
             request_id=f"official-{self.calls}",
-            reported_count=1,
+            reported_count=len(rows),
             has_more=self._first_has_more and self.calls == 1,
             fields=tuple(expected_fields),
-            rows=(row,),
+            rows=rows,
         )
 
 
@@ -485,6 +494,49 @@ def test_official_partition_adapter_reconciles_exact_baseline() -> None:
         )
         == result["physical_receipts"][0]
     )
+
+
+def test_fina_indicator_exact_duplicates_are_preserved_for_multiset_comparison() -> None:
+    source, plan, probes, baseline, _fingerprints, policy = _adapter_inputs()
+    baseline["fina_indicator"] = pd.concat(
+        [baseline["fina_indicator"], baseline["fina_indicator"]],
+        ignore_index=True,
+    )
+    fingerprints = {table: frame_fingerprint(frame) for table, frame in baseline.items()}
+    result = acquire_official_partition_fundamental_vip_v4(
+        official_plan=plan,
+        source_execution_closure=source,
+        probe_observations=probes,
+        baseline_tables=baseline,
+        baseline_table_fingerprints=fingerprints,
+        comparison_policy=policy,
+        client=_OfficialClient(plan=plan, source=source, duplicate_table="fina_indicator"),
+        captured_at=NOW,
+    )
+    assert result["status"] == "COMPLETE"
+    assert result["comparison"]["passed"] is True
+    assert all(
+        "DUPLICATE_ROWS" not in receipt["blocker_codes"]
+        for receipt in result["physical_receipts"]
+        if receipt["table"] == "fina_indicator"
+    )
+
+
+def test_non_indicator_exact_duplicates_remain_incomplete() -> None:
+    source, plan, probes, baseline, fingerprints, policy = _adapter_inputs()
+    result = acquire_official_partition_fundamental_vip_v4(
+        official_plan=plan,
+        source_execution_closure=source,
+        probe_observations=probes,
+        baseline_tables=baseline,
+        baseline_table_fingerprints=fingerprints,
+        comparison_policy=policy,
+        client=_OfficialClient(plan=plan, source=source, duplicate_table="balancesheet"),
+        captured_at=NOW,
+    )
+    assert result["status"] == "ACQUISITION_BLOCKED"
+    assert result["transport_calls"] == 1
+    assert result["physical_receipts"][0]["blocker_codes"] == ["DUPLICATE_ROWS"]
 
 
 def test_official_partition_adapter_resume_uses_no_transport(tmp_path: Any) -> None:

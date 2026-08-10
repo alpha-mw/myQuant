@@ -67,6 +67,7 @@ _PROBE_FIELDS = {
 }
 _REQUEST_FIELDS = {
     "completeness_mode",
+    "exact_duplicate_mode",
     "endpoint",
     "local_max_response_items",
     "official_row_limit",
@@ -101,6 +102,14 @@ _DOC_URLS: Final = {
 _STATEMENT_TABLES: Final = ("balancesheet", "cashflow", "income")
 _SCOPE_MODE: Final = "BASELINE_EXACT_PARTITION_RECONCILIATION"
 _COMPLETENESS_MODE: Final = "EXACT_PARAMS_HAS_MORE_FALSE_BASELINE_EQUAL"
+_EXACT_DUPLICATE_MODES: Final = {
+    "fina_indicator": "PRESERVE_CANONICAL_MULTISET",
+    "balancesheet": "REJECT_EXACT_DUPLICATES",
+    "cashflow": "REJECT_EXACT_DUPLICATES",
+    "daily_basic": "REJECT_EXACT_DUPLICATES",
+    "forecast": "REJECT_EXACT_DUPLICATES",
+    "income": "REJECT_EXACT_DUPLICATES",
+}
 
 
 def _documents(observed_at: str) -> list[dict[str, Any]]:
@@ -242,6 +251,7 @@ def _request_row(
     partition_id = _partition_id(params)
     return {
         "completeness_mode": _COMPLETENESS_MODE,
+        "exact_duplicate_mode": _EXACT_DUPLICATE_MODES[table],
         "endpoint": endpoint,
         "local_max_response_items": 20_000,
         "official_row_limit": row_limit,

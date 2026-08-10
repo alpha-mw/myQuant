@@ -378,7 +378,8 @@ def _response_scope_blockers(
         duplicate = len(rows) != len(set(rows))
     except TypeError:
         return ["SCOPE_MISMATCH"]
-    if duplicate:
+    duplicate_mode = request["exact_duplicate_mode"]
+    if duplicate and duplicate_mode == "REJECT_EXACT_DUPLICATES":
         blockers.add("DUPLICATE_ROWS")
     indices = {field: index for index, field in enumerate(fields)}
     required = {"ts_code", "trade_date" if request["table"] == "daily_basic" else "end_date"}
