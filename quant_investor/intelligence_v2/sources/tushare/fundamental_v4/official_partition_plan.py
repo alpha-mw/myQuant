@@ -170,6 +170,8 @@ def _probes(values: Sequence[Mapping[str, Any]], *, created_at: str) -> list[dic
         "BALANCESHEET_EIGHT_DAY_1_COMPLETE",
         "BALANCESHEET_EIGHT_DAY_2_COMPLETE",
         "BALANCESHEET_MONTH_COMPLETE",
+        "BALANCESHEET_Q3_FOUR_DAY_1_COMPLETE",
+        "BALANCESHEET_Q3_FOUR_DAY_2_COMPLETE",
         "CASHFLOW_COMPANY_TYPE_LIMIT",
         "CASHFLOW_DAY_COMPLETE",
         "CASHFLOW_MONTH_LIMIT",
@@ -202,7 +204,7 @@ def _company_one_intervals(period: str, *, table: str, as_of: str) -> list[tuple
     if start < hot_start:
         rows.append((start, min(hot_start - timedelta(days=1), end)))
     if hot_start <= end:
-        maximum_days = 1 if table == "cashflow" else 8
+        maximum_days = 1 if table == "cashflow" else (4 if start.month == 9 else 8)
         cursor = hot_start
         while cursor <= hot_end:
             interval_end = min(cursor + timedelta(days=maximum_days - 1), hot_end)
