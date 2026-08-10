@@ -55,7 +55,8 @@
     if (value.status !== "BLOCKED") {
       if (!RECORD_RE.test(value.latest_valid_record || "")) errors.push("latest_valid_record is invalid");
       if (!RECORD_RE.test(value.previous_valid_record || "")) errors.push("previous_valid_record is invalid");
-      if (!Array.isArray(value.positions) || value.positions.length < 1) {
+      if (!Array.isArray(value.positions) ||
+          (!value.public_redacted && value.positions.length < 1)) {
         errors.push("positions are missing");
       } else {
         var seen = {};
@@ -129,8 +130,26 @@
             Math.abs(lastPoint.adjusted_total_value - (lastPoint.total_value - lastPoint.excluded_external_flow)) > 0.01) {
           errors.push("performance external flow exclusion is inconsistent");
         }
+        if (lastPoint.date !== value.portfolio.performance_end_date ||
+            (value.history.latest_performance_date && lastPoint.date !== value.history.latest_performance_date)) {
+          errors.push("latest performance date is inconsistent");
+        }
+        if (finite(value.portfolio.cumulative_return) && finite(lastPoint.portfolio_unit_nav) &&
+            Math.abs(value.portfolio.cumulative_return - (lastPoint.portfolio_unit_nav - 1)) > 1e-9) {
+          errors.push("latest performance return is inconsistent");
+        }
+        var currentValuationStatus = String(value.portfolio.current_valuation_status || "");
+        var currentValuationIsExplicitlyIncomplete = value.status === "PARTIAL" &&
+          currentValuationStatus.indexOf("BLOCKED") === 0 &&
+          isObject(value.current_evidence) &&
+          value.current_evidence.official_valuation === false &&
+          value.current_evidence.valuation_completeness_passed === false &&
+          value.current_evidence.valuation_status === currentValuationStatus &&
+          Array.isArray(value.warnings) &&
+          value.warnings.indexOf("latest_current_valuation_incomplete:" + currentValuationStatus) >= 0;
         if (finite(lastPoint.adjusted_total_value) && finite(value.portfolio.total_value) &&
-            Math.abs(lastPoint.adjusted_total_value - value.portfolio.total_value) > 0.01) {
+            Math.abs(lastPoint.adjusted_total_value - value.portfolio.total_value) > 0.01 &&
+            !currentValuationIsExplicitlyIncomplete) {
           errors.push("latest performance total is inconsistent");
         }
         value.history.funding_events.forEach(function (event, index) {

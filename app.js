@@ -821,6 +821,32 @@
     });
   }
 
+  function renderInternalControl(bundle) {
+    if (!byId("internalLatestRecord")) return;
+    var risks = bundle.risks || [];
+    var highRiskCount = risks.filter(function (risk) { return risk.severity === "HIGH"; }).length;
+    var mediumRiskCount = risks.filter(function (risk) { return risk.severity === "MEDIUM"; }).length;
+    var execution = bundle.current_evidence || {};
+    var performancePointCount = bundle.history && bundle.history.performance_point_count;
+
+    setText("internalLatestRecord", bundle.latest_valid_record);
+    setText("internalPreviousRecord", bundle.previous_valid_record);
+    setText("internalDataDate", bundle.latest_data_date + " · " + bundle.data_age_calendar_days + " calendar days");
+    setText("internalExecutionStatus", (execution.execution_status || "UNKNOWN") + " · " + (execution.execution_kind || "UNKNOWN"));
+    setText("internalHistoryEvidence", bundle.history && bundle.history.evidence_status);
+    setText("internalTotalValue", money(bundle.portfolio.total_value));
+    setText("internalPortfolioPnl", money(bundle.portfolio.portfolio_pnl));
+    setText("internalGrossExposure", percent(bundle.portfolio.gross_exposure));
+    setText("internalCashWeight", percent(bundle.portfolio.cash_weight));
+    setText("internalTurnover", percent(bundle.portfolio.latest_interval_turnover));
+    setText("internalHoldingCount", bundle.concentration.holding_count + " 只");
+    setText("internalConcentration", percent(bundle.concentration.top1_equity_weight) + " / " + percent(bundle.concentration.top3_equity_weight));
+    setText("internalEvidenceCounts", bundle.valid_record_count + " / " + performancePointCount);
+    setText("internalRiskCount", risks.length + " 项 · " + highRiskCount + " HIGH · " + mediumRiskCount + " MEDIUM");
+    setText("internalWarningCount", (bundle.warnings || []).length + " 项");
+    setText("internalI1Status", bundle.i1_display_status + " · research-only · no holding authority");
+  }
+
   function renderBundle(bundle) {
     var csi300 = benchmarkById(bundle, "CSI300");
     var star50 = benchmarkById(bundle, "STAR50");
@@ -858,6 +884,7 @@
     renderRisks(bundle);
     renderEvidence(bundle);
     renderWarnings(bundle);
+    renderInternalControl(bundle);
     byId("dashboardContent").hidden = false;
     window.requestAnimationFrame(renderCharts);
   }

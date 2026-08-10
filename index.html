@@ -3,40 +3,90 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light" />
     <title>AlphaMx科技创新组合001号｜myQuant</title>
+    <link rel="icon" href="data:," />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <div class="app-shell">
-      <header class="page-header public-section public-section-brand">
-        <div class="brand-lockup">
-          <svg class="brand-mark" viewBox="0 0 48 48" role="img" aria-label="myQuant 组合与基准图形标志">
-            <rect x="1" y="1" width="46" height="46" rx="12"></rect>
-            <path class="brand-mark-portfolio" d="M9 32 L16 25 L22 28 L29 15 L39 11"></path>
-            <path class="brand-mark-benchmark" d="M9 35 L17 33 L24 34 L31 29 L39 30"></path>
-            <circle class="brand-mark-dot" cx="39" cy="11" r="2.5"></circle>
-          </svg>
-          <div>
-            <p class="eyebrow">MYQUANT · CN PERFORMANCE</p>
-            <h1>AlphaMx科技创新组合001号</h1>
-            <p class="strategy-line"><code>aggressive_tech_manufacturing</code></p>
-            <p class="subtitle"><span id="headerPeriod">2026-03-17 起</span> · 归档业绩与三项科技基准对照</p>
-          </div>
-        </div>
-        <div class="status-stack">
-          <span id="runtimeStatus" class="status-pill blocked">BLOCKED</span>
-          <span id="freshnessLabel" class="freshness-label">等待数据</span>
-        </div>
-      </header>
+    <a class="skip-link" href="#record">跳至业绩记录</a>
 
-      <main>
+    <header class="site-nav public-section public-section-brand">
+      <a class="nav-brand" href="#top" aria-label="返回页面顶部">
+        <svg class="brand-mark" viewBox="0 0 40 40" role="img" aria-label="myQuant 组合与基准图形标志">
+          <rect x="0.5" y="0.5" width="39" height="39"></rect>
+          <path class="brand-mark-portfolio" d="M6 28 L13 21 L18 24 L25 11 L34 7"></path>
+          <path class="brand-mark-benchmark" d="M6 32 L14 30 L21 31 L27 27 L34 28"></path>
+        </svg>
+        <span>
+          <strong>AlphaMx科技创新组合001号</strong>
+          <small>myQuant · aggressive_tech_manufacturing</small>
+        </span>
+      </a>
+      <nav class="nav-links" aria-label="页面导航">
+        <a href="#record">业绩 Record</a>
+        <a href="#risk">风险 Risk</a>
+        <a href="#method">口径 Method</a>
+        <a class="nav-cta blueprint" href="#record">
+          查看业绩 Performance
+          <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+        </a>
+      </nav>
+    </header>
+
+    <main id="top">
+      <section class="hero app-shell" aria-labelledby="heroTitle">
+        <div class="hero-copy">
+          <p class="eyebrow">QUANT + AI · 科技创新赛道</p>
+          <h1 id="heroTitle" class="hero-title">
+            <span>量化筛选</span>
+            <span class="hero-title-accent"><i aria-hidden="true"></i>AI 深研</span>
+          </h1>
+          <p class="hero-manifesto">双引擎 · 各司其职</p>
+
+          <div class="process-grid" aria-label="研究与执行流程">
+            <article><span>01</span><h2>量化模型选股</h2><p>因子筛选形成研究候选与风险边界。</p></article>
+            <article><span>02</span><h2>基本面深研</h2><p>复核公司质量、产业位置、估值与反证。</p></article>
+            <article><span>03</span><h2>纪律化执行</h2><p>组合规则与风险门槛预先定义、全程留痕。</p></article>
+            <article><span>04</span><h2>每日证据复盘</h2><p>用归档记录检查业绩、变化与数据完整性。</p></article>
+          </div>
+
+          <p class="hero-note">公开页只展示历史业绩、三项基准、风险评价和月度拆解；不披露个股、绝对资产、路径或 SHA。</p>
+          <a class="primary-action blueprint" href="#record">
+            查看完整净值曲线
+            <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+          </a>
+        </div>
+
+        <aside class="hero-scorecard blueprint" aria-label="组合业绩摘要">
+          <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+          <div class="scorecard-head">
+            <span>SPEC SHEET · 归档数据</span>
+            <div class="status-stack">
+              <span id="runtimeStatus" class="status-pill blocked">BLOCKED</span>
+              <span id="freshnessLabel" class="freshness-label">等待数据</span>
+            </div>
+          </div>
+          <p class="scorecard-period"><span id="headerPeriod">2026-03-17 起</span> · 三项基准对照</p>
+          <div class="return-summary" aria-label="累计收益摘要">
+            <div class="score-primary"><span>组合累计收益</span><strong id="portfolioReturnValue">—</strong><small>Portfolio cumulative</small></div>
+            <div class="score-primary"><span>对沪深300超额</span><strong id="excessValue">—</strong><small>Excess vs CSI 300</small></div>
+            <div><span>沪深300</span><strong id="benchmarkReturnValue">—</strong></div>
+            <div><span>科创50</span><strong id="star50ReturnValue">—</strong></div>
+            <div><span>创业板指</span><strong id="chinextReturnValue">—</strong></div>
+            <div><span>组合最大回撤</span><strong id="drawdownValue">—</strong></div>
+          </div>
+        </aside>
+      </section>
+
+      <div class="app-shell dashboard-shell">
         <section id="blockerPanel" class="panel blocker-panel" hidden>
           <div class="panel-heading"><div><p class="eyebrow">DATA STATUS</p><h2>业绩数据暂不可用</h2></div></div>
           <ul id="blockerList" class="blocker-list"></ul>
         </section>
 
         <div id="dashboardContent" hidden>
-          <section class="performance-stage public-section public-section-performance" aria-labelledby="performanceInsight">
+          <section id="record" class="performance-stage public-section public-section-performance section-anchor" aria-labelledby="performanceInsight">
             <div class="performance-heading">
               <div>
                 <p class="eyebrow">PERFORMANCE LEDGER</p>
@@ -52,36 +102,31 @@
               </div>
             </div>
 
-            <div class="return-summary" aria-label="累计收益摘要">
-              <div><span>组合累计收益</span><strong id="portfolioReturnValue">—</strong></div>
-              <div><span>沪深300</span><strong id="benchmarkReturnValue">—</strong></div>
-              <div><span>科创50</span><strong id="star50ReturnValue">—</strong></div>
-              <div><span>创业板指</span><strong id="chinextReturnValue">—</strong></div>
-              <div><span>对沪深300超额</span><strong id="excessValue">—</strong></div>
-              <div><span>组合最大回撤</span><strong id="drawdownValue">—</strong></div>
-            </div>
-
-            <section class="quant-evaluation" aria-labelledby="quantEvaluationTitle">
-              <div class="quant-evaluation-heading">
-                <div><p class="eyebrow">RISK-ADJUSTED</p><h3 id="quantEvaluationTitle">量化评价</h3></div>
-                <p id="quantMetricNote">历史区间折算，不是未来收益承诺；Sharpe 使用中国1年期国债收益率。</p>
-              </div>
-              <div id="quantMetricGrid" class="quant-metric-grid" aria-label="组合常用量化评价指标"></div>
-            </section>
-
-            <figure class="chart-figure">
+            <figure class="chart-figure blueprint chart-blueprint">
+              <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
               <div id="growthChart" class="chart-host growth-chart" role="group" aria-label="组合、沪深300、科创50、创业板指与累计超额的互动历史收益折线图"></div>
               <figcaption>组合从2026-03-17开始，以100 万为起始资金，移动鼠标或使用左右方向键查看具体日期与净值。</figcaption>
             </figure>
+          </section>
 
-            <figure class="chart-figure drawdown-figure">
+          <section id="risk" class="risk-layout public-section section-anchor">
+            <figure class="chart-figure drawdown-figure blueprint">
+              <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
               <div class="subchart-heading">
-                <div><p class="eyebrow">UNDERWATER</p><h3>历史回撤</h3></div>
+                <div><p class="eyebrow">UNDERWATER</p><h2>历史回撤对照</h2></div>
                 <div class="drawdown-values"><span>组合 <strong id="portfolioDrawdownValue">—</strong></span><span>沪深300 <strong id="benchmarkDrawdownValue">—</strong></span><span>科创50 <strong id="star50DrawdownValue">—</strong></span><span>创业板指 <strong id="chinextDrawdownValue">—</strong></span></div>
               </div>
               <div id="drawdownChart" class="chart-host drawdown-chart" role="group" aria-label="组合与三项基准互动历史回撤图"></div>
               <figcaption>从各自历史高点计算；移动鼠标或使用左右方向键查看同日回撤。</figcaption>
             </figure>
+
+            <section class="quant-evaluation" aria-labelledby="quantEvaluationTitle">
+              <div class="quant-evaluation-heading">
+                <div><p class="eyebrow">RISK-ADJUSTED</p><h2 id="quantEvaluationTitle">量化评价</h2></div>
+                <p id="quantMetricNote">历史区间折算，不是未来收益承诺；Sharpe 使用中国1年期国债收益率。</p>
+              </div>
+              <div id="quantMetricGrid" class="quant-metric-grid" aria-label="组合常用量化评价指标"></div>
+            </section>
           </section>
 
           <section class="history-analysis public-section" aria-labelledby="historyAnalysisTitle">
@@ -103,15 +148,29 @@
               <div id="historyInsightList" class="insight-list"></div>
             </aside>
           </section>
-        </div>
-      </main>
-    </div>
 
-    <script src="private/generated/cn_aggressive_dashboard.v1.js"></script>
-    <script src="js/cn_aggressive_input.js"></script>
-    <script src="js/cn_aggressive_dashboard_contract_v1.js"></script>
-    <script src="js/cn_aggressive_dashboard_analysis_v1.js"></script>
-    <script src="js/cn_aggressive_public_mode.js"></script>
-    <script src="app.js"></script>
+          <section id="method" class="method-grid section-anchor" aria-labelledby="methodTitle">
+            <div class="method-heading"><p class="eyebrow">METHOD &amp; BOUNDARIES</p><h2 id="methodTitle">口径、证据与边界</h2></div>
+            <article class="blueprint"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i><span>01 · SINGLE CAPITAL BASE</span><h3>一个资本起点</h3><p>以 2026-03-17 的 100 万为唯一起点，业绩口径不把外部资金流当作收益。</p></article>
+            <article class="blueprint"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i><span>02 · HASH-BOUND EVIDENCE</span><h3>逐条证据留痕</h3><p>历史估值点与三项基准必须满足页面合约；公开版只保留经验证的聚合结果。</p></article>
+            <article class="blueprint"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i><span>03 · FAIL CLOSED</span><h3>不合格就不展示</h3><p>缺失、过期或不闭合的数据会明确标记 PARTIAL / BLOCKED，不静默回退。</p></article>
+          </section>
+        </div>
+      </div>
+    </main>
+
+    <footer class="site-footer">
+      <span>AlphaMx科技创新组合001号 · myQuant</span>
+      <span>只读归档复盘 · 不荐股 · 不代客理财 · 不构成收益承诺</span>
+    </footer>
+
+    <script>
+      document.write('<script src="private/generated/cn_aggressive_dashboard.v1.js?cache=' + Date.now() + '"><\/script>');
+    </script>
+    <script src="js/cn_aggressive_input.js?v=dashboard-v2"></script>
+    <script src="js/cn_aggressive_dashboard_contract_v1.js?v=dashboard-v2"></script>
+    <script src="js/cn_aggressive_dashboard_analysis_v1.js?v=dashboard-v2"></script>
+    <script src="js/cn_aggressive_public_mode.js?mode=public-v1"></script>
+    <script src="app.js?v=dashboard-v2"></script>
   </body>
 </html>
