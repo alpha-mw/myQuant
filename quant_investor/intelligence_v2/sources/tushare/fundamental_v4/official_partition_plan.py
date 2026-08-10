@@ -167,6 +167,8 @@ def _probes(values: Sequence[Mapping[str, Any]], *, created_at: str) -> list[dic
         raise FundamentalV4ContractError("partition probes must be case-id sorted unique")
     required = {
         "BALANCESHEET_COMPANY_TYPE_LIMIT",
+        "BALANCESHEET_EIGHT_DAY_1_COMPLETE",
+        "BALANCESHEET_EIGHT_DAY_2_COMPLETE",
         "BALANCESHEET_MONTH_COMPLETE",
         "CASHFLOW_COMPANY_TYPE_LIMIT",
         "CASHFLOW_DAY_COMPLETE",
@@ -200,16 +202,12 @@ def _company_one_intervals(period: str, *, table: str, as_of: str) -> list[tuple
     if start < hot_start:
         rows.append((start, min(hot_start - timedelta(days=1), end)))
     if hot_start <= end:
-        if table == "cashflow":
-            cursor = hot_start
-            while cursor <= hot_end:
-                rows.append((cursor, cursor))
-                cursor += timedelta(days=1)
-        else:
-            midpoint = min(date(hot_start.year, hot_start.month, 15), hot_end)
-            rows.append((hot_start, midpoint))
-            if midpoint < hot_end:
-                rows.append((midpoint + timedelta(days=1), hot_end))
+        maximum_days = 1 if table == "cashflow" else 8
+        cursor = hot_start
+        while cursor <= hot_end:
+            interval_end = min(cursor + timedelta(days=maximum_days - 1), hot_end)
+            rows.append((cursor, interval_end))
+            cursor = interval_end + timedelta(days=1)
     cursor = max(start, hot_end + timedelta(days=1))
     while cursor <= end:
         year_end = min(date(cursor.year, 12, 31), end)

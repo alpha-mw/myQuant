@@ -161,6 +161,8 @@ def _source_execution() -> dict[str, Any]:
 def _probes() -> list[dict[str, Any]]:
     values = [
         ("BALANCESHEET_COMPANY_TYPE_LIMIT", "balancesheet_vip", 7000, True),
+        ("BALANCESHEET_EIGHT_DAY_1_COMPLETE", "balancesheet_vip", 1635, False),
+        ("BALANCESHEET_EIGHT_DAY_2_COMPLETE", "balancesheet_vip", 5385, False),
         ("BALANCESHEET_MONTH_COMPLETE", "balancesheet_vip", 6963, False),
         ("CASHFLOW_COMPANY_TYPE_LIMIT", "cashflow_vip", 6400, True),
         ("CASHFLOW_DAY_COMPLETE", "cashflow_vip", 2683, False),
@@ -238,6 +240,25 @@ def test_cashflow_general_company_date_partitions_are_gap_free() -> None:
     april = [row for row in rows if row["params"]["start_date"].startswith("202304")]
     assert len(april) == 30
     assert all(row["params"]["start_date"] == row["params"]["end_date"] for row in april)
+
+
+def test_balance_and_income_hot_partitions_are_at_most_eight_days() -> None:
+    _source, plan, _probes_value = _build()
+    for table in ("balancesheet", "income"):
+        rows = [
+            row
+            for row in plan["request_rows"]
+            if row["table"] == table
+            and row["params"].get("period") == "20200630"
+            and row["params"].get("comp_type") == "1"
+            and row["params"].get("start_date", "") >= "20200801"
+            and row["params"].get("end_date", "") <= "20200831"
+        ]
+        assert rows
+        for row in rows:
+            start = datetime.strptime(row["params"]["start_date"], "%Y%m%d").date()
+            end = datetime.strptime(row["params"]["end_date"], "%Y%m%d").date()
+            assert (end - start).days + 1 <= 8
 
 
 def test_plan_uses_baseline_exact_scope_and_provider_has_more_semantics() -> None:
