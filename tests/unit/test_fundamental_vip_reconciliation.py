@@ -213,6 +213,51 @@ def test_equivalent_order_dtype_null_and_decimal_forms_compare_equal() -> None:
     assert not any(result["raw_value_diff"].values())
 
 
+def test_large_canonical_multiset_uses_bounded_streaming_identity() -> None:
+    rows = [
+        [f"{index:06d}.SZ", "20260630", Decimal(index), index, "x" * 3900] for index in range(2200)
+    ]
+    large = frame().iloc[0:0].copy()
+    large = pd.DataFrame(rows, columns=large.columns)
+
+    result = compare_fundamental_raw_tables(
+        baseline_tables=tables(large),
+        vip_tables=tables(large.iloc[::-1].reset_index(drop=True)),
+        policy=policy(),
+    )
+
+    assert result["passed"] is True
+    assert result["table_evidence"]["income"]["baseline_row_count"] == 2200
+    assert (
+        result["table_evidence"]["income"]["baseline_multiset_sha256"]
+        == result["table_evidence"]["income"]["vip_multiset_sha256"]
+    )
+
+
+def test_long_raw_text_is_hashed_without_entering_artifact_text() -> None:
+    long_reason = "原因" * 900
+    baseline = tables()
+    vip = tables()
+    baseline["forecast"].loc[0, "note"] = long_reason
+    vip["forecast"].loc[0, "note"] = long_reason
+
+    equal = compare_fundamental_raw_tables(
+        baseline_tables=baseline,
+        vip_tables=vip,
+        policy=policy(),
+    )
+    assert equal["passed"] is True
+
+    vip["forecast"].loc[0, "note"] = f"{long_reason}不同"
+    changed = compare_fundamental_raw_tables(
+        baseline_tables=baseline,
+        vip_tables=vip,
+        policy=policy(),
+    )
+    assert changed["passed"] is False
+    assert changed["raw_row_diff"]["forecast"]
+
+
 @pytest.mark.parametrize(
     ("baseline_value", "vip_value"),
     [

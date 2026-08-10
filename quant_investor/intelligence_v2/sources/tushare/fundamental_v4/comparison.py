@@ -4,11 +4,16 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Mapping, Sequence
+from contextlib import closing
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_EVEN, localcontext
 import hashlib
+import json
 import math
 from numbers import Integral
+from pathlib import Path
+import sqlite3
+import tempfile
 from typing import Any
 import unicodedata
 
@@ -16,6 +21,7 @@ import numpy as np
 import pandas as pd
 
 from ...._core import (
+    MAX_ARTIFACT_BYTES,
     canonical_bytes,
     common_fields,
     require_exact_keys,
@@ -62,6 +68,7 @@ _TABLE_POLICY_FIELDS = {
 _COLUMN_ROW_FIELDS = {"column", "kind"}
 _DECIMAL_QUANTUM = Decimal("0.000000000001")
 _SCHEMA_DIAGNOSTIC_VERSION = "myquant.v17.intelligence-v2.tushare-schema-diagnostic-receipt.v1"
+_MULTISET_HASH_DOMAIN = b"myquant.v17.canonical-row-multiset-stream.v1\0"
 
 
 def _sequence(value: Any, *, label: str, maximum: int) -> list[Any]:
@@ -326,15 +333,94 @@ def _row_json(value: tuple[Any, ...]) -> list[list[Any]]:
 
 
 def _row_bytes(value: tuple[Any, ...]) -> bytes:
-    return canonical_bytes(_row_json(value))
+    return _projection_bytes(_row_json(value))
 
 
-def _table_projection(
+def _projection_bytes(value: Any) -> bytes:
+    """Encode validated raw scalars for internal hashing, not as an artifact."""
+
+    raw = json.dumps(
+        value,
+        allow_nan=False,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8", errors="strict")
+    if len(raw) > MAX_ARTIFACT_BYTES:
+        raise FundamentalV4ContractError("canonical raw row exceeds 8 MiB")
+    return raw
+
+
+def _multiset_sha256(rows: Sequence[tuple[str, int]]) -> str:
+    """Hash a canonical row-digest multiset without one oversized artifact."""
+
+    digest = hashlib.sha256(_MULTISET_HASH_DOMAIN)
+    for row_sha256, count in rows:
+        payload = canonical_bytes({"count": count, "row_sha256": row_sha256})
+        digest.update(len(payload).to_bytes(8, byteorder="big", signed=False))
+        digest.update(payload)
+    return digest.hexdigest()
+
+
+def _projection_schema(connection: sqlite3.Connection) -> None:
+    connection.executescript("""
+        PRAGMA journal_mode=OFF;
+        PRAGMA synchronous=OFF;
+        PRAGMA temp_store=FILE;
+        PRAGMA locking_mode=EXCLUSIVE;
+        CREATE TABLE row_counts (
+            lane INTEGER NOT NULL,
+            row_hash BLOB NOT NULL,
+            count INTEGER NOT NULL,
+            PRIMARY KEY (lane, row_hash)
+        ) WITHOUT ROWID;
+        CREATE TABLE winner_rows (
+            lane INTEGER NOT NULL,
+            key_hash BLOB NOT NULL,
+            order_bytes BLOB NOT NULL,
+            row_hash BLOB NOT NULL,
+            PRIMARY KEY (lane, key_hash)
+        ) WITHOUT ROWID;
+        """)
+
+
+def _flush_projection_batch(
+    connection: sqlite3.Connection,
+    *,
+    lane_id: int,
+    row_hashes: Counter[bytes],
+    winners: Mapping[bytes, tuple[bytes, bytes]],
+) -> None:
+    connection.executemany(
+        """
+        INSERT INTO row_counts (lane, row_hash, count) VALUES (?, ?, ?)
+        ON CONFLICT (lane, row_hash) DO UPDATE SET count = count + excluded.count
+        """,
+        ((lane_id, row_hash, count) for row_hash, count in row_hashes.items()),
+    )
+    connection.executemany(
+        """
+        INSERT INTO winner_rows (lane, key_hash, order_bytes, row_hash)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT (lane, key_hash) DO UPDATE SET
+            order_bytes = excluded.order_bytes,
+            row_hash = excluded.row_hash
+        WHERE excluded.order_bytes >= winner_rows.order_bytes
+        """,
+        (
+            (lane_id, key_hash, order_bytes, row_hash)
+            for key_hash, (order_bytes, row_hash) in winners.items()
+        ),
+    )
+
+
+def _write_table_projection(
     frame: pd.DataFrame,
     *,
     table_policy: Mapping[str, Any],
     lane: str,
-) -> dict[str, Any]:
+    connection: sqlite3.Connection,
+) -> int:
     if not isinstance(frame, pd.DataFrame):
         raise FundamentalV4ContractError("raw table must be a DataFrame")
     column_rows = list(table_policy["column_rows"])
@@ -346,81 +432,137 @@ def _table_projection(
     if list(frame.columns) != expected_columns:
         raise FundamentalV4ContractError("raw table column order changed")
     kinds = [row["kind"] for row in column_rows]
-    rows = [
-        tuple(_canonical_scalar(value, kind=kinds[index]) for index, value in enumerate(raw_row))
-        for raw_row in frame.loc[:, columns].itertuples(index=False, name=None)
-    ]
-    counter = Counter(rows)
-    ordered_rows = sorted(counter, key=_row_bytes)
-    multiset_rows = [{"count": counter[row], "row": _row_json(row)} for row in ordered_rows]
     key_indices = [columns.index(value) for value in table_policy["canonical_key_columns"]]
     winner_indices = [columns.index(value) for value in table_policy["winner_order_columns"]]
-    by_key: dict[tuple[Any, ...], list[tuple[Any, ...]]] = {}
-    for row in rows:
-        key = tuple(row[index] for index in key_indices)
-        by_key.setdefault(key, []).append(row)
-    winners: dict[tuple[Any, ...], tuple[Any, ...]] = {}
-    for key, candidates in by_key.items():
-        winners[key] = sorted(
-            candidates,
-            key=lambda row: canonical_bytes([list(row[index]) for index in winner_indices]),
-        )[-1]
+    lane_id = 0 if lane == "BASELINE" else 1
+    row_hashes: Counter[bytes] = Counter()
+    winners: dict[bytes, tuple[bytes, bytes]] = {}
+    row_count = 0
+    for raw_row in frame.loc[:, columns].itertuples(index=False, name=None):
+        row = tuple(
+            _canonical_scalar(value, kind=kinds[index]) for index, value in enumerate(raw_row)
+        )
+        row_bytes = _row_bytes(row)
+        row_hash = hashlib.sha256(row_bytes).digest()
+        key_bytes = _projection_bytes([list(row[index]) for index in key_indices])
+        key_hash = hashlib.sha256(key_bytes).digest()
+        order_bytes = _projection_bytes([list(row[index]) for index in winner_indices])
+        row_hashes[row_hash] += 1
+        prior = winners.get(key_hash)
+        if prior is None or order_bytes >= prior[0]:
+            winners[key_hash] = (order_bytes, row_hash)
+        row_count += 1
+        if row_count % 10_000 == 0:
+            _flush_projection_batch(
+                connection,
+                lane_id=lane_id,
+                row_hashes=row_hashes,
+                winners=winners,
+            )
+            row_hashes.clear()
+            winners.clear()
+    _flush_projection_batch(
+        connection,
+        lane_id=lane_id,
+        row_hashes=row_hashes,
+        winners=winners,
+    )
+    connection.commit()
+    return row_count
+
+
+def _multiset_projection(connection: sqlite3.Connection, *, lane_id: int) -> dict[str, Any]:
+    rows = [
+        (bytes(row_hash).hex(), int(count))
+        for row_hash, count in connection.execute(
+            "SELECT row_hash, count FROM row_counts WHERE lane = ? ORDER BY row_hash",
+            (lane_id,),
+        )
+    ]
     return {
-        "counter": counter,
-        "duplicate_row_count": sum(count - 1 for count in counter.values()),
-        "multiset_rows": multiset_rows,
-        "multiset_sha256": hashlib.sha256(canonical_bytes(multiset_rows)).hexdigest(),
-        "row_count": len(rows),
-        "winners": winners,
+        "duplicate_row_count": sum(count - 1 for _row_hash, count in rows),
+        "multiset_sha256": _multiset_sha256(rows),
     }
 
 
-def _row_diffs(
-    baseline: Mapping[str, Any],
-    vip: Mapping[str, Any],
-) -> list[dict[str, Any]]:
-    keys = sorted(set(baseline["counter"]) | set(vip["counter"]), key=_row_bytes)
-    rows: list[dict[str, Any]] = []
-    for row in keys:
-        baseline_count = baseline["counter"].get(row, 0)
-        vip_count = vip["counter"].get(row, 0)
-        if baseline_count != vip_count:
-            rows.append(
-                {
-                    "baseline_count": baseline_count,
-                    "row_sha256": hashlib.sha256(_row_bytes(row)).hexdigest(),
-                    "vip_count": vip_count,
-                }
-            )
-    return rows
+def _row_diffs(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    query = """
+        SELECT b.row_hash, b.count, COALESCE(v.count, 0)
+        FROM row_counts AS b
+        LEFT JOIN row_counts AS v ON v.lane = 1 AND v.row_hash = b.row_hash
+        WHERE b.lane = 0 AND (v.count IS NULL OR b.count != v.count)
+        UNION ALL
+        SELECT v.row_hash, 0, v.count
+        FROM row_counts AS v
+        LEFT JOIN row_counts AS b ON b.lane = 0 AND b.row_hash = v.row_hash
+        WHERE v.lane = 1 AND b.row_hash IS NULL
+        ORDER BY 1
+    """
+    return [
+        {
+            "baseline_count": int(baseline_count),
+            "row_sha256": bytes(row_hash).hex(),
+            "vip_count": int(vip_count),
+        }
+        for row_hash, baseline_count, vip_count in connection.execute(query)
+    ]
 
 
-def _winner_diffs(
-    baseline: Mapping[str, Any],
-    vip: Mapping[str, Any],
-) -> list[dict[str, Any]]:
-    keys = sorted(set(baseline["winners"]) | set(vip["winners"]), key=_row_bytes)
-    rows: list[dict[str, Any]] = []
-    for key in keys:
-        baseline_winner = baseline["winners"].get(key)
-        vip_winner = vip["winners"].get(key)
-        if baseline_winner != vip_winner:
-            rows.append(
-                {
-                    "baseline_winner_sha256": (
-                        None
-                        if baseline_winner is None
-                        else hashlib.sha256(_row_bytes(baseline_winner)).hexdigest()
-                    ),
-                    "key_sha256": hashlib.sha256(_row_bytes(key)).hexdigest(),
-                    "vip_winner_sha256": (
-                        None
-                        if vip_winner is None
-                        else hashlib.sha256(_row_bytes(vip_winner)).hexdigest()
-                    ),
-                }
+def _winner_diffs(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    query = """
+        SELECT b.key_hash, b.row_hash, v.row_hash
+        FROM winner_rows AS b
+        LEFT JOIN winner_rows AS v ON v.lane = 1 AND v.key_hash = b.key_hash
+        WHERE b.lane = 0 AND (v.row_hash IS NULL OR b.row_hash != v.row_hash)
+        UNION ALL
+        SELECT v.key_hash, NULL, v.row_hash
+        FROM winner_rows AS v
+        LEFT JOIN winner_rows AS b ON b.lane = 0 AND b.key_hash = v.key_hash
+        WHERE v.lane = 1 AND b.key_hash IS NULL
+        ORDER BY 1
+    """
+    return [
+        {
+            "baseline_winner_sha256": (
+                None if baseline_winner is None else bytes(baseline_winner).hex()
+            ),
+            "key_sha256": bytes(key_hash).hex(),
+            "vip_winner_sha256": None if vip_winner is None else bytes(vip_winner).hex(),
+        }
+        for key_hash, baseline_winner, vip_winner in connection.execute(query)
+    ]
+
+
+def _compare_table(
+    *,
+    baseline_frame: pd.DataFrame,
+    vip_frame: pd.DataFrame,
+    table_policy: Mapping[str, Any],
+) -> dict[str, Any]:
+    with tempfile.TemporaryDirectory(prefix="myquant-fundamental-compare-") as root:
+        database = Path(root) / "projection.sqlite3"
+        with closing(sqlite3.connect(database)) as connection:
+            _projection_schema(connection)
+            baseline_count = _write_table_projection(
+                baseline_frame,
+                table_policy=table_policy,
+                lane="BASELINE",
+                connection=connection,
             )
-    return rows
+            vip_count = _write_table_projection(
+                vip_frame,
+                table_policy=table_policy,
+                lane="VIP",
+                connection=connection,
+            )
+            baseline = _multiset_projection(connection, lane_id=0)
+            vip = _multiset_projection(connection, lane_id=1)
+            return {
+                "baseline": {**baseline, "row_count": baseline_count},
+                "row_diff": _row_diffs(connection),
+                "value_diff": _winner_diffs(connection),
+                "vip": {**vip, "row_count": vip_count},
+            }
 
 
 @fundamental_v4_contract
@@ -446,18 +588,15 @@ def compare_fundamental_raw_tables(
     duplicate_diff: dict[str, dict[str, int]] = {}
     evidence: dict[str, dict[str, Any]] = {}
     for table in SOURCE_TABLES:
-        baseline = _table_projection(
-            baseline_tables[table],
+        result = _compare_table(
+            baseline_frame=baseline_tables[table],
+            vip_frame=vip_tables[table],
             table_policy=policy_by_table[table],
-            lane="BASELINE",
         )
-        vip = _table_projection(
-            vip_tables[table],
-            table_policy=policy_by_table[table],
-            lane="VIP",
-        )
-        row_diff[table] = _row_diffs(baseline, vip)
-        value_diff[table] = _winner_diffs(baseline, vip)
+        baseline = result["baseline"]
+        vip = result["vip"]
+        row_diff[table] = result["row_diff"]
+        value_diff[table] = result["value_diff"]
         duplicate_diff[table] = {
             "baseline_duplicate_row_count": baseline["duplicate_row_count"],
             "vip_duplicate_row_count": vip["duplicate_row_count"],
