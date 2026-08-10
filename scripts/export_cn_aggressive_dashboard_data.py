@@ -10,6 +10,11 @@ import tempfile
 from datetime import date, datetime
 from pathlib import Path
 
+from quant_investor.strategy_records.store import (
+    StrategyRecordStoreError,
+    load_registered_catalog,
+)
+
 from cn_dashboard_common import (
     DashboardInputError,
     build_bundle,
@@ -28,11 +33,48 @@ DEFAULT_RECORD_ROOT = (
 DEFAULT_BENCHMARK = (
     PROJECT_ROOT / "portfolio_dashboard" / "inputs" / "cn_index_benchmark.csv"
 )
+DEFAULT_RISK_FREE = (
+    PROJECT_ROOT / "portfolio_dashboard" / "inputs" / "cn_govt_bond_yield.csv"
+)
 DEFAULT_OUTPUT_DIR = (
     PROJECT_ROOT / "portfolio_dashboard" / "private" / "generated"
 )
 DEFAULT_JSON = DEFAULT_OUTPUT_DIR / "cn_aggressive_dashboard.v1.json"
 DEFAULT_JS = DEFAULT_OUTPUT_DIR / "cn_aggressive_dashboard.v1.js"
+DEFAULT_HISTORY_INTEGRITY = (
+    DEFAULT_OUTPUT_DIR / "cn_aggressive_history_integrity.v1.json"
+)
+
+
+def _catalog_history_integrity_path(
+    *,
+    project_root: Path,
+    record_root: Path,
+    requested: Path,
+) -> Path:
+    try:
+        registered = load_registered_catalog(record_root)
+    except StrategyRecordStoreError as exc:
+        raise DashboardInputError(
+            "record_catalog_invalid:" + str(exc)
+        ) from exc
+    if registered is None:
+        return requested.resolve()
+    ref = registered[1].get("history_registry_ref")
+    if ref is None:
+        return requested.resolve()
+    if not isinstance(ref, dict) or not isinstance(ref.get("path"), str):
+        raise DashboardInputError("catalog_history_registry_ref_invalid")
+    legacy_default = (
+        project_root
+        / "portfolio_dashboard/private/generated/"
+        "cn_aggressive_history_integrity.v1.json"
+    ).resolve()
+    requested_path = requested.resolve()
+    bound_path = (project_root / ref["path"]).resolve()
+    if requested_path == legacy_default:
+        return bound_path
+    return requested_path
 
 
 def _render_json(bundle: dict) -> bytes:
@@ -122,8 +164,14 @@ def parse_args() -> argparse.Namespace:
         "--record-root", type=Path, default=DEFAULT_RECORD_ROOT
     )
     parser.add_argument("--benchmark", type=Path, default=DEFAULT_BENCHMARK)
+    parser.add_argument("--risk-free", type=Path, default=DEFAULT_RISK_FREE)
     parser.add_argument("--json-output", type=Path, default=DEFAULT_JSON)
     parser.add_argument("--js-output", type=Path, default=DEFAULT_JS)
+    parser.add_argument(
+        "--history-integrity",
+        type=Path,
+        default=DEFAULT_HISTORY_INTEGRITY,
+    )
     parser.add_argument("--generated-at", default=None)
     parser.add_argument(
         "--today", default=None, help="Testing override in YYYY-MM-DD format"
@@ -138,12 +186,21 @@ def main() -> int:
     )
     today = date.fromisoformat(args.today) if args.today else date.today()
     try:
+        project_root = args.project_root.resolve()
+        record_root = args.record_root.resolve()
+        history_integrity_path = _catalog_history_integrity_path(
+            project_root=project_root,
+            record_root=record_root,
+            requested=args.history_integrity,
+        )
         bundle = build_bundle(
-            project_root=args.project_root.resolve(),
-            record_root=args.record_root.resolve(),
+            project_root=project_root,
+            record_root=record_root,
             benchmark_path=args.benchmark.resolve(),
+            risk_free_path=args.risk_free.resolve(),
             generated_at=generated_at,
             today=today,
+            history_integrity_path=history_integrity_path,
         )
         if bundle["status"] == "BLOCKED":
             raise DashboardInputError("export_blocked")
@@ -151,7 +208,7 @@ def main() -> int:
             bundle,
             args.json_output.resolve(),
             args.js_output.resolve(),
-            args.project_root.resolve(),
+            project_root,
         )
     except DashboardInputError as exc:
         print(

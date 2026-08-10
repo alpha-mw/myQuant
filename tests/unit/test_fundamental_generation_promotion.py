@@ -19,6 +19,7 @@ from quant_investor.market.fundamental_generation import (
     FundamentalGenerationError,
     load_fundamental_pointer,
     pointer_sha256,
+    preflight_staged_fundamental_promotion,
     promote_staged_fundamental_generation,
     publish_fundamental_generation,
 )
@@ -913,6 +914,57 @@ def test_promote_verified_primary_generation_with_cas(tmp_path: Path) -> None:
     lock = canonical / generation.FUNDAMENTAL_PROMOTION_LOCK_FILENAME
     assert lock.is_file() and not lock.is_symlink()
     assert os.stat(lock).st_mode & 0o077 == 0
+
+
+def test_optional_phase_recorder_observes_commit_boundaries(tmp_path: Path) -> None:
+    canonical = tmp_path / "canonical"
+    staging = tmp_path / "staging"
+    _publish_offline(canonical)
+    _publish_verified_primary(staging)
+    events: list[tuple[str, dict[str, Any]]] = []
+
+    result = promote_staged_fundamental_generation(
+        staging_root=staging,
+        canonical_root=canonical,
+        expected_pointer_sha256=pointer_sha256(canonical),
+        phase_recorder=lambda event, payload: events.append(
+            (event, dict(payload))
+        ),
+    )
+
+    assert result["promoted"] is True
+    assert [event for event, _payload in events] == [
+        "PRECAS_VALIDATED",
+        "CAS_COMMITTED",
+        "POSTCHECK_PASSED",
+    ]
+    assert events[1][1]["pointer_sha256"] == result["pointer_sha256"]
+
+
+def test_promotion_preflight_is_read_only_and_matches_commit_target(
+    tmp_path: Path,
+) -> None:
+    canonical = tmp_path / "canonical"
+    staging = tmp_path / "staging"
+    _publish_offline(canonical)
+    _publish_verified_primary(staging)
+    before = pointer_sha256(canonical)
+
+    preflight = preflight_staged_fundamental_promotion(
+        staging_root=staging,
+        canonical_root=canonical,
+        expected_pointer_sha256=before,
+    )
+
+    assert pointer_sha256(canonical) == before
+    assert preflight["candidate_generation_id"] == "verified-stage"
+    assert preflight["provider_evidence"] is None
+    result = promote_staged_fundamental_generation(
+        staging_root=staging,
+        canonical_root=canonical,
+        expected_pointer_sha256=before,
+    )
+    assert result["pointer_sha256"] == preflight["candidate_pointer_sha256"]
 
 
 def test_successful_promotion_rederives_exactly_once(

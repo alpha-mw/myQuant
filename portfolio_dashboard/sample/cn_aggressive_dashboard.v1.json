@@ -56,9 +56,9 @@
     "included_record_count": 2, "performance_point_count": 2,
     "legacy_exact_byte_record_count": 0, "hash_bound_current_record_count": 2,
     "funding_events": [{
-      "record": "20990102_1200", "date": "2099-01-02", "amount": 5000,
-      "total_value_before": 4900, "total_value_after": 9900,
-      "evidence_path": "SYNTHETIC/20990102_1200/funding.json",
+      "record": "20990103_1200", "date": "2099-01-03", "amount": 5000,
+      "total_value_before": 10000, "total_value_after": 15000,
+      "evidence_path": "SYNTHETIC/20990103_1200/funding.json",
       "evidence_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
       "binding_status": "MANIFEST_EMBED_AND_INDEPENDENT_MANUAL_MATCH"
     }],
@@ -79,29 +79,60 @@
   "changes": [{
     "symbol": "000001.SZ", "name": "合成样例A", "change_type": "UNCHANGED",
     "previous_shares": 100, "current_shares": 100, "share_delta": 0,
-    "nav_weight_delta": 0, "equity_weight_delta": 0
+    "nav_weight_delta": -0.0011111111111111183, "equity_weight_delta": 0
   }],
   "portfolio": {
     "cash": 8900, "market_value": 1100, "total_value": 10000, "cash_weight": 0.89,
-    "gross_exposure": 0.11, "portfolio_pnl": 0, "current_unrealized_pnl": 100,
+    "gross_exposure": 0.11, "portfolio_pnl": 100, "current_unrealized_pnl": 100,
     "latest_record_realized_pnl_from_rebalance": 0, "cumulative_realized_pnl": null,
-    "realized_pnl_evidence_status": "UNKNOWN", "cumulative_twr": 0.01,
-    "latest_record_interval_return": 0.01, "max_drawdown": 0, "latest_interval_turnover": 0,
-    "return_method": "funding_aware_time_weighted_unitization", "gross_or_net": "UNKNOWN",
+    "realized_pnl_evidence_status": "UNKNOWN", "performance_initial_capital": 9900,
+    "excluded_external_flow": 5000, "adjusted_total_value": 10000,
+    "cumulative_profit_excluding_external_flow": 100, "cumulative_return": 0.010101010101010166,
+    "latest_record_interval_return": 0.010101010101010166, "max_drawdown": 0, "latest_interval_turnover": 0,
+    "return_method": "initial_capital_return_excluding_external_flows", "gross_or_net": "UNKNOWN",
     "fee_basis": "UNKNOWN", "performance_start_date": "2099-01-02", "performance_end_date": "2099-01-03",
     "performance_points": [
-      {"date": "2099-01-02", "record": "20990102_1200", "total_value": 9900, "portfolio_unit_nav": 1, "portfolio_cumulative_return": 0, "csi300_nav": 1, "csi300_cumulative_return": 0, "cumulative_excess_return": 0, "benchmark_coverage": "exact_close", "benchmark_value_date": "2099-01-02", "evidence_status": "HASH_BOUND_CURRENT_CLOSURE"},
-      {"date": "2099-01-03", "record": "20990103_1200", "total_value": 10000, "portfolio_unit_nav": 1.01, "portfolio_cumulative_return": 0.01, "csi300_nav": 1.005, "csi300_cumulative_return": 0.005, "cumulative_excess_return": 0.005, "benchmark_coverage": "exact_close", "benchmark_value_date": "2099-01-03", "evidence_status": "HASH_BOUND_CURRENT_CLOSURE"}
+      {"date": "2099-01-02", "record": "20990102_1200", "total_value": 9900, "excluded_external_flow": 0, "adjusted_total_value": 9900, "portfolio_unit_nav": 1, "portfolio_cumulative_return": 0, "csi300_nav": 1, "csi300_cumulative_return": 0, "star50_nav": 1, "star50_cumulative_return": 0, "star50_benchmark_coverage": "exact_close", "star50_benchmark_value_date": "2099-01-02", "chinext_nav": 1, "chinext_cumulative_return": 0, "chinext_benchmark_coverage": "exact_close", "chinext_benchmark_value_date": "2099-01-02", "cumulative_excess_return": 0, "benchmark_coverage": "exact_close", "benchmark_value_date": "2099-01-02", "risk_free_annual_yield": 0.02, "risk_free_coverage": "exact_published_yield", "risk_free_value_date": "2099-01-02", "evidence_status": "HASH_BOUND_CURRENT_CLOSURE"},
+      {"date": "2099-01-03", "record": "20990103_1200", "total_value": 15000, "excluded_external_flow": 5000, "adjusted_total_value": 10000, "portfolio_unit_nav": 1.0101010101010102, "portfolio_cumulative_return": 0.010101010101010166, "csi300_nav": 1.005, "csi300_cumulative_return": 0.005, "star50_nav": 1.01, "star50_cumulative_return": 0.01, "star50_benchmark_coverage": "exact_close", "star50_benchmark_value_date": "2099-01-03", "chinext_nav": 0.995, "chinext_cumulative_return": -0.005, "chinext_benchmark_coverage": "exact_close", "chinext_benchmark_value_date": "2099-01-03", "cumulative_excess_return": 0.00510101010101015, "benchmark_coverage": "exact_close", "benchmark_value_date": "2099-01-03", "risk_free_annual_yield": 0.02, "risk_free_coverage": "exact_published_yield", "risk_free_value_date": "2099-01-03", "evidence_status": "HASH_BOUND_CURRENT_CLOSURE"}
     ]
   },
-  "benchmarks": [{
-    "id": "CSI300", "name": "沪深300", "ts_code": "000300.SH",
-    "source_path": "SYNTHETIC/cn_index_benchmark.csv",
-    "source_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-    "start_date": "2099-01-02", "end_date": "2099-01-03", "return": 0.005,
-    "excess_return": 0.005, "max_drawdown": 0, "missing_dates": [],
-    "coverage": ["exact_close", "exact_close"]
-  }],
+  "benchmarks": [
+    {
+      "id": "CSI300", "name": "沪深300", "ts_code": "000300.SH",
+      "source_path": "SYNTHETIC/cn_index_benchmark.csv",
+      "source_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "start_date": "2099-01-02", "end_date": "2099-01-03", "return": 0.005,
+      "excess_return": 0.00510101010101015, "max_drawdown": 0, "missing_dates": [],
+      "coverage": ["exact_close", "exact_close"]
+    },
+    {
+      "id": "STAR50", "name": "科创50", "ts_code": "000688.SH",
+      "source_path": "SYNTHETIC/cn_index_benchmark.csv",
+      "source_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "start_date": "2099-01-02", "end_date": "2099-01-03", "return": 0.01,
+      "excess_return": 0.00010101010101016566, "max_drawdown": 0, "missing_dates": [],
+      "coverage": ["exact_close", "exact_close"]
+    },
+    {
+      "id": "CHINEXT", "name": "创业板指", "ts_code": "399006.SZ",
+      "source_path": "SYNTHETIC/cn_index_benchmark.csv",
+      "source_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "start_date": "2099-01-02", "end_date": "2099-01-03", "return": -0.005,
+      "excess_return": 0.015101010101010156, "max_drawdown": -0.005, "missing_dates": [],
+      "coverage": ["exact_close", "exact_close"]
+    }
+  ],
+  "risk_free": {
+    "name": "中国1年期国债收益率", "tenor": "1Y",
+    "source_system": "chinabond.mof_govt_yield_curve",
+    "source_url": "https://yield.chinabond.com.cn/cbweb-mn/pgxh/showHistory",
+    "source_path": "SYNTHETIC/cn_govt_bond_yield.csv",
+    "source_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "start_date": "2099-01-02", "end_date": "2099-01-03",
+    "latest_annual_yield": 0.02, "day_count": "ACT/365",
+    "alignment": "interval_start_previous_published_workday",
+    "missing_dates": [], "coverage": ["exact_published_yield", "exact_published_yield"]
+  },
   "concentration": {"top1_equity_weight": 1, "top3_equity_weight": 1, "equity_hhi": 1, "holding_count": 1, "thesis_status_counts": {"SYNTHETIC": 1}},
   "risks": [{"code": "SYNTHETIC_SAMPLE", "severity": "MEDIUM", "detail": "Tracked sample only; never a production input."}],
   "i1_research": null,
@@ -113,8 +144,9 @@
   "rejected_record_reason_counts": {},
   "rejected_record_samples": [],
   "source_refs": [
-    {"path": "SYNTHETIC/20990102_1200/funding.json", "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},
-    {"path": "SYNTHETIC/cn_index_benchmark.csv", "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+    {"path": "SYNTHETIC/20990103_1200/funding.json", "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},
+    {"path": "SYNTHETIC/cn_index_benchmark.csv", "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+    {"path": "SYNTHETIC/cn_govt_bond_yield.csv", "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}
   ],
-  "content_sha256": "2f29b3ca98ceb928840216b4b2ed0c845e68f2db3cf933b83e3195acaae8dd14"
+  "content_sha256": "f1b1d6d09d359df786f3538389f4e659c7971a7bf7cd5fc155cdd788db98897e"
 }

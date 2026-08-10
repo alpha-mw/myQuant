@@ -13,6 +13,8 @@ and the separate Shadow forward-evidence lane.
 - [Investment Intelligence I0](architecture/v17_i0_investment_intelligence.md)
 - [Forward Research Evaluator R2.2](architecture/v17_r22_forward_research_evaluator.md)
 - [Investment Decision Intelligence I1](architecture/v17_i1_investment_decision_intelligence.md)
+- [Investment Intelligence v2: I2-I6](architecture/v17_i2_i6_investment_intelligence_v2.md)
+- [Tushare 10,000 source and promotion flow](architecture/tushare_10000_investment_intelligence.md)
 - [Legacy configuration cleanup and migration](runbooks/v17_legacy_configuration_cleanup.md)
 
 ## Supporting contracts
@@ -41,4 +43,13 @@ offline stdout-only evaluator rather than a daily scheduler or memory writer.
 I1 is a library-only decision layer above exact I0 and optional R2.2 replay. Its
 five states are research workflow states; `PAPER_CANDIDATE` means eligibility
 for external paper review only. I1 adds no selector, portfolio, public CLI, Web,
-scheduler, writer, broker, order, execution or trade authority.
+scheduler, writer, broker, order, execution or trade authority. The sibling v2
+package adds B0 and I2-I6 research capabilities, including a skeptical open-Web
+advisory layer and signed publication contracts, without adding a builder CLI
+or pointer-write authority. Live model calls and activation remain separately
+authorized operations.
+
+Tushare 10,000 support adds governed Fundamental VIP shadow/reconciliation,
+Industry and Theme source compilers, and a monotonic-only market-risk
+projection. The shadow and promotion operators remain internal guarded scripts;
+they do not expand the public CLI or V17 activation authority.

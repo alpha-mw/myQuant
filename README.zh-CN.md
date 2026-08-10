@@ -194,6 +194,7 @@ quant-investor market storage-validate --help
 quant-investor research run --help
 quant-investor portfolio cycle-status --help
 quant-investor-v17-v4 run-forward --help
+quant-investor-v17-v4 research-evaluate --help
 ```
 
 需要 Python 3.13+。CI 的本地等价检查：
@@ -215,6 +216,7 @@ uv run mypy quant_investor/factors --ignore-missing-imports
 - [I0 投资智能](docs/architecture/v17_i0_investment_intelligence.md)
 - [R2.2 前瞻研究评估器](docs/architecture/v17_r22_forward_research_evaluator.md)
 - [I1 投资决策智能](docs/architecture/v17_i1_investment_decision_intelligence.md)
+- [Tushare 10,000 投资智能数据链路](docs/architecture/tushare_10000_investment_intelligence.md)
 - [组合周期基础](docs/architecture/v17_portfolio_cycle_foundation.md)
 - [Tushare 数据清洗](docs/tushare_data_cleaning.md)
 - [交易纪律](docs/trading_discipline.md)

@@ -1,0 +1,746 @@
+{
+  "version": "myquant.v17.tushare-10000-integration-inventory.v1",
+  "baseline_commit": "1035e1ab2e0a0f09cd8d73523ebd0b017c8eaf9a",
+  "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+  "generated_from_git_objects": true,
+  "rows": [
+    {
+      "relative_path": ".github/workflows/ci-cd.yml",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "f99d43aecc661c8c899954ef14538c5155807069",
+      "current_main_blob_sha": "60819d517a9d205bd326d968dc4c8846cad3fe44",
+      "classification": "REAPPLY_SEMANTICALLY",
+      "result_blob_sha": "f99d43aecc661c8c899954ef14538c5155807069",
+      "reason": "Existing current-main path requires a scoped semantic replay without restoring retired surfaces."
+    },
+    {
+      "relative_path": "README.md",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "4782bdd26af0c0e82de9ed1ddf5412d16fbcb64d",
+      "current_main_blob_sha": "7ec50da76837258033d6338e7f3644a767206aa4",
+      "classification": "REAPPLY_SEMANTICALLY",
+      "result_blob_sha": "29d54099be4540e242c95c2ef22fd0153133b77e",
+      "reason": "Existing current-main path requires a scoped semantic replay without restoring retired surfaces."
+    },
+    {
+      "relative_path": "README.zh-CN.md",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "ba947ce45c27d36b15dbd3cc24ec28a311947ae6",
+      "current_main_blob_sha": "02ddc9328c13d53edaa410f57f4efbebbe51dbf3",
+      "classification": "REAPPLY_SEMANTICALLY",
+      "result_blob_sha": "109dbbcdd8149a627e8169015538ddc24310b168",
+      "reason": "Existing current-main path requires a scoped semantic replay without restoring retired surfaces."
+    },
+    {
+      "relative_path": "docs/README.md",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "1ad1aeb23266598c2ab02801f1be542ffbb584e9",
+      "current_main_blob_sha": "8566809a626a059ddf9ccb9ccaf74f5cd977c6a6",
+      "classification": "REAPPLY_SEMANTICALLY",
+      "result_blob_sha": "1ad1aeb23266598c2ab02801f1be542ffbb584e9",
+      "reason": "Existing current-main path requires a scoped semantic replay without restoring retired surfaces."
+    },
+    {
+      "relative_path": "docs/architecture/research_pipeline_and_protocols.md",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "9efdc5953697552cbf4d8ec9202972bf9b80fc3d",
+      "current_main_blob_sha": "3bdf2cba2a7dc560fdc83ee5cfa7d97433b82272",
+      "classification": "REAPPLY_SEMANTICALLY",
+      "result_blob_sha": "9efdc5953697552cbf4d8ec9202972bf9b80fc3d",
+      "reason": "Existing current-main path requires a scoped semantic replay without restoring retired surfaces."
+    },
+    {
+      "relative_path": "docs/architecture/resources/v17_intelligence_v1_freeze_manifest.json",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "0e9f6030c953522ea78c8ec0fb1faa83afd0754b",
+      "current_main_blob_sha": null,
+      "classification": "REGENERATE",
+      "result_blob_sha": "0e9f6030c953522ea78c8ec0fb1faa83afd0754b",
+      "reason": "Identity-bearing manifest or lock must be generated from the final integrated current-main tree."
+    },
+    {
+      "relative_path": "docs/architecture/v17_i2_i6_investment_intelligence_v2.md",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "76774a6dbfb2966732c80b90e6608fc042a9b152",
+      "current_main_blob_sha": null,
+      "classification": "REAPPLY_SEMANTICALLY",
+      "result_blob_sha": "76774a6dbfb2966732c80b90e6608fc042a9b152",
+      "reason": "Existing current-main path requires a scoped semantic replay without restoring retired surfaces."
+    },
+    {
+      "relative_path": "docs/architecture/v17_portfolio_cycle_foundation.md",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "20f5367540ae35e3d16f6c7a4bfde703d92b40fd",
+      "current_main_blob_sha": "c24664526aa2ef06dfa7015e455237555477daf5",
+      "classification": "REAPPLY_SEMANTICALLY",
+      "result_blob_sha": "20f5367540ae35e3d16f6c7a4bfde703d92b40fd",
+      "reason": "Existing current-main path requires a scoped semantic replay without restoring retired surfaces."
+    },
+    {
+      "relative_path": "docs/architecture/v17_v4_production_research_contract.md",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "ec6570e140cc6e4c549802b60b7f0b8f0f404a07",
+      "current_main_blob_sha": "f1ebb9ac5faf6c04da787f5a522048389bed0d3c",
+      "classification": "REAPPLY_SEMANTICALLY",
+      "result_blob_sha": "ec6570e140cc6e4c549802b60b7f0b8f0f404a07",
+      "reason": "Existing current-main path requires a scoped semantic replay without restoring retired surfaces."
+    },
+    {
+      "relative_path": "docs/dependency_profiles.md",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "3fc4492ad709759a43c050033a513cc1ef4ddf3b",
+      "current_main_blob_sha": "5d882a27c902ba43d75c5db562e0f142ff7dd45f",
+      "classification": "REAPPLY_SEMANTICALLY",
+      "result_blob_sha": "3fc4492ad709759a43c050033a513cc1ef4ddf3b",
+      "reason": "Existing current-main path requires a scoped semantic replay without restoring retired surfaces."
+    },
+    {
+      "relative_path": "docs/modules/module_map.md",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "5330862168937550f18e58aeee069304758bb766",
+      "current_main_blob_sha": "17c5988afe2b98f67c21a795a25adfdf2d346767",
+      "classification": "REAPPLY_SEMANTICALLY",
+      "result_blob_sha": "5330862168937550f18e58aeee069304758bb766",
+      "reason": "Existing current-main path requires a scoped semantic replay without restoring retired surfaces."
+    },
+    {
+      "relative_path": "docs/runbooks/v17_v4_operations.md",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "f46b9cd857359bae11a44c2c61cdfc8ad99d0593",
+      "current_main_blob_sha": "d3484138e8c7af561e942c7c2c6514e66a317ddd",
+      "classification": "REAPPLY_SEMANTICALLY",
+      "result_blob_sha": "f46b9cd857359bae11a44c2c61cdfc8ad99d0593",
+      "reason": "Existing current-main path requires a scoped semantic replay without restoring retired surfaces."
+    },
+    {
+      "relative_path": "pyproject.toml",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "9047d11dc57de5a063b117035f7f4043f3be7427",
+      "current_main_blob_sha": "4aa645d1b66be003c0189890536cdabae0fe0401",
+      "classification": "REGENERATE",
+      "result_blob_sha": "9047d11dc57de5a063b117035f7f4043f3be7427",
+      "reason": "Apply only approved direct dependency delta and regenerate synchronized lock."
+    },
+    {
+      "relative_path": "quant_investor/intelligence_v2/__init__.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "c8c164f13865106b5afe6be67a0cf437d401d775",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "c8c164f13865106b5afe6be67a0cf437d401d775",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "quant_investor/intelligence_v2/_core.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "3e950b9a159ca97382771f79c4b0e5714799c577",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "3e950b9a159ca97382771f79c4b0e5714799c577",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "quant_investor/intelligence_v2/decision_v2/__init__.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "9ad3408768ac5f20c3af3f7bbb758a2ea4e782d5",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "9ad3408768ac5f20c3af3f7bbb758a2ea4e782d5",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "quant_investor/intelligence_v2/decision_v2/engine.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "c96bfc877badb00e89a9ddb5b7bdc1761a0b68a8",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "c96bfc877badb00e89a9ddb5b7bdc1761a0b68a8",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "quant_investor/intelligence_v2/decision_v2/fusion.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "1790bc11bf29e8707fef00a11c19b51b3a9f8b7e",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "1790bc11bf29e8707fef00a11c19b51b3a9f8b7e",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "quant_investor/intelligence_v2/decision_v2/graph.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "89296de6237f23fd5cd5ad23f87587eaf026a071",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "89296de6237f23fd5cd5ad23f87587eaf026a071",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "quant_investor/intelligence_v2/decision_v2/models.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "e5194a4f9a50a47d1d2ec666a181c2df511d7f63",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "e5194a4f9a50a47d1d2ec666a181c2df511d7f63",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "quant_investor/intelligence_v2/fundamental/__init__.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "a09468e5d39f95821a1e2bb37ba8f37e1761a78f",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "a09468e5d39f95821a1e2bb37ba8f37e1761a78f",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "quant_investor/intelligence_v2/fundamental/models.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "75491f34a70f88a6151dff5d84af06a25b1b8c99",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "75491f34a70f88a6151dff5d84af06a25b1b8c99",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "quant_investor/intelligence_v2/fundamental/policy.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "963512b7b5be504ce0a8ce39704c5ce2fab2c1af",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "963512b7b5be504ce0a8ce39704c5ce2fab2c1af",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "quant_investor/intelligence_v2/fundamental/profile.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "296221dc9fd6009c06962fdf5f376676135bf07f",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "296221dc9fd6009c06962fdf5f376676135bf07f",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "quant_investor/intelligence_v2/industry/__init__.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "1b41284c6387975bface1104f96896ba8d08adda",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "1b41284c6387975bface1104f96896ba8d08adda",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "quant_investor/intelligence_v2/industry/component.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "a5ea316bc2572401a2468abc46047a0d07a81547",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "a5ea316bc2572401a2468abc46047a0d07a81547",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "quant_investor/intelligence_v2/industry/contracts.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "fb7d50c8c4f14d736ad81bf06ea91c956e619e4b",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "fb7d50c8c4f14d736ad81bf06ea91c956e619e4b",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "quant_investor/intelligence_v2/industry/identity.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "f75793cf1e2de7140df07b99d984354240b44133",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "f75793cf1e2de7140df07b99d984354240b44133",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "quant_investor/intelligence_v2/industry/models.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "f483a29f2d3065c35659383471349866f4171215",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "f483a29f2d3065c35659383471349866f4171215",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "quant_investor/intelligence_v2/llm_research/__init__.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "e77441aa5db672565870dfa8d5d2b1d996d1a686",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "e77441aa5db672565870dfa8d5d2b1d996d1a686",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "quant_investor/intelligence_v2/llm_research/_contracts.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "60fce587899375724fad59b8991893eee7a6fb51",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "60fce587899375724fad59b8991893eee7a6fb51",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "quant_investor/intelligence_v2/llm_research/capture.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "47ba5dcbf5cc65ca754ee30d788b02dbfe3604e0",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "47ba5dcbf5cc65ca754ee30d788b02dbfe3604e0",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "quant_investor/intelligence_v2/llm_research/committee.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "27afad80916d58f2110be8c4e4f75734e50d0893",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "27afad80916d58f2110be8c4e4f75734e50d0893",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "quant_investor/intelligence_v2/llm_research/models.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "76ddfc00cb8db2299d272114a0de420b2d289090",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "76ddfc00cb8db2299d272114a0de420b2d289090",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "quant_investor/intelligence_v2/llm_research/public_search.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "83be6971e3851ef64065b40363e7343b746d9ebb",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "83be6971e3851ef64065b40363e7343b746d9ebb",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "quant_investor/intelligence_v2/llm_research/replay.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "c8575bb7aece5286e2d0d943424b74537ef55895",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "c8575bb7aece5286e2d0d943424b74537ef55895",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "quant_investor/intelligence_v2/llm_research/responses_adapter.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "c8d292385cc1ab6bfef0fb07a1d298148c9eda1a",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "c8d292385cc1ab6bfef0fb07a1d298148c9eda1a",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "quant_investor/intelligence_v2/llm_research/safety_collector.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "635254e905bc77eac4fa5ddae4f7f8ea1b1e3037",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "635254e905bc77eac4fa5ddae4f7f8ea1b1e3037",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "quant_investor/intelligence_v2/package.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "beb10d7937f4e2393b247f66ed83f5eb75d082a9",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "beb10d7937f4e2393b247f66ed83f5eb75d082a9",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "quant_investor/intelligence_v2/portfolio/__init__.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "773238bafbc91e116fe391d7a89c6e7f0a37561e",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "773238bafbc91e116fe391d7a89c6e7f0a37561e",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "quant_investor/intelligence_v2/portfolio/capital_gate.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "bcedaf4cefbf3a16e3e6eae5c406ccca71ffcdad",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "bcedaf4cefbf3a16e3e6eae5c406ccca71ffcdad",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "quant_investor/intelligence_v2/portfolio/constructor.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "710062525cadc1e7eaea4bf2ccc50c470c9f5a38",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "710062525cadc1e7eaea4bf2ccc50c470c9f5a38",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "quant_investor/intelligence_v2/portfolio/contracts.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "80166da35a866608b0d15e97dab6c4f179de4051",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "80166da35a866608b0d15e97dab6c4f179de4051",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "quant_investor/intelligence_v2/portfolio/graduation.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "aec589dfc2d2831e7ef7620890c67d4efbca3a84",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "aec589dfc2d2831e7ef7620890c67d4efbca3a84",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "quant_investor/intelligence_v2/portfolio/paper.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "87df5502daea6370320742b3f5b43c1cdf076202",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "87df5502daea6370320742b3f5b43c1cdf076202",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "quant_investor/intelligence_v2/portfolio/policies.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "2baa802cb26076ee4a8f9193b0d5725fc4e5d0da",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "2baa802cb26076ee4a8f9193b0d5725fc4e5d0da",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "quant_investor/intelligence_v2/publication/__init__.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "a1b48e606d0b4fcfd889cc74a87bf4117a793fb2",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "a1b48e606d0b4fcfd889cc74a87bf4117a793fb2",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "quant_investor/intelligence_v2/publication/contracts.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "b6b6b122310a07ccdf7ec0b975a5a866d648ff8b",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "b6b6b122310a07ccdf7ec0b975a5a866d648ff8b",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "quant_investor/intelligence_v2/publication/permits.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "affe87a26e75aa768822388223c27b6190c6329b",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "affe87a26e75aa768822388223c27b6190c6329b",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "quant_investor/intelligence_v2/quant_producer.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "7198759f3a2623e9cef77fa950536bbb1262c4f1",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "7198759f3a2623e9cef77fa950536bbb1262c4f1",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "quant_investor/intelligence_v2/readiness.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "5bdb9fc2d84fdf1f89e356d1154687435e5975ae",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "5bdb9fc2d84fdf1f89e356d1154687435e5975ae",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "quant_investor/intelligence_v2/resources/frozen_v1_manifest.v1.json",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "0e9f6030c953522ea78c8ec0fb1faa83afd0754b",
+      "current_main_blob_sha": null,
+      "classification": "REGENERATE",
+      "result_blob_sha": "0e9f6030c953522ea78c8ec0fb1faa83afd0754b",
+      "reason": "Identity-bearing manifest or lock must be generated from the final integrated current-main tree."
+    },
+    {
+      "relative_path": "quant_investor/intelligence_v2/resources/package_manifest.v1.json",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "fcd0881dd5c8d1583d7c93752332c987dffbb689",
+      "current_main_blob_sha": null,
+      "classification": "REGENERATE",
+      "result_blob_sha": "fcd0881dd5c8d1583d7c93752332c987dffbb689",
+      "reason": "Identity-bearing manifest or lock must be generated from the final integrated current-main tree."
+    },
+    {
+      "relative_path": "quant_investor/intelligence_v2/theme/__init__.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "855d9219474e4b15ca4fbd73d69d9292300cc4bb",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "855d9219474e4b15ca4fbd73d69d9292300cc4bb",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "quant_investor/intelligence_v2/theme/contracts.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "d5f403b718e5478e22f16c8045f079a5c3d8bd35",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "d5f403b718e5478e22f16c8045f079a5c3d8bd35",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "quant_investor/intelligence_v2/theme/engine.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "2121506e3aecb8b2edf66d6f15b1b65b2d2f535c",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "2121506e3aecb8b2edf66d6f15b1b65b2d2f535c",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "quant_investor/intelligence_v2/theme/models.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "bc85f25ba63c5639b2bc0ceea0a219d4a63ae94a",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "bc85f25ba63c5639b2bc0ceea0a219d4a63ae94a",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "quant_investor/v17_mainline/constants.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "3105184e5353937b7395531a74e2b694428010b2",
+      "current_main_blob_sha": "cd9b9d0941919fc8cd415600e637ef0ae02bbc18",
+      "classification": "REAPPLY_SEMANTICALLY",
+      "result_blob_sha": "3105184e5353937b7395531a74e2b694428010b2",
+      "reason": "Existing current-main path requires a scoped semantic replay without restoring retired surfaces."
+    },
+    {
+      "relative_path": "quant_investor/v17_mainline/intelligence_v2_reader.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "fcdac5b03ea682482c59bfaac204e755e43cec34",
+      "current_main_blob_sha": null,
+      "classification": "REAPPLY_SEMANTICALLY",
+      "result_blob_sha": "fcdac5b03ea682482c59bfaac204e755e43cec34",
+      "reason": "Existing current-main path requires a scoped semantic replay without restoring retired surfaces."
+    },
+    {
+      "relative_path": "quant_investor/v17_mainline/runtime.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "ddeb8b033e685ae549cf835c83226f7b5bf6c406",
+      "current_main_blob_sha": "d8464a7658a297881913accdaaf7128f18a34da0",
+      "classification": "REAPPLY_SEMANTICALLY",
+      "result_blob_sha": "17b099a0f2b8214449865dee991eea9c99ec8cc5",
+      "reason": "Existing current-main path requires a scoped semantic replay without restoring retired surfaces."
+    },
+    {
+      "relative_path": "quant_investor/v17_mainline/storage.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "e1183ed0cd365e39d3b8807361c43279fd196cfb",
+      "current_main_blob_sha": "878fba4c3c9b24fcbc267fac612053b3b6a8343b",
+      "classification": "REAPPLY_SEMANTICALLY",
+      "result_blob_sha": "e1183ed0cd365e39d3b8807361c43279fd196cfb",
+      "reason": "Existing current-main path requires a scoped semantic replay without restoring retired surfaces."
+    },
+    {
+      "relative_path": "quant_investor/v17_mainline/testing.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "ee95b56a9625caa4913cc32f1408614251df87c1",
+      "current_main_blob_sha": "36b22ed4fdd02c00bd4c45f5b308c2cea93dc49a",
+      "classification": "REAPPLY_SEMANTICALLY",
+      "result_blob_sha": "ee95b56a9625caa4913cc32f1408614251df87c1",
+      "reason": "Existing current-main path requires a scoped semantic replay without restoring retired surfaces."
+    },
+    {
+      "relative_path": "requirements.txt",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "d8b6734f9275157b1eb0eae0dc19987921f1cf68",
+      "current_main_blob_sha": "c29bdd34f8ebd7f60bbc2e22861f4f81f6eb4979",
+      "classification": "REGENERATE",
+      "result_blob_sha": "d8b6734f9275157b1eb0eae0dc19987921f1cf68",
+      "reason": "Apply only approved direct dependency delta and regenerate synchronized lock."
+    },
+    {
+      "relative_path": "scripts/mine_quant_branch_factors.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "16d46f0e253939c0854e23ec5920bde6d2ffff5c",
+      "current_main_blob_sha": "4947e0d568096ab544514114e41c854eddb52662",
+      "classification": "REAPPLY_SEMANTICALLY",
+      "result_blob_sha": "16d46f0e253939c0854e23ec5920bde6d2ffff5c",
+      "reason": "Current-main preregistration loader gap was independently reviewed, explicitly authorized by the user, applied byte-exact from the source commit, and committed as bb26b5d."
+    },
+    {
+      "relative_path": "skill/myquant-backend-ops/SKILL.md",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "8c84e1804cfeaad8f62f6b696ece0e84ee3e57a9",
+      "current_main_blob_sha": "33b70620d5cf7b34cda24a278079947fabafa30b",
+      "classification": "REAPPLY_SEMANTICALLY",
+      "result_blob_sha": "8c84e1804cfeaad8f62f6b696ece0e84ee3e57a9",
+      "reason": "Existing current-main path requires a scoped semantic replay without restoring retired surfaces."
+    },
+    {
+      "relative_path": "skill/myquant-backend-ops/references/entrypoints-and-commands.md",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "3b0de48faa0e89f7d2c939887d3062f50938eee7",
+      "current_main_blob_sha": "2a3259c6161869a28baeade91772d184563e974f",
+      "classification": "REAPPLY_SEMANTICALLY",
+      "result_blob_sha": "3b0de48faa0e89f7d2c939887d3062f50938eee7",
+      "reason": "Existing current-main path requires a scoped semantic replay without restoring retired surfaces."
+    },
+    {
+      "relative_path": "skill/myquant-backend-ops/references/runtime-paths-and-artifacts.md",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "4fddd0f032a64d9fce65a2092afb41f24d8a4602",
+      "current_main_blob_sha": "dced5b51b8e3a760d9c7739f17649d420ddfc5fa",
+      "classification": "REAPPLY_SEMANTICALLY",
+      "result_blob_sha": "4fddd0f032a64d9fce65a2092afb41f24d8a4602",
+      "reason": "Existing current-main path requires a scoped semantic replay without restoring retired surfaces."
+    },
+    {
+      "relative_path": "tests/unit/test_documentation_consistency.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "1ba2a2744f0be325593fdc2bc16f388ab4fa63c9",
+      "current_main_blob_sha": "6c56e76862e3556e5d7fb1ae95daed2fe24d8aa4",
+      "classification": "REAPPLY_SEMANTICALLY",
+      "result_blob_sha": "1ba2a2744f0be325593fdc2bc16f388ab4fa63c9",
+      "reason": "Existing current-main path requires a scoped semantic replay without restoring retired surfaces."
+    },
+    {
+      "relative_path": "tests/unit/test_v17_active_surface_cleanup.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "8b76afa353cec4a53cb1c04dd45b54b0ef339d04",
+      "current_main_blob_sha": "dc108e7bd781cba938b562cabcae647202f2ea8a",
+      "classification": "REAPPLY_SEMANTICALLY",
+      "result_blob_sha": "8b76afa353cec4a53cb1c04dd45b54b0ef339d04",
+      "reason": "Existing current-main path requires a scoped semantic replay without restoring retired surfaces."
+    },
+    {
+      "relative_path": "tests/unit/test_v17_b0_data_readiness_quant_producer.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "7d1f172b6ec9795b9239e4fa3b42d9d863115650",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "7d1f172b6ec9795b9239e4fa3b42d9d863115650",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "tests/unit/test_v17_i2_industry_intelligence.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "c7b92aa76822489405c4987fe7e10bbdea1f3e68",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "c7b92aa76822489405c4987fe7e10bbdea1f3e68",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "tests/unit/test_v17_i3_theme_intelligence.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "044e349131703af9ccdd8383ded07b7e7876a7ff",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "044e349131703af9ccdd8383ded07b7e7876a7ff",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "tests/unit/test_v17_i45_decision_v2.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "cf816cd9d29e2d7edc87108b171562682e737b96",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "cf816cd9d29e2d7edc87108b171562682e737b96",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "tests/unit/test_v17_i4_fundamental_intelligence.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "938f9fdc2f9878b600c025b4abb1090538bcce4b",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "938f9fdc2f9878b600c025b4abb1090538bcce4b",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "tests/unit/test_v17_i5_llm_security.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "26b98665e55a53bdf68045e28cff8f765f24d649",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "26b98665e55a53bdf68045e28cff8f765f24d649",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "tests/unit/test_v17_i5_open_web_committee.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "49b67ebff71120a1696870aa8ec22f1995ff3716",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "49b67ebff71120a1696870aa8ec22f1995ff3716",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "tests/unit/test_v17_i6_mainline_publication.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "9bbf853d1972bce5352f26b0b2daef7494977754",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "9bbf853d1972bce5352f26b0b2daef7494977754",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "tests/unit/test_v17_i6_paper_publication.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "1a79c632e0fc5fafc6d87579c009ed381cc636a1",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "1a79c632e0fc5fafc6d87579c009ed381cc636a1",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "tests/unit/test_v17_i6_portfolio.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "4f6f058edb0353db21f6d35f98849dc83593f51f",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "4f6f058edb0353db21f6d35f98849dc83593f51f",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "tests/unit/test_v17_intelligence_v1_freeze.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "2b9e95291c6f70c3d55800b1a9a0de66e20d2467",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "2b9e95291c6f70c3d55800b1a9a0de66e20d2467",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "tests/unit/test_v17_intelligence_v2_package.py",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "fc7f25a33bb99813e3ddc877259bfa71c635ef5d",
+      "current_main_blob_sha": null,
+      "classification": "TAKE_EXACT",
+      "result_blob_sha": "fc7f25a33bb99813e3ddc877259bfa71c635ef5d",
+      "reason": "New isolated v2 source or test with no current-main path conflict."
+    },
+    {
+      "relative_path": "uv.lock",
+      "source_commit": "e5066673f7fbd8ea3e821193742761f8a34951c2",
+      "source_blob_sha": "3a3cbfe3c20e65406e3723f8e5f1914e5c84be42",
+      "current_main_blob_sha": "8640421570b70ac20acf6f841eb34bd108fc83ea",
+      "classification": "REGENERATE",
+      "result_blob_sha": "3a3cbfe3c20e65406e3723f8e5f1914e5c84be42",
+      "reason": "Identity-bearing manifest or lock must be generated from the final integrated current-main tree."
+    }
+  ]
+}

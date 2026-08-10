@@ -36,6 +36,17 @@ from quant_investor.llm_provider_priority import (
 ROOT = Path(__file__).resolve().parents[2]
 RUN_DIR_PATTERN = re.compile(r"^\d{8}_\d{3,6}$")
 DEFAULT_DAILY_REPORT_DIR = "reports/v15/daily"
+DEFAULT_HISTORY_STRATEGY_BY_MARKET = {
+    "CN": "aggressive_tech_manufacturing",
+    "US": "simulated_portfolio_10000",
+}
+
+
+def _default_history_strategy(market: Any) -> str:
+    return DEFAULT_HISTORY_STRATEGY_BY_MARKET.get(
+        str(market or "CN").strip().upper(),
+        "",
+    )
 
 
 def resolve_daily_report_dir(value: Any) -> Path:
@@ -145,6 +156,7 @@ def load_config(config_path: Optional[str] = None) -> dict[str, Any]:
     # 默认值补全
     defaults: dict[str, Any] = {
         "market": "CN",
+        "history_strategy": _default_history_strategy(normalized.get("market")),
         "universe": "full_a",
         "risk_level": "中等",
         "total_capital": 1_000_000,
@@ -191,6 +203,10 @@ def load_config(config_path: Optional[str] = None) -> dict[str, Any]:
 
 def _normalize_runtime_config(config: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(config)
+    normalized.setdefault(
+        "history_strategy",
+        _default_history_strategy(normalized.get("market")),
+    )
     normalized.setdefault("report_dir", DEFAULT_DAILY_REPORT_DIR)
     resolve_daily_report_dir(normalized["report_dir"])
     normalized["review_model_priority"] = _resolve_review_model_priority(normalized)
@@ -278,7 +294,11 @@ def run_once(
     builder = ReportBuilder()
     persist = PersistenceManager()
 
-    history = history_loader.load_recent(market=config["market"], max_dates=5)
+    history = history_loader.load_recent(
+        market=config["market"],
+        strategy=config["history_strategy"],
+        max_dates=5,
+    )
     recall_context = history_loader.build_recall_context(history, market=config["market"])
     log.info(
         "已加载 %d 条策略记录，覆盖最近 %d 个日期",
@@ -345,7 +365,10 @@ def run_daemon(config: dict[str, Any]) -> None:
 def print_last_report(config: dict[str, Any]) -> None:
     """打印最后一次分析报告。"""
     loader = HistoryLoader()
-    report = loader.load_last_report(config["market"])
+    report = loader.load_last_report(
+        config["market"],
+        strategy=config["history_strategy"],
+    )
     if not report:
         print("暂无策略记录报告。请先确认 results/strategy_records 下存在正式 run 目录。")
         return
@@ -371,7 +394,11 @@ def dry_run(config: dict[str, Any]) -> None:
         print("✗ 市场策略记录目录不存在")
 
     try:
-        runs = loader.load_recent(market=config["market"], max_dates=5)
+        runs = loader.load_recent(
+            market=config["market"],
+            strategy=config["history_strategy"],
+            max_dates=5,
+        )
         recall_context = loader.build_recall_context(runs, market=config["market"])
         print(f"✓ 最近 5 个日期共解析 {len(runs)} 条策略记录")
         print(f"  window_dates: {recall_context.get('window_dates', [])}")

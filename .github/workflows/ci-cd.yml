@@ -31,19 +31,53 @@ jobs:
 
     - name: Install dependencies
       run: |
-        uv sync --extra dev
+        uv sync --locked --extra dev
 
     - name: Check requirements sync
-      run: uv run python scripts/check_requirements_sync.py
+      run: |
+        uv run python scripts/check_requirements_sync.py
+        uv run python -c 'from quant_investor.intelligence.package import verify_package; verify_package()'
+        uv run python -c 'from quant_investor.intelligence_v2.package import verify_package; verify_package()'
+
+    - name: Check strategy-record access governance
+      run: uv run python scripts/check_strategy_record_access.py
 
     - name: Lint with flake8
       run: |
         uv run flake8 quant_investor --count --select=E9,F63,F7,F82 --show-source --statistics
         uv run flake8 quant_investor --count --exit-zero --max-complexity=10 --max-line-length=100 --statistics
+        uv run flake8 quant_investor/intelligence_v2 quant_investor/factors/governance_v5 \
+          quant_investor/v17_mainline/intelligence_v2_reader.py \
+          tests/unit/test_v17_i2_industry_intelligence.py \
+          tests/unit/test_v17_i3_theme_intelligence.py \
+          tests/unit/test_v17_i4_fundamental_intelligence.py \
+          tests/unit/test_v17_i45_decision_v2.py \
+          tests/unit/test_v17_i5_open_web_committee.py \
+          tests/unit/test_v17_i5_llm_security.py \
+          tests/unit/test_v17_i6_portfolio.py \
+          tests/unit/test_v17_i6_paper_publication.py \
+          tests/unit/test_v17_i6_mainline_publication.py \
+          tests/unit/test_v17_intelligence_v2_package.py \
+          --max-complexity=10 --max-line-length=100
+        uv run black --check quant_investor/intelligence_v2 quant_investor/factors/governance_v5 \
+          quant_investor/v17_mainline/intelligence_v2_reader.py \
+          tests/unit/test_v17_i2_industry_intelligence.py \
+          tests/unit/test_v17_i3_theme_intelligence.py \
+          tests/unit/test_v17_i4_fundamental_intelligence.py \
+          tests/unit/test_v17_i45_decision_v2.py \
+          tests/unit/test_v17_i5_open_web_committee.py \
+          tests/unit/test_v17_i5_llm_security.py \
+          tests/unit/test_v17_i6_portfolio.py \
+          tests/unit/test_v17_i6_paper_publication.py \
+          tests/unit/test_v17_i6_mainline_publication.py \
+          tests/unit/test_v17_intelligence_v2_package.py
 
     - name: Type check with mypy
       run: |
         uv run mypy quant_investor/factors --ignore-missing-imports
+        uv run mypy quant_investor/intelligence_v2 --ignore-missing-imports
+        uv run mypy quant_investor/v17_mainline/intelligence_v2_reader.py \
+          --ignore-missing-imports
         uv run mypy \
           quant_investor/pipeline/mainline.py \
           quant_investor/v17_mainline/constants.py \
@@ -55,7 +89,14 @@ jobs:
 
     - name: Test engine core
       run: |
-        uv run pytest tests/unit -q
+        uv run pytest tests/unit -q -ra
+
+    - name: Check dashboard contract
+      run: |
+        node portfolio_dashboard/tests/cn_aggressive_dashboard_contract_v1.test.js
+        node --check portfolio_dashboard/app.js
+        node --check portfolio_dashboard/js/cn_aggressive_input.js
+        node --check portfolio_dashboard/js/cn_aggressive_dashboard_contract_v1.js
 
   nightly-full-tests:
     runs-on: ubuntu-latest
@@ -75,7 +116,7 @@ jobs:
         enable-cache: true
 
     - name: Install dependencies
-      run: uv sync --extra dev
+      run: uv sync --locked --extra dev
 
     - name: Run full test suite with coverage
       run: |
@@ -110,11 +151,14 @@ jobs:
       with:
         enable-cache: true
 
+    - name: Install build dependencies
+      run: uv sync --locked --extra dev
+
     - name: Build package
       run: uv build
 
     - name: Check package
-      run: uvx twine check dist/*
+      run: uv run twine check dist/*
 
   model-training:
     needs: [engine-core]
@@ -136,7 +180,7 @@ jobs:
 
     - name: Install dependencies
       run: |
-        uv sync --extra dev
+        uv sync --locked --extra dev
 
     - name: Run model training
       env:

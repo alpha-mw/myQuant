@@ -86,10 +86,33 @@ paper adapter implementation, provider or LLM call, broker, order, execution or
 trade authority. `PAPER_CANDIDATE` means only external paper-review eligibility;
 it is not portfolio admission or a trading signal.
 
-### `quant_investor/v17_v3_contract`
+### `quant_investor/intelligence_v2`
 
-Retains explicit historical compatibility contracts used by governed V4
-research tooling. It is not a competing public decision mainline.
+This sibling package leaves frozen I0/R2.2/I1 bytes unchanged and implements
+the later research path:
+
+- `readiness.py` and `quant_producer.py`: B0 data readiness and the explicit
+  Factor Governance v5 Quant producer;
+- `industry/`, `theme/`, and `fundamental/`: source-bound I2/I3 identity and
+  deterministic I4 Fundamental profile;
+- `decision_v2/`: same-run Evidence Graph, frozen-v3 Fusion projection and
+  five-state deterministic Decision v2;
+- `llm_research/`: I5 skeptical open-Web discovery, safe local HTML capture,
+  private no-tool committee and bounded advisory ranking;
+- `portfolio/`: I6 owner-policy-bound research portfolio, A-share paper and
+  graduation receipts;
+- `publication/`: pure Ed25519 permit and research-mainline publication
+  contracts. It does not sign, publish or invoke pointer CAS by itself.
+- `sources/tushare/`: strict-decimal capability receipts, Fundamental VIP v4
+  acquisition/reconciliation, and source-bound Industry/Theme compilers;
+- `market_risk/`: exact same-session I6 risk projection that can only tighten
+  gross, cash, security-cap and veto constraints.
+
+The v2 package has its own exact package manifest and binds the frozen-v1
+manifest SHA. It adds no public builder CLI, Web endpoint, scheduler or daemon.
+See `docs/architecture/v17_i2_i6_investment_intelligence_v2.md`.
+The Tushare source and Fundamental promotion boundary is documented in
+`docs/architecture/tushare_10000_investment_intelligence.md`.
 
 ## Standalone legacy automation
 

@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """Build offline fundamental tracking sheets for current CN aggressive holdings.
 
-The script is measurement-only. It reads the latest valid
-``ledger_after_manual_switch`` selected by ``manual_execution_manifest`` and
-local Parquet fundamentals/disclosure tables, then writes ignored audit
-artifacts under ``results/track_record_audit/<YYYYMMDD>/fundamentals/``.
-It never calls online providers and never modifies strategy records.
+The script is measurement-only. It reads the catalog-resolved active
+``ledger_after_manual_switch.parquet`` after exact closure-hash verification,
+then combines it with local Parquet fundamentals/disclosure tables and writes
+ignored audit artifacts under
+``results/track_record_audit/<YYYYMMDD>/fundamentals/``. It never calls online
+providers and never modifies strategy records.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
+import io
 import json
 import os
 from contextlib import contextmanager
@@ -19,11 +22,17 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Iterable
 
+from quant_investor.strategy_records.store import (
+    StrategyRecordStoreError,
+    load_registered_catalog,
+    resolve_active_record_dirs,
+)
+
+RecordStoreError = StrategyRecordStoreError
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_RECORD_ROOT = (
-    PROJECT_ROOT / "results" / "strategy_records" / "CN" / "aggressive_tech_manufacturing"
-)
+DEFAULT_RECORD_ROOT = PROJECT_ROOT / "results" / "strategy_records"
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "results" / "track_record_audit"
 DEFAULT_FUNDAMENTALS_ROOT = PROJECT_ROOT / "data" / "parquet" / "cn" / "fundamental_raw"
 DEFAULT_DISCLOSURE_ROOT = PROJECT_ROOT / "data" / "parquet" / "cn" / "dag_core_raw" / "table=disclosure_date"
@@ -67,17 +76,6 @@ def _normalize_symbol(value: Any) -> str:
     return str(value or "").strip().upper()
 
 
-def _compact_datetime_key(value: Any) -> str:
-    digits = "".join(ch for ch in str(value or "") if ch.isdigit())
-    if len(digits) >= 14:
-        return digits[:14]
-    if len(digits) == 12:
-        return f"{digits}00"
-    if len(digits) == 8:
-        return f"{digits}000000"
-    return digits
-
-
 def _manual_manifest_is_valid_baseline(manifest: dict[str, Any]) -> bool:
     status_text = " ".join(
         str(manifest.get(key) or "")
@@ -86,55 +84,82 @@ def _manual_manifest_is_valid_baseline(manifest: dict[str, Any]) -> bool:
     return not any(marker in status_text for marker in INVALID_MANUAL_LEDGER_STATUS_MARKERS)
 
 
-def _manual_manifest_order_key(run_dir: Path, manifest: dict[str, Any]) -> tuple[str, str]:
-    for key in (
-        "recorded_at",
-        "executed_at",
-        "updated_at",
-        "quote_snapshot",
-        "timestamp_long",
-        "record_timestamp",
-    ):
-        normalized = _compact_datetime_key(manifest.get(key))
-        if normalized:
-            return normalized, run_dir.name
-    return _compact_datetime_key(run_dir.name), run_dir.name
+def _record_store_root(record_root: Path) -> Path:
+    """Keep the historical strategy-root CLI spelling as a compatibility alias."""
+
+    root = Path(record_root).absolute()
+    if root.name == "aggressive_tech_manufacturing" and root.parent.name == "CN":
+        return root
+    return root / "CN" / "aggressive_tech_manufacturing"
 
 
-def _read_json(path: Path) -> dict[str, Any]:
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    return payload if isinstance(payload, dict) else {}
-
-
-def _resolve_manual_ledger_path(manifest_path: Path, manifest: dict[str, Any]) -> Path | None:
-    candidates: list[Path] = []
-    next_ledger = str(manifest.get("next_ledger_path") or "").strip()
-    if next_ledger:
-        next_path = Path(next_ledger)
-        resolved_next = next_path if next_path.is_absolute() else manifest_path.parent / next_path
-        if resolved_next.suffix.lower() == ".parquet":
-            candidates.append(resolved_next)
-        elif resolved_next.name == "ledger_after_manual_switch.csv":
-            candidates.append(resolved_next.with_suffix(".parquet"))
-            candidates.append(resolved_next)
-    candidates.extend(
-        [
-            manifest_path.parent / "ledger_after_manual_switch.parquet",
-            manifest_path.parent / "ledger_after_manual_switch.csv",
-        ]
+def _stat_identity(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        int(value.st_dev),
+        int(value.st_ino),
+        int(value.st_mode),
+        int(value.st_size),
+        int(value.st_mtime_ns),
+        int(value.st_ctime_ns),
     )
-    for candidate in candidates:
-        if (
-            candidate.stem == "ledger_after_manual_switch"
-            and candidate.suffix.lower() in {".parquet", ".csv"}
-            and candidate.exists()
-            and candidate.is_file()
-        ):
-            return candidate
-    return None
+
+
+def _contained_regular_file(
+    *,
+    store_root: Path,
+    active_dir: Path,
+    relative_path: Any,
+    declared_sha256: Any,
+    label: str,
+) -> tuple[Path, bytes]:
+    raw_relative = str(relative_path or "").strip()
+    raw_sha256 = str(declared_sha256 or "").strip().lower()
+    if not raw_relative or Path(raw_relative).is_absolute() or ".." in Path(raw_relative).parts:
+        raise RecordStoreError(f"active closure {label} path must be record-root relative")
+    if len(raw_sha256) != 64 or any(ch not in "0123456789abcdef" for ch in raw_sha256):
+        raise RecordStoreError(f"active closure {label} sha256 missing or invalid")
+
+    store_root = store_root.absolute()
+    active_dir = active_dir.absolute()
+    candidate = store_root / raw_relative
+    try:
+        active_dir.relative_to(store_root)
+        candidate.relative_to(active_dir)
+    except ValueError as exc:
+        raise RecordStoreError(f"active closure {label} path escapes active record") from exc
+
+    current = store_root
+    if current.is_symlink():
+        raise RecordStoreError("strategy-record root must not be a symlink")
+    for part in candidate.relative_to(store_root).parts:
+        current = current / part
+        if current.is_symlink():
+            raise RecordStoreError(f"active closure {label} path contains a symlink")
+    try:
+        resolved_root = store_root.resolve(strict=True)
+        resolved_active = active_dir.resolve(strict=True)
+        resolved_candidate = candidate.resolve(strict=True)
+        resolved_active.relative_to(resolved_root)
+        resolved_candidate.relative_to(resolved_active)
+        before = candidate.stat()
+        if not candidate.is_file():
+            raise RecordStoreError(f"active closure {label} is not a regular file")
+        raw = candidate.read_bytes()
+        after = candidate.stat()
+    except RecordStoreError:
+        raise
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise RecordStoreError(
+            f"active closure {label} is missing, unreadable, or unsafe"
+        ) from exc
+    if candidate.is_symlink() or _stat_identity(before) != _stat_identity(after):
+        raise RecordStoreError(f"active closure {label} changed during read")
+    actual_sha256 = hashlib.sha256(raw).hexdigest()
+    if actual_sha256 != raw_sha256:
+        raise RecordStoreError(
+            f"active closure {label} sha256 mismatch: {actual_sha256} != {raw_sha256}"
+        )
+    return resolved_candidate, raw
 
 
 def _read_table(path: Path, *, columns: list[str] | None = None):
@@ -142,40 +167,72 @@ def _read_table(path: Path, *, columns: list[str] | None = None):
 
     if path.is_dir():
         path = path / "part.parquet"
-    if path.suffix.lower() == ".parquet":
-        with _suppress_native_stderr():
-            return pd.read_parquet(path, columns=columns)
-    return pd.read_csv(path, encoding="utf-8-sig")
+    if path.suffix.lower() != ".parquet":
+        raise RuntimeError(f"strict Parquet table required: {path}")
+    with _suppress_native_stderr():
+        return pd.read_parquet(path, columns=columns)
 
 
 def load_latest_holding_baseline(record_root: Path = DEFAULT_RECORD_ROOT) -> HoldingBaseline:
     import pandas as pd  # type: ignore[import-not-found]
 
-    candidates: list[tuple[tuple[str, str], Path, dict[str, Any], Path]] = []
-    for run_dir in sorted(path for path in record_root.iterdir() if path.is_dir() and not path.name.startswith("_")):
-        manifest_path = run_dir / "manual_execution_manifest.json"
-        if not manifest_path.exists():
-            continue
-        manifest = _read_json(manifest_path)
-        if not _manual_manifest_is_valid_baseline(manifest):
-            continue
-        ledger_path = _resolve_manual_ledger_path(manifest_path, manifest)
-        if ledger_path is None:
-            continue
-        candidates.append((_manual_manifest_order_key(run_dir, manifest), manifest_path, manifest, ledger_path))
-    for _, manifest_path, manifest, ledger_path in sorted(candidates, key=lambda item: item[0], reverse=True):
-        if ledger_path.suffix.lower() == ".parquet":
-            ledger = pd.read_parquet(ledger_path)
-        else:
-            ledger = pd.read_csv(ledger_path, encoding="utf-8-sig")
-        required = {"symbol", "shares", "avg_cost"}
-        missing = required - set(ledger.columns)
-        if missing:
-            raise RuntimeError(f"effective ledger schema missing {sorted(missing)}: {ledger_path}")
-        ledger = ledger.copy()
-        ledger["symbol"] = ledger["symbol"].map(_normalize_symbol)
-        return HoldingBaseline(ledger=ledger, manifest=manifest, manifest_path=manifest_path, ledger_path=ledger_path)
-    raise RuntimeError(f"no valid ledger_after_manual_switch baseline under {record_root}")
+    store_root = _record_store_root(record_root)
+    registered = load_registered_catalog(store_root)
+    if registered is None:
+        raise RecordStoreError("registered strategy catalog missing")
+    pointer, _catalog = registered
+    closure = pointer.get("active_closure")
+    if not isinstance(closure, dict):
+        raise RecordStoreError("active strategy-record closure missing")
+    active_dirs = resolve_active_record_dirs(store_root)
+    if not active_dirs:
+        raise RecordStoreError("active strategy-record directory missing")
+    active_dir = active_dirs[0]
+    manifest_path, manifest_raw = _contained_regular_file(
+        store_root=store_root,
+        active_dir=active_dir,
+        relative_path=closure.get("manual_manifest_path"),
+        declared_sha256=closure.get("manual_manifest_sha256"),
+        label="manual manifest",
+    )
+    ledger_path, ledger_raw = _contained_regular_file(
+        store_root=store_root,
+        active_dir=active_dir,
+        relative_path=closure.get("ledger_path"),
+        declared_sha256=closure.get("ledger_sha256"),
+        label="ledger",
+    )
+    if ledger_path.name != "ledger_after_manual_switch.parquet":
+        raise RecordStoreError("active holding ledger must be ledger_after_manual_switch.parquet")
+    try:
+        manifest = json.loads(manifest_raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RecordStoreError("active manual execution manifest is invalid JSON") from exc
+    if not isinstance(manifest, dict) or not _manual_manifest_is_valid_baseline(manifest):
+        raise RecordStoreError("active manual execution manifest is not a valid baseline")
+    next_ledger = str(manifest.get("next_ledger_path") or "").strip()
+    if next_ledger:
+        declared_ledger = Path(next_ledger)
+        if declared_ledger.is_absolute() or ".." in declared_ledger.parts:
+            raise RecordStoreError("manual manifest next_ledger_path is unsafe")
+        if declared_ledger.name != ledger_path.name:
+            raise RecordStoreError("manual manifest ledger does not match active closure")
+    with _suppress_native_stderr():
+        ledger = pd.read_parquet(io.BytesIO(ledger_raw))
+    required = {"symbol", "shares", "avg_cost"}
+    missing = required - set(ledger.columns)
+    if missing:
+        raise RuntimeError(
+            f"effective ledger schema missing {sorted(missing)}: {ledger_path}"
+        )
+    ledger = ledger.copy()
+    ledger["symbol"] = ledger["symbol"].map(_normalize_symbol)
+    return HoldingBaseline(
+        ledger=ledger,
+        manifest=manifest,
+        manifest_path=manifest_path,
+        ledger_path=ledger_path,
+    )
 
 
 def _latest_by_symbol(frame: Any, symbols: set[str], date_columns: Iterable[str]):

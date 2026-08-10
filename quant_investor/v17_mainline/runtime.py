@@ -162,7 +162,7 @@ def _build_public_run(
     )
 
 
-def derive_mainline_state(
+def derive_mainline_state(  # noqa: C901 - fail-closed reader stages remain explicit
     workspace_root: str | Path,
     strategy_id: str | None = None,
     *,
@@ -264,6 +264,32 @@ def derive_mainline_state(
             raise
         except (MainlineStorageError, MainlineContractError):
             return _blocked(MainlineBlocker.SOURCE_CLOSURE_INVALID)
+
+        if "publication_profile" in formal:
+            # Marked runs opt into the strict v2 reader while legacy runs retain
+            # their existing byte-for-byte public projection.
+            from .intelligence_v2_reader import (
+                ActiveRunQuarantined,
+                IntelligenceV2PublicationError,
+                validate_marked_publication,
+            )
+
+            try:
+                validate_marked_publication(
+                    store,
+                    formal=formal,
+                    run=run,
+                    run_bytes=run_bytes,
+                    pointer=pointer,
+                    pointer_bytes=pointer_bytes,
+                    portfolio=portfolio,
+                )
+            except ActiveRunQuarantined:
+                return _blocked(MainlineBlocker.ACTIVE_RUN_QUARANTINED)
+            except MainlineStorageSecurityError:
+                raise
+            except (IntelligenceV2PublicationError, MainlineStorageError, ValueError):
+                return _blocked(MainlineBlocker.INTELLIGENCE_V2_PUBLICATION_INVALID)
 
         public_run = _build_public_run(
             strategy_id=strategy,

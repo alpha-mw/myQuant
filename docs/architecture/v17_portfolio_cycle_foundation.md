@@ -394,8 +394,9 @@ Rules:
 - the command never creates a missing workspace or writes within an existing
   one.
 
-Existing `research run`, `market analyze`, `market run`, `market backtest`, Web,
-and Python public behavior remains unchanged.
+Existing `research run`, `market analyze`, `market run`, `market backtest`, and
+Python public behavior remains unchanged. The current tree has no Web reader;
+Dashboard v1 remains an independent historical display surface.
 
 ## Future separation
 
@@ -462,8 +463,7 @@ pytest -q tests/unit/test_portfolio_cycle_readiness.py
 pytest -q tests/unit/test_portfolio_cycle_cli.py
 pytest -q tests/unit/test_v17_mainline_runtime.py \
   tests/unit/test_v17_public_python.py \
-  tests/unit/test_v17_public_cli.py \
-  tests/unit/test_v17_public_web.py
+  tests/unit/test_v17_public_cli.py
 git diff --check
 ```
 

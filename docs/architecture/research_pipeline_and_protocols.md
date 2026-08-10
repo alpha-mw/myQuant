@@ -9,8 +9,8 @@ and do not prove that a decision DAG was executed.
 
 `quant-investor research run`, `quant-investor market analyze`, and
 `quant-investor market run` all resolve the same exact strategy active pointer.
-The `QuantInvestor` Python facade and `GET /api/research/{strategy_id}` use the
-same reader.
+The `QuantInvestor` Python facade uses the same reader. The repository has no
+public Web reader.
 
 ```text
 exact strategy active pointer
@@ -86,6 +86,56 @@ Memory contract or R2.2 Memory Proposal. See
 [V17 I1 Investment Decision Intelligence](v17_i1_investment_decision_intelligence.md)
 for the closed replay, state precedence, memo and discipline contracts.
 
+### I2-I6 Investment Intelligence v2
+
+`quant_investor.intelligence_v2` implements the next research-only layers while
+keeping I0/R2.2/I1 byte-frozen:
+
+```text
+B0 readiness + Quant v5
+  -> I2 Industry
+  -> I3 Theme
+  -> I4 Fundamental Profile
+  -> I4.5 same-closure Decision v2
+  -> I5 skeptical open-Web advisory review
+  -> I6 research portfolio / paper / graduation
+  -> signed research-mainline publication capability
+```
+
+Industry/Theme identity, score and risk policies, admission and portfolio
+constraints remain deterministic and owner-sealed. I5 may search the public Web
+without a domain whitelist, but citations are only leads until a local
+DNS-pinned collector validates the exact HTML. The private committee has no
+tools and cannot change Decision state, risk, veto or admission. AI rank and
+capital influence are capped at 10% with deterministic fallback.
+
+I6 artifacts are research/paper evidence, never broker holdings or executable
+orders. The marked-run reader fail-closes on an invalid v2 closure, sidecar,
+legacy projection, Ed25519 permit or quarantine marker. The current publication
+boundary does not yet persist every closure-dependent builder's full validation
+capsule and does not provide a formal publisher or an owner-confirmed CAS
+coordinator, so it remains `CAPABILITY_PARTIAL`. It does not sign with, load or
+store an owner private key. No pointer is written without a later exact-target
+display and fresh user confirmation.
+
+### Tushare 10,000 governed source path
+
+The v2 source package reuses the official V4 HTTPS transport in strict-decimal
+mode. It separates a dry-run capability probe, same-as-of Fundamental VIP
+shadow acquisition, exact v3/VIP reconciliation, isolated staging and the
+journaled Fundamental-only CAS. Physical network attempts, including retries,
+must satisfy `vip_attempts * 10 <= baseline_provider_calls_attempted`.
+
+I2 consumes sealed SW2021 taxonomy and membership partitions. I3 uses complete
+DC snapshots first and TDX only for a sealed DC-incomplete company keyset.
+Neither compiler permits display labels or diagnostics to become identity or
+Decision authority. `MarketRiskProjection.v1` accepts only same-session daily,
+daily-basic, suspension and price-limit refs and can only tighten I6 risk.
+
+The Fundamental promotion authorization does not authorize a V17 active
+pointer write. See
+[Tushare 10,000 Investment Intelligence Flow](tushare_10000_investment_intelligence.md).
+
 ## Causal Regime contract
 
 The current Markov implementation is under
@@ -116,9 +166,9 @@ sources, and satisfy `input.available_at <= receipt.timestamp <= origin cutoff`.
 The aggregation consumes selected states only; missing bindings stay explicit
 and invalid bindings block the evaluation.
 
-## Governance target for an upstream producer
+## Implemented producer contracts and operationally blocked inputs
 
-An eventual governed producer is expected to close this topology:
+The v2 library implements governed producer contracts for this topology:
 
 ```text
 strict CN Parquet + PIT membership
@@ -129,11 +179,15 @@ strict CN Parquet + PIT membership
   -> expected-prevalue CAS activation + exact readback
 ```
 
-This is a normative topology, not the implementation behind the current public
-read commands. A future producer must keep the following invariants:
+This remains distinct from the current public read commands and is not evidence
+that a real run can be published. Real Factor v5 prospective evidence,
+Industry/Theme catalogs, owner policies, ZDR capability and matured paper
+outcomes may be absent; missing authority keeps the candidate blocked. The
+following invariants remain mandatory:
 
 - deterministic controls remain authoritative;
-- advisory model output cannot alter candidates, limits or weights;
+- advisory model output cannot alter admission or limits and can affect only
+  admitted-set ordering within the explicit 10% rank/capital bounds;
 - missing or invalid evidence is explicit, never silently replaced;
 - only an exact active pointer grants public visibility;
 - code deployment and operational activation remain separate actions.

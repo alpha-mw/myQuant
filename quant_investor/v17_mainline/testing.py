@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Sequence
 from typing import Any, Mapping
 
 from .constants import (
@@ -26,7 +27,7 @@ from .contracts import (
     seal_document,
 )
 from .runtime import active_pointer_path, mainline_run_path
-from .storage import MainlineStore, canonical_relative_path
+from .storage import MainlineStore, StoredBytes, canonical_relative_path
 
 
 class _SyntheticFixtureStore(MainlineStore):
@@ -49,6 +50,20 @@ class SyntheticFixture:
     source_closure_path: str
 
 
+def write_synthetic_governed_bytes_for_tests(
+    workspace_root: str | Path,
+    *,
+    relative_path: str,
+    raw: bytes,
+    synthetic_only: bool = False,
+) -> StoredBytes:
+    """Write exact fixture bytes beneath any read-governed root in tests only."""
+
+    if synthetic_only is not True:
+        raise ValueError("synthetic governed writer requires synthetic_only=True")
+    return _SyntheticFixtureStore(workspace_root).write_exact_once(relative_path, raw)
+
+
 def write_synthetic_fixture_for_tests(
     workspace_root: str | Path,
     *,
@@ -60,6 +75,7 @@ def write_synthetic_fixture_for_tests(
     formal_overrides: Mapping[str, Any] | None = None,
     portfolio_overrides: Mapping[str, Any] | None = None,
     source_overrides: Mapping[str, Any] | None = None,
+    additional_formal_evidence_refs: Sequence[Mapping[str, Any]] = (),
     synthetic_only: bool = False,
     allow_invalid_run_for_tests: bool = False,
 ) -> SyntheticFixture:
@@ -127,7 +143,10 @@ def write_synthetic_fixture_for_tests(
             "research_runtime_default": True,
             "trade": False,
         },
-        "evidence_refs": [dict(portfolio_ref)],
+        "evidence_refs": [
+            dict(portfolio_ref),
+            *(dict(reference) for reference in additional_formal_evidence_refs),
+        ],
     }
     if formal_overrides:
         formal_body.update(dict(formal_overrides))
@@ -212,4 +231,8 @@ def write_synthetic_fixture_for_tests(
     )
 
 
-__all__ = ["SyntheticFixture", "write_synthetic_fixture_for_tests"]
+__all__ = [
+    "SyntheticFixture",
+    "write_synthetic_fixture_for_tests",
+    "write_synthetic_governed_bytes_for_tests",
+]
