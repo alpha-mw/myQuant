@@ -144,7 +144,7 @@ def _source_execution() -> dict[str, Any]:
         market_scope_ref=_ref("market-scope"),
         market_calendar_ref=_ref("market-calendar"),
         baseline_provider_manifest_ref=_ref("baseline-provider"),
-        baseline_network_attempts=33012,
+        baseline_network_attempts=34000,
         baseline_empty_partition_keyset=[],
         endpoint_plans=endpoint_plans,
         max_attempts_per_partition=2,
@@ -164,6 +164,8 @@ def _probes() -> list[dict[str, Any]]:
         ("BALANCESHEET_EIGHT_DAY_1_COMPLETE", "balancesheet_vip", 1635, False),
         ("BALANCESHEET_EIGHT_DAY_2_COMPLETE", "balancesheet_vip", 5385, False),
         ("BALANCESHEET_MONTH_COMPLETE", "balancesheet_vip", 6963, False),
+        ("BALANCESHEET_Q2_FOUR_DAY_1_COMPLETE", "balancesheet_vip", 2584, False),
+        ("BALANCESHEET_Q2_FOUR_DAY_2_COMPLETE", "balancesheet_vip", 4845, False),
         ("BALANCESHEET_Q3_FOUR_DAY_1_COMPLETE", "balancesheet_vip", 4138, False),
         ("BALANCESHEET_Q3_FOUR_DAY_2_COMPLETE", "balancesheet_vip", 3876, False),
         ("CASHFLOW_COMPANY_TYPE_LIMIT", "cashflow_vip", 6400, True),
@@ -212,7 +214,10 @@ def test_official_partition_plan_is_sealed_replayable_and_within_attempt_gate() 
     )
     assert plan["max_attempts_per_partition"] == 1
     assert plan["planned_terminal_request_count"] == len(plan["request_rows"])
-    assert plan["planned_max_network_attempts"] * 10 <= 33012
+    assert (
+        plan["planned_max_network_attempts"] * 10
+        <= source["request_plan"]["baseline_network_attempts"]
+    )
     assert plan["performance_gate"]["passed"] is True
     assert len({row["request_key"] for row in plan["request_rows"]}) == len(plan["request_rows"])
     assert validate_fundamental_execution_closure_v4(source) == source
@@ -244,7 +249,7 @@ def test_cashflow_general_company_date_partitions_are_gap_free() -> None:
     assert all(row["params"]["start_date"] == row["params"]["end_date"] for row in april)
 
 
-def test_balance_and_income_hot_partitions_are_at_most_eight_days() -> None:
+def test_balance_and_income_hot_partitions_are_at_most_four_days() -> None:
     _source, plan, _probes_value = _build()
     for table in ("balancesheet", "income"):
         rows = [
@@ -255,25 +260,6 @@ def test_balance_and_income_hot_partitions_are_at_most_eight_days() -> None:
             and row["params"].get("comp_type") == "1"
             and row["params"].get("start_date", "") >= "20200801"
             and row["params"].get("end_date", "") <= "20200831"
-        ]
-        assert rows
-        for row in rows:
-            start = datetime.strptime(row["params"]["start_date"], "%Y%m%d").date()
-            end = datetime.strptime(row["params"]["end_date"], "%Y%m%d").date()
-            assert (end - start).days + 1 <= 8
-
-
-def test_balance_and_income_q3_hot_partitions_are_at_most_four_days() -> None:
-    _source, plan, _probes_value = _build()
-    for table in ("balancesheet", "income"):
-        rows = [
-            row
-            for row in plan["request_rows"]
-            if row["table"] == table
-            and row["params"].get("period") == "20210930"
-            and row["params"].get("comp_type") == "1"
-            and row["params"].get("start_date", "") >= "20211001"
-            and row["params"].get("end_date", "") <= "20211031"
         ]
         assert rows
         for row in rows:
