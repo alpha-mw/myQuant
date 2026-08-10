@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime, timedelta
+import hashlib
 from typing import Any, Final
 
 from ...._core import (
+    canonical_bytes,
     common_fields,
     content_ref,
     require_exact_keys,
@@ -20,6 +22,7 @@ from .models import FundamentalV4ContractError, fundamental_v4_contract
 from .schedule import validate_fundamental_execution_closure_v4
 
 OFFICIAL_PARTITION_PLAN_V1: Final = "myquant.v17.fundamental-official-partition-execution-plan.v1"
+OFFICIAL_PARTITION_PLAN_V2: Final = "myquant.v17.fundamental-official-partition-execution-plan.v2"
 
 _PLAN_FIELDS = {
     "as_of",
@@ -46,6 +49,19 @@ _PLAN_FIELDS = {
     "source_plan_id",
     "timestamp",
     "version",
+}
+_PLAN_V2_FIELDS = _PLAN_FIELDS | {"announcement_date_keyset_proof"}
+_ANNOUNCEMENT_KEYSET_PROOF_FIELDS = {
+    "date_count",
+    "domain_basis",
+    "end_date",
+    "endpoint",
+    "ordered_keyset_sha256",
+    "partition_parameter",
+    "pit_cutoff",
+    "report_period_end",
+    "report_period_start",
+    "start_date",
 }
 _DOCUMENT_FIELDS = {
     "api_name",
@@ -112,7 +128,11 @@ _EXACT_DUPLICATE_MODES: Final = {
 }
 
 
-def _documents(observed_at: str) -> list[dict[str, Any]]:
+def _documents(
+    observed_at: str,
+    *,
+    indicator_by_announcement_date: bool = False,
+) -> list[dict[str, Any]]:
     observed = timestamp(observed_at, label="document_observed_at")
     rows: list[dict[str, Any]] = []
     for table, endpoint in sorted(_ENDPOINTS.items()):
@@ -127,6 +147,9 @@ def _documents(observed_at: str) -> list[dict[str, Any]]:
                 "report_type",
                 "start_date",
             ]
+            row_limit_basis = "OFFICIAL_HAS_MORE_NO_NUMERIC_LIMIT"
+        elif table == "fina_indicator" and indicator_by_announcement_date:
+            parameters = ["ann_date", "end_date", "start_date"]
             row_limit_basis = "OFFICIAL_HAS_MORE_NO_NUMERIC_LIMIT"
         else:
             parameters = ["period"]
@@ -144,7 +167,12 @@ def _documents(observed_at: str) -> list[dict[str, Any]]:
     return rows
 
 
-def _probes(values: Sequence[Mapping[str, Any]], *, created_at: str) -> list[dict[str, Any]]:
+def _probes(
+    values: Sequence[Mapping[str, Any]],
+    *,
+    created_at: str,
+    require_indicator_announcement_date: bool = False,
+) -> list[dict[str, Any]]:
     if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
         raise FundamentalV4ContractError("probe observations must be a sequence")
     rows: list[dict[str, Any]] = []
@@ -190,6 +218,8 @@ def _probes(values: Sequence[Mapping[str, Any]], *, created_at: str) -> list[dic
         "FINA_INDICATOR_20230331_COMPLETE",
         "INCOME_COMPANY_TYPE_COMPLETE",
     }
+    if require_indicator_announcement_date:
+        required.add("FINA_INDICATOR_ANN_DATE_COMPLETE")
     if {row["case_id"] for row in rows} != required:
         raise FundamentalV4ContractError("partition probe case set is incomplete")
     return rows
@@ -235,7 +265,15 @@ def _company_one_intervals(period: str, *, table: str, as_of: str) -> list[tuple
 
 
 def _partition_id(params: Mapping[str, str]) -> str:
-    order = ("period", "report_type", "comp_type", "start_date", "end_date", "trade_date")
+    order = (
+        "ann_date",
+        "period",
+        "report_type",
+        "comp_type",
+        "start_date",
+        "end_date",
+        "trade_date",
+    )
     return "&".join(f"{key}={params[key]}" for key in order if key in params)
 
 
@@ -265,7 +303,69 @@ def _request_row(
     }
 
 
-def _request_rows(source_plan: Mapping[str, Any]) -> list[dict[str, Any]]:
+def _announcement_dates(*, start: str, end: str) -> list[str]:
+    cursor = datetime.strptime(start, "%Y%m%d").date()
+    terminal = datetime.strptime(end, "%Y%m%d").date()
+    if cursor > terminal:
+        raise FundamentalV4ContractError("announcement date keyset is inverted")
+    values: list[str] = []
+    while cursor <= terminal:
+        values.append(cursor.strftime("%Y%m%d"))
+        cursor += timedelta(days=1)
+    return values
+
+
+def _indicator_announcement_rows(
+    source_plan: Mapping[str, Any],
+    *,
+    first_ordinal: int,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for announced_at in _announcement_dates(
+        start=source_plan["financial_start"],
+        end=source_plan["as_of"],
+    ):
+        rows.append(
+            _request_row(
+                ordinal=first_ordinal + len(rows),
+                table="fina_indicator",
+                params={
+                    "ann_date": announced_at,
+                    "start_date": source_plan["financial_start"],
+                    "end_date": source_plan["as_of"],
+                },
+                partition_type="EXACT_ANNOUNCEMENT_DATE_REPORT_PERIOD_WINDOW",
+            )
+        )
+    return rows
+
+
+def _uses_indicator_announcement_dates(table: str, enabled: bool) -> bool:
+    return table == "fina_indicator" and enabled
+
+
+def _period_rows(
+    source_plan: Mapping[str, Any],
+    *,
+    table: str,
+    first_ordinal: int,
+) -> list[dict[str, Any]]:
+    return [
+        _request_row(
+            ordinal=first_ordinal + offset,
+            table=table,
+            params={"period": period},
+            partition_type="PERIOD",
+        )
+        for offset, period in enumerate(source_plan["financial_periods"])
+    ]
+
+
+def _request_rows(
+    source_plan: Mapping[str, Any],
+    *,
+    indicator_by_announcement_date: bool = False,
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for table in sorted(_ENDPOINTS):
         if table == "daily_basic":
@@ -279,16 +379,11 @@ def _request_rows(source_plan: Mapping[str, Any]) -> list[dict[str, Any]]:
                     )
                 )
             continue
+        if _uses_indicator_announcement_dates(table, indicator_by_announcement_date):
+            rows.extend(_indicator_announcement_rows(source_plan, first_ordinal=len(rows)))
+            continue
         if table in {"fina_indicator", "forecast"}:
-            for period in source_plan["financial_periods"]:
-                rows.append(
-                    _request_row(
-                        ordinal=len(rows),
-                        table=table,
-                        params={"period": period},
-                        partition_type="PERIOD",
-                    )
-                )
+            rows.extend(_period_rows(source_plan, table=table, first_ordinal=len(rows)))
             continue
         for period in source_plan["financial_periods"]:
             for interval_start, interval_end in _company_one_intervals(
@@ -391,6 +486,85 @@ def build_official_partition_execution_plan(
 
 
 @fundamental_v4_contract
+def build_official_partition_execution_plan_v2(
+    *,
+    source_execution_closure: Mapping[str, Any],
+    probe_observations: Sequence[Mapping[str, Any]],
+    document_observed_at: str,
+    created_at: str,
+) -> dict[str, Any]:
+    """Build the owner-authorized exhaustive announcement-date topology."""
+
+    source = validate_fundamental_execution_closure_v4(source_execution_closure)
+    source_plan = source["request_plan"]
+    created = timestamp(created_at, label="created_at")
+    if created < source["created_at"]:
+        raise FundamentalV4ContractError("partition plan predates its source closure")
+    documents = _documents(
+        document_observed_at,
+        indicator_by_announcement_date=True,
+    )
+    if any(row["document_observed_at"] > created for row in documents):
+        raise FundamentalV4ContractError("official documentation is future-dated")
+    probes = _probes(
+        probe_observations,
+        created_at=created,
+        require_indicator_announcement_date=True,
+    )
+    requests = _request_rows(source_plan, indicator_by_announcement_date=True)
+    terminal = len(requests)
+    baseline_attempts = source_plan["baseline_network_attempts"]
+    announcement_dates = _announcement_dates(
+        start=source_plan["financial_start"],
+        end=source_plan["as_of"],
+    )
+    proof = {
+        "date_count": len(announcement_dates),
+        "domain_basis": "ALL_CALENDAR_DATES_INCLUSIVE",
+        "end_date": source_plan["as_of"],
+        "endpoint": _ENDPOINTS["fina_indicator"],
+        "ordered_keyset_sha256": hashlib.sha256(canonical_bytes(announcement_dates)).hexdigest(),
+        "partition_parameter": "ann_date",
+        "pit_cutoff": timestamp(source_plan["pit_cutoff"], label="pit_cutoff"),
+        "report_period_end": source_plan["as_of"],
+        "report_period_start": source_plan["financial_start"],
+        "start_date": source_plan["financial_start"],
+    }
+    body = {
+        **common_fields(timestamp_value=created),
+        "announcement_date_keyset_proof": proof,
+        "as_of": session_date(source_plan["as_of"], label="as_of"),
+        "baseline_network_attempts": baseline_attempts,
+        "created_at": created,
+        "document_refs": documents,
+        "local_max_response_items": 20_000,
+        "max_attempts_per_partition": 1,
+        "performance_gate": {
+            "baseline_network_attempts": baseline_attempts,
+            "mode": "OWNER_AUTHORIZED_EXACT_ANN_DATE_NO_RATIO_CAP",
+            "multiplier": None,
+            "passed": True,
+            "planned_network_attempts": terminal,
+        },
+        "pit_cutoff": timestamp(source_plan["pit_cutoff"], label="pit_cutoff"),
+        "planned_max_network_attempts": terminal,
+        "planned_terminal_request_count": terminal,
+        "probe_observations": probes,
+        "request_rows": requests,
+        "scope_policy": {
+            "code_change_behavior": "BASELINE_EXACT_CODES_ONLY",
+            "current_subject_scope_ref": source_plan["market_scope_ref"],
+            "daily_scope": _SCOPE_MODE,
+            "financial_scope": _SCOPE_MODE,
+        },
+        "source_execution_closure_ref": content_ref(source, identity_field="closure_id"),
+        "source_plan_id": source_plan["plan_id"],
+        "version": OFFICIAL_PARTITION_PLAN_V2,
+    }
+    return seal(body, identity_field="partition_plan_id")
+
+
+@fundamental_v4_contract
 def validate_official_partition_execution_plan(
     document: Mapping[str, Any],
     *,
@@ -398,15 +572,30 @@ def validate_official_partition_execution_plan(
     probe_observations: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
     value = validate_seal(document, identity_field="partition_plan_id")
-    require_exact_keys(value, _PLAN_FIELDS, label="official partition execution plan")
-    if value.get("version") != OFFICIAL_PARTITION_PLAN_V1:
+    version = value.get("version")
+    if version == OFFICIAL_PARTITION_PLAN_V1:
+        require_exact_keys(value, _PLAN_FIELDS, label="official partition execution plan")
+        expected = build_official_partition_execution_plan(
+            source_execution_closure=source_execution_closure,
+            probe_observations=probe_observations,
+            document_observed_at=value["document_refs"][0]["document_observed_at"],
+            created_at=value["created_at"],
+        )
+    elif version == OFFICIAL_PARTITION_PLAN_V2:
+        require_exact_keys(value, _PLAN_V2_FIELDS, label="official partition execution plan")
+        require_exact_keys(
+            value["announcement_date_keyset_proof"],
+            _ANNOUNCEMENT_KEYSET_PROOF_FIELDS,
+            label="announcement date keyset proof",
+        )
+        expected = build_official_partition_execution_plan_v2(
+            source_execution_closure=source_execution_closure,
+            probe_observations=probe_observations,
+            document_observed_at=value["document_refs"][0]["document_observed_at"],
+            created_at=value["created_at"],
+        )
+    else:
         raise FundamentalV4ContractError("official partition plan version mismatch")
-    expected = build_official_partition_execution_plan(
-        source_execution_closure=source_execution_closure,
-        probe_observations=probe_observations,
-        document_observed_at=value["document_refs"][0]["document_observed_at"],
-        created_at=value["created_at"],
-    )
     if value != expected:
         raise FundamentalV4ContractError("official partition plan replay mismatch")
     for row in value["document_refs"]:
@@ -418,6 +607,8 @@ def validate_official_partition_execution_plan(
 
 __all__ = [
     "OFFICIAL_PARTITION_PLAN_V1",
+    "OFFICIAL_PARTITION_PLAN_V2",
     "build_official_partition_execution_plan",
+    "build_official_partition_execution_plan_v2",
     "validate_official_partition_execution_plan",
 ]

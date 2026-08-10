@@ -359,6 +359,14 @@ def _row_in_scope(
         return False
     if request["table"] == "daily_basic":
         return row[indices["trade_date"]] == params["trade_date"]
+    if "ann_date" in params:
+        announced = row[indices["ann_date"]]
+        period = row[indices["end_date"]]
+        return (
+            announced == params["ann_date"]
+            and type(period) is str
+            and params["start_date"] <= period <= params["end_date"]
+        )
     if row[indices["end_date"]] != params["period"]:
         return False
     if "start_date" not in params:
@@ -383,7 +391,10 @@ def _response_scope_blockers(
         blockers.add("DUPLICATE_ROWS")
     indices = {field: index for index, field in enumerate(fields)}
     required = {"ts_code", "trade_date" if request["table"] == "daily_basic" else "end_date"}
-    if request["table"] in {"balancesheet", "cashflow", "income"}:
+    if (
+        request["table"] in {"balancesheet", "cashflow", "income"}
+        or "ann_date" in request["params"]
+    ):
         required.add("ann_date")
     if not required.issubset(indices) or any(len(row) != len(fields) for row in rows):
         return ["SCOPE_MISMATCH"]

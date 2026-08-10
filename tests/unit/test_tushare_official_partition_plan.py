@@ -17,12 +17,16 @@ from quant_investor.intelligence_v2.sources.tushare.fundamental_v4 import (
     build_fundamental_execution_closure_v4,
     build_fundamental_request_plan_v4,
     build_official_partition_execution_plan,
+    build_official_partition_execution_plan_v2,
     validate_fundamental_execution_closure_v4,
     validate_official_partition_request_receipt,
     validate_official_partition_execution_plan,
 )
 from quant_investor.intelligence_v2.sources.tushare.fundamental_v4.models import (
     SOURCE_ENDPOINTS,
+)
+from quant_investor.intelligence_v2.sources.tushare.fundamental_v4 import (
+    official_partition_acquisition as official_acquisition,
 )
 from quant_investor.market.fundamental_provider_contract import frame_fingerprint
 from quant_investor.v17_v4_runtime.tushare_https import TushareResponse
@@ -190,10 +194,39 @@ def _probes() -> list[dict[str, Any]]:
     ]
 
 
+def _probes_v2() -> list[dict[str, Any]]:
+    values = _probes()
+    values.append(
+        {
+            "api_name": "fina_indicator_vip",
+            "case_id": "FINA_INDICATOR_ANN_DATE_COMPLETE",
+            "expected_fields_match": True,
+            "has_more": False,
+            "item_count": 3098,
+            "observed_at": NOW,
+            "params_sha256": "f" * 64,
+            "response_body_sha256": "e" * 64,
+        }
+    )
+    return sorted(values, key=lambda row: row["case_id"].encode("ascii"))
+
+
 def _build() -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
     source = _source_execution()
     probes = _probes()
     plan = build_official_partition_execution_plan(
+        source_execution_closure=source,
+        probe_observations=probes,
+        document_observed_at=NOW,
+        created_at=NOW,
+    )
+    return source, plan, probes
+
+
+def _build_v2() -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
+    source = _source_execution()
+    probes = _probes_v2()
+    plan = build_official_partition_execution_plan_v2(
         source_execution_closure=source,
         probe_observations=probes,
         document_observed_at=NOW,
@@ -221,6 +254,100 @@ def test_official_partition_plan_is_sealed_replayable_and_within_attempt_gate() 
     assert plan["performance_gate"]["passed"] is True
     assert len({row["request_key"] for row in plan["request_rows"]}) == len(plan["request_rows"])
     assert validate_fundamental_execution_closure_v4(source) == source
+
+
+def test_v2_exhausts_every_announcement_date_without_ratio_gate() -> None:
+    source, plan, probes = _build_v2()
+    assert (
+        validate_official_partition_execution_plan(
+            plan,
+            source_execution_closure=source,
+            probe_observations=probes,
+        )
+        == plan
+    )
+    proof = plan["announcement_date_keyset_proof"]
+    first = datetime.strptime(proof["start_date"], "%Y%m%d").date()
+    last = datetime.strptime(proof["end_date"], "%Y%m%d").date()
+    assert proof["domain_basis"] == "ALL_CALENDAR_DATES_INCLUSIVE"
+    assert proof["date_count"] == (last - first).days + 1
+    assert plan["performance_gate"] == {
+        "baseline_network_attempts": source["request_plan"]["baseline_network_attempts"],
+        "mode": "OWNER_AUTHORIZED_EXACT_ANN_DATE_NO_RATIO_CAP",
+        "multiplier": None,
+        "passed": True,
+        "planned_network_attempts": plan["planned_terminal_request_count"],
+    }
+    assert (
+        plan["planned_terminal_request_count"] * 10
+        > source["request_plan"]["baseline_network_attempts"]
+    )
+    rows = [row for row in plan["request_rows"] if row["table"] == "fina_indicator"]
+    assert len(rows) == proof["date_count"]
+    assert [row["params"]["ann_date"] for row in rows] == [
+        (first + timedelta(days=offset)).strftime("%Y%m%d") for offset in range(proof["date_count"])
+    ]
+    assert all(
+        row["params"]
+        == {
+            "ann_date": row["params"]["ann_date"],
+            "end_date": "20260807",
+            "start_date": "20190807",
+        }
+        for row in rows
+    )
+    assert {
+        tuple(document["partition_parameters"])
+        for document in plan["document_refs"]
+        if document["api_name"] == "fina_indicator_vip"
+    } == {("ann_date", "end_date", "start_date")}
+
+
+def test_v2_rejects_a_resealed_announcement_date_gap() -> None:
+    source, plan, probes = _build_v2()
+    forged = dict(plan)
+    forged.pop("partition_plan_id")
+    forged.pop("semantic_sha256")
+    rows = list(forged["request_rows"])
+    removed = next(
+        index
+        for index, row in enumerate(rows)
+        if row["table"] == "fina_indicator" and row["params"]["ann_date"] == "20220428"
+    )
+    rows.pop(removed)
+    forged["request_rows"] = rows
+    forged = seal(forged, identity_field="partition_plan_id")
+    with pytest.raises(FundamentalV4ContractError, match="replay mismatch"):
+        validate_official_partition_execution_plan(
+            forged,
+            source_execution_closure=source,
+            probe_observations=probes,
+        )
+
+
+def test_v2_announcement_leaf_enforces_date_and_report_period_scope() -> None:
+    _source, plan, _probes_value = _build_v2()
+    request = next(
+        row
+        for row in plan["request_rows"]
+        if row["table"] == "fina_indicator" and row["params"]["ann_date"] == "20220428"
+    )
+    fields = EXPECTED_FIELDS["fina_indicator"]
+    valid = ("000001.SZ", "20220428", "20211231", *([Decimal("0.1")] * 5))
+    wrong_announcement = ("000001.SZ", "20220429", "20211231", *([Decimal("0.1")] * 5))
+    old_period = ("000001.SZ", "20220428", "20181231", *([Decimal("0.1")] * 5))
+    assert (
+        official_acquisition._response_scope_blockers(request=request, fields=fields, rows=(valid,))
+        == []
+    )
+    assert official_acquisition._response_scope_blockers(
+        request=request,
+        fields=fields,
+        rows=(wrong_announcement,),
+    ) == ["SCOPE_MISMATCH"]
+    assert official_acquisition._response_scope_blockers(
+        request=request, fields=fields, rows=(old_period,)
+    ) == ["SCOPE_MISMATCH"]
 
 
 def test_cashflow_general_company_date_partitions_are_gap_free() -> None:
