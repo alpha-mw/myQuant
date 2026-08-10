@@ -497,8 +497,12 @@ def test_official_partition_adapter_resume_uses_no_transport(tmp_path: Any) -> N
     assert all(path.stat().st_mode & 0o777 == 0o600 for path in checkpoint.rglob("*.json"))
 
 
-def test_official_partition_adapter_blocks_provider_and_baseline_mismatch() -> None:
+def test_official_partition_adapter_blocks_provider_and_baseline_mismatch(
+    tmp_path: Any,
+) -> None:
     source, plan, probes, baseline, fingerprints, policy = _adapter_inputs()
+    checkpoint = tmp_path / "blocked-checkpoint"
+    incomplete_client = _OfficialClient(plan=plan, source=source, first_has_more=True)
     incomplete = acquire_official_partition_fundamental_vip_v4(
         official_plan=plan,
         source_execution_closure=source,
@@ -506,12 +510,34 @@ def test_official_partition_adapter_blocks_provider_and_baseline_mismatch() -> N
         baseline_tables=baseline,
         baseline_table_fingerprints=fingerprints,
         comparison_policy=policy,
-        client=_OfficialClient(plan=plan, source=source, first_has_more=True),
+        client=incomplete_client,
         captured_at=NOW,
+        checkpoint_root=checkpoint,
     )
     assert incomplete["status"] == "ACQUISITION_BLOCKED"
     assert incomplete["comparison"] is None
     assert incomplete["physical_receipts"][0]["blocker_codes"] == ["HAS_MORE"]
+    assert incomplete["transport_calls"] == incomplete_client.calls == 1
+    assert len(incomplete["physical_receipts"]) == 1
+
+    class _NetworkForbidden:
+        def request(self, **_kwargs: Any) -> TushareResponse:
+            raise AssertionError("failed checkpoint attempted more transport")
+
+    replay = acquire_official_partition_fundamental_vip_v4(
+        official_plan=plan,
+        source_execution_closure=source,
+        probe_observations=probes,
+        baseline_tables=baseline,
+        baseline_table_fingerprints=fingerprints,
+        comparison_policy=policy,
+        client=_NetworkForbidden(),
+        captured_at=NOW,
+        checkpoint_root=checkpoint,
+    )
+    assert replay["status"] == "ACQUISITION_BLOCKED"
+    assert replay["transport_calls"] == 0
+    assert replay["physical_receipts"] == incomplete["physical_receipts"]
 
     changed = acquire_official_partition_fundamental_vip_v4(
         official_plan=plan,

@@ -580,12 +580,15 @@ def acquire_official_partition_fundamental_vip_v4(
                 _atomic_record(record_path, _record_bytes(receipt, rows))
         receipts.append(receipt)
         rows_by_table[request["table"]].extend(rows)
-    if len(receipts) != plan["planned_terminal_request_count"]:
-        raise FundamentalV4ContractError("official terminal request keyset is incomplete")
+        if receipt["status"] not in {"AVAILABLE", "EMPTY"}:
+            break
+    terminal_complete = len(receipts) == plan["planned_terminal_request_count"]
     if checkpoint is not None:
         _checkpoint_names(checkpoint)
     raw_tables = _frames(rows_by_table, endpoint_plans)
-    physical_closed = all(receipt["status"] in {"AVAILABLE", "EMPTY"} for receipt in receipts)
+    physical_closed = terminal_complete and all(
+        receipt["status"] in {"AVAILABLE", "EMPTY"} for receipt in receipts
+    )
     comparison = None
     status = "ACQUISITION_BLOCKED"
     if physical_closed:
