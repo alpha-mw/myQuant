@@ -32,6 +32,10 @@
     var result = (parsed * 100).toFixed(2) + "%";
     return signed && parsed > 0 ? "+" + result : result;
   }
+  function ratio(value) {
+    var parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed.toFixed(2) : "UNKNOWN";
+  }
   function makeCell(row, value, className) {
     var cell = document.createElement("td");
     cell.textContent = value;
@@ -570,14 +574,13 @@
     if (!performance) return;
     performance.replaceChildren();
     metric(performance, "统计区间", portfolio.performance_start_date + " → " + portfolio.performance_end_date);
-    metric(performance, "收益方法", "3 月 100 万起点 · 剔除外部入金");
+    metric(performance, "收益方法", "3 月 17 日 100 万唯一资本起点");
     metric(performance, "起始资本", publicRedacted(money(portfolio.performance_initial_capital)));
-    metric(performance, "已剔除外部入金", publicRedacted(money(portfolio.excluded_external_flow)));
-    metric(performance, "剔除入金后资产", publicRedacted(money(portfolio.adjusted_total_value)));
-    metric(performance, "剔除入金后累计利润", publicRedacted(money(portfolio.cumulative_profit_excluding_external_flow)));
+    metric(performance, "当前组合总资产", publicRedacted(money(portfolio.total_value)));
+    metric(performance, "累计利润", publicRedacted(money(portfolio.cumulative_profit_excluding_external_flow)));
     metric(performance, "最新有效记录区间收益", percent(portfolio.latest_record_interval_return, true));
     metric(performance, "最近一次账本数量换手", percent(portfolio.latest_interval_turnover));
-    metric(performance, "归档会计 P&L（当前资本基准）", publicRedacted(money(portfolio.portfolio_pnl)));
+    metric(performance, "组合 P&L（100 万基准）", publicRedacted(money(portfolio.portfolio_pnl)));
     metric(performance, "当前未实现 P&L", publicRedacted(money(portfolio.current_unrealized_pnl)));
     metric(performance, "最新调仓已实现 P&L", publicRedacted(money(portfolio.latest_record_realized_pnl_from_rebalance)));
     metric(performance, "累计已实现 P&L", "UNKNOWN");
@@ -610,6 +613,52 @@
     metric(current, "股票市值", publicRedacted(money(portfolio.market_value)));
     metric(current, "股票仓位", percent(portfolio.gross_exposure));
     metric(current, "组合 P&L", publicRedacted(money(portfolio.portfolio_pnl)));
+  }
+
+  function quantMetricCard(grid, label, value, detail, className) {
+    var card = document.createElement("div");
+    var labelNode = document.createElement("span");
+    var valueNode = document.createElement("strong");
+    var detailNode = document.createElement("p");
+    card.className = "quant-metric";
+    labelNode.textContent = label;
+    valueNode.textContent = value;
+    if (className) valueNode.className = className;
+    detailNode.textContent = detail;
+    card.appendChild(labelNode);
+    card.appendChild(valueNode);
+    card.appendChild(detailNode);
+    grid.appendChild(card);
+  }
+
+  function renderQuantMetrics(analysis) {
+    var grid = byId("quantMetricGrid");
+    var note = byId("quantMetricNote");
+    if (!grid) return;
+    grid.replaceChildren();
+    var metrics = analysis.quantitative_metrics;
+    if (!metrics) {
+      quantMetricCard(grid, "量化指标", "UNKNOWN", "至少需要 3 个有效估值点。", "");
+      if (note) note.textContent = "有效估值点不足，无法计算风险调整指标。";
+      return;
+    }
+    quantMetricCard(grid, "预计年化收益", percent(metrics.estimated_annualized_return, true), "历史几何折算，非收益承诺", signedClass(metrics.estimated_annualized_return));
+    quantMetricCard(grid, "年化波动率", percent(metrics.annualized_volatility), "按实际观测频率年化", "");
+    quantMetricCard(grid, "Sharpe", ratio(metrics.sharpe_ratio), "Rf=中国1年期国债收益率", signedClass(metrics.sharpe_ratio));
+    quantMetricCard(grid, "Sortino", ratio(metrics.sortino_ratio), "最低可接受收益为 0%", signedClass(metrics.sortino_ratio));
+    quantMetricCard(grid, "Calmar", ratio(metrics.calmar_ratio), "预计年化收益 ÷ |最大回撤|", signedClass(metrics.calmar_ratio));
+    quantMetricCard(grid, "沪深300 Beta", ratio(metrics.beta_csi300), "相邻验证区间收益回归", "");
+    quantMetricCard(grid, "沪深300相关系数", ratio(metrics.correlation_csi300), "区间收益 Pearson 相关", "");
+    quantMetricCard(grid, "跟踪误差", percent(metrics.tracking_error), "组合相对沪深300，年化", "");
+    quantMetricCard(grid, "信息比率", ratio(metrics.information_ratio), "年化主动收益 ÷ 跟踪误差", signedClass(metrics.information_ratio));
+    quantMetricCard(grid, "正收益区间占比", percent(metrics.positive_interval_ratio), "相邻验证区间收益 > 0", "");
+    if (note) {
+      note.textContent = "历史区间折算，不是未来收益承诺；Sharpe 按中国1年期国债收益率计算（区间折算年化 " +
+        percent(metrics.risk_free_rate) + "，最新年收益率 " +
+        percent(metrics.risk_free_latest_annual_yield) + "）。" +
+        metrics.interval_count + " 个验证区间，年化观测频率 " +
+        metrics.annualization_periods_per_year.toFixed(1) + "。";
+    }
   }
 
   function historyEvidenceLabel(value) {
@@ -681,26 +730,6 @@
       insight(list, "最深历史回撤", percent(analysis.deepest_portfolio_drawdown.value) + " · " + analysis.deepest_portfolio_drawdown.date, "从此前组合净值高点计算。", "negative");
     }
 
-    var funding = byId("fundingEventList");
-    if (funding) funding.replaceChildren();
-    if (funding && !bundle.history.funding_events.length) {
-      var empty = document.createElement("p");
-      empty.className = "section-note";
-      empty.textContent = "无已验证外部资金流事件";
-      funding.appendChild(empty);
-    }
-    (funding ? bundle.history.funding_events : []).forEach(function (event) {
-      var item = document.createElement("div");
-      var title = document.createElement("strong");
-      var detail = document.createElement("span");
-      item.className = "funding-event";
-      title.textContent = PublicMode ? event.date + " · 已剔除外部入金" : event.date + " · 剔除入金 " + money(event.amount);
-      detail.textContent = PublicMode ? "绝对金额已隐藏 · 已从收益资产中扣除" : money(event.total_value_before) + " → " + money(event.total_value_after) + " · 自该点起从收益资产中持续扣除";
-      item.appendChild(title);
-      item.appendChild(detail);
-      funding.appendChild(item);
-    });
-
     var summary = byId("historySummary");
     if (!summary) return;
     summary.replaceChildren();
@@ -721,7 +750,7 @@
       var row = document.createElement("tr");
       makeCell(row, point.date);
       makeCell(row, point.record, "mono");
-      makeCell(row, publicRedacted(money(point.total_value)), "numeric");
+      makeCell(row, publicRedacted(money(point.adjusted_total_value)), "numeric");
       makeCell(row, number(point.portfolio_unit_nav), "numeric");
       makeCell(row, percent(point.portfolio_cumulative_return, true), "numeric " + signedClass(point.portfolio_cumulative_return));
       makeCell(row, percent(point.csi300_cumulative_return, true), "numeric " + signedClass(point.csi300_cumulative_return));
@@ -818,6 +847,7 @@
     setText("chinextDrawdownValue", percent(chinext.max_drawdown));
     setText("performanceInsight", "净值与回撤");
     setText("performanceSubtitle", bundle.portfolio.performance_start_date + " — " + bundle.portfolio.performance_end_date + " · 100 万起点");
+    renderQuantMetrics(analysis);
     renderPositions(bundle);
     renderAllocation(bundle);
     renderChanges(bundle);
@@ -835,7 +865,7 @@
   function render() {
     var snapshot = Contract.deriveSnapshot(window.MyQuantCNAggressiveDashboard);
     var status = byId("runtimeStatus");
-    status.textContent = snapshot.status;
+    status.textContent = snapshot.status === "FRESH" ? "UPDATED" : snapshot.status;
     status.className = "status-pill " + snapshot.status.toLowerCase();
     renderBlockers(snapshot.blockers);
     if (snapshot.bundle) renderBundle(snapshot.bundle);

@@ -41,7 +41,7 @@
               <div>
                 <p class="eyebrow">PERFORMANCE LEDGER</p>
                 <h2 id="performanceInsight">净值与回撤</h2>
-                <p id="performanceSubtitle" class="section-note">2026-03-17 以 100 万为起点，剔除后续外部入金。</p>
+                <p id="performanceSubtitle" class="section-note">2026-03-17 以 100 万为唯一资本起点。</p>
               </div>
               <div class="chart-key" aria-label="图表图例">
                 <span><i class="key-line portfolio"></i>组合净值</span>
@@ -60,6 +60,14 @@
               <div><span>对沪深300超额</span><strong id="excessValue">—</strong></div>
               <div><span>组合最大回撤</span><strong id="drawdownValue">—</strong></div>
             </div>
+
+            <section class="quant-evaluation" aria-labelledby="quantEvaluationTitle">
+              <div class="quant-evaluation-heading">
+                <div><p class="eyebrow">RISK-ADJUSTED</p><h3 id="quantEvaluationTitle">量化评价</h3></div>
+                <p id="quantMetricNote">历史区间折算，不是未来收益承诺；Sharpe 使用中国1年期国债收益率。</p>
+              </div>
+              <div id="quantMetricGrid" class="quant-metric-grid" aria-label="组合常用量化评价指标"></div>
+            </section>
 
             <figure class="chart-figure">
               <div id="growthChart" class="chart-host growth-chart" role="group" aria-label="组合、沪深300、科创50、创业板指与累计超额的互动历史收益折线图"></div>
