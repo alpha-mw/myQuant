@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Acquire and seal a Fundamental VIP v4 shadow generation without promotion."""
+"""Validate or acquire Fundamental VIP v4 shadow data without promotion."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from typing import Any
 from quant_investor.intelligence_v2._core import canonical_bytes
 from quant_investor.intelligence_v2.package import verify_package
 from quant_investor.intelligence_v2.sources.tushare.fundamental_v4 import (
+    acquire_official_partition_fundamental_vip_v4,
     acquire_fundamental_vip_v4,
     build_fundamental_shadow_bundle_v4,
     build_logical_coverages_from_shadow_v4,
@@ -22,8 +23,10 @@ from quant_investor.intelligence_v2.sources.tushare.fundamental_v4 import (
     materialize_fundamental_v4_staging_generation,
     validate_fundamental_comparison_policy,
     validate_fundamental_execution_closure_v4,
+    validate_official_partition_execution_plan,
     write_fundamental_shadow_bundle_v4,
 )
+from quant_investor.market.fundamental_provider_contract import frame_fingerprint
 from quant_investor.v17_v4_runtime.tushare_https import OfficialTushareHttpsClient
 
 
@@ -71,6 +74,29 @@ def _load_exact_json(path: Path, expected_sha256: str) -> tuple[dict[str, Any], 
     if canonical_bytes(value) != raw:
         raise ShadowSafetyError("VIP_SHADOW_INPUT_NOT_CANONICAL")
     return value, raw
+
+
+def _load_exact_array(path: Path, expected_sha256: str) -> list[Any]:
+    if not path.is_absolute() or path.is_symlink() or not path.is_file():
+        raise ShadowSafetyError("VIP_SHADOW_INPUT_PATH_INVALID")
+    raw = path.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != expected_sha256:
+        raise ShadowSafetyError("VIP_SHADOW_INPUT_SHA_MISMATCH")
+    try:
+        value = json.loads(
+            raw.decode("utf-8", errors="strict"),
+            object_pairs_hook=_unique_object,
+            parse_constant=lambda _value: (_ for _ in ()).throw(
+                ShadowSafetyError("VIP_SHADOW_NONFINITE_JSON")
+            ),
+        )
+    except ShadowSafetyError:
+        raise
+    except (UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise ShadowSafetyError("VIP_SHADOW_INPUT_INVALID") from exc
+    if type(value) is not list or canonical_bytes(value) != raw:
+        raise ShadowSafetyError("VIP_SHADOW_INPUT_NOT_CANONICAL")
+    return value
 
 
 def _load_legacy_provider_manifest(
@@ -180,9 +206,45 @@ def _inputs(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any], d
     return execution, comparison, baseline, baseline_bytes
 
 
+def _official_inputs(
+    args: argparse.Namespace,
+    *,
+    execution: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
+    names = (
+        "official_plan_path",
+        "official_plan_sha256",
+        "probe_observations_path",
+        "probe_observations_sha256",
+    )
+    values = [getattr(args, name, None) for name in names]
+    if not any(values):
+        return None
+    if not all(values):
+        raise ShadowSafetyError("VIP_SHADOW_OFFICIAL_INPUT_INCOMPLETE")
+    observations = _load_exact_array(
+        Path(args.probe_observations_path),
+        args.probe_observations_sha256,
+    )
+    if any(type(row) is not dict for row in observations):
+        raise ShadowSafetyError("VIP_SHADOW_PROBE_OBSERVATIONS_INVALID")
+    plan_raw, _raw = _load_exact_json(
+        Path(args.official_plan_path),
+        args.official_plan_sha256,
+    )
+    plan = validate_official_partition_execution_plan(
+        plan_raw,
+        source_execution_closure=execution,
+        probe_observations=observations,
+    )
+    return plan, observations
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
     execution, comparison, baseline_manifest, baseline_bytes = _inputs(args)
-    plan = execution["request_plan"]
+    legacy_plan = execution["request_plan"]
+    official = _official_inputs(args, execution=execution)
+    plan = legacy_plan if official is None else official[0]
     package = verify_package()
     summary: dict[str, Any] = {
         "as_of": plan["as_of"],
@@ -191,22 +253,60 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "planned_terminal_request_count": plan["planned_terminal_request_count"],
         "status": "DRY_RUN_VALIDATED",
     }
+    if official is not None:
+        summary["official_partition_plan_id"] = plan["partition_plan_id"]
     if not args.allow_live:
         return summary
     required = (
-        "captured_at",
-        "checkpoint_root",
-        "evidence_root",
-        "membership_path",
-        "membership_sha256",
-        "run_id",
-        "staging_data_root",
-        "staging_raw_root",
-        "staging_reports_root",
+        ("captured_at", "checkpoint_root")
+        if official is not None
+        else (
+            "captured_at",
+            "checkpoint_root",
+            "evidence_root",
+            "membership_path",
+            "membership_sha256",
+            "run_id",
+            "staging_data_root",
+            "staging_raw_root",
+            "staging_reports_root",
+        )
     )
     if any(not getattr(args, name) for name in required):
         raise ShadowSafetyError("VIP_SHADOW_LIVE_ARGUMENT_MISSING")
     checkpoint = _checkpoint_path(args.checkpoint_root)
+    if official is not None:
+        _disk_preflight([checkpoint], required_free_bytes=args.required_free_bytes)
+        baseline_tables = _baseline_tables(
+            baseline_manifest,
+            plan=legacy_plan,
+            manifest_bytes=baseline_bytes,
+        )
+        acquisition = acquire_official_partition_fundamental_vip_v4(
+            official_plan=plan,
+            source_execution_closure=execution,
+            probe_observations=official[1],
+            baseline_tables=baseline_tables,
+            baseline_table_fingerprints={
+                table: frame_fingerprint(frame) for table, frame in baseline_tables.items()
+            },
+            comparison_policy=comparison,
+            client=OfficialTushareHttpsClient(strict_decimal_decode=True),
+            captured_at=args.captured_at,
+            checkpoint_root=checkpoint,
+        )
+        summary.update(
+            {
+                "actual_network_attempts": acquisition["transport_calls"],
+                "receipt_network_attempts": acquisition["receipt_network_attempts"],
+                "status": (
+                    "OFFICIAL_PARTITION_SHADOW_VALIDATED"
+                    if acquisition["status"] == "COMPLETE"
+                    else acquisition["status"]
+                ),
+            }
+        )
+        return summary
     evidence = _new_absolute_path(args.evidence_root, label="EVIDENCE")
     staging_paths = [
         _new_absolute_path(args.staging_data_root, label="STAGING_DATA"),
@@ -294,6 +394,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--as-of", required=True)
     parser.add_argument("--execution-closure-path", required=True)
     parser.add_argument("--execution-closure-sha256", required=True)
+    parser.add_argument("--official-plan-path")
+    parser.add_argument("--official-plan-sha256")
+    parser.add_argument("--probe-observations-path")
+    parser.add_argument("--probe-observations-sha256")
     parser.add_argument("--comparison-policy-path", required=True)
     parser.add_argument("--comparison-policy-sha256", required=True)
     parser.add_argument("--baseline-provider-manifest-path", required=True)

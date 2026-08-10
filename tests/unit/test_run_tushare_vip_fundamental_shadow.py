@@ -36,6 +36,10 @@ def args(tmp_path: Path, *, allow_live: bool) -> argparse.Namespace:
         execution_closure_sha256="c" * 64,
         membership_path=str(tmp_path / "membership.parquet") if allow_live else None,
         membership_sha256="d" * 64 if allow_live else None,
+        official_plan_path=None,
+        official_plan_sha256=None,
+        probe_observations_path=None,
+        probe_observations_sha256=None,
         required_free_bytes=1,
         run_id="vip-shadow-20260807" if allow_live else None,
         staging_data_root=str(tmp_path / "staging-data") if allow_live else None,
@@ -162,6 +166,100 @@ def test_live_shadow_composes_once_without_promotion(
     assert calls == ["acquire", "coverage", "derive", "bundle", "evidence", "staging"]
     assert result["actual_network_attempts"] == 80
     assert result["status"] == "STAGING_READY"
+
+
+def test_official_partition_mode_stops_after_exact_reconciliation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load_script()
+    values = args(tmp_path, allow_live=True)
+    values.official_plan_path = str(tmp_path / "official-plan.json")
+    values.official_plan_sha256 = "1" * 64
+    values.probe_observations_path = str(tmp_path / "probes.json")
+    values.probe_observations_sha256 = "2" * 64
+    official_plan = {
+        "as_of": "20260807",
+        "partition_plan_id": "3" * 64,
+        "planned_max_network_attempts": 200,
+        "planned_terminal_request_count": 100,
+    }
+    monkeypatch.setattr(module, "_inputs", lambda _args: inputs())
+    monkeypatch.setattr(
+        module,
+        "_official_inputs",
+        lambda _args, **_kwargs: (official_plan, [{"probe": True}]),
+    )
+    monkeypatch.setattr(module, "verify_package", lambda: {"semantic_sha256": "f" * 64})
+    monkeypatch.setattr(module, "_disk_preflight", lambda *_args, **_kwargs: None)
+    tables = {"daily_basic": pd.DataFrame({"ts_code": ["000001.SZ"]})}
+    monkeypatch.setattr(module, "_baseline_tables", lambda *_args, **_kwargs: tables)
+    client = object()
+    monkeypatch.setattr(module, "OfficialTushareHttpsClient", lambda **_kwargs: client)
+    calls: list[str] = []
+
+    def acquire(**kwargs: Any) -> dict[str, Any]:
+        assert kwargs["official_plan"] is official_plan
+        assert kwargs["client"] is client
+        calls.append("official-acquire")
+        return {
+            "receipt_network_attempts": 100,
+            "status": "COMPLETE",
+            "transport_calls": 100,
+        }
+
+    monkeypatch.setattr(
+        module,
+        "acquire_official_partition_fundamental_vip_v4",
+        acquire,
+    )
+    monkeypatch.setattr(
+        module,
+        "build_logical_coverages_from_shadow_v4",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("legacy continuation")),
+    )
+
+    result = module.run(values)
+
+    assert calls == ["official-acquire"]
+    assert result["actual_network_attempts"] == 100
+    assert result["official_partition_plan_id"] == "3" * 64
+    assert result["status"] == "OFFICIAL_PARTITION_SHADOW_VALIDATED"
+
+
+def test_official_partition_dry_run_does_not_construct_provider(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load_script()
+    values = args(tmp_path, allow_live=False)
+    values.official_plan_path = str(tmp_path / "official-plan.json")
+    values.official_plan_sha256 = "1" * 64
+    values.probe_observations_path = str(tmp_path / "probes.json")
+    values.probe_observations_sha256 = "2" * 64
+    official_plan = {
+        "as_of": "20260807",
+        "partition_plan_id": "3" * 64,
+        "planned_max_network_attempts": 200,
+        "planned_terminal_request_count": 100,
+    }
+    monkeypatch.setattr(module, "_inputs", lambda _args: inputs())
+    monkeypatch.setattr(
+        module,
+        "_official_inputs",
+        lambda _args, **_kwargs: (official_plan, [{"probe": True}]),
+    )
+    monkeypatch.setattr(module, "verify_package", lambda: {"semantic_sha256": "f" * 64})
+    monkeypatch.setattr(
+        module,
+        "OfficialTushareHttpsClient",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("provider client")),
+    )
+
+    result = module.run(values)
+
+    assert result["official_partition_plan_id"] == "3" * 64
+    assert result["status"] == "DRY_RUN_VALIDATED"
 
 
 def test_incomplete_acquisition_preserves_checkpoint_and_stops(
