@@ -102,37 +102,52 @@ def _taxonomy_rows(
     if type(partitions) is not dict or set(partitions) != {"L1", "L2", "L3"}:
         raise IndustryContractError("industry taxonomy partition keyset is incomplete")
     result: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    source_rows: list[tuple[str, dict[str, Any]]] = []
+    index_codes: set[str] = set()
+    index_code_by_industry_code: dict[str, str] = {}
     for expected_level in ("L1", "L2", "L3"):
         for row in _rows(
             partitions[expected_level],
             fields=TAXONOMY_FIELDS,
             label=f"taxonomy.{expected_level}",
         ):
-            code = _code(row["index_code"], label="index_code")
+            index_code = _code(row["index_code"], label="index_code")
+            industry_code = _code(row["industry_code"], label="industry_code")
             if (
                 row["level"] != expected_level
                 or row["src"] != "SW2021"
-                or code in seen
+                or index_code in index_codes
+                or industry_code in index_code_by_industry_code
                 or type(row["industry_name"]) is not str
                 or not row["industry_name"]
             ):
                 raise IndustryContractError("industry taxonomy identity is invalid")
-            seen.add(code)
-            parent = row["parent_code"]
-            result.append(
-                {
-                    "aliases": [],
-                    "available_at": captured_at,
-                    "effective_from": effective_from,
-                    "effective_to": None,
-                    "industry_id": _industry_id(code),
-                    "level": int(expected_level[1:]) - 1,
-                    "name": row["industry_name"],
-                    "parent_id": None if parent in {None, ""} else _industry_id(parent),
-                    "status": "ACTIVE",
-                }
-            )
+            index_codes.add(index_code)
+            index_code_by_industry_code[industry_code] = index_code
+            source_rows.append((expected_level, row))
+    for expected_level, row in source_rows:
+        parent = row["parent_code"]
+        if expected_level == "L1":
+            if parent not in {None, "", "0"}:
+                raise IndustryContractError("L1 taxonomy parent is invalid")
+            parent_id = None
+        else:
+            if type(parent) is not str or parent not in index_code_by_industry_code:
+                raise IndustryContractError("industry taxonomy parent is unresolved")
+            parent_id = _industry_id(index_code_by_industry_code[parent])
+        result.append(
+            {
+                "aliases": [],
+                "available_at": captured_at,
+                "effective_from": effective_from,
+                "effective_to": None,
+                "industry_id": _industry_id(row["index_code"]),
+                "level": int(expected_level[1:]) - 1,
+                "name": row["industry_name"],
+                "parent_id": parent_id,
+                "status": "ACTIVE",
+            }
+        )
     return result
 
 
@@ -173,7 +188,7 @@ def _subject_memberships(
     for row in rows:
         subject = _code(row["ts_code"], label="ts_code")
         if subject not in listing_identity_by_company:
-            raise IndustryContractError("industry membership subject is outside PIT scope")
+            continue
         effective_from = _date(row["in_date"], label="in_date")
         effective_to = _date(row["out_date"], label="out_date", end=True)
         if effective_from is None or (effective_to is not None and effective_to < effective_from):
@@ -191,7 +206,8 @@ def _subject_memberships(
         )
     blocked: dict[str, str] = {}
     admitted: list[dict[str, Any]] = []
-    for subject, values in by_subject.items():
+    for subject in sorted(listing_identity_by_company, key=lambda item: item.encode("ascii")):
+        values = by_subject.get(subject, [])
         active = {
             row["industry_id"]
             for row in values
@@ -200,6 +216,9 @@ def _subject_memberships(
         }
         if len(active) > 1:
             blocked[subject] = "AMBIGUOUS"
+            continue
+        if not active:
+            blocked[subject] = "UNMAPPED"
             continue
         unique = {
             (

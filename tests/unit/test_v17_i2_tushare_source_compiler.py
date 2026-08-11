@@ -30,13 +30,20 @@ def source_ref(name: str) -> dict[str, str]:
     }
 
 
-def taxonomy_row(code: str, name: str, level: str, parent: str | None) -> dict[str, Any]:
+def taxonomy_row(
+    code: str,
+    name: str,
+    level: str,
+    parent: str | None,
+    *,
+    industry_code: str,
+) -> dict[str, Any]:
     return {
         "index_code": code,
         "industry_name": name,
         "parent_code": parent,
         "level": level,
-        "industry_code": code,
+        "industry_code": industry_code,
         "is_pub": "1",
         "src": "SW2021",
     }
@@ -61,9 +68,9 @@ def member(symbol: str, *, flag: str = "Y") -> dict[str, Any]:
 def compile_source() -> dict[str, Any]:
     return compile_tushare_sw2021_industry_source(
         taxonomy_partitions={
-            "L1": [taxonomy_row("L1A", "一级A", "L1", None)],
-            "L2": [taxonomy_row("L2A", "二级A", "L2", "L1A")],
-            "L3": [taxonomy_row("L3A", "三级A", "L3", "L2A")],
+            "L1": [taxonomy_row("L1A", "一级A", "L1", None, industry_code="C1")],
+            "L2": [taxonomy_row("L2A", "二级A", "L2", "C1", industry_code="C2")],
+            "L3": [taxonomy_row("L3A", "三级A", "L3", "C2", industry_code="C3")],
         },
         membership_partitions={
             "L3A|Y": [member("000001.SZ", flag="Y")],
@@ -114,6 +121,36 @@ def test_compiler_projects_one_active_l1_with_exact_exposure_and_i2_replay() -> 
     )
 
 
+def test_official_l1_parent_zero_is_root_and_missing_scope_subject_is_unmapped() -> None:
+    compiled = compile_tushare_sw2021_industry_source(
+        taxonomy_partitions={
+            "L1": [taxonomy_row("L1A", "一级A", "L1", "0", industry_code="C1")],
+            "L2": [taxonomy_row("L2A", "二级A", "L2", "C1", industry_code="C2")],
+            "L3": [taxonomy_row("L3A", "三级A", "L3", "C2", industry_code="C3")],
+        },
+        membership_partitions={
+            "L3A|Y": [member("000001.SZ", flag="Y")],
+            "L3A|N": [member("000001.SZ", flag="N")],
+        },
+        listing_identity_by_company={
+            "000001.SZ": "listing-000001-sz",
+            "000002.SZ": "listing-000002-sz",
+        },
+        taxonomy_source_ref=source_ref("taxonomy-source"),
+        membership_source_ref=source_ref("membership-source"),
+        taxonomy_effective_from="2021-12-13T00:00:00Z",
+        cutoff=NOW,
+        captured_at=NOW,
+    )
+
+    l1_row = next(
+        row for row in compiled["taxonomy"]["rows"] if row["industry_id"] == "TUSHARE_SW2021:L1A"
+    )
+    assert l1_row["parent_id"] is None
+    assert compiled["status"] == "PARTIAL_BLOCKED"
+    assert compiled["blocked_subjects"] == {"000002.SZ": "UNMAPPED"}
+
+
 def test_row_limit_scope_and_display_industry_are_fail_closed() -> None:
     with pytest.raises(Exception):
         compile_tushare_sw2021_industry_source(
@@ -127,6 +164,49 @@ def test_row_limit_scope_and_display_industry_are_fail_closed() -> None:
             captured_at=NOW,
             stock_basic_industry="银行",
         )
+
+
+def test_provider_history_outside_exact_pit_scope_is_not_projected() -> None:
+    taxonomy = {
+        "L1": [taxonomy_row("L1A", "一级A", "L1", None, industry_code="C1")],
+        "L2": [taxonomy_row("L2A", "二级A", "L2", "C1", industry_code="C2")],
+        "L3": [taxonomy_row("L3A", "三级A", "L3", "C2", industry_code="C3")],
+    }
+    historical = member("999999.SZ", flag="N")
+    historical["out_date"] = "20201231"
+    compiled = compile_tushare_sw2021_industry_source(
+        taxonomy_partitions=taxonomy,
+        membership_partitions={
+            "L3A|Y": [member("000001.SZ", flag="Y")],
+            "L3A|N": [historical],
+        },
+        listing_identity_by_company={"000001.SZ": "listing-000001-sz"},
+        taxonomy_source_ref=source_ref("taxonomy-source"),
+        membership_source_ref=source_ref("membership-source"),
+        taxonomy_effective_from="2021-12-13T00:00:00Z",
+        cutoff=NOW,
+        captured_at=NOW,
+    )
+    assert compiled["status"] == "AVAILABLE"
+
+    active_outside = compile_tushare_sw2021_industry_source(
+        taxonomy_partitions=taxonomy,
+        membership_partitions={
+            "L3A|Y": [
+                member("000001.SZ", flag="Y"),
+                member("999999.SZ", flag="Y"),
+            ],
+            "L3A|N": [],
+        },
+        listing_identity_by_company={"000001.SZ": "listing-000001-sz"},
+        taxonomy_source_ref=source_ref("taxonomy-source"),
+        membership_source_ref=source_ref("membership-source"),
+        taxonomy_effective_from="2021-12-13T00:00:00Z",
+        cutoff=NOW,
+        captured_at=NOW,
+    )
+    assert active_outside["status"] == "AVAILABLE"
+    assert {row["subject_id"] for row in active_outside["catalog"]["memberships"]} == {"000001.SZ"}
 
     forged = compile_source()
     tampered = copy.deepcopy(forged["catalog"])
@@ -154,9 +234,9 @@ def test_row_limit_scope_and_display_industry_are_fail_closed() -> None:
     with pytest.raises(Exception, match="row limit"):
         compile_tushare_sw2021_industry_source(
             taxonomy_partitions={
-                "L1": [taxonomy_row("L1A", "一级A", "L1", None)],
-                "L2": [taxonomy_row("L2A", "二级A", "L2", "L1A")],
-                "L3": [taxonomy_row("L3A", "三级A", "L3", "L2A")],
+                "L1": [taxonomy_row("L1A", "一级A", "L1", None, industry_code="C1")],
+                "L2": [taxonomy_row("L2A", "二级A", "L2", "C1", industry_code="C2")],
+                "L3": [taxonomy_row("L3A", "三级A", "L3", "C2", industry_code="C3")],
             },
             membership_partitions=membership_partitions,
             listing_identity_by_company={"000001.SZ": "listing-000001-sz"},
@@ -174,9 +254,9 @@ def test_compiler_translates_shared_ref_errors_to_industry_contract() -> None:
     with pytest.raises(IndustryContractError):
         compile_tushare_sw2021_industry_source(
             taxonomy_partitions={
-                "L1": [taxonomy_row("L1A", "一级A", "L1", None)],
-                "L2": [taxonomy_row("L2A", "二级A", "L2", "L1A")],
-                "L3": [taxonomy_row("L3A", "三级A", "L3", "L2A")],
+                "L1": [taxonomy_row("L1A", "一级A", "L1", None, industry_code="C1")],
+                "L2": [taxonomy_row("L2A", "二级A", "L2", "C1", industry_code="C2")],
+                "L3": [taxonomy_row("L3A", "三级A", "L3", "C2", industry_code="C3")],
             },
             membership_partitions={
                 "L3A|Y": [member("000001.SZ", flag="Y")],

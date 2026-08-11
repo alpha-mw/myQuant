@@ -17,12 +17,36 @@ from .contracts import (
 from .models import TushareContractError, TushareRequestClient
 from .probe import probe_tushare_capabilities
 from .industry import compile_tushare_sw2021_industry_source
+from .industry_membership import (
+    build_industry_membership_capture,
+    build_industry_membership_partition_capture,
+    capture_industry_membership_partition,
+    membership_partition_params,
+    validate_industry_membership_capture,
+    validate_industry_membership_partition_capture,
+)
+from .industry_taxonomy import (
+    INDUSTRY_MEMBERSHIP_PLAN_VERSION,
+    build_industry_membership_execution_plan,
+    build_industry_taxonomy_capture,
+    build_industry_taxonomy_execution_plan,
+    capture_tushare_industry_taxonomy,
+    validate_industry_taxonomy_capture,
+    validate_industry_taxonomy_execution_plan,
+    validate_industry_membership_execution_plan,
+)
 from .theme import compile_tushare_theme_source, validate_tushare_theme_source_receipt
 
 __all__ = [
+    "INDUSTRY_MEMBERSHIP_PLAN_VERSION",
     "TushareContractError",
     "TushareRequestClient",
     "build_endpoint_execution_plan",
+    "build_industry_membership_execution_plan",
+    "build_industry_membership_capture",
+    "build_industry_membership_partition_capture",
+    "build_industry_taxonomy_capture",
+    "build_industry_taxonomy_execution_plan",
     "build_tushare_capability_receipt",
     "build_tushare_endpoint_policy",
     "build_tushare_execution_receipt",
@@ -31,7 +55,15 @@ __all__ = [
     "compile_tushare_sw2021_industry_source",
     "compile_tushare_theme_source",
     "probe_tushare_capabilities",
+    "capture_tushare_industry_taxonomy",
+    "capture_industry_membership_partition",
+    "membership_partition_params",
     "validate_endpoint_execution_plan",
+    "validate_industry_taxonomy_capture",
+    "validate_industry_taxonomy_execution_plan",
+    "validate_industry_membership_execution_plan",
+    "validate_industry_membership_capture",
+    "validate_industry_membership_partition_capture",
     "validate_tushare_capability_receipt",
     "validate_tushare_endpoint_policy",
     "validate_tushare_execution_receipt",
