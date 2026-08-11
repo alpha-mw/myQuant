@@ -162,6 +162,10 @@ validated Fundamental promotion. It does keep Decision v2 and I6 blocked.
 
 The current full-A source compilation remains fail-closed:
 
+- Fundamental: all 5,753 official-plan v2 partition receipts replayed from the
+  sealed checkpoint with zero network calls, but the exact baseline/VIP raw
+  comparison remains `RECONCILIATION_BLOCKED`. No v4 fileset, staging
+  generation or pointer promotion was produced.
 - Industry: 12 companies are `UNMAPPED`; no Decision v2 admission is possible
   for those subjects.
 - Theme: 5,485 companies are `AMBIGUOUS` because their DC membership codes are
@@ -171,9 +175,9 @@ The current full-A source compilation remains fail-closed:
 - No Theme membership was admitted by inference, name matching or a stale
   catalog. Decision v2 and I6 therefore remain blocked.
 
-These are valid partial outcomes, not acquisition failures. The capture
-receipts and compilers replay successfully; the source authority is
-insufficient for admission.
+These are valid partial outcomes, not acquisition failures. The physical
+partition keysets and source compilers replay successfully; raw reconciliation
+and identity authority remain insufficient for promotion or admission.
 
 ## I6 Market risk projection
 
