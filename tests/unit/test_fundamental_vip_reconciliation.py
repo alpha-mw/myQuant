@@ -234,6 +234,19 @@ def test_v3_rejects_unsealed_or_inapplicable_winner_semantics() -> None:
         )
 
 
+@pytest.mark.parametrize("invalid_date", ["20260230", "2026-02-28", 20260228])
+def test_v3_window_fast_path_preserves_exact_date_contract(invalid_date: Any) -> None:
+    baseline = v3_tables()
+    baseline["daily_basic"]["trade_date"] = baseline["daily_basic"]["trade_date"].astype(object)
+    baseline["daily_basic"].loc[0, "trade_date"] = invalid_date
+    with pytest.raises(FundamentalV4ContractError):
+        compare_fundamental_raw_tables(
+            baseline_tables=baseline,
+            vip_tables=v3_tables(),
+            policy=v3_policy(),
+        )
+
+
 def schema_diagnostic_ref() -> dict[str, str]:
     return {
         "artifact_id": "b" * 64,

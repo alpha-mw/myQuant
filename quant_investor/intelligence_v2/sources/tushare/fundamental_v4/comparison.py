@@ -734,9 +734,16 @@ def _windowed_frame(
         raise FundamentalV4ContractError("comparison window date column is missing")
     start_date = comparison_window["start_date"]
     end_date = comparison_window["end_date"]
-    mask = [
-        start_date <= _canonical_date(value) <= end_date for value in frame[date_column].tolist()
-    ]
+    values = frame[date_column]
+    raw_values = values.to_numpy(dtype=object, copy=False)
+    if all(type(value) is str for value in raw_values):
+        exact_shape = values.str.fullmatch(r"[0-9]{8}", na=False)
+        parsed = pd.to_datetime(values, format="%Y%m%d", errors="coerce")
+        if not bool(exact_shape.all()) or bool(parsed.isna().any()):
+            raise FundamentalV4ContractError("date value is invalid")
+        mask = values.ge(start_date) & values.le(end_date)
+    else:
+        mask = [start_date <= _canonical_date(value) <= end_date for value in values.tolist()]
     return frame.loc[mask].reset_index(drop=True)
 
 
