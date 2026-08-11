@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import shutil
 import stat
+import time
 from typing import Any
 
 from quant_investor.intelligence_v2._core import canonical_bytes
@@ -33,6 +34,36 @@ from quant_investor.v17_v4_runtime.tushare_https import OfficialTushareHttpsClie
 
 class ShadowSafetyError(RuntimeError):
     """Static, secret-free shadow orchestration failure."""
+
+
+class _PacedTushareClient:
+    """Keep official shadow calls within the validated v3 request rate."""
+
+    def __init__(
+        self,
+        client: Any,
+        *,
+        requests_per_second: float,
+        clock: Any = time.monotonic,
+        sleeper: Any = time.sleep,
+    ) -> None:
+        if not 0 < requests_per_second <= 8.0:
+            raise ShadowSafetyError("VIP_SHADOW_REQUEST_RATE_INVALID")
+        self._client = client
+        self._minimum_interval = 1.0 / requests_per_second
+        self._clock = clock
+        self._sleeper = sleeper
+        self._last_started_at: float | None = None
+
+    def request(self, **kwargs: Any) -> Any:
+        now = self._clock()
+        if self._last_started_at is not None:
+            remaining = self._minimum_interval - (now - self._last_started_at)
+            if remaining > 0:
+                self._sleeper(remaining)
+                now = self._clock()
+        self._last_started_at = now
+        return self._client.request(**kwargs)
 
 
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -256,6 +287,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     }
     if official is not None:
         summary["official_partition_plan_id"] = plan["partition_plan_id"]
+        summary["requests_per_second"] = args.requests_per_second
     if not args.allow_live:
         return summary
     required = (
@@ -293,9 +325,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 table: frame_fingerprint(frame) for table, frame in baseline_tables.items()
             },
             comparison_policy=comparison,
-            client=OfficialTushareHttpsClient(
-                strict_decimal_decode=True,
-                max_response_items=plan["local_max_response_items"],
+            client=_PacedTushareClient(
+                OfficialTushareHttpsClient(
+                    strict_decimal_decode=True,
+                    max_response_items=plan["local_max_response_items"],
+                ),
+                requests_per_second=args.requests_per_second,
             ),
             captured_at=args.captured_at,
             checkpoint_root=checkpoint,
@@ -413,6 +448,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--membership-path")
     parser.add_argument("--membership-sha256")
     parser.add_argument("--required-free-bytes", type=int, default=1)
+    parser.add_argument("--requests-per-second", type=float, default=8.0)
     parser.add_argument("--run-id")
     parser.add_argument("--staging-data-root")
     parser.add_argument("--staging-raw-root")

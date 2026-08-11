@@ -41,6 +41,7 @@ def args(tmp_path: Path, *, allow_live: bool) -> argparse.Namespace:
         probe_observations_path=None,
         probe_observations_sha256=None,
         required_free_bytes=1,
+        requests_per_second=8.0,
         run_id="vip-shadow-20260807" if allow_live else None,
         staging_data_root=str(tmp_path / "staging-data") if allow_live else None,
         staging_raw_root=str(tmp_path / "staging-raw") if allow_live else None,
@@ -214,7 +215,7 @@ def test_official_partition_mode_stops_after_exact_reconciliation(
 
     def acquire(**kwargs: Any) -> dict[str, Any]:
         assert kwargs["official_plan"] is official_plan
-        assert kwargs["client"] is client
+        assert kwargs["client"]._client is client
         calls.append("official-acquire")
         return {
             "receipt_network_attempts": 100,
@@ -242,7 +243,40 @@ def test_official_partition_mode_stops_after_exact_reconciliation(
     assert calls == ["official-acquire"]
     assert result["actual_network_attempts"] == 100
     assert result["official_partition_plan_id"] == "3" * 64
+    assert result["requests_per_second"] == 8.0
     assert result["status"] == "OFFICIAL_PARTITION_SHADOW_VALIDATED"
+
+
+def test_official_partition_pacer_enforces_eight_requests_per_second() -> None:
+    module = load_script()
+    now = [10.0]
+    sleeps: list[float] = []
+    calls: list[int] = []
+
+    class Client:
+        def request(self, **_kwargs: Any) -> int:
+            calls.append(len(calls))
+            return len(calls)
+
+    def clock() -> float:
+        return now[0]
+
+    def sleeper(seconds: float) -> None:
+        sleeps.append(seconds)
+        now[0] += seconds
+
+    client = module._PacedTushareClient(
+        Client(), requests_per_second=8.0, clock=clock, sleeper=sleeper
+    )
+    assert client.request() == 1
+    assert client.request() == 2
+    now[0] += 0.25
+    assert client.request() == 3
+    assert calls == [0, 1, 2]
+    assert sleeps == [0.125]
+
+    with pytest.raises(module.ShadowSafetyError, match="REQUEST_RATE_INVALID"):
+        module._PacedTushareClient(Client(), requests_per_second=8.1)
 
 
 def test_official_partition_dry_run_does_not_construct_provider(
@@ -282,6 +316,7 @@ def test_official_partition_dry_run_does_not_construct_provider(
     result = module.run(values)
 
     assert result["official_partition_plan_id"] == "3" * 64
+    assert result["requests_per_second"] == 8.0
     assert result["status"] == "DRY_RUN_VALIDATED"
 
 
