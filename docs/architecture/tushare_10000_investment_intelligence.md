@@ -101,6 +101,15 @@ logical-coverage receipts, comparison policy, all comparison outputs,
 reconciliation receipt and a closed fileset manifest. No promoted generation
 depends on `/private/tmp`.
 
+Comparison policy v2 remains replayable with its original byte identity. New
+reconciliation runs use comparison policy v3, which seals an inclusive date
+window for every table and applies that same window to both baseline and VIP
+rows. Statement-table winner selection may explicitly use
+`update_flag -> declared non-null completeness -> canonical ASCII` ordering;
+other tables retain canonical ASCII ordering. These rules only make the window
+and selected restatement deterministic. They do not forgive raw row, duplicate,
+coverage, or business-value differences, which continue to block promotion.
+
 ## I2 Industry compiler
 
 The Industry source compiler consumes `index_classify` for the SW2021 L1/L2/L3

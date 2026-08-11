@@ -33,6 +33,7 @@ from ...._core import (
 )
 from .models import (
     COMPARISON_POLICY_V2,
+    COMPARISON_POLICY_V3,
     SCALAR_KINDS,
     SOURCE_TABLES,
     FundamentalV4ContractError,
@@ -54,6 +55,7 @@ _POLICY_FIELDS = {
     "timestamp",
     "version",
 }
+_POLICY_FIELDS_V3 = _POLICY_FIELDS | {"comparison_windows"}
 _TABLE_POLICY_FIELDS = {
     "baseline_source_only_columns",
     "baseline_source_only_reason",
@@ -65,7 +67,10 @@ _TABLE_POLICY_FIELDS = {
     "winner_order_columns",
     "winner_rule",
 }
+_TABLE_POLICY_FIELDS_V3 = _TABLE_POLICY_FIELDS | {"winner_completeness_columns"}
 _COLUMN_ROW_FIELDS = {"column", "kind"}
+_COMPARISON_WINDOW_FIELDS = {"date_column", "end_date", "start_date", "table"}
+_WINNER_RULES_V3 = frozenset({"ASCII_CANONICAL_LAST", "UPDATE_FLAG_THEN_COMPLETENESS_THEN_ASCII"})
 _DECIMAL_QUANTUM = Decimal("0.000000000001")
 _SCHEMA_DIAGNOSTIC_VERSION = "myquant.v17.intelligence-v2.tushare-schema-diagnostic-receipt.v1"
 _MULTISET_HASH_DOMAIN = b"myquant.v17.canonical-row-multiset-stream.v1\0"
@@ -90,6 +95,14 @@ def _column_names(value: Any, *, label: str, allowed: set[str]) -> list[str]:
     if len(normalized) != len(set(normalized)):
         raise FundamentalV4ContractError(f"{label} contains duplicates")
     return normalized
+
+
+def _optional_column_names(value: Any, *, label: str, allowed: set[str]) -> list[str]:
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        raise FundamentalV4ContractError(f"{label} must be a sequence")
+    if not value:
+        return []
+    return _column_names(value, label=label, allowed=allowed)
 
 
 def _baseline_source_only_contract(
@@ -180,6 +193,58 @@ def _table_policy(value: Any, *, expected_table: str) -> dict[str, Any]:
     }
 
 
+def _table_policy_v3(value: Any, *, expected_table: str) -> dict[str, Any]:
+    row = require_exact_keys(value, _TABLE_POLICY_FIELDS_V3, label="table policy v3")
+    legacy_shape = {key: row[key] for key in _TABLE_POLICY_FIELDS}
+    legacy_shape["winner_rule"] = "ASCII_CANONICAL_LAST"
+    base = _table_policy(
+        legacy_shape,
+        expected_table=expected_table,
+    )
+    allowed = {item["column"] for item in base["column_rows"]}
+    completeness_columns = _optional_column_names(
+        row["winner_completeness_columns"],
+        label="winner_completeness_columns",
+        allowed=allowed,
+    )
+    winner_rule = row.get("winner_rule")
+    if winner_rule not in _WINNER_RULES_V3:
+        raise FundamentalV4ContractError("winner rule is invalid")
+    if winner_rule == "UPDATE_FLAG_THEN_COMPLETENESS_THEN_ASCII":
+        if expected_table not in {"balancesheet", "cashflow", "income"}:
+            raise FundamentalV4ContractError("update-flag winner rule is not allowed for table")
+        if "update_flag" not in allowed or not completeness_columns:
+            raise FundamentalV4ContractError("update-flag winner rule closure is incomplete")
+        if "update_flag" in completeness_columns:
+            raise FundamentalV4ContractError("update_flag cannot be a completeness column")
+    elif completeness_columns:
+        raise FundamentalV4ContractError("ASCII winner rule cannot declare completeness columns")
+    return {
+        **base,
+        "winner_completeness_columns": completeness_columns,
+        "winner_rule": winner_rule,
+    }
+
+
+def _comparison_window(value: Any, *, expected_table: str) -> dict[str, str]:
+    row = require_exact_keys(value, _COMPARISON_WINDOW_FIELDS, label="comparison window")
+    if row.get("table") != expected_table:
+        raise FundamentalV4ContractError("comparison window table mismatch")
+    expected_date_column = "trade_date" if expected_table == "daily_basic" else "end_date"
+    if row.get("date_column") != expected_date_column:
+        raise FundamentalV4ContractError("comparison window date column mismatch")
+    start_date = _canonical_date(row.get("start_date"))
+    end_date = _canonical_date(row.get("end_date"))
+    if start_date > end_date:
+        raise FundamentalV4ContractError("comparison window is reversed")
+    return {
+        "date_column": expected_date_column,
+        "end_date": end_date,
+        "start_date": start_date,
+        "table": expected_table,
+    }
+
+
 @fundamental_v4_contract
 def build_fundamental_comparison_policy(
     *,
@@ -223,21 +288,92 @@ def build_fundamental_comparison_policy(
 
 
 @fundamental_v4_contract
+def build_fundamental_comparison_policy_v3(
+    *,
+    table_policies: Mapping[str, Mapping[str, Any]],
+    comparison_windows: Mapping[str, Mapping[str, Any]],
+    created_at: str,
+) -> dict[str, Any]:
+    """Seal symmetric comparison windows and versioned winner semantics."""
+
+    if type(table_policies) is not dict or set(table_policies) != set(SOURCE_TABLES):
+        raise FundamentalV4ContractError("comparison table policy set is invalid")
+    if type(comparison_windows) is not dict or set(comparison_windows) != set(SOURCE_TABLES):
+        raise FundamentalV4ContractError("comparison window set is invalid")
+    normalized_policies = [
+        _table_policy_v3(table_policies[table], expected_table=table) for table in SOURCE_TABLES
+    ]
+    normalized_windows = [
+        _comparison_window(comparison_windows[table], expected_table=table)
+        for table in SOURCE_TABLES
+    ]
+    created = timestamp(created_at, label="created_at")
+    body = {
+        **common_fields(timestamp_value=created),
+        "array_order_semantics": {
+            "/comparison_windows": "table ASCII ascending",
+            "/table_policies": "table ASCII ascending",
+            "/table_policies/*/baseline_source_only_columns": "source column order",
+            "/table_policies/*/canonical_key_columns": "owner semantic order",
+            "/table_policies/*/column_rows": "source column order",
+            "/table_policies/*/winner_completeness_columns": "owner semantic order",
+            "/table_policies/*/winner_order_columns": "owner semantic order",
+        },
+        "canonical_rules": {
+            "date": "EXACT_YYYYMMDD",
+            "decimal_places": 12,
+            "decimal_precision": 50,
+            "decimal_rounding": "ROUND_HALF_EVEN",
+            "empty_string_is_null": False,
+            "input_scientific_notation": True,
+            "negative_zero": "0.000000000000",
+            "null": "JSON_OR_PARQUET_NULL_ONLY",
+            "row_order": "IGNORED_MULTISET",
+            "text_normalization": "UNICODE_NFC_NO_TRIM",
+        },
+        "comparison_windows": normalized_windows,
+        "created_at": created,
+        "table_policies": normalized_policies,
+        "version": COMPARISON_POLICY_V3,
+    }
+    return seal(body, identity_field="policy_id")
+
+
+@fundamental_v4_contract
 def validate_fundamental_comparison_policy(
     document: Mapping[str, Any],
 ) -> dict[str, Any]:
     value = validate_seal(document, identity_field="policy_id")
-    require_exact_keys(value, _POLICY_FIELDS, label="Fundamental comparison policy")
-    if value.get("version") != COMPARISON_POLICY_V2:
+    version = value.get("version")
+    if version == COMPARISON_POLICY_V2:
+        require_exact_keys(value, _POLICY_FIELDS, label="Fundamental comparison policy")
+    elif version == COMPARISON_POLICY_V3:
+        require_exact_keys(value, _POLICY_FIELDS_V3, label="Fundamental comparison policy v3")
+    else:
         raise FundamentalV4ContractError("comparison policy version mismatch")
     policies = {
         row["table"]: row
         for row in _sequence(value["table_policies"], label="table_policies", maximum=6)
     }
-    expected = build_fundamental_comparison_policy(
-        table_policies=policies,
-        created_at=value["created_at"],
-    )
+    if version == COMPARISON_POLICY_V2:
+        expected = build_fundamental_comparison_policy(
+            table_policies=policies,
+            created_at=value["created_at"],
+        )
+    else:
+        windows = {
+            row["table"]: row
+            for row in _sequence(
+                value["comparison_windows"],
+                label="comparison_windows",
+                maximum=6,
+            )
+        }
+        expected = build_fundamental_comparison_policy_v3(
+            table_policies=policies,
+            comparison_windows=windows,
+            created_at=value["created_at"],
+        )
     if value != expected:
         raise FundamentalV4ContractError("comparison policy replay mismatch")
     return value
@@ -434,6 +570,10 @@ def _write_table_projection(
     kinds = [row["kind"] for row in column_rows]
     key_indices = [columns.index(value) for value in table_policy["canonical_key_columns"]]
     winner_indices = [columns.index(value) for value in table_policy["winner_order_columns"]]
+    completeness_indices = [
+        columns.index(value) for value in table_policy.get("winner_completeness_columns", [])
+    ]
+    update_flag_index = columns.index("update_flag") if "update_flag" in columns else None
     lane_id = 0 if lane == "BASELINE" else 1
     row_hashes: Counter[bytes] = Counter()
     winners: dict[bytes, tuple[bytes, bytes]] = {}
@@ -446,7 +586,20 @@ def _write_table_projection(
         row_hash = hashlib.sha256(row_bytes).digest()
         key_bytes = _projection_bytes([list(row[index]) for index in key_indices])
         key_hash = hashlib.sha256(key_bytes).digest()
-        order_bytes = _projection_bytes([list(row[index]) for index in winner_indices])
+        ascii_order = _projection_bytes([list(row[index]) for index in winner_indices])
+        if table_policy["winner_rule"] == "UPDATE_FLAG_THEN_COMPLETENESS_THEN_ASCII":
+            if update_flag_index is None:
+                raise FundamentalV4ContractError("update-flag winner closure is missing")
+            update_flag = row[update_flag_index]
+            update_rank = 1 if update_flag == ("TEXT", "1") else 0
+            completeness = sum(row[index][0] != "NULL" for index in completeness_indices)
+            order_bytes = (
+                bytes((update_rank,))
+                + completeness.to_bytes(2, byteorder="big", signed=False)
+                + ascii_order
+            )
+        else:
+            order_bytes = ascii_order
         row_hashes[row_hash] += 1
         prior = winners.get(key_hash)
         if prior is None or order_bytes >= prior[0]:
@@ -538,7 +691,11 @@ def _compare_table(
     baseline_frame: pd.DataFrame,
     vip_frame: pd.DataFrame,
     table_policy: Mapping[str, Any],
+    comparison_window: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
+    if comparison_window is not None:
+        baseline_frame = _windowed_frame(baseline_frame, comparison_window=comparison_window)
+        vip_frame = _windowed_frame(vip_frame, comparison_window=comparison_window)
     with tempfile.TemporaryDirectory(prefix="myquant-fundamental-compare-") as root:
         database = Path(root) / "projection.sqlite3"
         with closing(sqlite3.connect(database)) as connection:
@@ -565,6 +722,24 @@ def _compare_table(
             }
 
 
+def _windowed_frame(
+    frame: pd.DataFrame,
+    *,
+    comparison_window: Mapping[str, Any],
+) -> pd.DataFrame:
+    if not isinstance(frame, pd.DataFrame):
+        raise FundamentalV4ContractError("raw table must be a DataFrame")
+    date_column = comparison_window["date_column"]
+    if date_column not in frame.columns:
+        raise FundamentalV4ContractError("comparison window date column is missing")
+    start_date = comparison_window["start_date"]
+    end_date = comparison_window["end_date"]
+    mask = [
+        start_date <= _canonical_date(value) <= end_date for value in frame[date_column].tolist()
+    ]
+    return frame.loc[mask].reset_index(drop=True)
+
+
 @fundamental_v4_contract
 def compare_fundamental_raw_tables(
     *,
@@ -583,6 +758,7 @@ def compare_fundamental_raw_tables(
     ):
         raise FundamentalV4ContractError("raw comparison table set is invalid")
     policy_by_table = {row["table"]: row for row in validated_policy["table_policies"]}
+    windows_by_table = {row["table"]: row for row in validated_policy.get("comparison_windows", [])}
     row_diff: dict[str, list[dict[str, Any]]] = {}
     value_diff: dict[str, list[dict[str, Any]]] = {}
     duplicate_diff: dict[str, dict[str, int]] = {}
@@ -592,6 +768,7 @@ def compare_fundamental_raw_tables(
             baseline_frame=baseline_tables[table],
             vip_frame=vip_tables[table],
             table_policy=policy_by_table[table],
+            comparison_window=windows_by_table.get(table),
         )
         baseline = result["baseline"]
         vip = result["vip"]
@@ -613,6 +790,8 @@ def compare_fundamental_raw_tables(
             "vip_row_count": vip["row_count"],
             "winner_implementation_sha256": policy_by_table[table]["winner_implementation_sha256"],
         }
+        if table in windows_by_table:
+            evidence[table]["comparison_window"] = windows_by_table[table]
     passed = (
         not any(row_diff.values())
         and not any(value_diff.values())
@@ -632,6 +811,7 @@ def compare_fundamental_raw_tables(
 
 __all__ = [
     "build_fundamental_comparison_policy",
+    "build_fundamental_comparison_policy_v3",
     "compare_fundamental_raw_tables",
     "validate_fundamental_comparison_policy",
 ]

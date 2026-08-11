@@ -21,6 +21,7 @@ from quant_investor.intelligence_v2.sources.tushare.fundamental_v4 import (
     FundamentalV4ContractError,
     REQUIRED_EVIDENCE_PATHS,
     build_fundamental_comparison_policy,
+    build_fundamental_comparison_policy_v3,
     build_fundamental_provider_manifest_v4,
     build_fundamental_reconciliation_receipt,
     build_provider_evidence_fileset_manifest,
@@ -82,12 +83,155 @@ def tables(value: pd.DataFrame | None = None) -> dict[str, pd.DataFrame]:
 
 def test_policy_is_sealed_replayable_and_owner_order_is_semantic() -> None:
     document = policy()
+    assert (
+        document["policy_id"] == "9505fc0ae44303c720a211ea50a052830d8a059d9c93f42d6cbc31f19439fc0c"
+    )
+    assert document["semantic_sha256"] == (
+        "218dce5137bad40d34f485d4414441936b57a1cfd8382759ec195414ea3d74db"
+    )
     assert validate_fundamental_comparison_policy(document) == document
 
     forged = copy.deepcopy(document)
     forged["table_policies"][0]["winner_order_columns"].reverse()
     with pytest.raises(FundamentalV4ContractError):
         validate_fundamental_comparison_policy(forged)
+
+
+def v3_policy() -> dict[str, Any]:
+    table_policies: dict[str, dict[str, Any]] = {}
+    windows: dict[str, dict[str, str]] = {}
+    for table in SOURCE_TABLES:
+        date_column = "trade_date" if table == "daily_basic" else "end_date"
+        statement = table in {"balancesheet", "cashflow", "income"}
+        columns = [
+            {"column": "ts_code", "kind": "TEXT"},
+            {"column": date_column, "kind": "DATE"},
+            {"column": "amount", "kind": "DECIMAL"},
+        ]
+        if statement:
+            columns.append({"column": "update_flag", "kind": "TEXT"})
+        winner_columns = [row["column"] for row in columns]
+        table_policies[table] = {
+            "baseline_source_only_columns": [],
+            "baseline_source_only_reason": None,
+            "baseline_source_schema_evidence_ref": None,
+            "canonical_key_columns": ["ts_code", date_column],
+            "column_rows": columns,
+            "table": table,
+            "winner_completeness_columns": ["amount"] if statement else [],
+            "winner_implementation_sha256": "b" * 64,
+            "winner_order_columns": winner_columns,
+            "winner_rule": (
+                "UPDATE_FLAG_THEN_COMPLETENESS_THEN_ASCII" if statement else "ASCII_CANONICAL_LAST"
+            ),
+        }
+        windows[table] = {
+            "date_column": date_column,
+            "end_date": "20260807",
+            "start_date": "20190807" if table != "daily_basic" else "20210807",
+            "table": table,
+        }
+    return build_fundamental_comparison_policy_v3(
+        table_policies=table_policies,
+        comparison_windows=windows,
+        created_at=NOW,
+    )
+
+
+def v3_frame(
+    table: str,
+    rows: list[list[Any]] | None = None,
+) -> pd.DataFrame:
+    date_column = "trade_date" if table == "daily_basic" else "end_date"
+    columns = ["ts_code", date_column, "amount"]
+    if table in {"balancesheet", "cashflow", "income"}:
+        columns.append("update_flag")
+    values = rows if rows is not None else [["000001.SZ", "20260630", Decimal("1"), "1"]]
+    if table not in {"balancesheet", "cashflow", "income"} and rows is None:
+        values = [["000001.SZ", "20260630", Decimal("1")]]
+    return pd.DataFrame(values, columns=columns)
+
+
+def v3_tables() -> dict[str, pd.DataFrame]:
+    return {table: v3_frame(table) for table in SOURCE_TABLES}
+
+
+def test_v3_policy_seals_symmetric_window_and_replays() -> None:
+    document = v3_policy()
+    assert validate_fundamental_comparison_policy(document) == document
+    assert document["version"] == "myquant.v17.fundamental-comparison-policy.v3"
+
+    baseline = v3_tables()
+    baseline["income"] = pd.concat(
+        [
+            v3_frame("income", [["000001.SZ", "20180630", Decimal("9"), "1"]]),
+            baseline["income"],
+        ],
+        ignore_index=True,
+    )
+    result = compare_fundamental_raw_tables(
+        baseline_tables=baseline,
+        vip_tables=v3_tables(),
+        policy=document,
+    )
+    assert result["passed"] is True
+    assert result["table_evidence"]["income"]["baseline_row_count"] == 1
+    assert result["table_evidence"]["income"]["comparison_window"]["start_date"] == "20190807"
+
+
+def test_v3_winner_prefers_update_flag_then_completeness() -> None:
+    baseline = v3_tables()
+    vip = v3_tables()
+    baseline["balancesheet"] = v3_frame(
+        "balancesheet",
+        [
+            ["000001.SZ", "20260630", Decimal("10"), "1"],
+            ["000001.SZ", "20260630", None, "0"],
+        ],
+    )
+    vip["balancesheet"] = v3_frame(
+        "balancesheet",
+        [["000001.SZ", "20260630", Decimal("10"), "1"]],
+    )
+    result = compare_fundamental_raw_tables(
+        baseline_tables=baseline,
+        vip_tables=vip,
+        policy=v3_policy(),
+    )
+    assert result["passed"] is False
+    assert result["raw_row_diff"]["balancesheet"]
+    assert result["raw_value_diff"]["balancesheet"] == []
+
+    baseline["balancesheet"].loc[1, "update_flag"] = "1"
+    complete_result = compare_fundamental_raw_tables(
+        baseline_tables=baseline,
+        vip_tables=vip,
+        policy=v3_policy(),
+    )
+    assert complete_result["raw_value_diff"]["balancesheet"] == []
+
+
+def test_v3_rejects_unsealed_or_inapplicable_winner_semantics() -> None:
+    document = v3_policy()
+    policies = {row["table"]: copy.deepcopy(row) for row in document["table_policies"]}
+    windows = {row["table"]: copy.deepcopy(row) for row in document["comparison_windows"]}
+    policies["daily_basic"]["winner_rule"] = "UPDATE_FLAG_THEN_COMPLETENESS_THEN_ASCII"
+    policies["daily_basic"]["winner_completeness_columns"] = ["amount"]
+    with pytest.raises(FundamentalV4ContractError):
+        build_fundamental_comparison_policy_v3(
+            table_policies=policies,
+            comparison_windows=windows,
+            created_at=NOW,
+        )
+
+    policies = {row["table"]: copy.deepcopy(row) for row in document["table_policies"]}
+    windows["income"]["start_date"] = "20260808"
+    with pytest.raises(FundamentalV4ContractError):
+        build_fundamental_comparison_policy_v3(
+            table_policies=policies,
+            comparison_windows=windows,
+            created_at=NOW,
+        )
 
 
 def schema_diagnostic_ref() -> dict[str, str]:

@@ -11,6 +11,7 @@ from .contracts import (
 )
 from .comparison import (
     build_fundamental_comparison_policy,
+    build_fundamental_comparison_policy_v3,
     compare_fundamental_raw_tables,
     validate_fundamental_comparison_policy,
 )
@@ -73,6 +74,7 @@ __all__ = [
     "acquire_official_partition_fundamental_vip_v4",
     "acquire_fundamental_vip_v4",
     "build_fundamental_comparison_policy",
+    "build_fundamental_comparison_policy_v3",
     "build_fundamental_execution_closure_v4",
     "build_fundamental_provider_manifest_v4",
     "build_fundamental_request_plan_v4",
