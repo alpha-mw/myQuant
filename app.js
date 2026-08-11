@@ -248,8 +248,18 @@
         if (showTooltip) {
           setTooltipContent(tooltip, point.date, rows);
           tooltip.style.left = Math.max(0, Math.min(100, x / options.width * 100)) + "%";
-          tooltip.classList.toggle("align-right", x > options.width * 0.72);
           tooltip.hidden = false;
+          tooltip.classList.remove("align-right", "align-center");
+          var hostWidth = host.getBoundingClientRect().width;
+          var tooltipWidth = tooltip.getBoundingClientRect().width;
+          var anchor = x / options.width * hostWidth;
+          if (anchor + 12 + tooltipWidth > hostWidth - 8) {
+            tooltip.classList.add(
+              anchor - tooltipWidth - 12 >= 8
+                ? "align-right"
+                : "align-center"
+            );
+          }
         } else {
           tooltip.hidden = true;
         }
@@ -319,7 +329,7 @@
     var yMax = maximum + padding;
     var xScale = linear(start, end, dimensions.left, width - dimensions.right);
     var yScale = linear(yMin, yMax, height - dimensions.bottom, dimensions.top);
-    var svg = svgNode("svg", { viewBox: "0 0 " + width + " " + height, width: width, height: height, "aria-hidden": "true" });
+    var svg = svgNode("svg", { viewBox: "0 0 " + width + " " + height, width: width, height: height });
     svg.appendChild(svgNode("title", {}, "组合、三项基准与对沪深300累计超额历史曲线"));
     svg.appendChild(svgNode("desc", {}, "从 " + points[0].date + " 到 " + points[points.length - 1].date + "，共同起点归一化为100。"));
     appendAxes(svg, dimensions, xScale, yScale, points, yMin, yMax, formatIndex);
@@ -406,7 +416,7 @@
     var benchmarkValues = benchmark.map(function (point) { return { date: point.date, value: point.value * 100 }; });
     var star50Values = star50.map(function (point) { return { date: point.date, value: point.value * 100 }; });
     var chinextValues = chinext.map(function (point) { return { date: point.date, value: point.value * 100 }; });
-    var svg = svgNode("svg", { viewBox: "0 0 " + width + " " + height, width: width, height: height, "aria-hidden": "true" });
+    var svg = svgNode("svg", { viewBox: "0 0 " + width + " " + height, width: width, height: height });
     svg.appendChild(svgNode("title", {}, "组合与三项基准历史回撤"));
     svg.appendChild(svgNode("desc", {}, "回撤从各自历史高点计算，数值越低表示距离前高越远。"));
     appendAxes(svg, dimensions, xScale, yScale, activeAnalysis.points, yMin, 0, formatDrawdown);
