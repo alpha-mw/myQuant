@@ -72,8 +72,8 @@ not inferred from the number of symbols or logical requests.
 
 The owner-authorized v2 official-partition lane remains replayable as
 `OWNER_AUTHORIZED_EXACT_ANN_DATE_NO_RATIO_CAP`, but it only proves the exact
-`ann_date` keyset for `fina_indicator_vip`. New runs use v3.
-V3 removes the empirical hot-window split for `balancesheet_vip`,
+`ann_date` keyset for `fina_indicator_vip`. V3 also remains replayable.
+V3 removed the empirical hot-window split for `balancesheet_vip`,
 `cashflow_vip`, and `income_vip`: each endpoint is requested once for every
 calendar announcement date from `financial_start` through `as_of`, inclusive,
 using the documented `start_date=end_date` parameters and no inferred `period`,
@@ -100,6 +100,30 @@ sealed request upper bound, terminal receipt keyset, `has_more=false`, row scope
 duplicate, PIT window, restatement-winner, or baseline/VIP equality requirements.
 Legacy v1 reconciliation continues to enforce the old ratio, and v2 evidence
 cannot be silently reinterpreted as v3 evidence.
+
+The first v3 shadow exposed an unresolved projection collision. Official
+statement contracts provide `report_type` and `comp_type` filters, but v3
+requested neither and retained only the narrow comparison projection. The saved
+v3 evidence therefore cannot prove whether its duplicate rows came from distinct
+report classes. New execution plans use v4 to close those documented dimensions
+rather than silently deduplicating v3 output. V4 combines the complete calendar
+announcement-date keyset with the documented latest consolidated report and
+company-type dimensions:
+
+```text
+each exact ann_date
+  x report_type=1
+  x comp_type in {1,2,3,4}
+```
+
+V4 keeps exact duplicates as blockers. It does not relax raw multiset equality
+or restatement-winner comparison. To remain below the 8 MiB artifact limit, the
+plan seals a compact deterministic schedule, the complete date-keyset SHA-256,
+the ordered company-type keyset, and a streaming SHA-256 over every regenerated
+request row. Every validation replay regenerates and hashes the complete
+topology. A live v4 plan cannot be sealed until nonempty, `has_more=false`
+dimension probes exist for all three statement endpoints and all four company
+types.
 
 ### Shadow and promotion are separate
 
@@ -209,6 +233,12 @@ The current full-A source compilation remains fail-closed:
   `6e13b0ddd2ef0c87c97ca5cb0b47968666552587284a9136a5e5f23c808c8d2d`.
   Acquisition remains `SHADOW_BLOCKED_EXACT_DUPLICATE_SURPLUS`; 11,458
   partitions were not requested, and the v3 run has no promotion authority.
+  Official documentation confirms that `report_type` and `comp_type` are
+  supported statement filters; the saved narrow projection cannot determine
+  which omitted dimension caused the collision. The v4 code path now seals exact
+  `report_type=1 x comp_type={1,2,3,4}` partitions without changing the
+  comparator. No live v4 execution plan has been published: the required
+  dimension probes are still missing, so Fundamental remains blocked.
 - Industry: 12 companies are `UNMAPPED`; no Decision v2 admission is possible
   for those subjects.
 - Theme: the sealed DC/TDX captures replay to eight catalog shards containing

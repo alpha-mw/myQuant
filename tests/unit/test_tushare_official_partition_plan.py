@@ -19,6 +19,8 @@ from quant_investor.intelligence_v2.sources.tushare.fundamental_v4 import (
     build_official_partition_execution_plan,
     build_official_partition_execution_plan_v2,
     build_official_partition_execution_plan_v3,
+    build_official_partition_execution_plan_v4,
+    replay_official_partition_request_rows,
     validate_fundamental_execution_closure_v4,
     validate_official_partition_request_receipt,
     validate_official_partition_execution_plan,
@@ -251,6 +253,30 @@ def _probes_v3() -> list[dict[str, Any]]:
     return sorted(values, key=lambda row: row["case_id"].encode("ascii"))
 
 
+def _probes_v4() -> list[dict[str, Any]]:
+    values = _probes_v3()
+    for table, api_name in (
+        ("BALANCESHEET", "balancesheet_vip"),
+        ("CASHFLOW", "cashflow_vip"),
+        ("INCOME", "income_vip"),
+    ):
+        for comp_type in ("1", "2", "3", "4"):
+            index = len(values) + 1
+            values.append(
+                {
+                    "api_name": api_name,
+                    "case_id": (f"{table}_EXACT_ANN_DATE_REPORT_1_COMP_{comp_type}_COMPLETE"),
+                    "expected_fields_match": True,
+                    "has_more": False,
+                    "item_count": 1,
+                    "observed_at": NOW,
+                    "params_sha256": f"{index:064x}",
+                    "response_body_sha256": f"{index + 100:064x}",
+                }
+            )
+    return sorted(values, key=lambda row: row["case_id"].encode("ascii"))
+
+
 def _build() -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
     source = _source_execution()
     probes = _probes()
@@ -279,6 +305,18 @@ def _build_v3() -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
     source = _source_execution()
     probes = _probes_v3()
     plan = build_official_partition_execution_plan_v3(
+        source_execution_closure=source,
+        probe_observations=probes,
+        document_observed_at=NOW,
+        created_at=NOW,
+    )
+    return source, plan, probes
+
+
+def _build_v4() -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
+    source = _source_execution()
+    probes = _probes_v4()
+    plan = build_official_partition_execution_plan_v4(
         source_execution_closure=source,
         probe_observations=probes,
         document_observed_at=NOW,
@@ -486,6 +524,159 @@ def test_v3_statement_leaf_enforces_exact_announcement_date() -> None:
     ) == ["SCOPE_MISMATCH"]
 
 
+def test_v4_compact_schedule_replays_complete_statement_dimensions() -> None:
+    source, plan, probes = _build_v4()
+    assert "request_rows" not in plan
+    assert len(canonical_bytes(plan)) < 8 * 1024 * 1024
+    assert (
+        validate_official_partition_execution_plan(
+            plan,
+            source_execution_closure=source,
+            probe_observations=probes,
+        )
+        == plan
+    )
+    rows = replay_official_partition_request_rows(
+        plan,
+        source_execution_closure=source,
+    )
+    statement_rows = [row for row in rows if row["table"] in {"balancesheet", "cashflow", "income"}]
+    date_count = plan["announcement_date_keyset_proofs"][0]["date_count"]
+    expected_count = (
+        date_count * 3 * 4
+        + date_count
+        + len(source["request_plan"]["daily_open_sessions"])
+        + len(source["request_plan"]["financial_periods"])
+    )
+    assert len(statement_rows) == date_count * 3 * 4
+    assert len(rows) == plan["planned_terminal_request_count"] == expected_count
+    assert plan["request_schedule"] == {
+        "generator_version": "EXACT_ANN_DATE_REPORT_TYPE_COMP_TYPE_V1",
+        "planned_request_count": expected_count,
+        "request_rows_sha256": plan["request_schedule"]["request_rows_sha256"],
+        "statement_comp_types": ["1", "2", "3", "4"],
+        "statement_report_type": "1",
+    }
+    assert all(
+        row["params"]["report_type"] == "1"
+        and row["params"]["comp_type"] in {"1", "2", "3", "4"}
+        and row["params"]["start_date"] == row["params"]["end_date"]
+        and "period" not in row["params"]
+        and row["exact_duplicate_mode"] == "REJECT_EXACT_DUPLICATES"
+        for row in statement_rows
+    )
+    first = next(
+        row
+        for row in statement_rows
+        if row["table"] == "balancesheet"
+        and row["params"]["start_date"] == "20190819"
+        and row["params"]["comp_type"] == "1"
+    )
+    assert official_acquisition._baseline_partition_key(first) == (
+        "ann_date=20190819&report_type=1&comp_type=1"
+    )
+
+
+def test_v4_rejects_resealed_schedule_and_keeps_v3_bytes_replayable() -> None:
+    source, plan, probes = _build_v4()
+    forged = dict(plan)
+    forged.pop("partition_plan_id")
+    forged.pop("semantic_sha256")
+    forged["request_schedule"] = {
+        **forged["request_schedule"],
+        "statement_comp_types": ["1", "2", "4"],
+    }
+    forged = seal(forged, identity_field="partition_plan_id")
+    with pytest.raises(FundamentalV4ContractError, match="replay mismatch"):
+        validate_official_partition_execution_plan(
+            forged,
+            source_execution_closure=source,
+            probe_observations=probes,
+        )
+    source_v3, plan_v3, probes_v3 = _build_v3()
+    assert (
+        validate_official_partition_execution_plan(
+            plan_v3,
+            source_execution_closure=source_v3,
+            probe_observations=probes_v3,
+        )
+        == plan_v3
+    )
+    with pytest.raises(FundamentalV4ContractError, match="case set is incomplete"):
+        build_official_partition_execution_plan_v4(
+            source_execution_closure=source,
+            probe_observations=_probes_v3(),
+            document_observed_at=NOW,
+            created_at=NOW,
+        )
+    incomplete = [
+        (
+            {**row, "item_count": 0}
+            if row["case_id"] == "BALANCESHEET_EXACT_ANN_DATE_REPORT_1_COMP_4_COMPLETE"
+            else row
+        )
+        for row in probes
+    ]
+    with pytest.raises(FundamentalV4ContractError, match="does not prove completeness"):
+        build_official_partition_execution_plan_v4(
+            source_execution_closure=source,
+            probe_observations=incomplete,
+            document_observed_at=NOW,
+            created_at=NOW,
+        )
+
+
+def test_v4_compact_schedule_is_consumed_without_expanding_the_artifact() -> None:
+    source, plan, probes = _build_v4()
+    _source_v1, plan_v1, _probes_v1, baseline, fingerprints, policy = _adapter_inputs()
+    calls: list[tuple[str, dict[str, Any], list[str]]] = []
+
+    class _FirstRequestBlocked:
+        def request(
+            self,
+            *,
+            api_name: str,
+            params: dict[str, Any],
+            expected_fields: list[str],
+        ) -> TushareResponse:
+            calls.append((api_name, params, expected_fields))
+            request = replay_official_partition_request_rows(
+                plan,
+                source_execution_closure=source,
+            )[0]
+            row = _row(request, expected_fields)
+            return TushareResponse(
+                api_name=api_name,
+                request_id="v4-first-blocked",
+                reported_count=1,
+                has_more=True,
+                fields=tuple(expected_fields),
+                rows=(row,),
+            )
+
+    result = acquire_official_partition_fundamental_vip_v4(
+        official_plan=plan,
+        source_execution_closure=source,
+        probe_observations=probes,
+        baseline_tables=baseline,
+        baseline_table_fingerprints=fingerprints,
+        comparison_policy=policy,
+        client=_FirstRequestBlocked(),
+        captured_at=NOW,
+    )
+    assert plan_v1["version"].endswith(".v1")
+    assert result["status"] == "ACQUISITION_BLOCKED"
+    assert result["transport_calls"] == 1
+    assert result["physical_receipts"][0]["blocker_codes"] == ["HAS_MORE"]
+    assert calls[0][0] == "balancesheet_vip"
+    assert calls[0][1] == {
+        "comp_type": "1",
+        "end_date": "20190807",
+        "report_type": "1",
+        "start_date": "20190807",
+    }
+
+
 def test_v2_announcement_leaf_enforces_date_and_report_period_scope() -> None:
     _source, plan, _probes_value = _build_v2()
     request = next(
@@ -663,7 +854,7 @@ def _row(request: dict[str, Any], fields: list[str], *, changed: bool = False) -
         elif field == "trade_date":
             values.append(params["trade_date"])
         elif field == "end_date":
-            values.append(params["period"])
+            values.append(params.get("period", "20181231"))
         elif field in {"ann_date", "f_ann_date"}:
             values.append(params["start_date"] if "start_date" in params else params["period"])
         elif field == "type":

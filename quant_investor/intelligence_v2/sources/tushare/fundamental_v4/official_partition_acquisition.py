@@ -41,7 +41,10 @@ from .comparison import (
     validate_fundamental_comparison_policy,
 )
 from .models import FundamentalV4ContractError, SOURCE_TABLES, fundamental_v4_contract
-from .official_partition_plan import validate_official_partition_execution_plan
+from .official_partition_plan import (
+    replay_official_partition_request_rows,
+    validate_official_partition_execution_plan,
+)
 from .schedule import validate_fundamental_execution_closure_v4
 
 OFFICIAL_PARTITION_REQUEST_RECEIPT_V1: Final = (
@@ -112,6 +115,14 @@ def _baseline_partition_key(request: Mapping[str, Any]) -> str:
         dimension = "trade_date"
     elif request["partition_type"] == "EXACT_ANNOUNCEMENT_DATE_ALL_PERIODS":
         return f"ann_date={params['start_date']}"
+    elif request["partition_type"] == (
+        "EXACT_ANNOUNCEMENT_DATE_REPORT_TYPE_COMPANY_TYPE_ALL_PERIODS"
+    ):
+        return (
+            f"ann_date={params['start_date']}"
+            f"&report_type={params['report_type']}"
+            f"&comp_type={params['comp_type']}"
+        )
     elif "ann_date" in params:
         dimension = "ann_date"
     else:
@@ -366,7 +377,10 @@ def _row_in_scope(
         return False
     if request["table"] == "daily_basic":
         return row[indices["trade_date"]] == params["trade_date"]
-    if request["partition_type"] == "EXACT_ANNOUNCEMENT_DATE_ALL_PERIODS":
+    if request["partition_type"] in {
+        "EXACT_ANNOUNCEMENT_DATE_ALL_PERIODS",
+        "EXACT_ANNOUNCEMENT_DATE_REPORT_TYPE_COMPANY_TYPE_ALL_PERIODS",
+    }:
         announced = row[indices["ann_date"]]
         return params["start_date"] == params["end_date"] and announced == params["start_date"]
     if "ann_date" in params:
@@ -572,8 +586,12 @@ def acquire_official_partition_fundamental_vip_v4(
     rows_by_table: dict[str, list[tuple[Any, ...]]] = {table: [] for table in SOURCE_TABLES}
     transport_calls = 0
     plan_ref = content_ref(plan, identity_field="partition_plan_id")
-    requests_by_key = {row["request_key"]: row for row in plan["request_rows"]}
-    for request in plan["request_rows"]:
+    request_rows = replay_official_partition_request_rows(
+        plan,
+        source_execution_closure=source,
+    )
+    requests_by_key = {row["request_key"]: row for row in request_rows}
+    for request in request_rows:
         record_path = (
             None
             if checkpoint is None
