@@ -36,6 +36,17 @@ from .industry_taxonomy import (
     validate_industry_membership_execution_plan,
 )
 from .theme import compile_tushare_theme_source, validate_tushare_theme_source_receipt
+from .theme_capture import (
+    build_theme_partition_capture,
+    build_theme_provider_capture,
+    build_theme_provider_execution_plan,
+    capture_theme_partition,
+    derive_tdx_fallback_company_keyset,
+    project_theme_provider_capture,
+    validate_theme_partition_capture,
+    validate_theme_provider_capture,
+    validate_theme_provider_execution_plan,
+)
 
 __all__ = [
     "INDUSTRY_MEMBERSHIP_PLAN_VERSION",
@@ -52,11 +63,16 @@ __all__ = [
     "build_tushare_execution_receipt",
     "build_tushare_request_receipt",
     "build_tushare_schema_diagnostic_receipt",
+    "build_theme_partition_capture",
+    "build_theme_provider_capture",
+    "build_theme_provider_execution_plan",
     "compile_tushare_sw2021_industry_source",
     "compile_tushare_theme_source",
     "probe_tushare_capabilities",
     "capture_tushare_industry_taxonomy",
     "capture_industry_membership_partition",
+    "capture_theme_partition",
+    "derive_tdx_fallback_company_keyset",
     "membership_partition_params",
     "validate_endpoint_execution_plan",
     "validate_industry_taxonomy_capture",
@@ -70,4 +86,8 @@ __all__ = [
     "validate_tushare_request_receipt",
     "validate_tushare_schema_diagnostic_receipt",
     "validate_tushare_theme_source_receipt",
+    "project_theme_provider_capture",
+    "validate_theme_partition_capture",
+    "validate_theme_provider_capture",
+    "validate_theme_provider_execution_plan",
 ]
