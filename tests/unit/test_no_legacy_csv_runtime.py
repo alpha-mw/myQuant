@@ -21,6 +21,9 @@ ALLOWLIST = {
     # never canonical market bars.
     # Dashboard export reads strategy-record CSV artifacts, not runtime market data.
     "scripts/backfill_cn_dashboard_benchmark.py",
+    # Official valuation reads only the Dashboard benchmark series as CSV;
+    # its governed holdings source remains the active canonical Parquet ledger.
+    "scripts/close_cn_dashboard_official_valuation.py",
     "scripts/cn_dashboard_common.py",
     "scripts/merge_cn_dashboard_benchmark_fills.py",
     # Factor package integrity verification reads installed wheel RECORD
