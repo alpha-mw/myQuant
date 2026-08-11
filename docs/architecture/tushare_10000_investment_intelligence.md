@@ -60,7 +60,8 @@ financial tables begin two additional calendar years earlier. All boundaries
 are inclusive. Each expected partition has one terminal identity; retries
 increase its attempt count without creating a new partition.
 
-The performance gate compares physical network calls, including retries:
+The original v1 partition lane retains its physical-attempt gate for backward
+replay compatibility:
 
 ```text
 vip_network_attempts * 10 <= baseline_provider_calls_attempted
@@ -68,6 +69,24 @@ vip_network_attempts * 10 <= baseline_provider_calls_attempted
 
 The baseline count comes from the fully validated v3 provider manifest. It is
 not inferred from the number of symbols or logical requests.
+
+The owner-authorized v2 official-partition lane does not apply that ratio cap.
+It may do so only when `fina_indicator_vip` is partitioned by the exact
+`ann_date` keyset covering every calendar date from `financial_start` through
+`as_of`, inclusive. The sealed `announcement_date_keyset_proof` binds the start,
+end, date count, ordered-keyset SHA-256, PIT cutoff and official endpoint. A
+missing date, resealed gap, different cutoff or non-v2 plan fails replay. The
+mode is explicit:
+
+```text
+OWNER_AUTHORIZED_EXACT_ANN_DATE_NO_RATIO_CAP
+```
+
+This authorization removes only the network-attempt ratio. It does not relax
+the sealed request upper bound, terminal receipt keyset, `has_more=false`, row
+scope, duplicate, PIT window, restatement-winner or baseline/VIP equality
+requirements. Legacy v1 reconciliation continues to enforce the old ratio and
+cannot be silently reinterpreted as v2 evidence.
 
 ### Shadow and promotion are separate
 
@@ -85,8 +104,11 @@ workflow:
 
 The script is dry-run by default. It cannot promote a pointer. An incomplete
 network run preserves its checkpoint and returns `ACQUISITION_BLOCKED`. A raw,
-derived, coverage or performance mismatch preserves durable evidence and
-returns `RECONCILIATION_BLOCKED` without building a promotion-ready manifest.
+derived, coverage or legacy-v1 performance mismatch preserves durable evidence
+and returns `RECONCILIATION_BLOCKED` without building a promotion-ready
+manifest. The official-partition v2 path currently ends at a replayable shadow
+comparison. It does not disguise official request receipts as legacy physical
+receipts and does not yet construct a promotion-ready v4 fileset.
 
 `scripts/run_tushare_vip_fundamental_upgrade.py` is the separate promotion
 operator. It accepts only an already sealed v4 staging generation and delegates
@@ -136,6 +158,23 @@ snapshot date; it is not extrapolated into a historical interval.
 Industry or Theme compilation failure does not roll back an independently
 validated Fundamental promotion. It does keep Decision v2 and I6 blocked.
 
+### Current sealed source result (2026-08-11)
+
+The current full-A source compilation remains fail-closed:
+
+- Industry: 12 companies are `UNMAPPED`; no Decision v2 admission is possible
+  for those subjects.
+- Theme: 5,485 companies are `AMBIGUOUS` because their DC membership codes are
+  outside the captured DC concept registry and the TDX fallback has the same
+  registry-closure problem. The remaining 17 companies are deterministically
+  `NO_MEMBERSHIP`.
+- No Theme membership was admitted by inference, name matching or a stale
+  catalog. Decision v2 and I6 therefore remain blocked.
+
+These are valid partial outcomes, not acquisition failures. The capture
+receipts and compilers replay successfully; the source authority is
+insufficient for admission.
+
 ## I6 Market risk projection
 
 `MarketRiskProjection.v1` accepts only exact, same-session canonical daily,
@@ -169,9 +208,11 @@ offline contract and package gates
 ```
 
 The Fundamental pointer may change only after raw and derived equality,
-coverage closure, the 10% attempt gate, staging readback and expected-current
-CAS all pass. This workflow never writes the V17 active pointer, Factor
-registry, Factor production set, actual holdings or a trading system.
+coverage closure, the applicable sealed performance mode, staging readback and
+expected-current CAS all pass. For v2, the applicable mode is the exact
+announcement-date proof described above, not the legacy 10% ratio. This
+workflow never writes the V17 active pointer, Factor registry, Factor
+production set, actual holdings or a trading system.
 
 Before a real run, the exact scope, calendar, baseline provider manifest,
 comparison policy, membership file, execution closure and all relevant SHA-256

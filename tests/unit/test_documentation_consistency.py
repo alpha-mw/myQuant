@@ -153,6 +153,9 @@ def test_public_docs_describe_the_live_entrypoints_and_contracts():
     assert "RESEARCH_MAINLINE_CANDIDATE_BLOCKED" in i2_i6
     assert "active pointer unchanged" in i2_i6
     assert "vip_network_attempts * 10 <= baseline_provider_calls_attempted" in tushare_10000
+    assert "OWNER_AUTHORIZED_EXACT_ANN_DATE_NO_RATIO_CAP" in tushare_10000
+    assert "announcement_date_keyset_proof" in tushare_10000
+    assert "Legacy v1 reconciliation continues to enforce the old ratio" in tushare_10000
     assert "run_tushare_vip_fundamental_shadow.py" in tushare_10000
     assert "never writes the V17 active pointer" in tushare_10000
     assert "low-level exact-once and compare-and-swap storage" in mainline_contract
