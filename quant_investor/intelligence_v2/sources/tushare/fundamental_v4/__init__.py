@@ -24,8 +24,10 @@ from .official_partition_acquisition import (
 from .official_partition_plan import (
     OFFICIAL_PARTITION_PLAN_V1,
     OFFICIAL_PARTITION_PLAN_V2,
+    OFFICIAL_PARTITION_PLAN_V3,
     build_official_partition_execution_plan,
     build_official_partition_execution_plan_v2,
+    build_official_partition_execution_plan_v3,
     validate_official_partition_execution_plan,
 )
 from .manifest import (
@@ -69,6 +71,7 @@ __all__ = [
     "FundamentalV4ContractError",
     "OFFICIAL_PARTITION_PLAN_V1",
     "OFFICIAL_PARTITION_PLAN_V2",
+    "OFFICIAL_PARTITION_PLAN_V3",
     "OFFICIAL_PARTITION_REQUEST_RECEIPT_V1",
     "REQUIRED_EVIDENCE_PATHS",
     "acquire_official_partition_fundamental_vip_v4",
@@ -82,6 +85,7 @@ __all__ = [
     "build_logical_coverages_from_shadow_v4",
     "build_official_partition_execution_plan",
     "build_official_partition_execution_plan_v2",
+    "build_official_partition_execution_plan_v3",
     "derive_fundamental_shadow_v4",
     "materialize_fundamental_v4_staging_generation",
     "build_fundamental_reconciliation_receipt",

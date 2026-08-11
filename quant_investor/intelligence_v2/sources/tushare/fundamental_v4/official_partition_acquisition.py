@@ -110,6 +110,8 @@ def _baseline_partition_key(request: Mapping[str, Any]) -> str:
     params = request["params"]
     if request["table"] == "daily_basic":
         dimension = "trade_date"
+    elif request["partition_type"] == "EXACT_ANNOUNCEMENT_DATE_ALL_PERIODS":
+        return f"ann_date={params['start_date']}"
     elif "ann_date" in params:
         dimension = "ann_date"
     else:
@@ -364,6 +366,9 @@ def _row_in_scope(
         return False
     if request["table"] == "daily_basic":
         return row[indices["trade_date"]] == params["trade_date"]
+    if request["partition_type"] == "EXACT_ANNOUNCEMENT_DATE_ALL_PERIODS":
+        announced = row[indices["ann_date"]]
+        return params["start_date"] == params["end_date"] and announced == params["start_date"]
     if "ann_date" in params:
         announced = row[indices["ann_date"]]
         period = row[indices["end_date"]]

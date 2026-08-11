@@ -155,6 +155,8 @@ def test_public_docs_describe_the_live_entrypoints_and_contracts():
     assert "vip_network_attempts * 10 <= baseline_provider_calls_attempted" in tushare_10000
     assert "OWNER_AUTHORIZED_EXACT_ANN_DATE_NO_RATIO_CAP" in tushare_10000
     assert "announcement_date_keyset_proof" in tushare_10000
+    assert "OWNER_AUTHORIZED_EXACT_ANN_DATE_FULL_STATEMENT_KEYSET_NO_RATIO_CAP" in tushare_10000
+    assert "announcement_date_keyset_proofs" in tushare_10000
     assert "Legacy v1 reconciliation continues to enforce the old ratio" in tushare_10000
     assert "all 5,753 official-plan v2 partition receipts" in tushare_10000
     assert "RECONCILIATION_BLOCKED" in tushare_10000

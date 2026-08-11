@@ -18,6 +18,7 @@ from quant_investor.intelligence_v2.sources.tushare.fundamental_v4 import (
     build_fundamental_request_plan_v4,
     build_official_partition_execution_plan,
     build_official_partition_execution_plan_v2,
+    build_official_partition_execution_plan_v3,
     validate_fundamental_execution_closure_v4,
     validate_official_partition_request_receipt,
     validate_official_partition_execution_plan,
@@ -211,6 +212,45 @@ def _probes_v2() -> list[dict[str, Any]]:
     return sorted(values, key=lambda row: row["case_id"].encode("ascii"))
 
 
+def _probes_v3() -> list[dict[str, Any]]:
+    values = _probes_v2()
+    values.extend(
+        [
+            {
+                "api_name": "balancesheet_vip",
+                "case_id": "BALANCESHEET_EXACT_ANN_DATE_ALL_PERIODS_COMPLETE",
+                "expected_fields_match": True,
+                "has_more": False,
+                "item_count": 1730,
+                "observed_at": NOW,
+                "params_sha256": "1" * 64,
+                "response_body_sha256": "2" * 64,
+            },
+            {
+                "api_name": "cashflow_vip",
+                "case_id": "CASHFLOW_EXACT_ANN_DATE_ALL_PERIODS_COMPLETE",
+                "expected_fields_match": True,
+                "has_more": False,
+                "item_count": 2594,
+                "observed_at": NOW,
+                "params_sha256": "3" * 64,
+                "response_body_sha256": "4" * 64,
+            },
+            {
+                "api_name": "income_vip",
+                "case_id": "INCOME_EXACT_ANN_DATE_ALL_PERIODS_COMPLETE",
+                "expected_fields_match": True,
+                "has_more": False,
+                "item_count": 2143,
+                "observed_at": NOW,
+                "params_sha256": "5" * 64,
+                "response_body_sha256": "6" * 64,
+            },
+        ]
+    )
+    return sorted(values, key=lambda row: row["case_id"].encode("ascii"))
+
+
 def _build() -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
     source = _source_execution()
     probes = _probes()
@@ -227,6 +267,18 @@ def _build_v2() -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
     source = _source_execution()
     probes = _probes_v2()
     plan = build_official_partition_execution_plan_v2(
+        source_execution_closure=source,
+        probe_observations=probes,
+        document_observed_at=NOW,
+        created_at=NOW,
+    )
+    return source, plan, probes
+
+
+def _build_v3() -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
+    source = _source_execution()
+    probes = _probes_v3()
+    plan = build_official_partition_execution_plan_v3(
         source_execution_closure=source,
         probe_observations=probes,
         document_observed_at=NOW,
@@ -323,6 +375,115 @@ def test_v2_rejects_a_resealed_announcement_date_gap() -> None:
             source_execution_closure=source,
             probe_observations=probes,
         )
+
+
+def test_v3_exhausts_statement_announcement_dates_without_empirical_ranges() -> None:
+    source, plan, probes = _build_v3()
+    assert (
+        validate_official_partition_execution_plan(
+            plan,
+            source_execution_closure=source,
+            probe_observations=probes,
+        )
+        == plan
+    )
+    assert plan["performance_gate"]["mode"] == (
+        "OWNER_AUTHORIZED_EXACT_ANN_DATE_FULL_STATEMENT_KEYSET_NO_RATIO_CAP"
+    )
+    proofs = plan["announcement_date_keyset_proofs"]
+    assert [row["table"] for row in proofs] == [
+        "balancesheet",
+        "cashflow",
+        "fina_indicator",
+        "income",
+    ]
+    assert len({row["ordered_keyset_sha256"] for row in proofs}) == 1
+    date_count = proofs[0]["date_count"]
+    assert all(row["date_count"] == date_count for row in proofs)
+    for table in ("balancesheet", "cashflow", "income"):
+        rows = [row for row in plan["request_rows"] if row["table"] == table]
+        assert len(rows) == date_count
+        assert all(
+            row["partition_type"] == "EXACT_ANNOUNCEMENT_DATE_ALL_PERIODS"
+            and row["params"]
+            == {
+                "end_date": row["params"]["start_date"],
+                "start_date": row["params"]["start_date"],
+            }
+            and "period" not in row["params"]
+            and "comp_type" not in row["params"]
+            and "report_type" not in row["params"]
+            for row in rows
+        )
+    assert not any("ANNOUNCEMENT_RANGE" in row["partition_type"] for row in plan["request_rows"])
+
+
+def test_v3_rejects_resealed_statement_date_gap_and_incomplete_probe() -> None:
+    source, plan, probes = _build_v3()
+    forged = dict(plan)
+    forged.pop("partition_plan_id")
+    forged.pop("semantic_sha256")
+    forged["request_rows"] = [
+        row
+        for row in forged["request_rows"]
+        if not (row["table"] == "balancesheet" and row["params"].get("start_date") == "20220428")
+    ]
+    forged = seal(forged, identity_field="partition_plan_id")
+    with pytest.raises(FundamentalV4ContractError, match="replay mismatch"):
+        validate_official_partition_execution_plan(
+            forged,
+            source_execution_closure=source,
+            probe_observations=probes,
+        )
+    incomplete = [
+        (
+            {**row, "has_more": True}
+            if row["case_id"] == "INCOME_EXACT_ANN_DATE_ALL_PERIODS_COMPLETE"
+            else row
+        )
+        for row in probes
+    ]
+    with pytest.raises(FundamentalV4ContractError, match="probe does not prove completeness"):
+        build_official_partition_execution_plan_v3(
+            source_execution_closure=source,
+            probe_observations=incomplete,
+            document_observed_at=NOW,
+            created_at=NOW,
+        )
+
+
+def test_v3_statement_leaf_enforces_exact_announcement_date() -> None:
+    _source, plan, _probes_value = _build_v3()
+    request = next(
+        row
+        for row in plan["request_rows"]
+        if row["table"] == "balancesheet" and row["params"]["start_date"] == "20220428"
+    )
+    fields = EXPECTED_FIELDS["balancesheet"]
+    valid = (
+        "000001.SZ",
+        "20220428",
+        "20220428",
+        "20211231",
+        Decimal("1"),
+        Decimal("2"),
+        "1",
+    )
+    wrong_date = (valid[0], "20220429", *valid[2:])
+    assert official_acquisition._baseline_partition_key(request) == "ann_date=20220428"
+    assert (
+        official_acquisition._response_scope_blockers(
+            request=request,
+            fields=fields,
+            rows=(valid,),
+        )
+        == []
+    )
+    assert official_acquisition._response_scope_blockers(
+        request=request,
+        fields=fields,
+        rows=(wrong_date,),
+    ) == ["SCOPE_MISMATCH"]
 
 
 def test_v2_announcement_leaf_enforces_date_and_report_period_scope() -> None:

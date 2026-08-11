@@ -23,6 +23,7 @@ from .schedule import validate_fundamental_execution_closure_v4
 
 OFFICIAL_PARTITION_PLAN_V1: Final = "myquant.v17.fundamental-official-partition-execution-plan.v1"
 OFFICIAL_PARTITION_PLAN_V2: Final = "myquant.v17.fundamental-official-partition-execution-plan.v2"
+OFFICIAL_PARTITION_PLAN_V3: Final = "myquant.v17.fundamental-official-partition-execution-plan.v3"
 
 _PLAN_FIELDS = {
     "as_of",
@@ -51,6 +52,7 @@ _PLAN_FIELDS = {
     "version",
 }
 _PLAN_V2_FIELDS = _PLAN_FIELDS | {"announcement_date_keyset_proof"}
+_PLAN_V3_FIELDS = _PLAN_FIELDS | {"announcement_date_keyset_proofs"}
 _ANNOUNCEMENT_KEYSET_PROOF_FIELDS = {
     "date_count",
     "domain_basis",
@@ -63,6 +65,7 @@ _ANNOUNCEMENT_KEYSET_PROOF_FIELDS = {
     "report_period_start",
     "start_date",
 }
+_ANNOUNCEMENT_KEYSET_PROOF_V3_FIELDS = _ANNOUNCEMENT_KEYSET_PROOF_FIELDS | {"table"}
 _DOCUMENT_FIELDS = {
     "api_name",
     "document_observed_at",
@@ -172,6 +175,7 @@ def _probes(
     *,
     created_at: str,
     require_indicator_announcement_date: bool = False,
+    require_statement_announcement_dates: bool = False,
 ) -> list[dict[str, Any]]:
     if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
         raise FundamentalV4ContractError("probe observations must be a sequence")
@@ -220,9 +224,32 @@ def _probes(
     }
     if require_indicator_announcement_date:
         required.add("FINA_INDICATOR_ANN_DATE_COMPLETE")
+    if require_statement_announcement_dates:
+        required.update(
+            {
+                "BALANCESHEET_EXACT_ANN_DATE_ALL_PERIODS_COMPLETE",
+                "CASHFLOW_EXACT_ANN_DATE_ALL_PERIODS_COMPLETE",
+                "INCOME_EXACT_ANN_DATE_ALL_PERIODS_COMPLETE",
+            }
+        )
     if {row["case_id"] for row in rows} != required:
         raise FundamentalV4ContractError("partition probe case set is incomplete")
+    if require_statement_announcement_dates and not _exact_date_probes_complete(rows):
+        raise FundamentalV4ContractError("partition probe does not prove completeness")
     return rows
+
+
+def _exact_date_probes_complete(rows: Sequence[Mapping[str, Any]]) -> bool:
+    exact_cases = {
+        "BALANCESHEET_EXACT_ANN_DATE_ALL_PERIODS_COMPLETE",
+        "CASHFLOW_EXACT_ANN_DATE_ALL_PERIODS_COMPLETE",
+        "FINA_INDICATOR_ANN_DATE_COMPLETE",
+        "INCOME_EXACT_ANN_DATE_ALL_PERIODS_COMPLETE",
+    }
+    return all(
+        row["case_id"] not in exact_cases or (not row["has_more"] and row["item_count"] >= 1)
+        for row in rows
+    )
 
 
 def _hot_month(period: str) -> tuple[date, date]:
@@ -340,6 +367,28 @@ def _indicator_announcement_rows(
     return rows
 
 
+def _statement_announcement_rows(
+    source_plan: Mapping[str, Any],
+    *,
+    table: str,
+    first_ordinal: int,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for announced_at in _announcement_dates(
+        start=source_plan["financial_start"],
+        end=source_plan["as_of"],
+    ):
+        rows.append(
+            _request_row(
+                ordinal=first_ordinal + len(rows),
+                table=table,
+                params={"end_date": announced_at, "start_date": announced_at},
+                partition_type="EXACT_ANNOUNCEMENT_DATE_ALL_PERIODS",
+            )
+        )
+    return rows
+
+
 def _uses_indicator_announcement_dates(table: str, enabled: bool) -> bool:
     return table == "fina_indicator" and enabled
 
@@ -423,6 +472,36 @@ def _request_rows(
                         partition_type="PERIOD_COMPANY_TYPE",
                     )
                 )
+    if len({row["request_key"] for row in rows}) != len(rows):
+        raise FundamentalV4ContractError("official partition request key is duplicated")
+    return rows
+
+
+def _request_rows_v3(source_plan: Mapping[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for table in sorted(_ENDPOINTS):
+        if table == "daily_basic":
+            for trade_date in source_plan["daily_open_sessions"]:
+                rows.append(
+                    _request_row(
+                        ordinal=len(rows),
+                        table=table,
+                        params={"trade_date": trade_date},
+                        partition_type="TRADE_DATE",
+                    )
+                )
+        elif table in _STATEMENT_TABLES:
+            rows.extend(
+                _statement_announcement_rows(
+                    source_plan,
+                    table=table,
+                    first_ordinal=len(rows),
+                )
+            )
+        elif table == "fina_indicator":
+            rows.extend(_indicator_announcement_rows(source_plan, first_ordinal=len(rows)))
+        else:
+            rows.extend(_period_rows(source_plan, table=table, first_ordinal=len(rows)))
     if len({row["request_key"] for row in rows}) != len(rows):
         raise FundamentalV4ContractError("official partition request key is duplicated")
     return rows
@@ -565,6 +644,93 @@ def build_official_partition_execution_plan_v2(
 
 
 @fundamental_v4_contract
+def build_official_partition_execution_plan_v3(
+    *,
+    source_execution_closure: Mapping[str, Any],
+    probe_observations: Sequence[Mapping[str, Any]],
+    document_observed_at: str,
+    created_at: str,
+) -> dict[str, Any]:
+    """Build exact announcement-date leaves for all PIT statement rows."""
+
+    source = validate_fundamental_execution_closure_v4(source_execution_closure)
+    source_plan = source["request_plan"]
+    created = timestamp(created_at, label="created_at")
+    if created < source["created_at"]:
+        raise FundamentalV4ContractError("partition plan predates its source closure")
+    documents = _documents(
+        document_observed_at,
+        indicator_by_announcement_date=True,
+    )
+    if any(row["document_observed_at"] > created for row in documents):
+        raise FundamentalV4ContractError("official documentation is future-dated")
+    probes = _probes(
+        probe_observations,
+        created_at=created,
+        require_indicator_announcement_date=True,
+        require_statement_announcement_dates=True,
+    )
+    requests = _request_rows_v3(source_plan)
+    terminal = len(requests)
+    baseline_attempts = source_plan["baseline_network_attempts"]
+    announcement_dates = _announcement_dates(
+        start=source_plan["financial_start"],
+        end=source_plan["as_of"],
+    )
+    keyset_sha256 = hashlib.sha256(canonical_bytes(announcement_dates)).hexdigest()
+    proofs = [
+        {
+            "date_count": len(announcement_dates),
+            "domain_basis": "ALL_CALENDAR_DATES_INCLUSIVE",
+            "end_date": source_plan["as_of"],
+            "endpoint": _ENDPOINTS[table],
+            "ordered_keyset_sha256": keyset_sha256,
+            "partition_parameter": (
+                "ann_date" if table == "fina_indicator" else "start_date=end_date"
+            ),
+            "pit_cutoff": timestamp(source_plan["pit_cutoff"], label="pit_cutoff"),
+            "report_period_end": source_plan["as_of"],
+            "report_period_start": source_plan["financial_start"],
+            "start_date": source_plan["financial_start"],
+            "table": table,
+        }
+        for table in sorted((*_STATEMENT_TABLES, "fina_indicator"))
+    ]
+    body = {
+        **common_fields(timestamp_value=created),
+        "announcement_date_keyset_proofs": proofs,
+        "as_of": session_date(source_plan["as_of"], label="as_of"),
+        "baseline_network_attempts": baseline_attempts,
+        "created_at": created,
+        "document_refs": documents,
+        "local_max_response_items": 20_000,
+        "max_attempts_per_partition": 1,
+        "performance_gate": {
+            "baseline_network_attempts": baseline_attempts,
+            "mode": "OWNER_AUTHORIZED_EXACT_ANN_DATE_FULL_STATEMENT_KEYSET_NO_RATIO_CAP",
+            "multiplier": None,
+            "passed": True,
+            "planned_network_attempts": terminal,
+        },
+        "pit_cutoff": timestamp(source_plan["pit_cutoff"], label="pit_cutoff"),
+        "planned_max_network_attempts": terminal,
+        "planned_terminal_request_count": terminal,
+        "probe_observations": probes,
+        "request_rows": requests,
+        "scope_policy": {
+            "code_change_behavior": "BASELINE_EXACT_CODES_ONLY",
+            "current_subject_scope_ref": source_plan["market_scope_ref"],
+            "daily_scope": _SCOPE_MODE,
+            "financial_scope": _SCOPE_MODE,
+        },
+        "source_execution_closure_ref": content_ref(source, identity_field="closure_id"),
+        "source_plan_id": source_plan["plan_id"],
+        "version": OFFICIAL_PARTITION_PLAN_V3,
+    }
+    return seal(body, identity_field="partition_plan_id")
+
+
+@fundamental_v4_contract
 def validate_official_partition_execution_plan(
     document: Mapping[str, Any],
     *,
@@ -594,6 +760,23 @@ def validate_official_partition_execution_plan(
             document_observed_at=value["document_refs"][0]["document_observed_at"],
             created_at=value["created_at"],
         )
+    elif version == OFFICIAL_PARTITION_PLAN_V3:
+        require_exact_keys(value, _PLAN_V3_FIELDS, label="official partition execution plan v3")
+        proofs = value["announcement_date_keyset_proofs"]
+        if isinstance(proofs, (str, bytes)) or not isinstance(proofs, Sequence) or len(proofs) != 4:
+            raise FundamentalV4ContractError("announcement date proof set is invalid")
+        for proof in proofs:
+            require_exact_keys(
+                proof,
+                _ANNOUNCEMENT_KEYSET_PROOF_V3_FIELDS,
+                label="announcement date keyset proof v3",
+            )
+        expected = build_official_partition_execution_plan_v3(
+            source_execution_closure=source_execution_closure,
+            probe_observations=probe_observations,
+            document_observed_at=value["document_refs"][0]["document_observed_at"],
+            created_at=value["created_at"],
+        )
     else:
         raise FundamentalV4ContractError("official partition plan version mismatch")
     if value != expected:
@@ -608,7 +791,9 @@ def validate_official_partition_execution_plan(
 __all__ = [
     "OFFICIAL_PARTITION_PLAN_V1",
     "OFFICIAL_PARTITION_PLAN_V2",
+    "OFFICIAL_PARTITION_PLAN_V3",
     "build_official_partition_execution_plan",
     "build_official_partition_execution_plan_v2",
+    "build_official_partition_execution_plan_v3",
     "validate_official_partition_execution_plan",
 ]

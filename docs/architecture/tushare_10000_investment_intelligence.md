@@ -70,23 +70,36 @@ vip_network_attempts * 10 <= baseline_provider_calls_attempted
 The baseline count comes from the fully validated v3 provider manifest. It is
 not inferred from the number of symbols or logical requests.
 
-The owner-authorized v2 official-partition lane does not apply that ratio cap.
-It may do so only when `fina_indicator_vip` is partitioned by the exact
-`ann_date` keyset covering every calendar date from `financial_start` through
-`as_of`, inclusive. The sealed `announcement_date_keyset_proof` binds the start,
-end, date count, ordered-keyset SHA-256, PIT cutoff and official endpoint. A
-missing date, resealed gap, different cutoff or non-v2 plan fails replay. The
-mode is explicit:
+The owner-authorized v2 official-partition lane remains replayable as
+`OWNER_AUTHORIZED_EXACT_ANN_DATE_NO_RATIO_CAP`, but it only proves the exact
+`ann_date` keyset for `fina_indicator_vip`. New runs use v3.
+V3 removes the empirical hot-window split for `balancesheet_vip`,
+`cashflow_vip`, and `income_vip`: each endpoint is requested once for every
+calendar announcement date from `financial_start` through `as_of`, inclusive,
+using the documented `start_date=end_date` parameters and no inferred `period`,
+company type, or report type. `fina_indicator_vip` continues to use its exact
+`ann_date` parameter. The sealed `announcement_date_keyset_proofs` bind all four
+endpoints to the same start, end, date count, ordered-keyset SHA-256, PIT cutoff,
+and report-period comparison window. A missing date, resealed gap, different
+cutoff, incomplete leaf probe, or non-v3 plan fails replay. The v3 mode is:
 
 ```text
-OWNER_AUTHORIZED_EXACT_ANN_DATE_NO_RATIO_CAP
+OWNER_AUTHORIZED_EXACT_ANN_DATE_FULL_STATEMENT_KEYSET_NO_RATIO_CAP
 ```
 
-This authorization removes only the network-attempt ratio. It does not relax
-the sealed request upper bound, terminal receipt keyset, `has_more=false`, row
-scope, duplicate, PIT window, restatement-winner or baseline/VIP equality
-requirements. Legacy v1 reconciliation continues to enforce the old ratio and
-cannot be silently reinterpreted as v2 evidence.
+The 2026-04-30 high-volume leaf probe returned 1,730 balance-sheet rows, 2,594
+cash-flow rows, and 2,143 income rows; every response matched its schema and
+announcement-date scope and reported `has_more=false`. This observation proves
+that the documented leaf shape is executable, not that every historical leaf
+will succeed. The acquisition still blocks on any future leaf with
+`has_more=true`, a scope mismatch, duplicate conflict, or an oversized local
+response.
+
+The authorization removes only the network-attempt ratio. It does not relax the
+sealed request upper bound, terminal receipt keyset, `has_more=false`, row scope,
+duplicate, PIT window, restatement-winner, or baseline/VIP equality requirements.
+Legacy v1 reconciliation continues to enforce the old ratio, and v2 evidence
+cannot be silently reinterpreted as v3 evidence.
 
 ### Shadow and promotion are separate
 
@@ -174,14 +187,20 @@ the sharded v2 receipt.
 Industry or Theme compilation failure does not roll back an independently
 validated Fundamental promotion. It does keep Decision v2 and I6 blocked.
 
-### Current sealed source result (2026-08-11)
+### Current sealed source result (2026-08-12)
 
 The current full-A source compilation remains fail-closed:
 
 - Fundamental: all 5,753 official-plan v2 partition receipts replayed from the
   sealed checkpoint with zero network calls, but the exact baseline/VIP raw
   comparison remains `RECONCILIATION_BLOCKED`. No v4 fileset, staging
-  generation or pointer promotion was produced.
+  generation or pointer promotion was produced. The replacement v3 plan seals
+  11,471 terminal requests: 2,558 exact announcement-date leaves for each of
+  the three statements and `fina_indicator`, 1,211 exact trade dates for
+  `daily_basic`, and 28 report periods for `forecast`. Its canonical plan is
+  6,123,004 bytes with SHA-256
+  `9a585ce81bf5b0e23a784eefe9d420f914cb34995c89b3fbc9bb926613c3b752`.
+  The v3 plan has not been executed and therefore has no promotion authority.
 - Industry: 12 companies are `UNMAPPED`; no Decision v2 admission is possible
   for those subjects.
 - Theme: the sealed DC/TDX captures replay to eight catalog shards containing
