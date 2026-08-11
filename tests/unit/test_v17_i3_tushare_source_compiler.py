@@ -5,6 +5,7 @@ from decimal import Decimal
 
 import pytest
 
+import quant_investor.intelligence_v2.sources.tushare.theme as tushare_theme
 from quant_investor.intelligence_v2._core import seal
 from quant_investor.intelligence_v2.sources.tushare.theme import (
     compile_tushare_theme_source,
@@ -102,10 +103,17 @@ def compile_source(
 
 
 def exposure(bundle: dict, company: str) -> dict:
+    matching_catalogs = [
+        catalog
+        for catalog in bundle["catalogs"]
+        if company in {row["company_code"] for row in catalog["coverage_rows"]}
+    ]
+    assert len(matching_catalogs) == 1
+    catalog = matching_catalogs[0]
     document = resolve_theme_exposure(
         company_code=company,
         registry=bundle["registry"],
-        membership_catalog=bundle["catalog"],
+        membership_catalog=catalog,
         lifecycle_policy=bundle["lifecycle_policy"],
         as_of=AS_OF,
     )
@@ -113,7 +121,7 @@ def exposure(bundle: dict, company: str) -> dict:
         validate_theme_exposure_receipt(
             document,
             registry=bundle["registry"],
-            membership_catalog=bundle["catalog"],
+            membership_catalog=catalog,
             lifecycle_policy=bundle["lifecycle_policy"],
             as_of=AS_OF,
         )
@@ -152,10 +160,130 @@ def test_dc_complete_is_primary_and_equal_membership_weights_are_exact() -> None
         validate_tushare_theme_source_receipt(
             receipt,
             registry=bundle["registry"],
-            catalog=bundle["catalog"],
+            catalogs=bundle["catalogs"],
             lifecycle_policy=bundle["lifecycle_policy"],
         )
         == receipt
+    )
+
+
+def test_member_rows_are_projected_to_the_sealed_concept_registry() -> None:
+    company = "000001.SZ"
+    bundle = compile_source(
+        companies=[company],
+        dc_rows=[dc_registry("BK1001.DC", "机器人")],
+        dc_captures={
+            company: capture(
+                "dc-member-000001",
+                [
+                    dc_member(company, "BK0153.DC"),
+                    dc_member(company, "BK1001.DC"),
+                ],
+            )
+        },
+    )
+    assert bundle["source_receipt"]["tdx_fallback_company_keyset"] == []
+    assert [row["theme_id"] for row in exposure(bundle, company)["exposure_rows"]] == [
+        "TUSHARE_DC:BK1001.DC"
+    ]
+
+
+def test_tdx_fallback_projects_mixed_member_rows_to_its_registry() -> None:
+    company = "000001.SZ"
+    bundle = compile_source(
+        companies=[company],
+        dc_rows=[dc_registry("BK1001.DC", "机器人")],
+        dc_captures={company: capture("dc-member-000001", [dc_member(company, "BK9999.DC")])},
+        tdx_rows=[tdx_registry("880904.TDX", "新型工业化")],
+        tdx_captures={
+            company: capture(
+                "tdx-member-000001",
+                [
+                    tdx_member(company, "300.TDX"),
+                    tdx_member(company, "880904.TDX"),
+                ],
+            )
+        },
+    )
+    assert bundle["source_receipt"]["tdx_fallback_company_keyset"] == [company]
+    assert [row["theme_id"] for row in exposure(bundle, company)["exposure_rows"]] == [
+        "TUSHARE_TDX:880904.TDX"
+    ]
+
+
+def test_tdx_fallback_with_only_outside_registry_codes_is_ambiguous() -> None:
+    company = "000001.SZ"
+    bundle = compile_source(
+        companies=[company],
+        dc_rows=[dc_registry("BK1001.DC", "机器人")],
+        dc_captures={company: capture("dc-member-000001", [dc_member(company, "BK9999.DC")])},
+        tdx_rows=[tdx_registry("880904.TDX", "新型工业化")],
+        tdx_captures={company: capture("tdx-member-000001", [tdx_member(company, "300.TDX")])},
+    )
+    assert exposure(bundle, company)["status"] == "AMBIGUOUS"
+
+
+def test_catalog_shards_close_the_company_keyset_and_replay(monkeypatch) -> None:
+    monkeypatch.setattr(tushare_theme, "CATALOG_SHARD_MEMBERSHIP_LIMIT", 3)
+    companies = ["000001.SZ", "000002.SZ"]
+    bundle = compile_source(
+        companies=companies,
+        dc_rows=[dc_registry("BK1001.DC", "机器人"), dc_registry("BK1002.DC", "人工智能")],
+        dc_captures={
+            company: capture(
+                f"dc-member-{company}",
+                [dc_member(company, "BK1001.DC"), dc_member(company, "BK1002.DC")],
+            )
+            for company in companies
+        },
+    )
+    assert len(bundle["catalogs"]) == 2
+    assert [
+        (row["first_company"], row["last_company"], row["company_count"])
+        for row in bundle["source_receipt"]["catalog_rows"]
+    ] == [
+        ("000001.SZ", "000001.SZ", 1),
+        ("000002.SZ", "000002.SZ", 1),
+    ]
+    assert (
+        validate_tushare_theme_source_receipt(
+            bundle["source_receipt"],
+            registry=bundle["registry"],
+            catalogs=bundle["catalogs"],
+            lifecycle_policy=bundle["lifecycle_policy"],
+        )
+        == bundle["source_receipt"]
+    )
+    with pytest.raises(ThemeContractError, match="ranges overlap|company keyset"):
+        validate_tushare_theme_source_receipt(
+            bundle["source_receipt"],
+            registry=bundle["registry"],
+            catalogs=list(reversed(bundle["catalogs"])),
+            lifecycle_policy=bundle["lifecycle_policy"],
+        )
+
+
+def test_v1_singleton_source_receipt_remains_replayable() -> None:
+    company = "000001.SZ"
+    bundle = compile_source(
+        companies=[company],
+        dc_rows=[dc_registry("BK1001.DC", "机器人")],
+        dc_captures={company: capture("dc-member-000001", [dc_member(company, "BK1001.DC")])},
+    )
+    legacy = deepcopy(bundle["source_receipt"])
+    legacy.pop("source_receipt_id")
+    legacy.pop("semantic_sha256")
+    legacy["version"] = tushare_theme.SOURCE_RECEIPT_VERSION_V1
+    legacy["catalog_ref"] = legacy.pop("catalog_rows")[0]["catalog_ref"]
+    legacy = seal(legacy, identity_field="source_receipt_id")
+    assert (
+        validate_tushare_theme_source_receipt(
+            legacy,
+            registry=bundle["registry"],
+            catalog=bundle["catalogs"][0],
+            lifecycle_policy=bundle["lifecycle_policy"],
+        )
+        == legacy
     )
 
 
@@ -256,7 +384,7 @@ def test_conflicting_selected_registry_is_ambiguous_and_receipt_forgery_is_rejec
         validate_tushare_theme_source_receipt(
             forged,
             registry=bundle["registry"],
-            catalog=bundle["catalog"],
+            catalogs=bundle["catalogs"],
             lifecycle_policy=bundle["lifecycle_policy"],
         )
 

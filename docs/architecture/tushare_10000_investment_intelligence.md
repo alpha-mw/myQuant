@@ -149,11 +149,27 @@ one membership receipt for every company. TDX is used only for the sealed
 ASCII-sorted set of companies whose DC coverage is incomplete. Complete DC
 `NO_MEMBERSHIP` cannot be overwritten by TDX.
 
+The member endpoints return memberships from more than one board/index domain;
+they do not accept the registry's `idx_type` filter. The compiler therefore
+projects each complete member response onto the exact, complete `概念板块`
+registry captured for the same provider and trade date. Registry-external rows
+are retained in the immutable provider capture but cannot become Theme
+memberships. A mixed response uses only its registry-bound Theme IDs. A DC
+response containing only registry-external IDs enters the sealed TDX fallback;
+a TDX response containing only registry-external IDs remains `AMBIGUOUS`.
+
 DC and TDX codes use separate namespaces. Same-name themes are not merged.
 When a selected provider returns multiple memberships, deterministic equal
 weights are quantized to 12 decimal places and the final ASCII-sorted member
 receives the exact residual. Snapshot membership is effective only for that
 snapshot date; it is not extrapolated into a historical interval.
+
+Full-A membership is stored as deterministic contiguous company shards. Each
+shard contains at most 9,000 membership rows and must independently satisfy the
+global 8 MiB artifact limit. The source receipt binds the ordered, nonoverlapping
+catalog ranges and proves that their company coverage exactly closes the sealed
+full-A keyset. The v1 singleton receipt remains replayable; new full-A builds use
+the sharded v2 receipt.
 
 Industry or Theme compilation failure does not roll back an independently
 validated Fundamental promotion. It does keep Decision v2 and I6 blocked.
@@ -168,12 +184,13 @@ The current full-A source compilation remains fail-closed:
   generation or pointer promotion was produced.
 - Industry: 12 companies are `UNMAPPED`; no Decision v2 admission is possible
   for those subjects.
-- Theme: 5,485 companies are `AMBIGUOUS` because their DC membership codes are
-  outside the captured DC concept registry and the TDX fallback has the same
-  registry-closure problem. The remaining 17 companies are deterministically
-  `NO_MEMBERSHIP`.
+- Theme: the sealed DC/TDX captures replay to eight catalog shards containing
+  69,505 exact memberships. DC resolves 5,484 companies; the one exact fallback
+  company resolves through TDX; 17 companies are deterministically
+  `NO_MEMBERSHIP`. No company remains `AMBIGUOUS` or `UNMAPPED`.
 - No Theme membership was admitted by inference, name matching or a stale
-  catalog. Decision v2 and I6 therefore remain blocked.
+  catalog. Decision v2 and I6 remain blocked by Fundamental reconciliation and
+  the 12 exact Industry `UNMAPPED` subjects rather than by Theme identity.
 
 These are valid partial outcomes, not acquisition failures. The physical
 partition keysets and source compilers replay successfully; raw reconciliation

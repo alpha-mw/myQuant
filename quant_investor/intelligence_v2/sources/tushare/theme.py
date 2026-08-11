@@ -30,7 +30,9 @@ from ...theme.models import ThemeContractError
 
 DC_PROVIDER: Final = "TUSHARE_DC"
 TDX_PROVIDER: Final = "TUSHARE_TDX"
-SOURCE_RECEIPT_VERSION: Final = "myquant.v17.intelligence-v2.tushare-theme-source-receipt.v1"
+SOURCE_RECEIPT_VERSION_V1: Final = "myquant.v17.intelligence-v2.tushare-theme-source-receipt.v1"
+SOURCE_RECEIPT_VERSION: Final = "myquant.v17.intelligence-v2.tushare-theme-source-receipt.v2"
+CATALOG_SHARD_MEMBERSHIP_LIMIT: Final = 9000
 _QUANTUM: Final = Decimal("0.000000000001")
 _DC_REGISTRY_FIELDS: Final = {"ts_code", "trade_date", "name", "idx_type", "level"}
 _DC_MEMBER_FIELDS: Final = {"trade_date", "ts_code", "con_code", "name"}
@@ -45,7 +47,7 @@ _COMMON_FIELDS: Final = {
     "research_only",
     "timestamp",
 }
-_RECEIPT_FIELDS: Final = _COMMON_FIELDS | {
+_RECEIPT_FIELDS_V1: Final = _COMMON_FIELDS | {
     "version",
     "source_receipt_id",
     "semantic_sha256",
@@ -57,7 +59,14 @@ _RECEIPT_FIELDS: Final = _COMMON_FIELDS | {
     "catalog_ref",
     "lifecycle_policy_ref",
 }
+_RECEIPT_FIELDS: Final = (_RECEIPT_FIELDS_V1 - {"catalog_ref"}) | {"catalog_rows"}
 _COMPANY_RECEIPT_FIELDS: Final = {"company_code", "provider", "status", "theme_ids"}
+_CATALOG_RECEIPT_FIELDS: Final = {
+    "catalog_ref",
+    "company_count",
+    "first_company",
+    "last_company",
+}
 
 
 def _fail(message: str) -> None:
@@ -182,21 +191,31 @@ def _member_theme_ids(
     company: str,
     trade_date: str,
     fields: set[str],
-) -> tuple[list[str], bool, bool]:
+) -> tuple[list[str], set[str], bool]:
     by_code: dict[str, bytes] = {}
-    conflict = False
+    conflicts: set[str] = set()
     for row in rows:
         if row.get("trade_date") != trade_date or row.get("con_code") != company:
-            return [], False, True
+            return [], set(), True
         code = _identifier(row.get("ts_code"), label=f"{provider}.membership.ts_code")
         identity = canonical_bytes(row)
         if code in by_code and by_code[code] != identity:
-            conflict = True
+            conflicts.add(f"{provider}:{code}")
         by_code[code] = identity
     theme_ids = sorted(
         (f"{provider}:{code}" for code in by_code), key=lambda item: item.encode("ascii")
     )
-    return theme_ids, conflict, False
+    return theme_ids, conflicts, False
+
+
+def _target_registry_ids(
+    theme_ids: Sequence[str],
+    *,
+    registry_ids: set[str],
+) -> list[str]:
+    """Project an untyped member response onto the sealed target registry."""
+
+    return [theme_id for theme_id in theme_ids if theme_id in registry_ids]
 
 
 def _weights(theme_ids: Sequence[str]) -> dict[str, str]:
@@ -225,18 +244,19 @@ def _select_company(
         limit=5000,
         label=f"dc_member.{company}",
     )
-    dc_ids, dc_conflict, dc_scope_mismatch = _member_theme_ids(
+    dc_ids, dc_conflicts, dc_scope_mismatch = _member_theme_ids(
         dc_rows,
         provider=DC_PROVIDER,
         company=company,
         trade_date=trade_date,
         fields=_DC_MEMBER_FIELDS,
     )
-    dc_complete = dc_complete and not dc_conflict and not dc_scope_mismatch
+    dc_target_ids = _target_registry_ids(dc_ids, registry_ids=registry_ids)
+    dc_complete = dc_complete and not dc_scope_mismatch and not (dc_conflicts & set(dc_target_ids))
     if tdx_capture is None and dc_complete:
-        unknown = any(theme_id not in registry_ids for theme_id in dc_ids)
-        conflict = any(theme_id in registry_conflicts for theme_id in dc_ids)
-        if unknown or conflict:
+        outside_only = bool(dc_ids) and not dc_target_ids
+        conflict = any(theme_id in registry_conflicts for theme_id in dc_target_ids)
+        if outside_only or conflict:
             return {
                 "provider": DC_PROVIDER,
                 "source_ref": dc_ref,
@@ -247,7 +267,7 @@ def _select_company(
             "provider": DC_PROVIDER,
             "source_ref": dc_ref,
             "status": "COVERED",
-            "themes": dc_ids,
+            "themes": dc_target_ids,
         }
     if tdx_capture is None:
         return {"provider": None, "source_ref": dc_ref, "status": "UNMAPPED", "themes": []}
@@ -257,7 +277,7 @@ def _select_company(
         limit=3000,
         label=f"tdx_member.{company}",
     )
-    tdx_ids, tdx_conflict, tdx_scope_mismatch = _member_theme_ids(
+    tdx_ids, tdx_conflicts, tdx_scope_mismatch = _member_theme_ids(
         tdx_rows,
         provider=TDX_PROVIDER,
         company=company,
@@ -266,16 +286,24 @@ def _select_company(
     )
     if not tdx_complete or tdx_scope_mismatch:
         return {"provider": TDX_PROVIDER, "source_ref": tdx_ref, "status": "UNMAPPED", "themes": []}
-    unknown = any(theme_id not in registry_ids for theme_id in tdx_ids)
-    conflict = tdx_conflict or any(theme_id in registry_conflicts for theme_id in tdx_ids)
-    if unknown or conflict:
+    tdx_target_ids = _target_registry_ids(tdx_ids, registry_ids=registry_ids)
+    outside_only = bool(tdx_ids) and not tdx_target_ids
+    conflict = bool(tdx_conflicts & set(tdx_target_ids)) or any(
+        theme_id in registry_conflicts for theme_id in tdx_target_ids
+    )
+    if outside_only or conflict:
         return {
             "provider": TDX_PROVIDER,
             "source_ref": tdx_ref,
             "status": "AMBIGUOUS",
             "themes": [],
         }
-    return {"provider": TDX_PROVIDER, "source_ref": tdx_ref, "status": "COVERED", "themes": tdx_ids}
+    return {
+        "provider": TDX_PROVIDER,
+        "source_ref": tdx_ref,
+        "status": "COVERED",
+        "themes": tdx_target_ids,
+    }
 
 
 def _artifact_rows(
@@ -312,6 +340,51 @@ def _artifact_rows(
     return coverage, memberships
 
 
+def _catalog_shards(
+    *,
+    company_rows: Sequence[Mapping[str, Any]],
+    trade_date: str,
+    captured_at: str,
+    registry: Mapping[str, Any],
+    scope_ref: Mapping[str, Any],
+    as_of: str,
+) -> list[dict[str, Any]]:
+    groups: list[list[Mapping[str, Any]]] = []
+    current: list[Mapping[str, Any]] = []
+    membership_count = 0
+    for row in company_rows:
+        row_count = len(row["themes"])
+        if row_count > CATALOG_SHARD_MEMBERSHIP_LIMIT:
+            _fail("one company exceeds the theme catalog shard limit")
+        if current and membership_count + row_count > CATALOG_SHARD_MEMBERSHIP_LIMIT:
+            groups.append(current)
+            current = []
+            membership_count = 0
+        current.append(row)
+        membership_count += row_count
+    if current:
+        groups.append(current)
+    catalogs: list[dict[str, Any]] = []
+    for group in groups:
+        coverage_rows, membership_rows = _artifact_rows(
+            company_rows=group,
+            trade_date=trade_date,
+            captured_at=captured_at,
+        )
+        catalog = build_theme_membership_catalog(
+            registry=registry,
+            scope_status="COMPLETE",
+            scope_ref=scope_ref,
+            coverage_rows=coverage_rows,
+            membership_rows=membership_rows,
+            as_of=as_of,
+        )
+        catalogs.append(validate_theme_membership_catalog(catalog, registry=registry))
+    if not catalogs:
+        _fail("theme catalog shard set is empty")
+    return catalogs
+
+
 def _source_receipt(
     *,
     trade_date: str,
@@ -319,7 +392,7 @@ def _source_receipt(
     fallback_keyset: Sequence[str],
     company_rows: Sequence[Mapping[str, Any]],
     registry: Mapping[str, Any],
-    catalog: Mapping[str, Any],
+    catalogs: Sequence[Mapping[str, Any]],
     lifecycle: Mapping[str, Any],
     as_of: str,
 ) -> dict[str, Any]:
@@ -340,7 +413,15 @@ def _source_receipt(
                 for row in company_rows
             ],
             "registry_ref": content_ref(registry, identity_field="registry_id"),
-            "catalog_ref": content_ref(catalog, identity_field="catalog_id"),
+            "catalog_rows": [
+                {
+                    "catalog_ref": content_ref(catalog, identity_field="catalog_id"),
+                    "company_count": len(catalog["coverage_rows"]),
+                    "first_company": catalog["coverage_rows"][0]["company_code"],
+                    "last_company": catalog["coverage_rows"][-1]["company_code"],
+                }
+                for catalog in catalogs
+            ],
             "lifecycle_policy_ref": content_ref(lifecycle, identity_field="lifecycle_policy_id"),
         },
         identity_field="source_receipt_id",
@@ -362,18 +443,19 @@ def _fallback_companies(
             limit=5000,
             label=f"dc_member.{company}",
         )
-        theme_ids, conflict, scope_mismatch = _member_theme_ids(
+        theme_ids, conflicts, scope_mismatch = _member_theme_ids(
             rows,
             provider=DC_PROVIDER,
             company=company,
             trade_date=trade_date,
             fields=_DC_MEMBER_FIELDS,
         )
+        target_ids = _target_registry_ids(theme_ids, registry_ids=set(registry))
         if (
             not complete
-            or conflict
             or scope_mismatch
-            or any(theme_id not in registry for theme_id in theme_ids)
+            or bool(conflicts & set(target_ids))
+            or (bool(theme_ids) and not target_ids)
         ):
             fallback.append(company)
     return sorted(fallback, key=lambda item: item.encode("ascii"))
@@ -475,17 +557,13 @@ def compile_tushare_theme_source(
         )
         company_rows.append({"company_code": company, **selected})
     registry = build_theme_registry(themes=list(registry_rows.values()), as_of=cutoff)
-    coverage_rows, membership_rows = _artifact_rows(
+    scope_source = _source_ref(scope_ref, label="scope_ref")
+    catalogs = _catalog_shards(
         company_rows=company_rows,
         trade_date=session,
         captured_at=captured,
-    )
-    catalog = build_theme_membership_catalog(
         registry=registry,
-        scope_status="COMPLETE",
-        scope_ref=_source_ref(scope_ref, label="scope_ref"),
-        coverage_rows=coverage_rows,
-        membership_rows=membership_rows,
+        scope_ref=scope_source,
         as_of=cutoff,
     )
     lifecycle_rows = [
@@ -509,7 +587,6 @@ def compile_tushare_theme_source(
         as_of=cutoff,
     )
     validate_theme_registry(registry)
-    validate_theme_membership_catalog(catalog, registry=registry)
     validate_theme_lifecycle_policy(lifecycle, registry=registry)
     receipt = _source_receipt(
         trade_date=session,
@@ -517,19 +594,19 @@ def compile_tushare_theme_source(
         fallback_keyset=fallback,
         company_rows=company_rows,
         registry=registry,
-        catalog=catalog,
+        catalogs=catalogs,
         lifecycle=lifecycle,
         as_of=cutoff,
     )
     validate_tushare_theme_source_receipt(
         receipt,
         registry=registry,
-        catalog=catalog,
+        catalogs=catalogs,
         lifecycle_policy=lifecycle,
     )
     return {
         "registry": registry,
-        "catalog": catalog,
+        "catalogs": catalogs,
         "lifecycle_policy": lifecycle,
         "source_receipt": receipt,
     }
@@ -561,16 +638,21 @@ def _receipt_keysets(row: Mapping[str, Any]) -> tuple[list[str], list[str]]:
 
 def _receipt_company_projection(
     *,
-    catalog: Mapping[str, Any],
+    catalogs: Sequence[Mapping[str, Any]],
     company_keyset: Sequence[str],
     fallback: Sequence[str],
 ) -> list[dict[str, Any]]:
-    coverage = {item["company_code"]: item["status"] for item in catalog["coverage_rows"]}
+    coverage = {
+        item["company_code"]: item["status"]
+        for catalog in catalogs
+        for item in catalog["coverage_rows"]
+    }
     if set(coverage) != set(company_keyset):
         _fail("theme source receipt company projection mismatch")
     memberships: dict[str, list[str]] = {company: [] for company in company_keyset}
-    for item in catalog["membership_rows"]:
-        memberships[item["company_code"]].append(item["theme_id"])
+    for catalog in catalogs:
+        for item in catalog["membership_rows"]:
+            memberships[item["company_code"]].append(item["theme_id"])
     return [
         {
             "company_code": company,
@@ -582,17 +664,97 @@ def _receipt_company_projection(
     ]
 
 
+def _validated_catalogs(
+    *,
+    catalogs: Sequence[Mapping[str, Any]],
+    registry: Mapping[str, Any],
+    company_keyset: Sequence[str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if isinstance(catalogs, (str, bytes)) or not isinstance(catalogs, Sequence):
+        _fail("theme catalog shards must be a sequence")
+    if not catalogs or len(catalogs) > 1024:
+        _fail("theme catalog shard count is invalid")
+    documents = [
+        validate_theme_membership_catalog(catalog, registry=registry) for catalog in catalogs
+    ]
+    catalog_rows: list[dict[str, Any]] = []
+    companies: list[str] = []
+    refs: set[tuple[str, str, str, str]] = set()
+    for index, catalog in enumerate(documents):
+        coverage = [row["company_code"] for row in catalog["coverage_rows"]]
+        if not coverage or coverage != sorted(coverage, key=lambda item: item.encode("ascii")):
+            _fail("theme catalog shard company order is invalid")
+        reference = content_ref(catalog, identity_field="catalog_id")
+        reference_key = (
+            reference["artifact_id"],
+            reference["artifact_version"],
+            reference["byte_sha256"],
+            reference["semantic_sha256"],
+        )
+        if reference_key in refs:
+            _fail("theme catalog shard reference is duplicated")
+        refs.add(reference_key)
+        catalog_rows.append(
+            {
+                "catalog_ref": reference,
+                "company_count": len(coverage),
+                "first_company": coverage[0],
+                "last_company": coverage[-1],
+            }
+        )
+        companies.extend(coverage)
+        if index and catalog_rows[index - 1]["last_company"] >= coverage[0]:
+            _fail("theme catalog shard ranges overlap")
+    if companies != list(company_keyset):
+        _fail("theme catalog shards do not close the company keyset")
+    return documents, catalog_rows
+
+
+def _receipt_catalog_documents(
+    *,
+    row: Mapping[str, Any],
+    version: str,
+    registry: Mapping[str, Any],
+    company_keyset: Sequence[str],
+    catalog: Mapping[str, Any] | None,
+    catalogs: Sequence[Mapping[str, Any]],
+) -> tuple[list[dict[str, Any]], bool]:
+    if version == SOURCE_RECEIPT_VERSION_V1:
+        if catalog is None or catalogs:
+            _fail("v1 theme source receipt requires exactly one catalog")
+        documents = [validate_theme_membership_catalog(catalog, registry=registry)]
+        expected_catalog = content_ref(documents[0], identity_field="catalog_id")
+        return documents, row["catalog_ref"] == expected_catalog
+    if catalog is not None:
+        _fail("v2 theme source receipt forbids a singleton catalog")
+    documents, expected_rows = _validated_catalogs(
+        catalogs=catalogs,
+        registry=registry,
+        company_keyset=company_keyset,
+    )
+    for index, catalog_row in enumerate(row["catalog_rows"]):
+        require_exact_keys(
+            catalog_row,
+            _CATALOG_RECEIPT_FIELDS,
+            label=f"source_receipt.catalog_rows[{index}]",
+        )
+    return documents, row["catalog_rows"] == expected_rows
+
+
 def validate_tushare_theme_source_receipt(
     document: Mapping[str, Any],
     *,
     registry: Mapping[str, Any],
-    catalog: Mapping[str, Any],
     lifecycle_policy: Mapping[str, Any],
+    catalog: Mapping[str, Any] | None = None,
+    catalogs: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     try:
-        row = require_exact_keys(document, _RECEIPT_FIELDS, label="theme source receipt")
+        version = document.get("version")
+        fields = _RECEIPT_FIELDS_V1 if version == SOURCE_RECEIPT_VERSION_V1 else _RECEIPT_FIELDS
+        row = require_exact_keys(document, fields, label="theme source receipt")
         validate_seal(row, identity_field="source_receipt_id")
-        if row["version"] != SOURCE_RECEIPT_VERSION:
+        if version not in {SOURCE_RECEIPT_VERSION_V1, SOURCE_RECEIPT_VERSION}:
             _fail("theme source receipt version is invalid")
         if (
             row["authority"] != NO_AUTHORITY
@@ -603,22 +765,25 @@ def validate_tushare_theme_source_receipt(
         _timestamp(row["timestamp"], label="source_receipt.timestamp")
         _session(row["trade_date"], label="source_receipt.trade_date")
         registry_doc = validate_theme_registry(registry)
-        catalog_doc = validate_theme_membership_catalog(catalog, registry=registry_doc)
         lifecycle = validate_theme_lifecycle_policy(lifecycle_policy, registry=registry_doc)
-        expected_refs = (
-            content_ref(registry_doc, identity_field="registry_id"),
-            content_ref(catalog_doc, identity_field="catalog_id"),
-            content_ref(lifecycle, identity_field="lifecycle_policy_id"),
+        company_keyset, fallback = _receipt_keysets(row)
+        catalog_documents, catalog_matches = _receipt_catalog_documents(
+            row=row,
+            version=version,
+            registry=registry_doc,
+            company_keyset=company_keyset,
+            catalog=catalog,
+            catalogs=catalogs,
         )
         if (
-            row["registry_ref"],
-            row["catalog_ref"],
-            row["lifecycle_policy_ref"],
-        ) != expected_refs:
+            row["registry_ref"] != content_ref(registry_doc, identity_field="registry_id")
+            or row["lifecycle_policy_ref"]
+            != content_ref(lifecycle, identity_field="lifecycle_policy_id")
+            or not catalog_matches
+        ):
             _fail("theme source receipt artifact binding mismatch")
-        company_keyset, fallback = _receipt_keysets(row)
         expected_company_rows = _receipt_company_projection(
-            catalog=catalog_doc,
+            catalogs=catalog_documents,
             company_keyset=company_keyset,
             fallback=fallback,
         )
