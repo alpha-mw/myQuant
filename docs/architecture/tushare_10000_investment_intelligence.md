@@ -200,7 +200,15 @@ The current full-A source compilation remains fail-closed:
   `daily_basic`, and 28 report periods for `forecast`. Its canonical plan is
   6,123,004 bytes with SHA-256
   `9a585ce81bf5b0e23a784eefe9d420f914cb34995c89b3fbc9bb926613c3b752`.
-  The v3 plan has not been executed and therefore has no promotion authority.
+  The first v3 shadow attempt stopped after 13 requests at the exact
+  `balancesheet_vip` announcement-date leaf `20190819`: three canonical rows
+  appeared twice in VIP while each appeared once in the exact baseline. The
+  diagnostic-only blocker receipt is
+  `/private/tmp/myquant-r7-v3-shadow-blocker-20260812-r1/blocker_receipt.json`
+  with SHA-256
+  `6e13b0ddd2ef0c87c97ca5cb0b47968666552587284a9136a5e5f23c808c8d2d`.
+  Acquisition remains `SHADOW_BLOCKED_EXACT_DUPLICATE_SURPLUS`; 11,458
+  partitions were not requested, and the v3 run has no promotion authority.
 - Industry: 12 companies are `UNMAPPED`; no Decision v2 admission is possible
   for those subjects.
 - Theme: the sealed DC/TDX captures replay to eight catalog shards containing
