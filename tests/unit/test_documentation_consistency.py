@@ -163,6 +163,7 @@ def test_public_docs_describe_the_live_entrypoints_and_contracts():
     assert "920188.BJ" in tushare_10000
     assert "5,473 have one active L1 and 12 are" in tushare_10000
     assert "039b8508c4dec4a969758f54771e2f40523c5b79c9eff4b787e948be3daac743" in tushare_10000
+    assert "no prospective admitted-set artifact exists" in tushare_10000
     assert "RECONCILIATION_BLOCKED" in tushare_10000
     assert "run_tushare_vip_fundamental_shadow.py" in tushare_10000
     assert "never writes the V17 active pointer" in tushare_10000

@@ -245,12 +245,15 @@ The current full-A source compilation remains fail-closed where required:
   receipt ID is
   `039b8508c4dec4a969758f54771e2f40523c5b79c9eff4b787e948be3daac743`.
 - No Theme membership was admitted by inference, name matching or a stale
-  catalog. Decision v2 and I6 remain blocked by Fundamental reconciliation and
-  the 12 exact Industry `UNMAPPED` subjects rather than by Theme identity.
+  catalog. Theme identity is not a current blocker.
+- Factor v5: no prospective admitted-set artifact exists for this target
+  session. Historical or diagnostic factor results cannot substitute for that
+  closure, so B0 Quant v5 cannot produce an initial pool.
 
 These are valid partial outcomes, not acquisition failures. Theme is available
-for the exact target session. Fundamental reconciliation and the 12 Industry
-identity blockers still keep Decision v2 and I6 unavailable.
+for the exact target session. Fundamental reconciliation, the missing Factor v5
+prospective admitted set and the 12 Industry identity blockers keep B0,
+Decision v2 and I6 unavailable.
 
 ## I6 Market risk projection
 
