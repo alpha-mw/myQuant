@@ -150,6 +150,33 @@ def test_official_l1_parent_zero_is_root_and_missing_scope_subject_is_unmapped()
     assert compiled["status"] == "PARTIAL_BLOCKED"
     assert compiled["blocked_subjects"] == {"000002.SZ": "UNMAPPED"}
 
+    policy = build_industry_identity_policy(
+        created_at=NOW,
+        provider_precedence=["TUSHARE_INDEX_MEMBER_ALL"],
+        taxonomy_precedence=["TUSHARE_SW2021"],
+        cap_taxonomy_level="TUSHARE_SW2021:L1",
+    )
+    available = evaluate_industry_identity(
+        policy=policy,
+        taxonomies=[compiled["taxonomy"]],
+        catalogs=[compiled["catalog"]],
+        subject_id="000001.SZ",
+        listing_identity="listing-000001-sz",
+        as_of=NOW,
+    )
+    blocked = evaluate_industry_identity(
+        policy=policy,
+        taxonomies=[compiled["taxonomy"]],
+        catalogs=[compiled["catalog"]],
+        subject_id="000002.SZ",
+        listing_identity="listing-000002-sz",
+        as_of=NOW,
+    )
+    assert available["state"] == "AVAILABLE"
+    assert available["primary_industry_id"] == "TUSHARE_SW2021:L1A"
+    assert blocked["state"] == "UNMAPPED"
+    assert blocked["reason_codes"] == ["NO_ADMISSIBLE_MEMBERSHIP"]
+
 
 def test_row_limit_scope_and_display_industry_are_fail_closed() -> None:
     with pytest.raises(Exception):

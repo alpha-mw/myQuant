@@ -47,8 +47,10 @@ factor registry, write a production factor set, or create a portfolio.
 Industry classification is selected only from effective, available,
 source-bound membership under owner-sealed provider and taxonomy precedence.
 Conflicting equal-precedence classifications are `AMBIGUOUS`; absent mappings
-are `UNMAPPED`. Either state blocks Decision v2 admission. The LLM cannot infer
-an industry.
+are `UNMAPPED`. Either state blocks Decision v2 admission for that subject only.
+A source bundle may therefore be `PARTIAL_BLOCKED` while mapped subjects remain
+eligible for their own I2 replay. The LLM cannot infer an industry or replace a
+missing subject identity.
 
 Theme identity distinguishes:
 

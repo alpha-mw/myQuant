@@ -234,8 +234,10 @@ The current full-A source compilation remains fail-closed where required:
 - Industry: the three SW2021 taxonomy partitions and all 692 sealed
   `L3 x {Y,N}` membership partitions replay successfully. Of the 5,485
   target-session PIT-active companies, 5,473 have one active L1 and 12 are
-  `UNMAPPED`; none is `AMBIGUOUS`. The compiler remains `PARTIAL_BLOCKED`, and
-  no Decision v2 admission is possible for those 12 subjects.
+  `UNMAPPED`; none is `AMBIGUOUS`. The compiler remains `PARTIAL_BLOCKED`, which
+  is a coverage summary rather than a global veto. No Decision v2 admission is
+  possible for those 12 subjects, while the 5,473 mapped subjects retain their
+  source-bound memberships and may continue through their own I2 replay.
 - Theme: a new exact-`20260807` DC plan completed 5,486 of 5,486 partitions with
   no incomplete response. The sealed fallback keyset contains only
   `603159.SH` and `605055.SH`; one TDX registry request and those two membership
@@ -251,9 +253,31 @@ The current full-A source compilation remains fail-closed where required:
   closure, so B0 Quant v5 cannot produce an initial pool.
 
 These are valid partial outcomes, not acquisition failures. Theme is available
-for the exact target session. Fundamental reconciliation, the missing Factor v5
-prospective admitted set and the 12 Industry identity blockers keep B0,
-Decision v2 and I6 unavailable.
+for the exact target session. The global B0 blocker is the missing Factor v5
+prospective admitted set. Fundamental reconciliation still blocks a formal
+Fundamental/Decision/I6 closure. The 12 Industry identity blockers are scoped
+to those subjects and do not erase the 5,473 mapped subjects.
+
+### Phase B1 forward-closure boundary (2026-08-13)
+
+Factor Governance v5.1 begins only with a non-admission candidate registration.
+It binds exact candidate-catalog, implementation, PIT-universe and exchange-
+calendar bytes, while declaring every still-missing owner policy field. Its
+only reachable lifecycle state is `REGISTERED`; prospective observation,
+Bayesian posterior, admission, B0, Decision, I6, V17 and production flags are
+all false. No Factor layer stock pool is created, and no technology or PCB list
+is hard-coded: full-A ranking remains a Quant responsibility and source-bound
+technology identity remains an I3 responsibility.
+
+The `920188.BJ` evidence is classified
+`INSUFFICIENT_TO_DISAMBIGUATE`: the exact two-row/two-winner difference proves a
+strict reconciliation blocker but does not uniquely distinguish provider
+revision/restatement drift from acquisition-epoch mismatch. The next cycle
+therefore requires one sealed campaign binding a fresh standard baseline and
+VIP capture to the same PIT cutoff, subject scope, request topology and epoch.
+The inert plan executes no network request, authorizes no promotion or pointer
+mutation, forbids tolerance, and can succeed only on exact zero difference for
+all six tables.
 
 ## I6 Market risk projection
 
