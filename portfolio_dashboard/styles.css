@@ -28,10 +28,11 @@
 
 * { box-sizing: border-box; }
 
-html { scroll-behavior: smooth; }
+html { overflow-x: clip; scroll-behavior: smooth; }
 
 body {
   margin: 0;
+  overflow-x: clip;
   background: var(--canvas);
   color: var(--ink);
   font-family: var(--font-body);
@@ -313,6 +314,7 @@ button, input { font: inherit; }
 .chart-focus-dot.chinext { fill: var(--chinext); }
 .chart-focus-dot.excess { fill: var(--excess); }
 .chart-tooltip { position: absolute; z-index: 3; top: 18px; min-width: 260px; max-width: calc(100% - 16px); padding: 12px 13px; border: 1px solid rgba(255,255,255,0.16); background: rgba(29,31,32,0.95); box-shadow: 0 12px 28px rgba(29,31,32,0.18); color: #fff; transform: translateX(12px); pointer-events: none; }
+.chart-tooltip.align-center { transform: translateX(-50%); }
 .chart-tooltip.align-right { transform: translateX(calc(-100% - 12px)); }
 .chart-tooltip > strong { display: block; margin-bottom: 8px; font: 750 12px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .chart-tooltip span { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-top: 6px; font-size: 11px; }

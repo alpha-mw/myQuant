@@ -139,6 +139,15 @@ root. A no-action/carry-forward outcome is still a first-class receipt: it binds
 the prior effective financial state and reason codes without copying the prior
 ledger or embedding a full evidence bundle.
 
+For archive-aware catalogs, the pointer/catalog `generation_id` identifies the
+current immutable publication and therefore advances for each no-action
+receipt. The hash-bound history registry's `intended_generation_id` identifies
+the generation where the registered historical projection last changed; it is
+intentionally inherited across receipt-only publications. Dashboard readers
+validate both identities separately and continue to require exact registry
+bytes, embedded-body equality, projection SHA, record/ref/inventory closure,
+and archive bindings.
+
 New writes fail before publication if any budget is exceeded:
 
 | Budget | Limit |

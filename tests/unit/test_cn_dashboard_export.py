@@ -699,6 +699,34 @@ def _archive_registered_record(
     record_dir.rmdir()
 
 
+def _publish_fixture_metadata_generation(
+    *,
+    record_root: Path,
+    pointer: dict,
+    catalog: dict,
+    generation_id: str,
+) -> None:
+    catalog["generation_id"] = generation_id
+    catalog.setdefault("receipts", []).append(
+        {
+            "schema_id": "myquant.strategy_record_no_action_receipt.v1",
+            "receipt_id": generation_id,
+            "status": "NO_ACTION",
+        }
+    )
+    catalog_path = record_root / pointer["catalog_path"]
+    catalog_path.write_text(
+        json.dumps(catalog, ensure_ascii=False, sort_keys=True),
+        encoding="utf-8",
+    )
+    pointer["generation_id"] = generation_id
+    pointer["catalog_sha256"] = _sha(catalog_path)
+    (record_root / "_record_store/current.v1.json").write_text(
+        json.dumps(pointer, ensure_ascii=False, sort_keys=True),
+        encoding="utf-8",
+    )
+
+
 def test_build_bundle_excludes_external_funding_and_is_read_only(
     tmp_path: Path,
 ) -> None:
@@ -1506,6 +1534,146 @@ def test_registered_archive_projection_survives_hot_record_absence(
             benchmark_path=benchmark,
             generated_at="2099-01-03T12:00:00+08:00",
             today=date(2099, 1, 3),
+        )
+
+
+def test_registered_history_binding_survives_consecutive_no_actions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_root, record_root, benchmark = _fixture(tmp_path)
+    pointer, catalog = _registered_projection_stub(
+        project_root=project_root,
+        record_root=record_root,
+        monkeypatch=monkeypatch,
+    )
+    _archive_registered_record(
+        project_root=project_root,
+        record_root=record_root,
+        pointer=pointer,
+        catalog=catalog,
+        record_id="20981230_1200",
+    )
+    registry_path = project_root / catalog["history_registry_ref"]["path"]
+    registry_bytes = registry_path.read_bytes()
+    original_records = json.loads(json.dumps(catalog["records"]))
+    original_projection = json.loads(
+        json.dumps(catalog["dashboard_projection"])
+    )
+    original_registry = json.loads(json.dumps(catalog["history_registry"]))
+    original_registry_ref = dict(catalog["history_registry_ref"])
+
+    for generation_id in ("g-noop-1", "g-noop-2"):
+        _publish_fixture_metadata_generation(
+            record_root=record_root,
+            pointer=pointer,
+            catalog=catalog,
+            generation_id=generation_id,
+        )
+        projection = dashboard_common.load_dashboard_catalog_projection(
+            record_root, project_root
+        )
+        assert projection["integrity_context"][
+            "publication_generation_id"
+        ] == generation_id
+        assert projection["integrity_context"][
+            "intended_generation_id"
+        ] == "fixture"
+
+    assert catalog["records"] == original_records
+    assert catalog["dashboard_projection"] == original_projection
+    assert catalog["history_registry"] == original_registry
+    assert catalog["history_registry_ref"] == original_registry_ref
+    assert registry_path.read_bytes() == registry_bytes
+    bundle = build_bundle(
+        project_root=project_root,
+        record_root=record_root,
+        benchmark_path=benchmark,
+        generated_at="2099-01-03T12:00:00+08:00",
+        today=date(2099, 1, 3),
+        history_integrity_path=registry_path,
+    )
+    assert bundle["latest_valid_record"] == pointer["active_record_id"]
+    assert verify_source_refs(bundle, project_root) == []
+
+
+def test_registered_history_binding_rejects_malformed_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_root, record_root, _benchmark = _fixture(tmp_path)
+    pointer, catalog = _registered_projection_stub(
+        project_root=project_root,
+        record_root=record_root,
+        monkeypatch=monkeypatch,
+    )
+    _archive_registered_record(
+        project_root=project_root,
+        record_root=record_root,
+        pointer=pointer,
+        catalog=catalog,
+        record_id="20981230_1200",
+    )
+    registry = dict(catalog["history_registry"])
+    registry["intended_generation_id"] = "../malformed"
+    registry_without_hash = dict(registry)
+    registry_without_hash.pop("content_sha256")
+    registry["content_sha256"] = hashlib.sha256(
+        canonical_json_bytes(registry_without_hash)
+    ).hexdigest()
+    registry_path = project_root / catalog["history_registry_ref"]["path"]
+    registry_path.write_text(
+        json.dumps(registry, ensure_ascii=False, sort_keys=True),
+        encoding="utf-8",
+    )
+    catalog["history_registry"] = registry
+    catalog["history_registry_ref"]["sha256"] = _sha(registry_path)
+    _publish_fixture_metadata_generation(
+        record_root=record_root,
+        pointer=pointer,
+        catalog=catalog,
+        generation_id="g-noop",
+    )
+
+    with pytest.raises(
+        DashboardInputError,
+        match="catalog_history_registry_generation_invalid",
+    ):
+        dashboard_common.load_dashboard_catalog_projection(
+            record_root, project_root
+        )
+
+
+def test_registered_history_binding_rejects_projection_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_root, record_root, _benchmark = _fixture(tmp_path)
+    pointer, catalog = _registered_projection_stub(
+        project_root=project_root,
+        record_root=record_root,
+        monkeypatch=monkeypatch,
+    )
+    _archive_registered_record(
+        project_root=project_root,
+        record_root=record_root,
+        pointer=pointer,
+        catalog=catalog,
+        record_id="20981230_1200",
+    )
+    catalog["dashboard_projection"]["historical_rejected"].append(
+        "20980101_1200:changed"
+    )
+    _publish_fixture_metadata_generation(
+        record_root=record_root,
+        pointer=pointer,
+        catalog=catalog,
+        generation_id="g-noop",
+    )
+
+    with pytest.raises(
+        DashboardInputError,
+        match="history_integrity_registry_projection_mismatch",
+    ):
+        dashboard_common.load_dashboard_catalog_projection(
+            record_root, project_root
         )
 
 

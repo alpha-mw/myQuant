@@ -46,6 +46,7 @@ STRATEGY = "aggressive_tech_manufacturing"
 RECORD_NAME_RE = re.compile(r"^[0-9]{8}_[0-9]{4}$")
 SYMBOL_RE = re.compile(r"^[0-9]{6}\.(?:SH|SZ|BJ)$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+GENERATION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 ALLOWED_BENCHMARK_SOURCES = {
     "eastmoney.push2his.kline",
     "tushare.index_daily",
@@ -1829,6 +1830,14 @@ def _catalog_history_registry_binding(
     body = load_json(artifact)
     if body != embedded:
         raise DashboardInputError("catalog_history_registry_body_mismatch")
+    historical_generation_id = embedded.get("intended_generation_id")
+    if (
+        not isinstance(historical_generation_id, str)
+        or GENERATION_ID_RE.fullmatch(historical_generation_id) is None
+    ):
+        raise DashboardInputError(
+            "catalog_history_registry_generation_invalid"
+        )
     return embedded, artifact
 
 
@@ -1859,9 +1868,21 @@ def _registered_dashboard_projection(
     if registered is None:
         return None
     pointer, catalog = registered
+    publication_generation_id = pointer.get("generation_id")
+    if catalog.get("schema_id") == "myquant.strategy_record_catalog.v2" and (
+        not isinstance(publication_generation_id, str)
+        or GENERATION_ID_RE.fullmatch(publication_generation_id) is None
+        or catalog.get("generation_id") != publication_generation_id
+    ):
+        raise DashboardInputError("record_catalog_generation_mismatch")
     history_registry_binding = _catalog_history_registry_binding(
         catalog, project_root
     )
+    historical_generation_id = publication_generation_id
+    if history_registry_binding is not None:
+        historical_generation_id = history_registry_binding[0][
+            "intended_generation_id"
+        ]
     projection = catalog.get("dashboard_projection")
     if not isinstance(projection, dict):
         raise DashboardInputError("catalog_dashboard_projection_missing")
@@ -2130,7 +2151,7 @@ def _registered_dashboard_projection(
             load_history_integrity_registry(
                 history_registry_binding[1].path,
                 project_root,
-                intended_generation_id=pointer.get("generation_id"),
+                intended_generation_id=historical_generation_id,
                 dashboard_projection_sha256=projection_sha256,
                 archive_bindings=archive_bindings,
             )
@@ -2167,7 +2188,8 @@ def _registered_dashboard_projection(
         },
         catalog_artifacts,
         {
-            "intended_generation_id": pointer.get("generation_id"),
+            "publication_generation_id": publication_generation_id,
+            "intended_generation_id": historical_generation_id,
             "dashboard_projection_sha256": projection_sha256,
             "archive_bindings": archive_bindings,
             "history_registry_ref": (
@@ -2267,11 +2289,12 @@ def build_history_integrity_registry(
     dashboard_projection_sha256: str | None = None,
     archive_bindings: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Create a candidate-bound Dashboard integrity declaration.
+    """Create a historical-state-bound Dashboard integrity declaration.
 
-    The registry deliberately binds the intended generation id and normalized
-    projection content, never the candidate catalog byte SHA (which would make
-    catalog publication self-referential).
+    The registry binds the generation where the historical projection changed
+    and the normalized projection content, never the candidate catalog byte
+    SHA (which would make catalog publication self-referential). Receipt-only
+    catalog publications intentionally retain this historical generation.
     """
 
     archive_bindings = archive_bindings or {}

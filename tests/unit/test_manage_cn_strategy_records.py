@@ -12,8 +12,12 @@ import tarfile
 import pytest
 
 from quant_investor.strategy_records.store import (
+    CATALOG_SCHEMA_V2,
     StrategyRecordConflict,
     StrategyRecordStoreError,
+    bootstrap_catalog,
+    canonical_json_bytes,
+    content_sha256,
     load_registered_catalog,
 )
 from scripts import manage_cn_strategy_records as manager
@@ -449,6 +453,120 @@ def test_no_action_receipt_references_checkpoint_without_copying_payload(
                 generation_id="g3",
             )
         )
+
+
+def test_consecutive_no_actions_preserve_history_state_binding(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    root = project / (
+        "results/strategy_records/CN/aggressive_tech_manufacturing"
+    )
+    record_ids = ("20260809_1000", "20260810_1000")
+    for record_id in record_ids:
+        (root / record_id).mkdir(parents=True)
+    empty_inventory_sha = hashlib.sha256(b"[]\n").hexdigest()
+    records = [
+        {
+            "record_id": record_id,
+            "relative_path": record_id,
+            "state": "ONLINE",
+            "storage_state": "ONLINE",
+            "sealed_at": "2026-08-10T00:00:00Z",
+            "inventory": [],
+            "inventory_sha256": empty_inventory_sha,
+            "file_count": 0,
+            "total_bytes": 0,
+        }
+        for record_id in record_ids
+    ]
+    projection = {
+        "valid_records": [],
+        "rejected": [],
+        "latest_seen": None,
+        "historical_records": [],
+        "historical_rejected": [],
+    }
+    registry = {
+        "schema_version": "cn_aggressive_dashboard_history_integrity.v2",
+        "market": "CN",
+        "strategy_label": "aggressive_tech_manufacturing",
+        "generated_at": "2026-08-10T00:00:00Z",
+        "authority": "DASHBOARD_POST_HOC_INTEGRITY_DECLARATION",
+        "intended_generation_id": "g-history",
+        "dashboard_projection_sha256": hashlib.sha256(
+            canonical_json_bytes(projection)
+        ).hexdigest(),
+        "record_count": 0,
+        "records": [],
+    }
+    registry["content_sha256"] = content_sha256(registry)
+    registry_path = project / "results/history-integrity/g-history.v2.json"
+    registry_path.parent.mkdir(parents=True)
+    registry_path.write_bytes(canonical_json_bytes(registry))
+    registry_ref = {
+        "path": registry_path.relative_to(project).as_posix(),
+        "sha256": hashlib.sha256(registry_path.read_bytes()).hexdigest(),
+    }
+    initial = bootstrap_catalog(
+        root,
+        records=records,
+        dashboard_projection=projection,
+        active_record_id=record_ids[1],
+        previous_record_id=record_ids[0],
+        generation_id="g-history",
+        published_at="2026-08-10T00:00:00Z",
+        catalog_schema=CATALOG_SCHEMA_V2,
+        history_registry=registry,
+        history_registry_ref=registry_ref,
+    )
+    registry_bytes = registry_path.read_bytes()
+    first = manager.command_no_action(
+        _args(
+            record_root=str(root),
+            receipt_id="no-action-1",
+            reason="metadata only",
+            expected_pointer_sha=initial["pointer_sha256"],
+            generation_id="g-noop-1",
+            published_at="2026-08-10T00:01:00Z",
+        )
+    )
+    second = manager.command_no_action(
+        _args(
+            record_root=str(root),
+            receipt_id="no-action-2",
+            reason="metadata only",
+            expected_pointer_sha=first["pointer_sha256"],
+            generation_id="g-noop-2",
+            published_at="2026-08-10T00:02:00Z",
+        )
+    )
+
+    assert first["pointer"]["generation_id"] == "g-noop-1"
+    assert second["pointer"]["generation_id"] == "g-noop-2"
+    assert second["catalog"]["generation_id"] == "g-noop-2"
+    for key in (
+        "active_record_id",
+        "previous_record_id",
+        "active_closure",
+    ):
+        assert second["pointer"][key] == initial["pointer"][key]
+    for key in (
+        "records",
+        "dashboard_projection",
+        "history_registry",
+        "history_registry_ref",
+    ):
+        assert first["catalog"][key] == initial["catalog"][key]
+        assert second["catalog"][key] == initial["catalog"][key]
+    assert second["catalog"]["history_registry"][
+        "intended_generation_id"
+    ] == "g-history"
+    assert registry_path.read_bytes() == registry_bytes
+    assert [row["receipt_id"] for row in second["catalog"]["receipts"]] == [
+        "no-action-1",
+        "no-action-2",
+    ]
 
 
 def test_restore_rejects_malicious_archive_members(tmp_path: Path) -> None:

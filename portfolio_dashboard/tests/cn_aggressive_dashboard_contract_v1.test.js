@@ -17,6 +17,7 @@ const sample = JSON.parse(
 const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const publicHtml = fs.readFileSync(path.join(root, "public.html"), "utf8");
 const app = fs.readFileSync(path.join(root, "app.js"), "utf8");
+const styles = fs.readFileSync(path.join(root, "styles.css"), "utf8");
 
 assert.strictEqual(schema.properties.schema_version.const, "cn_aggressive_dashboard.v1");
 assert.deepStrictEqual(schema.properties.status.enum, ["FRESH", "PARTIAL", "BLOCKED"]);
@@ -37,7 +38,10 @@ assert.match(html, /cn_aggressive_dashboard\.v1\.js\?cache=/);
 assert.match(publicHtml, /cn_aggressive_dashboard\.v1\.js\?cache=/);
 assert.match(html, /js\/cn_aggressive_dashboard_analysis_v1\.js\?v=dashboard-v2/);
 assert.match(html, /js\/cn_aggressive_dashboard_contract_v1\.js\?v=dashboard-v2/);
-assert.match(html, /app\.js\?v=dashboard-v2/);
+assert.match(html, /app\.js\?v=dashboard-v4/);
+assert.match(publicHtml, /app\.js\?v=dashboard-v4/);
+assert.match(html, /styles\.css\?v=dashboard-v5/);
+assert.match(publicHtml, /styles\.css\?v=dashboard-v5/);
 assert.match(html, /js\/cn_aggressive_public_mode\.js\?mode=internal-v1/);
 assert.match(publicHtml, /js\/cn_aggressive_public_mode\.js\?mode=public-v1/);
 assert.match(html, /id="evidenceDetails"/);
@@ -65,6 +69,15 @@ assert.strictEqual((publicHtml.match(/public-section-readout/g) || []).length, 1
 assert.match(publicHtml, /AlphaMx科技创新组合001号/);
 assert.doesNotMatch(publicHtml, /Alpha-mw's科技创新组合001号/);
 assert.match(publicHtml, /组合从2026-03-17开始，以100 万为起始资金，移动鼠标或使用左右方向键查看具体日期与净值。/);
+assert.doesNotMatch(
+  app,
+  /svgNode\("svg",[^;]+"aria-hidden": "true"/,
+  "interactive chart SVGs must not hide their focusable slider descendants"
+);
+assert.match(app, /tooltip\.classList\.remove\("align-right", "align-center"\)/);
+assert.match(styles, /\.chart-tooltip\.align-center \{ transform: translateX\(-50%\); \}/);
+assert.match(styles, /html \{ overflow-x: clip; scroll-behavior: smooth; \}/);
+assert.match(styles, /body \{\n  margin: 0;\n  overflow-x: clip;/);
 assert.doesNotMatch(publicHtml, /当前持仓与资产配置/);
 assert.doesNotMatch(publicHtml, /最近一次持仓变化/);
 assert.doesNotMatch(publicHtml, /收益与会计口径/);
