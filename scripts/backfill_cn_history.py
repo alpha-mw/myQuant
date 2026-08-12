@@ -111,6 +111,32 @@ def _completed_batches(checkpoint_dir: Path) -> set[str]:
     return completed
 
 
+def _drop_unusable_adj_factor(frame: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+    """Drop rows the store would reject for a missing or non-positive adj_factor.
+
+    ``upsert_bars`` requires adj_factor to be present and positive for every
+    row and rejects the whole batch otherwise. Tushare occasionally serves a
+    daily bar with no matching adj_factor row: across 2005 exactly one code is
+    affected (600018.SH), which is enough to block a whole year.
+
+    Such a row cannot produce an adjusted price, so it carries no research
+    value — but dropping it must not be silent. The affected codes are returned
+    so the caller can record them in the batch manifest, keeping the store's
+    audit trail honest about what did not make it in.
+    """
+    if frame.empty or "adj_factor" not in frame.columns:
+        return frame, []
+
+    factor = pd.to_numeric(frame["adj_factor"], errors="coerce")
+    usable = factor.notna() & (factor > 0)
+    if bool(usable.all()):
+        return frame, []
+
+    code_column = "ts_code" if "ts_code" in frame.columns else str(frame.columns[0])
+    dropped = sorted({str(value) for value in frame.loc[~usable, code_column]})
+    return frame.loc[usable].reset_index(drop=True), dropped
+
+
 def _fetch_with_retry(
     maintainer: Any,
     endpoint: str,
@@ -250,6 +276,7 @@ def main() -> int:
         frames: list[pd.DataFrame] = []
         covered: list[str] = []
         failures: list[str] = []
+        dropped_adj: set[str] = set()
         for session in by_batch[batch]:
             parts: dict[str, pd.DataFrame] = {}
             for endpoint in ENDPOINT_FIELDS:
@@ -270,6 +297,8 @@ def main() -> int:
             bars = maintainer._build_bars_frame(
                 parts["daily"], parts["adj_factor"], parts["daily_basic"]
             )
+            bars, dropped_codes = _drop_unusable_adj_factor(bars)
+            dropped_adj.update(dropped_codes)
             if bars.empty:
                 failures.append(f"{session}:empty_bars_frame")
                 continue
@@ -294,6 +323,9 @@ def main() -> int:
                 "backfill_batch": batch,
                 "session_count": len(covered),
                 "failure_count": len(failures),
+                # Codes whose bars had no usable adj_factor and were therefore
+                # not written. Recorded rather than dropped silently.
+                "dropped_missing_adj_factor": sorted(dropped_adj),
                 "latest_available_trade_date": pointer_payload["latest_available_trade_date"],
                 "latest_complete_trade_date": pointer_payload["latest_complete_trade_date"],
             },
