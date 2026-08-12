@@ -587,7 +587,25 @@ def _accepted_symbol_rows(
         accepted = accepted.loc[
             announcement_date.ge(financial_start) & announcement_date.le(as_of)
         ].reset_index(drop=True)
-    return accepted.drop(columns=source_only_columns) if source_only_columns else accepted
+    return _drop_physical_projection(
+        accepted,
+        table=table,
+        source_only_columns=source_only_columns,
+    )
+
+
+def _drop_physical_projection(
+    accepted: pd.DataFrame,
+    *,
+    table: str,
+    source_only_columns: Sequence[str],
+) -> pd.DataFrame:
+    if not source_only_columns:
+        return accepted
+    projected = accepted.drop(columns=list(source_only_columns))
+    if table in {"balancesheet", "cashflow", "income"}:
+        return projected.drop_duplicates(ignore_index=True)
+    return projected
 
 
 def _accepted_raw_projection(

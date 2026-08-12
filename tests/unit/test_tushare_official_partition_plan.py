@@ -812,6 +812,7 @@ def test_accepted_projection_keeps_restatements_and_filters_forecast_ann_date() 
     statement = pd.DataFrame(
         [
             ["000001.SZ", "20250829", "20250829", "20250630", 1, 2, "0", "1", "2"],
+            ["000001.SZ", "20250829", "20250829", "20250630", 1, 2, "0", "5", "2"],
             ["000001.SZ", "20250829", "20250829", "20250630", 1, 2, "1", "5", "2"],
         ],
         columns=[*EXPECTED_FIELDS["balancesheet"], "report_type", "comp_type"],
