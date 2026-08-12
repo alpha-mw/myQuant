@@ -20,6 +20,7 @@ from quant_investor.intelligence_v2.sources.tushare.fundamental_v4 import (
     build_official_partition_execution_plan_v2,
     build_official_partition_execution_plan_v3,
     build_official_partition_execution_plan_v4,
+    build_official_partition_execution_plan_v5,
     replay_official_partition_request_rows,
     validate_fundamental_execution_closure_v4,
     validate_official_partition_request_receipt,
@@ -277,6 +278,31 @@ def _probes_v4() -> list[dict[str, Any]]:
     return sorted(values, key=lambda row: row["case_id"].encode("ascii"))
 
 
+def _probes_v5() -> list[dict[str, Any]]:
+    values = _probes_v3()
+    for index, (table, api_name, item_count) in enumerate(
+        (
+            ("BALANCESHEET", "balancesheet_vip", 1057),
+            ("CASHFLOW", "cashflow_vip", 1710),
+            ("INCOME", "income_vip", 1375),
+        ),
+        start=1,
+    ):
+        values.append(
+            {
+                "api_name": api_name,
+                "case_id": f"{table}_UNFILTERED_PHYSICAL_CLASSIFICATION_COMPLETE",
+                "expected_fields_match": True,
+                "has_more": False,
+                "item_count": item_count,
+                "observed_at": NOW,
+                "params_sha256": f"{index + 200:064x}",
+                "response_body_sha256": f"{index + 300:064x}",
+            }
+        )
+    return sorted(values, key=lambda row: row["case_id"].encode("ascii"))
+
+
 def _build() -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
     source = _source_execution()
     probes = _probes()
@@ -317,6 +343,18 @@ def _build_v4() -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
     source = _source_execution()
     probes = _probes_v4()
     plan = build_official_partition_execution_plan_v4(
+        source_execution_closure=source,
+        probe_observations=probes,
+        document_observed_at=NOW,
+        created_at=NOW,
+    )
+    return source, plan, probes
+
+
+def _build_v5() -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
+    source = _source_execution()
+    probes = _probes_v5()
+    plan = build_official_partition_execution_plan_v5(
         source_execution_closure=source,
         probe_observations=probes,
         document_observed_at=NOW,
@@ -677,6 +715,134 @@ def test_v4_compact_schedule_is_consumed_without_expanding_the_artifact() -> Non
     }
 
 
+def test_v5_uses_unfiltered_dates_and_seals_physical_classification() -> None:
+    source, plan, probes = _build_v5()
+    assert "request_rows" not in plan
+    assert (
+        validate_official_partition_execution_plan(
+            plan,
+            source_execution_closure=source,
+            probe_observations=probes,
+        )
+        == plan
+    )
+    rows = replay_official_partition_request_rows(
+        plan,
+        source_execution_closure=source,
+    )
+    statement_rows = [row for row in rows if row["table"] in {"balancesheet", "cashflow", "income"}]
+    date_count = plan["announcement_date_keyset_proofs"][0]["date_count"]
+    assert len(statement_rows) == date_count * 3
+    assert all(
+        row["params"]
+        == {
+            "end_date": row["params"]["start_date"],
+            "start_date": row["params"]["start_date"],
+        }
+        for row in statement_rows
+    )
+    assert plan["request_schedule"] == {
+        "generator_version": "EXACT_ANN_DATE_UNFILTERED_PHYSICAL_CLASSIFICATION_V1",
+        "physical_statement_projection_columns": ["report_type", "comp_type"],
+        "planned_request_count": len(rows),
+        "request_rows_sha256": plan["request_schedule"]["request_rows_sha256"],
+    }
+    statement_proofs = [
+        row for row in plan["announcement_date_keyset_proofs"] if row["table"] != "fina_indicator"
+    ]
+    assert all(
+        row["physical_projection_columns"] == ["report_type", "comp_type"]
+        for row in statement_proofs
+    )
+
+    with pytest.raises(FundamentalV4ContractError, match="case set is incomplete"):
+        build_official_partition_execution_plan_v5(
+            source_execution_closure=source,
+            probe_observations=probes[:-1],
+            document_observed_at=NOW,
+            created_at=NOW,
+        )
+
+
+def test_v5_transport_projects_classification_but_accepted_raw_drops_it() -> None:
+    source, plan, probes = _build_v5()
+    _old_source, _old_plan, _old_probes, baseline, fingerprints, policy = _adapter_inputs()
+    calls: list[tuple[str, dict[str, Any], list[str]]] = []
+
+    class _FirstRequestBlocked:
+        def request(
+            self,
+            *,
+            api_name: str,
+            params: dict[str, Any],
+            expected_fields: list[str],
+        ) -> TushareResponse:
+            calls.append((api_name, params, expected_fields))
+            request = replay_official_partition_request_rows(
+                plan,
+                source_execution_closure=source,
+            )[0]
+            row = _row(request, expected_fields)
+            return TushareResponse(
+                api_name=api_name,
+                request_id="v5-first-blocked",
+                reported_count=1,
+                has_more=True,
+                fields=tuple(expected_fields),
+                rows=(row,),
+            )
+
+    result = acquire_official_partition_fundamental_vip_v4(
+        official_plan=plan,
+        source_execution_closure=source,
+        probe_observations=probes,
+        baseline_tables=baseline,
+        baseline_table_fingerprints=fingerprints,
+        comparison_policy=policy,
+        client=_FirstRequestBlocked(),
+        captured_at=NOW,
+    )
+    assert result["status"] == "ACQUISITION_BLOCKED"
+    assert calls[0][0] == "balancesheet_vip"
+    assert calls[0][1] == {"end_date": "20190807", "start_date": "20190807"}
+    assert calls[0][2][-2:] == ["report_type", "comp_type"]
+
+
+def test_accepted_projection_keeps_restatements_and_filters_forecast_ann_date() -> None:
+    statement = pd.DataFrame(
+        [
+            ["000001.SZ", "20250829", "20250829", "20250630", 1, 2, "0", "1", "2"],
+            ["000001.SZ", "20250829", "20250829", "20250630", 1, 2, "1", "5", "2"],
+        ],
+        columns=[*EXPECTED_FIELDS["balancesheet"], "report_type", "comp_type"],
+    )
+    accepted_statement = official_acquisition._accepted_symbol_rows(
+        statement,
+        table="balancesheet",
+        symbol="000001.SZ",
+        as_of="20260807",
+        financial_start="20190807",
+    )
+    assert list(accepted_statement.columns) == EXPECTED_FIELDS["balancesheet"]
+    assert accepted_statement["update_flag"].tolist() == ["0", "1"]
+
+    forecast = pd.DataFrame(
+        [
+            ["000001.SZ", "20190806", "20191231", "预增", 1, 2, 3, 4, 5, "a", "b"],
+            ["000001.SZ", "20190807", "20191231", "预增", 1, 2, 3, 4, 5, "a", "b"],
+        ],
+        columns=EXPECTED_FIELDS["forecast"],
+    )
+    accepted_forecast = official_acquisition._accepted_symbol_rows(
+        forecast,
+        table="forecast",
+        symbol="000001.SZ",
+        as_of="20260807",
+        financial_start="20190807",
+    )
+    assert accepted_forecast["ann_date"].tolist() == ["20190807"]
+
+
 def test_v2_announcement_leaf_enforces_date_and_report_period_scope() -> None:
     _source, plan, _probes_value = _build_v2()
     request = next(
@@ -850,7 +1016,7 @@ def _row(request: dict[str, Any], fields: list[str], *, changed: bool = False) -
     values: list[Any] = []
     for field in fields:
         if field == "ts_code":
-            values.append(f"{request['ordinal']:06d}.SZ")
+            values.append("000001.SZ")
         elif field == "trade_date":
             values.append(params["trade_date"])
         elif field == "end_date":
@@ -863,6 +1029,8 @@ def _row(request: dict[str, Any], fields: list[str], *, changed: bool = False) -
             values.append("validated text")
         elif field == "update_flag":
             values.append("1")
+        elif field in {"report_type", "comp_type"}:
+            values.append({"report_type": "1", "comp_type": "2"}[field])
         else:
             values.append(Decimal("0.2") if changed and request["ordinal"] == 0 else Decimal("0.1"))
     return tuple(values)
@@ -885,6 +1053,26 @@ def _baseline_tables(
         if table == "forecast":
             fields.append("update_flag")
         result[table] = pd.DataFrame(values, columns=fields)
+    from quant_investor.market.fundamental_mart import _strict_pit_cutoff
+
+    for table, frame in result.items():
+        accepted: list[pd.DataFrame] = []
+        for symbol in source["request_plan"]["symbols"]:
+            symbol_rows = frame.loc[frame["ts_code"] == symbol].reset_index(drop=True)
+            if symbol_rows.empty:
+                continue
+            projected, _stats, malformed_reason = _strict_pit_cutoff(
+                symbol_rows,
+                table=table,
+                symbol=symbol,
+                as_of=source["request_plan"]["as_of"],
+            )
+            assert not malformed_reason
+            if not projected.empty:
+                accepted.append(projected)
+        result[table] = (
+            pd.concat(accepted, ignore_index=True) if accepted else frame.iloc[:0].copy()
+        )
     return result
 
 
@@ -897,11 +1085,15 @@ class _OfficialClient:
         first_has_more: bool = False,
         changed: bool = False,
         duplicate_table: str | None = None,
+        include_out_of_scope: bool = False,
+        include_unusable: bool = False,
     ) -> None:
         self.calls = 0
         self._changed = changed
         self._first_has_more = first_has_more
         self._duplicate_table = duplicate_table
+        self._include_out_of_scope = include_out_of_scope
+        self._include_unusable = include_unusable
         self._requests = {
             (row["endpoint"], hashlib.sha256(canonical_bytes(row["params"])).hexdigest()): row
             for row in plan["request_rows"]
@@ -922,14 +1114,37 @@ class _OfficialClient:
         request = self._requests[(api_name, hashlib.sha256(canonical_bytes(params)).hexdigest())]
         assert expected_fields == self._fields[api_name]
         row = _row(request, expected_fields, changed=self._changed)
-        rows = (row, row) if request["table"] == self._duplicate_table else (row,)
+        rows = [row, row] if request["table"] == self._duplicate_table else [row]
+        if self._include_out_of_scope:
+            rows.append(("999999.SZ", *row[1:]))
+        if self._include_unusable:
+            unusable = tuple(
+                (
+                    value
+                    if field
+                    in {
+                        "ts_code",
+                        "trade_date",
+                        "ann_date",
+                        "f_ann_date",
+                        "end_date",
+                        "type",
+                        "summary",
+                        "change_reason",
+                        "update_flag",
+                    }
+                    else None
+                )
+                for field, value in zip(expected_fields, row)
+            )
+            rows.append(unusable)
         return TushareResponse(
             api_name=api_name,
             request_id=f"official-{self.calls}",
             reported_count=len(rows),
             has_more=self._first_has_more and self.calls == 1,
             fields=tuple(expected_fields),
-            rows=rows,
+            rows=tuple(rows),
         )
 
 
@@ -976,12 +1191,8 @@ def test_official_partition_adapter_reconciles_exact_baseline() -> None:
     )
 
 
-def test_fina_indicator_exact_duplicates_are_preserved_for_multiset_comparison() -> None:
+def test_fina_indicator_exact_duplicates_stay_in_physical_receipts_only() -> None:
     source, plan, probes, baseline, _fingerprints, policy = _adapter_inputs()
-    baseline["fina_indicator"] = pd.concat(
-        [baseline["fina_indicator"], baseline["fina_indicator"]],
-        ignore_index=True,
-    )
     fingerprints = {table: frame_fingerprint(frame) for table, frame in baseline.items()}
     result = acquire_official_partition_fundamental_vip_v4(
         official_plan=plan,
@@ -995,11 +1206,42 @@ def test_fina_indicator_exact_duplicates_are_preserved_for_multiset_comparison()
     )
     assert result["status"] == "COMPLETE"
     assert result["comparison"]["passed"] is True
+    assert not result["raw_tables"]["fina_indicator"].duplicated().any()
+    assert any(
+        receipt["accepted_count"] == 2
+        for receipt in result["physical_receipts"]
+        if receipt["table"] == "fina_indicator"
+    )
     assert all(
         "DUPLICATE_ROWS" not in receipt["blocker_codes"]
         for receipt in result["physical_receipts"]
         if receipt["table"] == "fina_indicator"
     )
+
+
+def test_official_partition_adapter_projects_target_scope_and_v3_accepted_raw() -> None:
+    source, plan, probes, baseline, fingerprints, policy = _adapter_inputs()
+    result = acquire_official_partition_fundamental_vip_v4(
+        official_plan=plan,
+        source_execution_closure=source,
+        probe_observations=probes,
+        baseline_tables=baseline,
+        baseline_table_fingerprints=fingerprints,
+        comparison_policy=policy,
+        client=_OfficialClient(
+            plan=plan,
+            source=source,
+            include_out_of_scope=True,
+            include_unusable=True,
+        ),
+        captured_at=NOW,
+    )
+    assert result["status"] == "COMPLETE"
+    assert result["comparison"]["passed"] is True
+    assert all(
+        set(frame["ts_code"].tolist()) == {"000001.SZ"} for frame in result["raw_tables"].values()
+    )
+    assert all(receipt["accepted_count"] == 3 for receipt in result["physical_receipts"])
 
 
 def test_non_indicator_exact_duplicates_remain_incomplete() -> None:

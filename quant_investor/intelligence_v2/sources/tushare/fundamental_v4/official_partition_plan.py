@@ -25,6 +25,7 @@ OFFICIAL_PARTITION_PLAN_V1: Final = "myquant.v17.fundamental-official-partition-
 OFFICIAL_PARTITION_PLAN_V2: Final = "myquant.v17.fundamental-official-partition-execution-plan.v2"
 OFFICIAL_PARTITION_PLAN_V3: Final = "myquant.v17.fundamental-official-partition-execution-plan.v3"
 OFFICIAL_PARTITION_PLAN_V4: Final = "myquant.v17.fundamental-official-partition-execution-plan.v4"
+OFFICIAL_PARTITION_PLAN_V5: Final = "myquant.v17.fundamental-official-partition-execution-plan.v5"
 
 _PLAN_FIELDS = {
     "as_of",
@@ -55,6 +56,7 @@ _PLAN_FIELDS = {
 _PLAN_V2_FIELDS = _PLAN_FIELDS | {"announcement_date_keyset_proof"}
 _PLAN_V3_FIELDS = _PLAN_FIELDS | {"announcement_date_keyset_proofs"}
 _PLAN_V4_FIELDS = (_PLAN_V3_FIELDS - {"request_rows"}) | {"request_schedule"}
+_PLAN_V5_FIELDS = _PLAN_V4_FIELDS
 _ANNOUNCEMENT_KEYSET_PROOF_FIELDS = {
     "date_count",
     "domain_basis",
@@ -72,12 +74,21 @@ _ANNOUNCEMENT_KEYSET_PROOF_V4_FIELDS = _ANNOUNCEMENT_KEYSET_PROOF_V3_FIELDS | {
     "fixed_report_type",
     "ordered_comp_type_keyset",
 }
+_ANNOUNCEMENT_KEYSET_PROOF_V5_FIELDS = _ANNOUNCEMENT_KEYSET_PROOF_V3_FIELDS | {
+    "physical_projection_columns",
+}
 _REQUEST_SCHEDULE_FIELDS = {
     "generator_version",
     "planned_request_count",
     "request_rows_sha256",
     "statement_comp_types",
     "statement_report_type",
+}
+_REQUEST_SCHEDULE_V5_FIELDS = {
+    "generator_version",
+    "physical_statement_projection_columns",
+    "planned_request_count",
+    "request_rows_sha256",
 }
 _DOCUMENT_FIELDS = {
     "api_name",
@@ -135,6 +146,8 @@ _STATEMENT_TABLES: Final = ("balancesheet", "cashflow", "income")
 _STATEMENT_COMP_TYPES: Final = ("1", "2", "3", "4")
 _STATEMENT_REPORT_TYPE: Final = "1"
 _V4_REQUEST_GENERATOR: Final = "EXACT_ANN_DATE_REPORT_TYPE_COMP_TYPE_V1"
+_V5_REQUEST_GENERATOR: Final = "EXACT_ANN_DATE_UNFILTERED_PHYSICAL_CLASSIFICATION_V1"
+_V5_STATEMENT_PROJECTION_COLUMNS: Final = ("report_type", "comp_type")
 _REQUEST_ROWS_HASH_DOMAIN: Final = b"myquant.v17.official-partition-request-rows.v1\0"
 _SCOPE_MODE: Final = "BASELINE_EXACT_PARTITION_RECONCILIATION"
 _COMPLETENESS_MODE: Final = "EXACT_PARAMS_HAS_MORE_FALSE_BASELINE_EQUAL"
@@ -194,6 +207,7 @@ def _probes(
     require_indicator_announcement_date: bool = False,
     require_statement_announcement_dates: bool = False,
     require_statement_dimensions: bool = False,
+    require_statement_physical_schema: bool = False,
 ) -> list[dict[str, Any]]:
     if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
         raise FundamentalV4ContractError("probe observations must be a sequence")
@@ -228,6 +242,7 @@ def _probes(
         require_indicator_announcement_date=require_indicator_announcement_date,
         require_statement_announcement_dates=require_statement_announcement_dates,
         require_statement_dimensions=require_statement_dimensions,
+        require_statement_physical_schema=require_statement_physical_schema,
     )
     if {row["case_id"] for row in rows} != required:
         raise FundamentalV4ContractError("partition probe case set is incomplete")
@@ -243,6 +258,7 @@ def _required_probe_cases(
     require_indicator_announcement_date: bool,
     require_statement_announcement_dates: bool,
     require_statement_dimensions: bool,
+    require_statement_physical_schema: bool,
 ) -> set[str]:
     required = {
         "BALANCESHEET_COMPANY_TYPE_LIMIT",
@@ -276,6 +292,11 @@ def _required_probe_cases(
             for table in ("BALANCESHEET", "CASHFLOW", "INCOME")
             for comp_type in _STATEMENT_COMP_TYPES
         )
+    if require_statement_physical_schema:
+        required.update(
+            f"{table}_UNFILTERED_PHYSICAL_CLASSIFICATION_COMPLETE"
+            for table in ("BALANCESHEET", "CASHFLOW", "INCOME")
+        )
     return required
 
 
@@ -290,6 +311,10 @@ def _exact_date_probes_complete(rows: Sequence[Mapping[str, Any]]) -> bool:
         f"{table}_EXACT_ANN_DATE_REPORT_1_COMP_{comp_type}_COMPLETE"
         for table in ("BALANCESHEET", "CASHFLOW", "INCOME")
         for comp_type in _STATEMENT_COMP_TYPES
+    )
+    exact_cases.update(
+        f"{table}_UNFILTERED_PHYSICAL_CLASSIFICATION_COMPLETE"
+        for table in ("BALANCESHEET", "CASHFLOW", "INCOME")
     )
     return all(
         row["case_id"] not in exact_cases or (not row["has_more"] and row["item_count"] >= 1)
@@ -596,6 +621,16 @@ def _request_rows_v4(source_plan: Mapping[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def _request_rows_v5(source_plan: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Use one unfiltered request per exact announcement date.
+
+    The physical response separately carries report/company classification so
+    restatement rows cannot collapse into apparent exact duplicates.
+    """
+
+    return _request_rows_v3(source_plan)
+
+
 def _request_rows_sha256(rows: Sequence[Mapping[str, Any]]) -> str:
     digest = hashlib.sha256(_REQUEST_ROWS_HASH_DOMAIN)
     for row in rows:
@@ -613,9 +648,16 @@ def replay_official_partition_request_rows(
     """Replay the exact request topology without storing a 34k-row v4 artifact."""
 
     source = validate_fundamental_execution_closure_v4(source_execution_closure)
-    if document.get("version") != OFFICIAL_PARTITION_PLAN_V4:
+    if document.get("version") not in {
+        OFFICIAL_PARTITION_PLAN_V4,
+        OFFICIAL_PARTITION_PLAN_V5,
+    }:
         return [dict(row) for row in document["request_rows"]]
-    rows = _request_rows_v4(source["request_plan"])
+    rows = (
+        _request_rows_v4(source["request_plan"])
+        if document.get("version") == OFFICIAL_PARTITION_PLAN_V4
+        else _request_rows_v5(source["request_plan"])
+    )
     schedule = document["request_schedule"]
     if (
         len(rows) != schedule["planned_request_count"]
@@ -948,6 +990,101 @@ def build_official_partition_execution_plan_v4(
     return seal(body, identity_field="partition_plan_id")
 
 
+@fundamental_v4_contract
+def build_official_partition_execution_plan_v5(
+    *,
+    source_execution_closure: Mapping[str, Any],
+    probe_observations: Sequence[Mapping[str, Any]],
+    document_observed_at: str,
+    created_at: str,
+) -> dict[str, Any]:
+    """Seal complete unfiltered announcement dates with physical class fields."""
+
+    source = validate_fundamental_execution_closure_v4(source_execution_closure)
+    source_plan = source["request_plan"]
+    created = timestamp(created_at, label="created_at")
+    if created < source["created_at"]:
+        raise FundamentalV4ContractError("partition plan predates its source closure")
+    documents = _documents(document_observed_at, indicator_by_announcement_date=True)
+    if any(row["document_observed_at"] > created for row in documents):
+        raise FundamentalV4ContractError("official documentation is future-dated")
+    probes = _probes(
+        probe_observations,
+        created_at=created,
+        require_indicator_announcement_date=True,
+        require_statement_announcement_dates=True,
+        require_statement_physical_schema=True,
+    )
+    requests = _request_rows_v5(source_plan)
+    terminal = len(requests)
+    announcement_dates = _announcement_dates(
+        start=source_plan["financial_start"],
+        end=source_plan["as_of"],
+    )
+    keyset_sha256 = hashlib.sha256(canonical_bytes(announcement_dates)).hexdigest()
+    proofs = [
+        {
+            "date_count": len(announcement_dates),
+            "domain_basis": "ALL_CALENDAR_DATES_INCLUSIVE",
+            "end_date": source_plan["as_of"],
+            "endpoint": _ENDPOINTS[table],
+            "ordered_keyset_sha256": keyset_sha256,
+            "partition_parameter": (
+                "ann_date" if table == "fina_indicator" else "start_date=end_date"
+            ),
+            "physical_projection_columns": (
+                list(_V5_STATEMENT_PROJECTION_COLUMNS) if table in _STATEMENT_TABLES else []
+            ),
+            "pit_cutoff": timestamp(source_plan["pit_cutoff"], label="pit_cutoff"),
+            "report_period_end": source_plan["as_of"],
+            "report_period_start": source_plan["financial_start"],
+            "start_date": source_plan["financial_start"],
+            "table": table,
+        }
+        for table in sorted((*_STATEMENT_TABLES, "fina_indicator"))
+    ]
+    baseline_attempts = source_plan["baseline_network_attempts"]
+    body = {
+        **common_fields(timestamp_value=created),
+        "announcement_date_keyset_proofs": proofs,
+        "as_of": session_date(source_plan["as_of"], label="as_of"),
+        "baseline_network_attempts": baseline_attempts,
+        "created_at": created,
+        "document_refs": documents,
+        "local_max_response_items": 20_000,
+        "max_attempts_per_partition": 1,
+        "performance_gate": {
+            "baseline_network_attempts": baseline_attempts,
+            "mode": "OWNER_AUTHORIZED_EXACT_ANN_DATE_FULL_PIT_KEYSET_NO_RATIO_CAP",
+            "multiplier": None,
+            "passed": True,
+            "planned_network_attempts": terminal,
+        },
+        "pit_cutoff": timestamp(source_plan["pit_cutoff"], label="pit_cutoff"),
+        "planned_max_network_attempts": terminal,
+        "planned_terminal_request_count": terminal,
+        "probe_observations": probes,
+        "production": False,
+        "request_schedule": {
+            "generator_version": _V5_REQUEST_GENERATOR,
+            "physical_statement_projection_columns": list(_V5_STATEMENT_PROJECTION_COLUMNS),
+            "planned_request_count": terminal,
+            "request_rows_sha256": _request_rows_sha256(requests),
+        },
+        "research_only": True,
+        "scope_policy": {
+            "code_change_behavior": "BASELINE_EXACT_CODES_ONLY",
+            "current_subject_scope_ref": source_plan["market_scope_ref"],
+            "daily_scope": _SCOPE_MODE,
+            "financial_scope": _SCOPE_MODE,
+        },
+        "source_execution_closure_ref": content_ref(source, identity_field="closure_id"),
+        "source_plan_id": source_plan["plan_id"],
+        "version": OFFICIAL_PARTITION_PLAN_V5,
+    }
+    return seal(body, identity_field="partition_plan_id")
+
+
 def _require_announcement_proofs(
     value: Mapping[str, Any],
     *,
@@ -1022,6 +1159,24 @@ def validate_official_partition_execution_plan(
             document_observed_at=value["document_refs"][0]["document_observed_at"],
             created_at=value["created_at"],
         )
+    elif version == OFFICIAL_PARTITION_PLAN_V5:
+        require_exact_keys(value, _PLAN_V5_FIELDS, label="official partition execution plan v5")
+        _require_announcement_proofs(
+            value,
+            fields=_ANNOUNCEMENT_KEYSET_PROOF_V5_FIELDS,
+            label="announcement date keyset proof v5",
+        )
+        require_exact_keys(
+            value["request_schedule"],
+            _REQUEST_SCHEDULE_V5_FIELDS,
+            label="official request schedule v5",
+        )
+        expected = build_official_partition_execution_plan_v5(
+            source_execution_closure=source_execution_closure,
+            probe_observations=probe_observations,
+            document_observed_at=value["document_refs"][0]["document_observed_at"],
+            created_at=value["created_at"],
+        )
     else:
         raise FundamentalV4ContractError("official partition plan version mismatch")
     if value != expected:
@@ -1041,10 +1196,12 @@ __all__ = [
     "OFFICIAL_PARTITION_PLAN_V2",
     "OFFICIAL_PARTITION_PLAN_V3",
     "OFFICIAL_PARTITION_PLAN_V4",
+    "OFFICIAL_PARTITION_PLAN_V5",
     "build_official_partition_execution_plan",
     "build_official_partition_execution_plan_v2",
     "build_official_partition_execution_plan_v3",
     "build_official_partition_execution_plan_v4",
+    "build_official_partition_execution_plan_v5",
     "replay_official_partition_request_rows",
     "validate_official_partition_execution_plan",
 ]

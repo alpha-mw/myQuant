@@ -42,6 +42,7 @@ from .comparison import (
 )
 from .models import FundamentalV4ContractError, SOURCE_TABLES, fundamental_v4_contract
 from .official_partition_plan import (
+    OFFICIAL_PARTITION_PLAN_V5,
     replay_official_partition_request_rows,
     validate_official_partition_execution_plan,
 )
@@ -248,7 +249,13 @@ def validate_official_partition_request_receipt(
         document,
         plan=plan,
         plan_ref=content_ref(plan, identity_field="partition_plan_id"),
-        requests_by_key={row["request_key"]: row for row in plan["request_rows"]},
+        requests_by_key={
+            row["request_key"]: row
+            for row in replay_official_partition_request_rows(
+                plan,
+                source_execution_closure=source_execution_closure,
+            )
+        },
     )
 
 
@@ -542,6 +549,105 @@ def _baseline_fingerprints(
     return result
 
 
+def _accepted_symbol_rows(
+    symbol_rows: pd.DataFrame,
+    *,
+    table: str,
+    symbol: str,
+    as_of: str,
+    financial_start: str,
+) -> pd.DataFrame:
+    try:
+        from quant_investor.market.fundamental_mart import _strict_pit_cutoff
+    except Exception as exc:
+        raise FundamentalV4ContractError(
+            "official accepted-raw PIT projector is unavailable"
+        ) from exc
+    source_only_columns: list[str] = []
+    if table == "forecast" and "update_flag" not in symbol_rows.columns:
+        symbol_rows = symbol_rows.copy()
+        symbol_rows["update_flag"] = pd.NA
+        source_only_columns.append("update_flag")
+    for column in ("report_type", "comp_type"):
+        if column in symbol_rows.columns:
+            source_only_columns.append(column)
+    try:
+        accepted, _stats, malformed_reason = _strict_pit_cutoff(
+            symbol_rows,
+            table=table,
+            symbol=symbol,
+            as_of=as_of,
+        )
+    except Exception as exc:
+        raise FundamentalV4ContractError("official accepted-raw PIT projection failed") from exc
+    if malformed_reason:
+        raise FundamentalV4ContractError("official accepted-raw PIT projection is malformed")
+    if table == "forecast":
+        announcement_date = accepted["ann_date"].astype("string")
+        accepted = accepted.loc[
+            announcement_date.ge(financial_start) & announcement_date.le(as_of)
+        ].reset_index(drop=True)
+    return accepted.drop(columns=source_only_columns) if source_only_columns else accepted
+
+
+def _accepted_raw_projection(
+    raw_tables: Mapping[str, pd.DataFrame],
+    *,
+    plan: Mapping[str, Any],
+) -> dict[str, pd.DataFrame]:
+    """Apply the exact v3 per-symbol accepted-raw boundary to bulk responses."""
+
+    symbols = list(plan["symbols"])
+    expected_symbols = set(symbols)
+    projected: dict[str, pd.DataFrame] = {}
+    for table in SOURCE_TABLES:
+        frame = raw_tables[table]
+        if "ts_code" not in frame.columns:
+            raise FundamentalV4ContractError("official raw table is missing target-scope identity")
+        scoped = frame.loc[frame["ts_code"].isin(expected_symbols)].reset_index(drop=True)
+        grouped = {
+            str(symbol): rows.reset_index(drop=True)
+            for symbol, rows in scoped.groupby("ts_code", sort=False, observed=True)
+        }
+        accepted_rows: list[pd.DataFrame] = []
+        for symbol in symbols:
+            symbol_rows = grouped.get(symbol)
+            if symbol_rows is None:
+                continue
+            accepted = _accepted_symbol_rows(
+                symbol_rows,
+                table=table,
+                symbol=symbol,
+                as_of=plan["as_of"],
+                financial_start=plan["financial_start"],
+            )
+            if not accepted.empty:
+                accepted_rows.append(accepted)
+        projected[table] = (
+            pd.concat(accepted_rows, ignore_index=True) if accepted_rows else scoped.iloc[:0].copy()
+        )
+    return projected
+
+
+def _physical_endpoint_plans(
+    endpoint_plans: Mapping[str, Mapping[str, Any]],
+    *,
+    official_plan: Mapping[str, Any],
+) -> dict[str, dict[str, Any]]:
+    plans = {table: dict(value) for table, value in endpoint_plans.items()}
+    if official_plan["version"] != OFFICIAL_PARTITION_PLAN_V5:
+        return plans
+    physical_columns = official_plan["request_schedule"]["physical_statement_projection_columns"]
+    if physical_columns != ["report_type", "comp_type"]:
+        raise FundamentalV4ContractError("official physical projection is invalid")
+    for table in ("balancesheet", "cashflow", "income"):
+        fields = list(plans[table]["expected_fields"])
+        if any(column in fields for column in physical_columns):
+            raise FundamentalV4ContractError("official physical projection duplicates a field")
+        plans[table]["expected_fields"] = fields + list(physical_columns)
+    return plans
+
+
 @fundamental_v4_contract
 def acquire_official_partition_fundamental_vip_v4(
     *,
@@ -572,6 +678,10 @@ def acquire_official_partition_fundamental_vip_v4(
     if captured < plan["created_at"]:
         raise FundamentalV4ContractError("official acquisition predates its plan")
     endpoint_plans = source["endpoint_plans"]
+    physical_endpoint_plans = _physical_endpoint_plans(
+        endpoint_plans,
+        official_plan=plan,
+    )
     bundle = {
         "baseline_table_fingerprints": fingerprints,
         "captured_at": captured,
@@ -612,7 +722,7 @@ def acquire_official_partition_fundamental_vip_v4(
                 plan=plan,
                 plan_ref=plan_ref,
                 request=request,
-                expected_fields=endpoint_plans[request["table"]]["expected_fields"],
+                expected_fields=physical_endpoint_plans[request["table"]]["expected_fields"],
                 captured_at=captured,
             )
             transport_calls += 1
@@ -625,7 +735,8 @@ def acquire_official_partition_fundamental_vip_v4(
     terminal_complete = len(receipts) == plan["planned_terminal_request_count"]
     if checkpoint is not None:
         _checkpoint_names(checkpoint)
-    raw_tables = _frames(rows_by_table, endpoint_plans)
+    provider_tables = _frames(rows_by_table, physical_endpoint_plans)
+    raw_tables = _accepted_raw_projection(provider_tables, plan=source["request_plan"])
     physical_closed = terminal_complete and all(
         receipt["status"] in {"AVAILABLE", "EMPTY"} for receipt in receipts
     )
