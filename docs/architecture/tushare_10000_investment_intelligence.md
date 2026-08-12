@@ -213,45 +213,44 @@ validated Fundamental promotion. It does keep Decision v2 and I6 blocked.
 
 ### Current sealed source result (2026-08-12)
 
-The current full-A source compilation remains fail-closed:
+The current full-A source compilation remains fail-closed where required:
 
-- Fundamental: all 5,753 official-plan v2 partition receipts replayed from the
-  sealed checkpoint with zero network calls, but the exact baseline/VIP raw
-  comparison remains `RECONCILIATION_BLOCKED`. No v4 fileset, staging
-  generation or pointer promotion was produced. The replacement v3 plan seals
-  11,471 terminal requests: 2,558 exact announcement-date leaves for each of
-  the three statements and `fina_indicator`, 1,211 exact trade dates for
-  `daily_basic`, and 28 report periods for `forecast`. Its canonical plan is
-  6,123,004 bytes with SHA-256
-  `9a585ce81bf5b0e23a784eefe9d420f914cb34995c89b3fbc9bb926613c3b752`.
-  The first v3 shadow attempt stopped after 13 requests at the exact
-  `balancesheet_vip` announcement-date leaf `20190819`: three canonical rows
-  appeared twice in VIP while each appeared once in the exact baseline. The
-  diagnostic-only blocker receipt is
-  `/private/tmp/myquant-r7-v3-shadow-blocker-20260812-r1/blocker_receipt.json`
+- Fundamental: the v5 execution plan sealed 11,471 terminal requests over the
+  complete announcement-date, report-period and open-session keysets. The live
+  shadow completed all 11,471 requests. A zero-network replay after removing
+  only byte-identical physical projection duplicates matches `balancesheet`,
+  `cashflow`, `daily_basic`, `forecast` and `income` exactly. `fina_indicator`
+  remains different by two multiset rows: Tushare now reports `ann_date`
+  `20260312` for `920188.BJ` period `20250630`, while the older baseline captured
+  `20251205`; all compared business values are equal. A separate one-request
+  standard `fina_indicator` probe also returned `20260312`, proving current
+  per-symbol/VIP agreement but not same-capture-time equality with the archived
+  baseline. Reconciliation therefore remains `RECONCILIATION_BLOCKED`; no
+  fileset, staging generation or pointer promotion was produced. The replay
+  summary is
+  `/private/tmp/myquant-r7-v5-reconciliation-diff-20260812-r3/summary.json`
   with SHA-256
-  `6e13b0ddd2ef0c87c97ca5cb0b47968666552587284a9136a5e5f23c808c8d2d`.
-  Acquisition remains `SHADOW_BLOCKED_EXACT_DUPLICATE_SURPLUS`; 11,458
-  partitions were not requested, and the v3 run has no promotion authority.
-  Official documentation confirms that `report_type` and `comp_type` are
-  supported statement filters; the saved narrow projection cannot determine
-  which omitted dimension caused the collision. The v4 code path now seals exact
-  `report_type=1 x comp_type={1,2,3,4}` partitions without changing the
-  comparator. No live v4 execution plan has been published: the required
-  dimension probes are still missing, so Fundamental remains blocked.
-- Industry: 12 companies are `UNMAPPED`; no Decision v2 admission is possible
-  for those subjects.
-- Theme: the sealed DC/TDX captures replay to eight catalog shards containing
-  69,505 exact memberships. DC resolves 5,484 companies; the one exact fallback
-  company resolves through TDX; 17 companies are deterministically
-  `NO_MEMBERSHIP`. No company remains `AMBIGUOUS` or `UNMAPPED`.
+  `1a81e3e2ac2778735d767bcf74cedaa93ee6920e4b21c87b4fa493ad4752f837`.
+- Industry: the three SW2021 taxonomy partitions and all 692 sealed
+  `L3 x {Y,N}` membership partitions replay successfully. Of the 5,485
+  target-session PIT-active companies, 5,473 have one active L1 and 12 are
+  `UNMAPPED`; none is `AMBIGUOUS`. The compiler remains `PARTIAL_BLOCKED`, and
+  no Decision v2 admission is possible for those 12 subjects.
+- Theme: a new exact-`20260807` DC plan completed 5,486 of 5,486 partitions with
+  no incomplete response. The sealed fallback keyset contains only
+  `603159.SH` and `605055.SH`; one TDX registry request and those two membership
+  requests also completed. The resulting source receipt replays across eight
+  catalog shards, covers all 5,485 target-session PIT-active companies, and
+  reports no `NO_MEMBERSHIP`, `AMBIGUOUS` or `UNMAPPED` subject. Its source
+  receipt ID is
+  `039b8508c4dec4a969758f54771e2f40523c5b79c9eff4b787e948be3daac743`.
 - No Theme membership was admitted by inference, name matching or a stale
   catalog. Decision v2 and I6 remain blocked by Fundamental reconciliation and
   the 12 exact Industry `UNMAPPED` subjects rather than by Theme identity.
 
-These are valid partial outcomes, not acquisition failures. The physical
-partition keysets and source compilers replay successfully; raw reconciliation
-and identity authority remain insufficient for promotion or admission.
+These are valid partial outcomes, not acquisition failures. Theme is available
+for the exact target session. Fundamental reconciliation and the 12 Industry
+identity blockers still keep Decision v2 and I6 unavailable.
 
 ## I6 Market risk projection
 

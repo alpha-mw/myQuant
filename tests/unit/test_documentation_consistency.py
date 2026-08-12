@@ -158,7 +158,11 @@ def test_public_docs_describe_the_live_entrypoints_and_contracts():
     assert "OWNER_AUTHORIZED_EXACT_ANN_DATE_FULL_STATEMENT_KEYSET_NO_RATIO_CAP" in tushare_10000
     assert "announcement_date_keyset_proofs" in tushare_10000
     assert "Legacy v1 reconciliation continues to enforce the old ratio" in tushare_10000
-    assert "all 5,753 official-plan v2 partition receipts" in tushare_10000
+    assert "sealed 11,471 terminal requests" in tushare_10000
+    assert "shadow completed all 11,471 requests" in tushare_10000
+    assert "920188.BJ" in tushare_10000
+    assert "5,473 have one active L1 and 12 are" in tushare_10000
+    assert "039b8508c4dec4a969758f54771e2f40523c5b79c9eff4b787e948be3daac743" in tushare_10000
     assert "RECONCILIATION_BLOCKED" in tushare_10000
     assert "run_tushare_vip_fundamental_shadow.py" in tushare_10000
     assert "never writes the V17 active pointer" in tushare_10000
