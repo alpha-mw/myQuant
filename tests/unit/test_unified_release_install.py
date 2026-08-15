@@ -6,6 +6,7 @@ import subprocess
 import pytest
 
 from quant_investor.contracts import canonical_json_bytes
+from quant_investor.migration import run_cutover_gate, validate_cutover_gate_evidence
 from quant_investor.system import (
     SystemPreconditionError,
     object_ref_for_artifact,
@@ -62,6 +63,22 @@ def test_frozen_release_build_install_and_exact_origin_replay(tmp_path: Path) ->
         Path(evidence["payload"]["install_root"])
     )
     assert not Path(evidence["payload"]["import_origin"]).is_relative_to(repository)
+
+    gate = run_cutover_gate(
+        repository_root=repository,
+        gate_id="release_install_origin",
+        final_commit=commit,
+        final_tree=tree,
+        subject_ref=object_ref_for_artifact(evidence),
+        release_install_evidence=evidence,
+        deployed_release=release,
+    )
+    gate_payload = validate_cutover_gate_evidence(gate)["payload"]
+    assert gate_payload["state"] == "PASS"
+    assert (
+        gate_payload["batch_results"][0]["stdin_sha256"]
+        != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    )
 
     wheel = Path(evidence["payload"]["wheel"]["path"])
     wheel.write_bytes(wheel.read_bytes() + b"tamper")
