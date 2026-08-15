@@ -23,6 +23,7 @@ from quant_investor.strategy_records.store import (
     catalog_online_record_dirs,
     load_registered_catalog,
     publish_catalog,
+    reselect_catalog,
     resolve_active_record_dirs,
 )
 
@@ -149,6 +150,96 @@ def test_immutable_catalog_identity_is_idempotent_or_conflicts(
             generation_id="g2",
             published_at="2026-08-10T00:02:00Z",
         )
+
+
+def test_reselect_catalog_uses_exact_existing_generation_and_pointer_cas(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "r1").mkdir()
+    (tmp_path / "r2").mkdir()
+    first = bootstrap_catalog(
+        tmp_path,
+        records=[_record("r1"), _record("r2")],
+        active_record_id="r2",
+        previous_record_id="r1",
+        generation_id="g1",
+        published_at="2026-08-10T00:00:00Z",
+        catalog_schema=CATALOG_SCHEMA_V2,
+    )
+    original_catalog = (
+        tmp_path / first["pointer"]["catalog_path"]
+    ).read_bytes()
+    second = publish_catalog(
+        tmp_path,
+        expected_pointer_sha256=first["pointer_sha256"],
+        generation_id="g2",
+        published_at="2026-08-10T00:01:00Z",
+        catalog_schema=CATALOG_SCHEMA_V2,
+    )
+    result = reselect_catalog(
+        tmp_path,
+        expected_current_pointer_sha256=second["pointer_sha256"],
+        target_generation_id=first["pointer"]["generation_id"],
+        target_catalog_path=first["pointer"]["catalog_path"],
+        target_catalog_sha256=first["pointer"]["catalog_sha256"],
+        published_at="2026-08-10T00:02:00Z",
+    )
+    assert result["catalog_reselected"] is True
+    assert result["catalog_created"] is False
+    assert result["pointer"]["generation_id"] == "g1"
+    assert result["pointer"]["previous_pointer_sha256"] == second["pointer_sha256"]
+    assert result["catalog"] == first["catalog"]
+    assert (tmp_path / first["pointer"]["catalog_path"]).read_bytes() == original_catalog
+    assert load_registered_catalog(tmp_path) == (
+        result["pointer"],
+        first["catalog"],
+    )
+
+
+def test_reselect_catalog_rejects_cas_or_target_sha_without_pointer_change(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "r1").mkdir()
+    (tmp_path / "r2").mkdir()
+    first = bootstrap_catalog(
+        tmp_path,
+        records=[_record("r1"), _record("r2")],
+        active_record_id="r2",
+        previous_record_id="r1",
+        generation_id="g1",
+        published_at="2026-08-10T00:00:00Z",
+        catalog_schema=CATALOG_SCHEMA_V2,
+    )
+    second = publish_catalog(
+        tmp_path,
+        expected_pointer_sha256=first["pointer_sha256"],
+        generation_id="g2",
+        published_at="2026-08-10T00:01:00Z",
+        catalog_schema=CATALOG_SCHEMA_V2,
+    )
+    pointer_path = tmp_path / "_record_store/current.v1.json"
+    before = pointer_path.read_bytes()
+    values = {
+        "target_generation_id": "g1",
+        "target_catalog_path": first["pointer"]["catalog_path"],
+        "target_catalog_sha256": first["pointer"]["catalog_sha256"],
+        "published_at": "2026-08-10T00:02:00Z",
+    }
+    with pytest.raises(StrategyRecordCASMismatch):
+        reselect_catalog(
+            tmp_path,
+            expected_current_pointer_sha256="0" * 64,
+            **values,
+        )
+    assert pointer_path.read_bytes() == before
+    values["target_catalog_sha256"] = "0" * 64
+    with pytest.raises(StrategyRecordStoreError, match="catalog byte SHA-256"):
+        reselect_catalog(
+            tmp_path,
+            expected_current_pointer_sha256=second["pointer_sha256"],
+            **values,
+        )
+    assert pointer_path.read_bytes() == before
 
 
 def test_pointer_catalog_sha_is_exact_bytes_not_json_semantics(

@@ -5352,9 +5352,15 @@ def run_cn_fundamental_maintenance(
     raw_tables: Mapping[str, pd.DataFrame] | None = None,
     run_id: str = "",
     authoritative_full_rebuild: bool = False,
+    safe_incremental_successor: bool = False,
+    canonical_predecessor_root: str | Path | None = None,
+    expected_pointer_sha256: str = "",
     canonical_scope_path: str | Path | None = None,
     canonical_market_pointer_path: str | Path | None = None,
+    canonical_pit_pointer_path: str | Path | None = None,
     canonical_membership_path: str | Path | None = None,
+    history_audit_path: str | Path | None = None,
+    expected_history_audit_sha256: str = "",
     checkpoint_root: str | Path | None = None,
     checkpoint_batch_size: int = 500,
     max_attempts: int = 3,
@@ -5370,6 +5376,65 @@ def run_cn_fundamental_maintenance(
         else list(universes or DEFAULT_UNIVERSES)
     )
     resolved_run_id = str(run_id or "").strip() or _run_id(as_of)
+    if safe_incremental_successor:
+        if authoritative_full_rebuild:
+            raise ValueError(
+                "safe incremental successor and authoritative full rebuild are mutually exclusive"
+            )
+        if raw_input_dir or raw_tables:
+            raise ValueError(
+                "safe incremental successor cannot use offline raw input"
+            )
+        required_safe_values = {
+            "canonical_predecessor_root": canonical_predecessor_root,
+            "expected_pointer_sha256": expected_pointer_sha256,
+            "canonical_scope_path": canonical_scope_path,
+            "canonical_market_pointer_path": canonical_market_pointer_path,
+            "canonical_pit_pointer_path": canonical_pit_pointer_path,
+            "canonical_membership_path": canonical_membership_path,
+            "history_audit_path": history_audit_path,
+            "expected_history_audit_sha256": expected_history_audit_sha256,
+            "checkpoint_root": checkpoint_root,
+            "run_id": resolved_run_id,
+            "as_of": as_of,
+        }
+        missing = sorted(
+            name for name, value in required_safe_values.items() if not value
+        )
+        if missing:
+            raise ValueError(
+                "safe incremental successor missing required values: "
+                + ", ".join(missing)
+            )
+        retry_backoffs = tuple(
+            min(
+                float(max_retry_backoff_seconds),
+                float(retry_backoff_seconds) * (2**attempt),
+            )
+            for attempt in range(max(0, int(max_attempts) - 1))
+        )
+        from .fundamental_successor import run_cn_fundamental_safe_successor
+
+        return run_cn_fundamental_safe_successor(
+            as_of=as_of,
+            run_id=resolved_run_id,
+            staging_root=data_root,
+            canonical_root=canonical_predecessor_root,
+            expected_pointer_sha256=expected_pointer_sha256,
+            canonical_market_pointer_path=canonical_market_pointer_path,
+            canonical_pit_pointer_path=canonical_pit_pointer_path,
+            canonical_membership_path=canonical_membership_path,
+            canonical_scope_path=canonical_scope_path,
+            history_audit_path=history_audit_path,
+            expected_history_audit_sha256=expected_history_audit_sha256,
+            support_fileset_root=checkpoint_root,
+            allow_live=allow_live,
+            universes=universe_list,
+            max_attempts=int(max_attempts),
+            retry_backoff_seconds=retry_backoffs,
+            requests_per_second=float(requests_per_second),
+            client=pro,
+        )
     if authoritative_full_rebuild:
         if not allow_live:
             raise ValueError("authoritative full rebuild requires --allow-live")

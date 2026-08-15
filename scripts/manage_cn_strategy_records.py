@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from decimal import Decimal
 import fcntl
 import hashlib
 import json
@@ -35,6 +36,7 @@ from quant_investor.strategy_records.store import (  # noqa: E402
     ARCHIVE_RESTORE_RECEIPT_SCHEMA,
     CATALOG_SCHEMA_V1,
     CATALOG_SCHEMA_V2,
+    CATALOG_SCHEMA_V3,
     NEW_RECORD_MAX_FILE_BYTES,
     NEW_RECORD_MAX_FILES,
     NEW_RECORD_MAX_TOTAL_BYTES,
@@ -51,6 +53,35 @@ from quant_investor.strategy_records.store import (  # noqa: E402
     project_root_for_record_root,
     publish_catalog,
     regular_file_sha256,
+    reselect_catalog,
+)
+from quant_investor.strategy_records.performance import (  # noqa: E402
+    MAX_PERFORMANCE_JSON_BYTES,
+    MAX_PERFORMANCE_PARQUET_BYTES,
+    MONEY_QUANTUM,
+    PERFORMANCE_MIGRATION_RECEIPT_SCHEMA,
+    UNIT_QUANTUM,
+    assert_private_tmp,
+    apply_flow_neutral_unitization,
+    build_lineage_index,
+    build_manifest as build_performance_manifest,
+    build_owner_declaration as build_performance_owner_declaration,
+    build_performance_history_ref,
+    build_seed_rows,
+    decimal_text,
+    extend_performance_rows,
+    immutable_write,
+    load_performance_history,
+    normalize_registered_projection,
+    read_performance_parquet,
+    seal_semantic,
+    validate_lineage_index,
+    validate_cash_flow_artifact,
+    validate_manifest as validate_performance_manifest,
+    validate_owner_declaration as validate_performance_owner_declaration,
+    validate_safe_regular_0600,
+    validate_semantic as validate_performance_semantic,
+    write_deterministic_parquet,
 )
 
 # Kept in this operational surface because the reader does not allocate archive
@@ -773,6 +804,390 @@ def _same_inventory(left: dict[str, Any], right: dict[str, Any]) -> bool:
     )
 
 
+def _reject_disabled_ledger_candidates(record_dir: Path) -> None:
+    """Reject legacy ledger authorities before inventory hashing can open them."""
+
+    for name in ("ledger.csv", "ledger_after_manual_switch.csv"):
+        if os.path.lexists(record_dir / name):
+            raise StrategyRecordStoreError(
+                "catalog v3 publication refuses a legacy ledger candidate"
+            )
+
+
+def _record_root_relative(
+    *, project: Path, root: Path, project_relative: Any, label: str
+) -> str:
+    if not isinstance(project_relative, str):
+        raise StrategyRecordStoreError(f"{label} is absent")
+    _safe_relative(project_relative)
+    try:
+        resolved = (project / project_relative).resolve(strict=True)
+        return resolved.relative_to(root).as_posix()
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise StrategyRecordStoreError(f"{label} escapes the record root") from exc
+
+
+def _integer_positions(strict_record: dict[str, Any]) -> dict[str, int]:
+    result: dict[str, int] = {}
+    for row in strict_record.get("positions") or []:
+        if not isinstance(row, dict):
+            raise StrategyRecordStoreError("cash-flow position row is invalid")
+        symbol = row.get("symbol")
+        shares = row.get("shares")
+        if not isinstance(symbol, str):
+            raise StrategyRecordStoreError("cash-flow position symbol is invalid")
+        try:
+            numeric = float(shares)
+            integral = int(numeric)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise StrategyRecordStoreError(
+                "cash-flow position quantity is not integral"
+            ) from exc
+        if float(integral) != numeric:
+            raise StrategyRecordStoreError(
+                "cash-flow position quantity is not integral"
+            )
+        result[symbol] = integral
+    return result
+
+
+def _load_cash_flow_declaration(
+    value: str, *, project: Path
+) -> tuple[dict[str, Any], str]:
+    try:
+        path_text, expected_sha = value.rsplit("=", 1)
+    except ValueError as exc:
+        raise StrategyRecordStoreError(
+            "cash-flow artifact must be PROJECT_RELATIVE_PATH=SHA256"
+        ) from exc
+    relative = _safe_relative(path_text)
+    declaration, _ = _read_candidate_json(
+        project / relative,
+        expected_sha256=expected_sha,
+        label="performance cash-flow declaration",
+    )
+    return declaration, expected_sha
+
+
+def _seal_publish_catalog_v3(
+    *,
+    args: argparse.Namespace,
+    root: Path,
+    target: Path,
+    record_id: str,
+    sealed_at: str,
+    pointer: dict[str, Any],
+    catalog: dict[str, Any],
+    records: list[dict[str, Any]],
+    new_record: dict[str, Any],
+) -> dict[str, Any]:
+    """Advance record, lineage, performance, and catalog in one CAS candidate."""
+
+    if not getattr(args, "project_root", None):
+        raise StrategyRecordStoreError("catalog v3 seal-publish requires project_root")
+    if not getattr(args, "generation_id", None):
+        raise StrategyRecordStoreError("catalog v3 seal-publish requires generation_id")
+    performance_generation = getattr(args, "performance_generation_id", None)
+    if not performance_generation:
+        raise StrategyRecordStoreError(
+            "catalog v3 seal-publish requires performance_generation_id"
+        )
+    project = Path(args.project_root).resolve(strict=True)
+    if project_root_for_record_root(root).resolve(strict=True) != project:
+        raise StrategyRecordStoreError("project root does not bind the governed record root")
+    try:
+        from scripts.cn_dashboard_common import (
+            DashboardInputError,
+            load_json,
+            stable_read,
+            validate_record,
+        )
+    except ImportError as exc:
+        raise StrategyRecordStoreError("Dashboard validation is unavailable") from exc
+
+    manual_artifact = stable_read(target / "manual_execution_manifest.json", project)
+    manual = load_json(manual_artifact)
+    if not isinstance(manual, dict):
+        raise StrategyRecordStoreError("manual manifest is not an object")
+    effective_ledger = manual.get("effective_manual_ledger_path") or manual.get(
+        "next_ledger_path"
+    )
+    if effective_ledger != "ledger_after_manual_switch.parquet":
+        raise StrategyRecordStoreError(
+            "catalog v3 financial state requires the exact Parquet ledger"
+        )
+    try:
+        strict_record = validate_record(target, root, project)
+    except DashboardInputError as exc:
+        raise StrategyRecordStoreError(
+            f"sealed record did not pass current-record validation: {exc}"
+        ) from exc
+    if strict_record.get("record") != record_id:
+        raise StrategyRecordStoreError("sealed record identity drifted")
+    if (
+        strict_record.get("execution_kind") != "applied_effective_ledger"
+        and strict_record.get("official_valuation") is not True
+    ):
+        raise StrategyRecordStoreError(
+            "new no-trade financial state must be an official valuation"
+        )
+
+    for path_key in ("manifest_path", "manual_manifest_path", "ledger_path", "pnl_path"):
+        new_record[path_key] = _record_root_relative(
+            project=project,
+            root=root,
+            project_relative=strict_record.get(path_key),
+            label=f"new record {path_key}",
+        )
+    if PurePosixPath(new_record["ledger_path"]).name != (
+        "ledger_after_manual_switch.parquet"
+    ):
+        raise StrategyRecordStoreError("catalog v3 effective ledger is not Parquet")
+    for sha_key in (
+        "manifest_sha256",
+        "manual_manifest_sha256",
+        "ledger_sha256",
+        "pnl_sha256",
+        "financial_state_sha256",
+    ):
+        value = strict_record.get(sha_key)
+        if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+            raise StrategyRecordStoreError(f"new record {sha_key} is invalid")
+        new_record[sha_key] = value
+    new_record["history_eligible"] = True
+    new_record["evidence_status"] = "HASH_VERIFIED"
+    new_record["summary"] = {
+        "symbols": [row["symbol"] for row in strict_record["positions"]],
+        "actions": [],
+    }
+    records = [
+        new_record if row.get("record_id") == record_id else row for row in records
+    ]
+
+    active_record_id = pointer.get("active_record_id")
+    if not isinstance(active_record_id, str):
+        raise StrategyRecordStoreError("catalog v3 active record is absent")
+    if strict_record.get("source_record") != active_record_id:
+        raise StrategyRecordStoreError(
+            "new financial state must bind the pointer-selected active record"
+        )
+    performance = load_performance_history(root, catalog["performance_history_ref"])
+    parent_rows = performance["rows"]
+    parent_last = parent_rows[-1]
+    if parent_last["record_id"] != active_record_id:
+        raise StrategyRecordStoreError("active performance row drifted")
+    same_date = strict_record.get("data_date") == parent_last["valuation_date"]
+    status_text = str(strict_record.get("execution_status") or "").lower()
+    explicit_correction = same_date and (
+        "correction" in status_text or strict_record.get("funding_correction") is not None
+    )
+    if same_date and not explicit_correction:
+        raise StrategyRecordStoreError("SAME_DATE_PERFORMANCE_CONFLICT")
+    if strict_record.get("funding_correction") is not None:
+        raise StrategyRecordStoreError(
+            "PERFORMANCE_EXTERNAL_FLOW_CLOSURE_INCOMPLETE:flow correction requires "
+            "an exact correction contract"
+        )
+
+    flow_refs = list(getattr(args, "cash_flow_artifact", None) or [])
+    funding = strict_record.get("funding")
+    post_flow_units = None
+    external_flow_amount = Decimal("0.0000")
+    if funding is None:
+        if flow_refs:
+            raise StrategyRecordStoreError(
+                "cash-flow artifact is present without registered funding evidence"
+            )
+    else:
+        if len(flow_refs) != 1:
+            raise StrategyRecordStoreError(
+                "PERFORMANCE_EXTERNAL_FLOW_CLOSURE_INCOMPLETE:one exact cash-flow "
+                "artifact is required"
+            )
+        current_by_id = {
+            row["record_id"]: row
+            for row in catalog["records"]
+            if row.get("state", row.get("storage_state")) == "ONLINE"
+        }
+        current_catalog_row = current_by_id.get(active_record_id)
+        if not isinstance(current_catalog_row, dict):
+            raise StrategyRecordStoreError("active cash-flow record is not ONLINE")
+        if PurePosixPath(str(current_catalog_row.get("ledger_path"))).name != (
+            "ledger_after_manual_switch.parquet"
+        ):
+            raise StrategyRecordStoreError("active cash-flow ledger is not Parquet")
+        try:
+            pre_record = validate_record(root / active_record_id, root, project)
+        except DashboardInputError as exc:
+            raise StrategyRecordStoreError(
+                f"cash-flow pre-state validation failed: {exc}"
+            ) from exc
+        declaration, _ = _load_cash_flow_declaration(flow_refs[0], project=project)
+        pre_row = {
+            "record_id": active_record_id,
+            "raw_nav_cny": pre_record["accounting"]["total_value_after"],
+            "financial_state_sha256": pre_record["financial_state_sha256"],
+            "manual_manifest_path": pre_record["manual_manifest_path"],
+            "manual_manifest_sha256": pre_record["manual_manifest_sha256"],
+        }
+        post_row = {
+            "record_id": record_id,
+            "raw_nav_cny": strict_record["accounting"]["total_value_after"],
+            "financial_state_sha256": strict_record["financial_state_sha256"],
+            "manual_manifest_path": strict_record["manual_manifest_path"],
+            "manual_manifest_sha256": strict_record["manual_manifest_sha256"],
+        }
+        external_flow_amount = validate_cash_flow_artifact(
+            declaration,
+            pre_row=pre_row,
+            post_row=post_row,
+            pre_positions=_integer_positions(pre_record),
+            post_positions=_integer_positions(strict_record),
+        )
+        if float(external_flow_amount) != float(funding.get("amount")):
+            raise StrategyRecordStoreError("cash-flow amount does not match funding closure")
+        post_flow_units, _ = apply_flow_neutral_unitization(
+            pre_nav=parent_last["raw_nav_cny"],
+            pre_units=parent_last["unit_count"],
+            pre_unit_nav=parent_last["unit_nav"],
+            amount=external_flow_amount,
+        )
+
+    next_rows = extend_performance_rows(
+        parent_rows,
+        strict_record=strict_record,
+        manual_manifest_sha256=new_record["manual_manifest_sha256"],
+        ledger_parquet_sha256=new_record["ledger_sha256"],
+        financial_state_sha256=new_record["financial_state_sha256"],
+        post_flow_unit_count=post_flow_units,
+        external_flow_amount=external_flow_amount,
+        allow_same_date_correction=explicit_correction,
+    )
+
+    lineage = [dict(row) for row in catalog["lineage_index"]]
+    execution_class = (
+        "APPLIED_TRADES"
+        if strict_record.get("execution_kind") == "applied_effective_ledger"
+        else "NO_TRADE"
+    )
+    lineage.append(
+        {
+            "record_id": record_id,
+            "source_record_id": active_record_id,
+            "supersedes_record_id": active_record_id if explicit_correction else None,
+            "valuation_date": strict_record["data_date"],
+            "execution_class": execution_class,
+            "publication_class": (
+                "CORRECTION" if explicit_correction else "OFFICIAL_FINANCIAL_STATE"
+            ),
+            "storage_state": "ONLINE",
+            "manifest_ref": {
+                "path": new_record["manifest_path"],
+                "sha256": new_record["manifest_sha256"],
+            },
+            "manual_manifest_ref": {
+                "path": new_record["manual_manifest_path"],
+                "sha256": new_record["manual_manifest_sha256"],
+            },
+            "effective_ledger_ref": {
+                "path": new_record["ledger_path"],
+                "sha256": new_record["ledger_sha256"],
+            },
+            "financial_state_sha256": new_record["financial_state_sha256"],
+            "ledger_parquet_sha256": new_record["ledger_sha256"],
+        }
+    )
+    validate_lineage_index(lineage, active_record_id=record_id)
+
+    performance_generation = _record_id(str(performance_generation))
+    prefix_text = f"_record_store/performance/{performance_generation}"
+    prefix = root / prefix_text
+    series_path = prefix / "series.parquet"
+    series_sha, series_bytes = write_deterministic_parquet(next_rows, series_path)
+    parent_manifest = performance["manifest"]
+    owner = build_performance_owner_declaration(
+        performance_generation_id=performance_generation,
+        declared_at=sealed_at,
+        series_path=f"{prefix_text}/series.parquet",
+        series_sha256=series_sha,
+        series_bytes=series_bytes,
+        source_pointer_sha256=args.expected_pointer_sha,
+        source_catalog_sha256=pointer["catalog_sha256"],
+        normalized_projection_semantic_sha256=parent_manifest[
+            "normalized_projection_semantic_sha256"
+        ],
+    )
+    owner_raw = canonical_json_bytes(owner)
+    owner_sha = immutable_write(
+        prefix / "owner_declaration.v1.json",
+        owner_raw,
+        max_bytes=MAX_PERFORMANCE_JSON_BYTES,
+    )
+    manifest = build_performance_manifest(
+        performance_generation_id=performance_generation,
+        generated_at=sealed_at,
+        identity_path=parent_manifest["identity_declaration"]["path"],
+        identity_sha256=parent_manifest["identity_declaration"]["sha256"],
+        parent_performance_manifest_sha256=catalog["performance_history_ref"][
+            "manifest"
+        ]["sha256"],
+        source_pointer_sha256=args.expected_pointer_sha,
+        source_catalog_generation_id=pointer["generation_id"],
+        source_catalog_sha256=pointer["catalog_sha256"],
+        dashboard_projection_sha256=parent_manifest[
+            "source_dashboard_projection_sha256"
+        ],
+        normalized_projection_semantic_sha256=parent_manifest[
+            "normalized_projection_semantic_sha256"
+        ],
+        series_path=f"{prefix_text}/series.parquet",
+        series_sha256=series_sha,
+        series_bytes=series_bytes,
+        owner_path=f"{prefix_text}/owner_declaration.v1.json",
+        owner_sha256=owner_sha,
+        owner_bytes=len(owner_raw),
+        rows=next_rows,
+    )
+    manifest_raw = canonical_json_bytes(manifest)
+    manifest_sha = immutable_write(
+        prefix / "manifest.v1.json",
+        manifest_raw,
+        max_bytes=MAX_PERFORMANCE_JSON_BYTES,
+    )
+    performance_ref = build_performance_history_ref(
+        manifest=manifest,
+        manifest_sha256=manifest_sha,
+        manifest_bytes=len(manifest_raw),
+    )
+    load_performance_history(root, performance_ref)
+    if _pointer_sha(root) != args.expected_pointer_sha:
+        raise StrategyRecordStoreError("source pointer drifted before catalog v3 CAS")
+    result = publish_catalog(
+        root,
+        expected_pointer_sha256=args.expected_pointer_sha,
+        records=records,
+        active_record_id=record_id,
+        previous_record_id=active_record_id,
+        generation_id=args.generation_id,
+        published_at=sealed_at,
+        catalog_schema=CATALOG_SCHEMA_V3,
+        inherit_history_registry=False,
+        lineage_index=lineage,
+        performance_history_ref=performance_ref,
+    )
+    readback = load_registered_catalog(root)
+    if readback is None or readback != (result["pointer"], result["catalog"]):
+        raise StrategyRecordStoreError("catalog v3 seal-publish readback mismatch")
+    return {
+        **result,
+        "performance_generation_id": performance_generation,
+        "performance_manifest_sha256": manifest_sha,
+        "performance_series_sha256": series_sha,
+        "performance_owner_declaration_sha256": owner_sha,
+        "performance_contract_ready": True,
+    }
+
+
 def command_seal_publish(args: argparse.Namespace) -> dict[str, Any]:
     root = Path(args.record_root).resolve(strict=True)
     loaded = load_registered_catalog(root)
@@ -795,6 +1210,9 @@ def command_seal_publish(args: argparse.Namespace) -> dict[str, Any]:
     target = root / record_id
     adopting_existing = not stage.exists() and target.exists()
     sealed_at = _timestamp(args.published_at)
+    source_candidate = stage if stage.exists() else target
+    if catalog.get("schema_id") == CATALOG_SCHEMA_V3:
+        _reject_disabled_ledger_candidates(source_candidate)
     if stage.exists():
         staged_inventory = build_inventory(
             stage, enforce_new_record_budget=True
@@ -839,9 +1257,9 @@ def command_seal_publish(args: argparse.Namespace) -> dict[str, Any]:
     if matches:
         if not _same_inventory(matches[0], new_record):
             raise StrategyRecordConflict("catalog record identity collision")
-        if (
-            pointer.get("active_record_id") == record_id
-            and not getattr(args, "project_root", None)
+        if pointer.get("active_record_id") == record_id and (
+            catalog.get("schema_id") == CATALOG_SCHEMA_V3
+            or not getattr(args, "project_root", None)
         ):
             return {
                 "idempotent": True,
@@ -855,6 +1273,18 @@ def command_seal_publish(args: argparse.Namespace) -> dict[str, Any]:
         ]
     else:
         records.append(new_record)
+    if catalog.get("schema_id") == CATALOG_SCHEMA_V3:
+        return _seal_publish_catalog_v3(
+            args=args,
+            root=root,
+            target=target,
+            record_id=record_id,
+            sealed_at=sealed_at,
+            pointer=pointer,
+            catalog=catalog,
+            records=records,
+            new_record=new_record,
+        )
     dashboard_projection = None
     if getattr(args, "project_root", None):
         try:
@@ -1131,15 +1561,552 @@ def command_verify(args: argparse.Namespace) -> dict[str, Any]:
                 f"registered record inventory mismatch: {record['record_id']}"
             )
         verified += 1
-    return {
+    result = {
         "valid": True,
         "pointer_sha256": _pointer_sha(root),
         "generation_id": pointer["generation_id"],
+        "catalog_schema": catalog["schema_id"],
+        "performance_contract_ready": catalog.get("schema_id") == CATALOG_SCHEMA_V3,
         "verified_online_records": verified,
         "verified_archived_records": verified_archived,
         "verified_archives": len(verified_archives),
         "orphan_record_dirs": _orphans(root, catalog),
         "orphans_preserved": True,
+    }
+    if catalog.get("schema_id") == CATALOG_SCHEMA_V3:
+        performance = load_performance_history(root, catalog["performance_history_ref"])
+        result["lineage_index_sha256"] = catalog["lineage_index_sha256"]
+        result["performance_generation_id"] = catalog["performance_history_ref"][
+            "performance_generation_id"
+        ]
+        result["performance_manifest_sha256"] = catalog["performance_history_ref"][
+            "manifest"
+        ]["sha256"]
+        result["performance_series_sha256"] = performance["series_sha256"]
+        result["performance_owner_declaration_sha256"] = catalog[
+            "performance_history_ref"
+        ]["owner_declaration"]["sha256"]
+    return result
+
+
+def command_reselect_catalog(args: argparse.Namespace) -> dict[str, Any]:
+    if args.owner_approved_by != "maxwell":
+        raise StrategyRecordStoreError(
+            "catalog reselection requires explicit owner approval by maxwell"
+        )
+    reason = args.approval_reason
+    if (
+        not isinstance(reason, str)
+        or not reason.strip()
+        or len(reason) > 500
+        or "\n" in reason
+        or "\r" in reason
+    ):
+        raise StrategyRecordStoreError("catalog reselection approval reason is invalid")
+    result = reselect_catalog(
+        args.record_root,
+        expected_current_pointer_sha256=args.expected_current_pointer_sha,
+        target_generation_id=args.target_generation_id,
+        target_catalog_path=args.target_catalog_path,
+        target_catalog_sha256=args.target_catalog_sha,
+        published_at=_timestamp(args.published_at),
+    )
+    return {
+        "catalog_reselected": True,
+        "catalog_created": False,
+        "pointer_sha256": result["pointer_sha256"],
+        "generation_id": result["pointer"]["generation_id"],
+        "catalog_path": result["pointer"]["catalog_path"],
+        "catalog_sha256": result["pointer"]["catalog_sha256"],
+        "catalog_schema": result["catalog"]["schema_id"],
+        "performance_contract_ready": (
+            result["catalog"].get("performance_contract_ready") is True
+        ),
+        "owner_approved_by": args.owner_approved_by,
+        "approval_reason": reason,
+        "v17_mainline_authority": False,
+        "broker_order_execution_trade_authority": False,
+    }
+
+
+IDENTITY_RELATIVE_PATH = (
+    "results/portfolio_cycle/CN/cn-aggressive-tech-manufacturing/"
+    "governance/strategy_identity.v1.json"
+)
+
+
+def _read_candidate_bytes(
+    path: Path,
+    *,
+    expected_sha256: str,
+    max_bytes: int,
+    label: str,
+) -> bytes:
+    validate_safe_regular_0600(path, label=label)
+    digest, size = regular_file_sha256(path, label=label)
+    if digest != expected_sha256:
+        raise StrategyRecordStoreError(f"{label} SHA-256 mismatch")
+    if size <= 0 or size > max_bytes:
+        raise StrategyRecordStoreError(f"{label} exceeds byte budget")
+    raw = path.read_bytes()
+    if len(raw) != size or _sha(raw) != digest:
+        raise StrategyRecordStoreError(f"{label} changed during readback")
+    return raw
+
+
+def _read_candidate_json(
+    path: Path,
+    *,
+    expected_sha256: str,
+    label: str,
+) -> tuple[dict[str, Any], bytes]:
+    raw = _read_candidate_bytes(
+        path,
+        expected_sha256=expected_sha256,
+        max_bytes=MAX_PERFORMANCE_JSON_BYTES,
+        label=label,
+    )
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise StrategyRecordStoreError(f"{label} is invalid JSON") from exc
+    if not isinstance(value, dict) or canonical_json_bytes(value) != raw:
+        raise StrategyRecordStoreError(f"{label} is not canonical JSON")
+    validate_performance_semantic(value, label=label)
+    return value, raw
+
+
+def command_declare_strategy_identity(args: argparse.Namespace) -> dict[str, Any]:
+    from quant_investor.portfolio_cycle.contracts import (
+        canonical_json_bytes as portfolio_canonical_json_bytes,
+        seal_document,
+    )
+    from quant_investor.portfolio_cycle.identity import resolve_strategy_identity
+
+    project = Path(args.project_root).resolve(strict=True)
+    relative = args.identity_path or IDENTITY_RELATIVE_PATH
+    if relative != IDENTITY_RELATIVE_PATH:
+        raise StrategyRecordStoreError("strategy identity path is not canonical")
+    declared_at = _timestamp(args.declared_at)
+    provenance = args.provenance or (
+        "Owner maxwell confirmed the one-to-one mapping from historical label "
+        "aggressive_tech_manufacturing to canonical strategy ID "
+        "cn-aggressive-tech-manufacturing. This declaration proves identity only; "
+        "it creates no holdings pointer, V17 activation, Factor admission, risk or "
+        "publisher permit, or broker/order/execution/trade authority."
+    )
+    declaration = seal_document(
+        {
+            "schema_id": "myquant.v17.v4.strategy-identity-declaration.v1",
+            "protocol": "myquant.v17.v4",
+            "historical_label": "aggressive_tech_manufacturing",
+            "canonical_strategy_id": "cn-aggressive-tech-manufacturing",
+            "declared_by": "maxwell",
+            "declared_at": declared_at,
+            "authority_kind": "owner_declaration",
+            "provenance": provenance,
+        }
+    )
+    raw = portfolio_canonical_json_bytes(declaration)
+    target = project / relative
+    digest = immutable_write(target, raw, max_bytes=MAX_PERFORMANCE_JSON_BYTES)
+    resolved = resolve_strategy_identity(
+        project,
+        declaration_path=relative,
+        declaration_sha256=digest,
+        expected_historical_label="aggressive_tech_manufacturing",
+    )
+    if resolved.canonical_strategy_id != "cn-aggressive-tech-manufacturing":
+        raise StrategyRecordStoreError("strategy identity readback mismatch")
+    return {
+        "created_or_idempotent": True,
+        "identity_path": relative,
+        "identity_sha256": digest,
+        "canonical_strategy_id": resolved.canonical_strategy_id,
+        "historical_label": resolved.historical_label,
+        "authority_kind": resolved.authority_kind,
+        "v17_activation_authority": False,
+        "broker_order_execution_trade_authority": False,
+    }
+
+
+def command_prepare_performance_migration(args: argparse.Namespace) -> dict[str, Any]:
+    from quant_investor.portfolio_cycle.identity import resolve_strategy_identity
+
+    root = Path(args.record_root).resolve(strict=True)
+    project = Path(args.project_root).resolve(strict=True)
+    if project_root_for_record_root(root).resolve(strict=True) != project:
+        raise StrategyRecordStoreError("project root does not bind the governed record root")
+    loaded = load_registered_catalog(root)
+    if loaded is None:
+        raise StrategyRecordStoreError("performance migration requires a registered store")
+    pointer, catalog = loaded
+    observed_pointer_sha = _pointer_sha(root)
+    if observed_pointer_sha != args.expected_pointer_sha:
+        from quant_investor.strategy_records.store import StrategyRecordCASMismatch
+
+        raise StrategyRecordCASMismatch(args.expected_pointer_sha, observed_pointer_sha)
+    if catalog.get("schema_id") != CATALOG_SCHEMA_V2:
+        raise StrategyRecordStoreError(
+            "CANONICAL_PERFORMANCE_SOURCE_UNAVAILABLE:seed requires registered catalog v2"
+        )
+    identity_path = args.identity_path
+    if identity_path != IDENTITY_RELATIVE_PATH:
+        raise StrategyRecordStoreError("performance identity path is not canonical")
+    identity = resolve_strategy_identity(
+        project,
+        declaration_path=identity_path,
+        declaration_sha256=args.identity_sha,
+        expected_historical_label="aggressive_tech_manufacturing",
+    )
+    if identity.canonical_strategy_id != "cn-aggressive-tech-manufacturing":
+        raise StrategyRecordStoreError("performance identity strategy mismatch")
+    performance_generation = _record_id(args.performance_generation_id)
+    generated_at = _timestamp(args.generated_at)
+    owner_declared_at = _timestamp(args.owner_declared_at)
+    candidate_dir = assert_private_tmp(Path(args.output_dir))
+    if candidate_dir.exists():
+        raise StrategyRecordConflict("performance candidate output already exists")
+    candidate_dir.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    candidate_dir.mkdir(mode=0o700)
+    normalized, projection_sha, normalized_sha = normalize_registered_projection(catalog)
+    rows = build_seed_rows(normalized, catalog=catalog)
+    if rows[-1]["record_id"] != pointer.get("active_record_id"):
+        raise StrategyRecordStoreError(
+            "CANONICAL_PERFORMANCE_SOURCE_UNAVAILABLE:seed does not end at active record"
+        )
+    lineage = build_lineage_index(catalog)
+    validate_lineage_index(lineage, active_record_id=pointer.get("active_record_id"))
+    series_store_path = (
+        f"_record_store/performance/{performance_generation}/series.parquet"
+    )
+    owner_store_path = (
+        f"_record_store/performance/{performance_generation}/owner_declaration.v1.json"
+    )
+    series_path = candidate_dir / "series.parquet"
+    replay_path = candidate_dir / ".series.replay.parquet"
+    series_sha, series_bytes = write_deterministic_parquet(
+        rows, series_path, replay_path=replay_path
+    )
+    readback_rows = read_performance_parquet(series_path)
+    if readback_rows != rows:
+        raise StrategyRecordStoreError("performance candidate Parquet readback mismatch")
+    owner_candidate = build_performance_owner_declaration(
+        performance_generation_id=performance_generation,
+        declared_at=owner_declared_at,
+        series_path=series_store_path,
+        series_sha256=series_sha,
+        series_bytes=series_bytes,
+        source_pointer_sha256=observed_pointer_sha,
+        source_catalog_sha256=pointer["catalog_sha256"],
+        normalized_projection_semantic_sha256=normalized_sha,
+    )
+    owner_raw = canonical_json_bytes(owner_candidate)
+    owner_sha = _sha(owner_raw)
+    manifest = build_performance_manifest(
+        performance_generation_id=performance_generation,
+        generated_at=generated_at,
+        identity_path=identity_path,
+        identity_sha256=args.identity_sha,
+        parent_performance_manifest_sha256=None,
+        source_pointer_sha256=observed_pointer_sha,
+        source_catalog_generation_id=pointer["generation_id"],
+        source_catalog_sha256=pointer["catalog_sha256"],
+        dashboard_projection_sha256=projection_sha,
+        normalized_projection_semantic_sha256=normalized_sha,
+        series_path=series_store_path,
+        series_sha256=series_sha,
+        series_bytes=series_bytes,
+        owner_path=owner_store_path,
+        owner_sha256=owner_sha,
+        owner_bytes=len(owner_raw),
+        rows=rows,
+    )
+    manifest_raw = canonical_json_bytes(manifest)
+    manifest_path = candidate_dir / "manifest.v1.json"
+    manifest_sha = immutable_write(
+        manifest_path, manifest_raw, max_bytes=MAX_PERFORMANCE_JSON_BYTES
+    )
+    lineage_sha = _sha(canonical_json_bytes(lineage))
+    lineage_document = seal_semantic(
+        {
+            "schema_id": "myquant.strategy_record_lineage_index.v1",
+            "performance_generation_id": performance_generation,
+            "active_record_id": pointer["active_record_id"],
+            "previous_record_id": pointer["previous_record_id"],
+            "lineage_index": lineage,
+            "lineage_index_sha256": lineage_sha,
+        }
+    )
+    lineage_raw = canonical_json_bytes(lineage_document)
+    lineage_path = candidate_dir / "lineage_index.v1.json"
+    lineage_document_sha = immutable_write(
+        lineage_path, lineage_raw, max_bytes=MAX_PERFORMANCE_JSON_BYTES
+    )
+    receipt = seal_semantic(
+        {
+            "schema_id": PERFORMANCE_MIGRATION_RECEIPT_SCHEMA,
+            "performance_generation_id": performance_generation,
+            "generated_at": generated_at,
+            "source_pointer_sha256": observed_pointer_sha,
+            "source_catalog_generation_id": pointer["generation_id"],
+            "source_catalog_sha256": pointer["catalog_sha256"],
+            "dashboard_projection_sha256": projection_sha,
+            "normalized_projection_semantic_sha256": normalized_sha,
+            "identity_path": identity_path,
+            "identity_sha256": args.identity_sha,
+            "row_count": len(rows),
+            "date_range": [rows[0]["valuation_date"], rows[-1]["valuation_date"]],
+            "first_record_id": rows[0]["record_id"],
+            "last_record_id": rows[-1]["record_id"],
+            "first_raw_nav_cny": decimal_text(
+                rows[0]["raw_nav_cny"], quantum=MONEY_QUANTUM
+            ),
+            "last_raw_nav_cny": decimal_text(
+                rows[-1]["raw_nav_cny"], quantum=MONEY_QUANTUM
+            ),
+            "final_net_external_flow_cny": decimal_text(
+                rows[-1]["excluded_external_flow_cny"], quantum=MONEY_QUANTUM
+            ),
+            "cumulative_return": decimal_text(
+                rows[-1]["cumulative_return"], quantum=UNIT_QUANTUM
+            ),
+            "max_drawdown": decimal_text(
+                min(row["drawdown"] for row in rows), quantum=UNIT_QUANTUM
+            ),
+            "candidate_manifest_sha256": manifest_sha,
+            "candidate_manifest_bytes": len(manifest_raw),
+            "series_sha256": series_sha,
+            "series_bytes": series_bytes,
+            "prospective_owner_declaration_sha256": owner_sha,
+            "prospective_owner_declaration_bytes": len(owner_raw),
+            "prospective_owner_declaration": owner_candidate,
+            "lineage_index_sha256": lineage_sha,
+            "lineage_document_sha256": lineage_document_sha,
+            "lineage_count": len(lineage),
+            "legacy_runtime_access": False,
+            "candidate_only": True,
+            "store_pointer_modified": False,
+            "owner_approval_required": True,
+            "v17_activation_authority": False,
+            "broker_order_execution_trade_authority": False,
+        }
+    )
+    receipt_raw = canonical_json_bytes(receipt)
+    receipt_path = candidate_dir / "candidate_receipt.v1.json"
+    receipt_sha = immutable_write(
+        receipt_path, receipt_raw, max_bytes=MAX_PERFORMANCE_JSON_BYTES
+    )
+    if _pointer_sha(root) != observed_pointer_sha:
+        raise StrategyRecordStoreError("source pointer drifted during migration prepare")
+    return {
+        "prepared": True,
+        "published": False,
+        "owner_approval_required": True,
+        "candidate_dir": str(candidate_dir),
+        "candidate_receipt_path": str(receipt_path),
+        "candidate_receipt_sha256": receipt_sha,
+        "candidate_manifest_path": str(manifest_path),
+        "candidate_manifest_sha256": manifest_sha,
+        "series_path": str(series_path),
+        "series_sha256": series_sha,
+        "prospective_owner_declaration_sha256": owner_sha,
+        "lineage_document_path": str(lineage_path),
+        "lineage_document_sha256": lineage_document_sha,
+        "row_count": len(rows),
+        "date_range": [rows[0]["valuation_date"], rows[-1]["valuation_date"]],
+        "cumulative_return": receipt["cumulative_return"],
+        "max_drawdown": receipt["max_drawdown"],
+        "source_pointer_sha256": observed_pointer_sha,
+        "store_pointer_modified": False,
+    }
+
+
+def command_seal_performance_owner_declaration(args: argparse.Namespace) -> dict[str, Any]:
+    candidate_dir = assert_private_tmp(Path(args.candidate_dir)).resolve(strict=True)
+    receipt, _ = _read_candidate_json(
+        candidate_dir / "candidate_receipt.v1.json",
+        expected_sha256=args.candidate_receipt_sha,
+        label="performance candidate receipt",
+    )
+    if receipt.get("schema_id") != PERFORMANCE_MIGRATION_RECEIPT_SCHEMA:
+        raise StrategyRecordStoreError("performance candidate receipt schema mismatch")
+    for field, expected in (
+        ("candidate_manifest_sha256", args.approved_manifest_sha),
+        ("series_sha256", args.approved_series_sha),
+        (
+            "prospective_owner_declaration_sha256",
+            args.approved_owner_declaration_sha,
+        ),
+    ):
+        if receipt.get(field) != expected:
+            raise StrategyRecordStoreError("owner approval does not match exact candidate")
+    owner = receipt.get("prospective_owner_declaration")
+    if not isinstance(owner, dict):
+        raise StrategyRecordStoreError("prospective owner declaration is absent")
+    raw = canonical_json_bytes(owner)
+    if _sha(raw) != args.approved_owner_declaration_sha:
+        raise StrategyRecordStoreError("prospective owner declaration SHA mismatch")
+    target = candidate_dir / "owner_declaration.v1.json"
+    digest = immutable_write(target, raw, max_bytes=MAX_PERFORMANCE_JSON_BYTES)
+    manifest, _ = _read_candidate_json(
+        candidate_dir / "manifest.v1.json",
+        expected_sha256=args.approved_manifest_sha,
+        label="performance candidate manifest",
+    )
+    validate_performance_owner_declaration(
+        owner,
+        expected_generation=receipt["performance_generation_id"],
+        expected_series=manifest["series"],
+    )
+    return {
+        "owner_declaration_sealed": True,
+        "owner_declaration_path": str(target),
+        "owner_declaration_sha256": digest,
+        "approved_candidate_receipt_sha256": args.candidate_receipt_sha,
+        "approved_manifest_sha256": args.approved_manifest_sha,
+        "approved_series_sha256": args.approved_series_sha,
+    }
+
+
+def command_publish_performance_migration(args: argparse.Namespace) -> dict[str, Any]:
+    root = Path(args.record_root).resolve(strict=True)
+    loaded = load_registered_catalog(root)
+    if loaded is None:
+        raise StrategyRecordStoreError("performance migration publish requires a store")
+    pointer, catalog = loaded
+    observed_pointer_sha = _pointer_sha(root)
+    if observed_pointer_sha != args.expected_pointer_sha:
+        from quant_investor.strategy_records.store import StrategyRecordCASMismatch
+
+        raise StrategyRecordCASMismatch(args.expected_pointer_sha, observed_pointer_sha)
+    if catalog.get("schema_id") != CATALOG_SCHEMA_V2:
+        raise StrategyRecordStoreError("performance migration source is no longer catalog v2")
+    candidate_dir = assert_private_tmp(Path(args.candidate_dir)).resolve(strict=True)
+    receipt, _ = _read_candidate_json(
+        candidate_dir / "candidate_receipt.v1.json",
+        expected_sha256=args.candidate_receipt_sha,
+        label="performance candidate receipt",
+    )
+    manifest, manifest_raw = _read_candidate_json(
+        candidate_dir / "manifest.v1.json",
+        expected_sha256=args.candidate_manifest_sha,
+        label="performance candidate manifest",
+    )
+    owner, owner_raw = _read_candidate_json(
+        candidate_dir / "owner_declaration.v1.json",
+        expected_sha256=args.owner_declaration_sha,
+        label="performance owner declaration",
+    )
+    lineage_document, _ = _read_candidate_json(
+        candidate_dir / "lineage_index.v1.json",
+        expected_sha256=args.lineage_document_sha,
+        label="performance lineage document",
+    )
+    series_raw = _read_candidate_bytes(
+        candidate_dir / "series.parquet",
+        expected_sha256=args.series_sha,
+        max_bytes=MAX_PERFORMANCE_PARQUET_BYTES,
+        label="performance series candidate",
+    )
+    if (
+        receipt.get("source_pointer_sha256") != observed_pointer_sha
+        or receipt.get("source_catalog_sha256") != pointer.get("catalog_sha256")
+        or receipt.get("candidate_manifest_sha256") != args.candidate_manifest_sha
+        or receipt.get("series_sha256") != args.series_sha
+        or receipt.get("prospective_owner_declaration_sha256")
+        != args.owner_declaration_sha
+        or receipt.get("lineage_document_sha256") != args.lineage_document_sha
+        or receipt.get("prospective_owner_declaration") != owner
+    ):
+        raise StrategyRecordStoreError("performance migration candidate closure mismatch")
+    performance_generation = receipt.get("performance_generation_id")
+    if performance_generation != args.performance_generation_id:
+        raise StrategyRecordStoreError("performance generation mismatch")
+    lineage = lineage_document.get("lineage_index")
+    if (
+        lineage_document.get("schema_id") != "myquant.strategy_record_lineage_index.v1"
+        or lineage_document.get("active_record_id") != pointer.get("active_record_id")
+        or lineage_document.get("previous_record_id") != pointer.get("previous_record_id")
+        or lineage_document.get("lineage_index_sha256")
+        != _sha(canonical_json_bytes(lineage))
+    ):
+        raise StrategyRecordStoreError("performance lineage closure mismatch")
+    validate_lineage_index(lineage, active_record_id=pointer.get("active_record_id"))
+    performance_ref = build_performance_history_ref(
+        manifest=manifest,
+        manifest_sha256=args.candidate_manifest_sha,
+        manifest_bytes=len(manifest_raw),
+    )
+    validate_performance_manifest(manifest, expected_ref=performance_ref)
+    validate_performance_owner_declaration(
+        owner,
+        expected_generation=performance_generation,
+        expected_series=performance_ref["series"],
+    )
+    rows = read_performance_parquet(candidate_dir / "series.parquet")
+    if (
+        len(rows) != receipt.get("row_count")
+        or rows[-1]["record_id"] != pointer.get("active_record_id")
+    ):
+        raise StrategyRecordStoreError("performance candidate active-row mismatch")
+    prefix = root / STORE_DIRECTORY / "performance" / str(performance_generation)
+    published = {
+        "manifest": (
+            prefix / "manifest.v1.json",
+            manifest_raw,
+            args.candidate_manifest_sha,
+            MAX_PERFORMANCE_JSON_BYTES,
+        ),
+        "series": (
+            prefix / "series.parquet",
+            series_raw,
+            args.series_sha,
+            MAX_PERFORMANCE_PARQUET_BYTES,
+        ),
+        "owner_declaration": (
+            prefix / "owner_declaration.v1.json",
+            owner_raw,
+            args.owner_declaration_sha,
+            MAX_PERFORMANCE_JSON_BYTES,
+        ),
+    }
+    for label, (target, raw, expected_sha, budget) in published.items():
+        observed = immutable_write(target, raw, max_bytes=budget)
+        if observed != expected_sha:
+            raise StrategyRecordStoreError(f"published performance {label} SHA mismatch")
+    load_performance_history(root, performance_ref)
+    if _pointer_sha(root) != observed_pointer_sha:
+        raise StrategyRecordStoreError("source pointer drifted before catalog CAS")
+    result = publish_catalog(
+        root,
+        expected_pointer_sha256=args.expected_pointer_sha,
+        records=[dict(row) for row in catalog["records"]],
+        active_record_id=pointer["active_record_id"],
+        previous_record_id=pointer["previous_record_id"],
+        generation_id=args.catalog_generation_id,
+        published_at=_timestamp(args.published_at),
+        catalog_schema=CATALOG_SCHEMA_V3,
+        inherit_history_registry=False,
+        lineage_index=lineage,
+        performance_history_ref=performance_ref,
+    )
+    readback = load_registered_catalog(root)
+    if readback is None or readback != (result["pointer"], result["catalog"]):
+        raise StrategyRecordStoreError("performance migration post-CAS readback mismatch")
+    return {
+        "published": True,
+        "pointer_sha256": result["pointer_sha256"],
+        "catalog_generation_id": result["pointer"]["generation_id"],
+        "catalog_sha256": result["pointer"]["catalog_sha256"],
+        "performance_generation_id": performance_generation,
+        "performance_manifest_sha256": args.candidate_manifest_sha,
+        "performance_series_sha256": args.series_sha,
+        "performance_owner_declaration_sha256": args.owner_declaration_sha,
+        "lineage_index_sha256": result["catalog"]["lineage_index_sha256"],
+        "performance_contract_ready": True,
+        "v17_activation_authority": False,
+        "broker_order_execution_trade_authority": False,
     }
 
 
@@ -2292,6 +3259,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--project-root",
         help="Required for governed CN publication and Dashboard revalidation",
     )
+    seal.add_argument(
+        "--performance-generation-id",
+        help="Required when advancing a catalog v3 official financial state",
+    )
+    seal.add_argument(
+        "--cash-flow-artifact",
+        action="append",
+        default=[],
+        metavar="PROJECT_RELATIVE_PATH=SHA256",
+        help="Exact owner-declared cash-flow closure for a non-zero funding state",
+    )
     _publication_options(seal)
     seal.set_defaults(handler=command_seal_publish)
     seal.set_defaults(mutating=True)
@@ -2308,6 +3286,62 @@ def build_parser() -> argparse.ArgumentParser:
     verify = subparsers.add_parser("verify")
     _common_record_root(verify)
     verify.set_defaults(handler=command_verify)
+
+    reselect = subparsers.add_parser("reselect-catalog")
+    _common_record_root(reselect)
+    reselect.add_argument("--expected-current-pointer-sha", required=True)
+    reselect.add_argument("--target-generation-id", required=True)
+    reselect.add_argument("--target-catalog-path", required=True)
+    reselect.add_argument("--target-catalog-sha", required=True)
+    reselect.add_argument("--published-at", required=True)
+    reselect.add_argument("--owner-approved-by", required=True)
+    reselect.add_argument("--approval-reason", required=True)
+    reselect.set_defaults(handler=command_reselect_catalog, mutating=True)
+
+    identity = subparsers.add_parser("declare-strategy-identity")
+    _common_record_root(identity)
+    identity.add_argument("--project-root", required=True)
+    identity.add_argument("--identity-path", default=IDENTITY_RELATIVE_PATH)
+    identity.add_argument("--declared-at", required=True)
+    identity.add_argument("--provenance")
+    identity.set_defaults(handler=command_declare_strategy_identity, mutating=True)
+
+    prepare_performance = subparsers.add_parser("prepare-performance-migration")
+    _common_record_root(prepare_performance)
+    prepare_performance.add_argument("--project-root", required=True)
+    prepare_performance.add_argument("--expected-pointer-sha", required=True)
+    prepare_performance.add_argument("--performance-generation-id", required=True)
+    prepare_performance.add_argument("--identity-path", required=True)
+    prepare_performance.add_argument("--identity-sha", required=True)
+    prepare_performance.add_argument("--generated-at", required=True)
+    prepare_performance.add_argument("--owner-declared-at", required=True)
+    prepare_performance.add_argument("--output-dir", required=True)
+    prepare_performance.set_defaults(handler=command_prepare_performance_migration)
+
+    seal_owner = subparsers.add_parser("seal-performance-owner-declaration")
+    seal_owner.add_argument("--candidate-dir", required=True)
+    seal_owner.add_argument("--candidate-receipt-sha", required=True)
+    seal_owner.add_argument("--approved-manifest-sha", required=True)
+    seal_owner.add_argument("--approved-series-sha", required=True)
+    seal_owner.add_argument("--approved-owner-declaration-sha", required=True)
+    seal_owner.set_defaults(handler=command_seal_performance_owner_declaration)
+
+    publish_performance = subparsers.add_parser("publish-performance-migration")
+    _common_record_root(publish_performance)
+    publish_performance.add_argument("--expected-pointer-sha", required=True)
+    publish_performance.add_argument("--candidate-dir", required=True)
+    publish_performance.add_argument("--candidate-receipt-sha", required=True)
+    publish_performance.add_argument("--candidate-manifest-sha", required=True)
+    publish_performance.add_argument("--series-sha", required=True)
+    publish_performance.add_argument("--owner-declaration-sha", required=True)
+    publish_performance.add_argument("--lineage-document-sha", required=True)
+    publish_performance.add_argument("--performance-generation-id", required=True)
+    publish_performance.add_argument("--catalog-generation-id", required=True)
+    publish_performance.add_argument("--published-at", required=True)
+    publish_performance.set_defaults(
+        handler=command_publish_performance_migration,
+        mutating=True,
+    )
 
     archive = subparsers.add_parser("archive-rehearsal")
     _common_record_root(archive)

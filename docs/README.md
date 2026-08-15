@@ -21,6 +21,11 @@ and the separate Shadow forward-evidence lane.
 
 - [Research pipeline and protocols](architecture/research_pipeline_and_protocols.md)
 - [Factor Governance v4](factor_governance_v4.md)
+- [CN weekly portfolio review automation](cn_weekly_review_automation.md) —
+  Store-v3 evidence, weekly narrative inputs, formal-advisory gate, and
+  decision-log boundary
+- [CN aggressive Dashboard contract](../portfolio_dashboard/README.md) —
+  registered current/previous holdings and canonical performance closure
 - [Evidence archive boundary](architecture/evidence_archive_boundary.md) — why
   `factors/governance*` is 32% of the package, unreachable from every entry
   point, and still must not be deleted, moved or edited

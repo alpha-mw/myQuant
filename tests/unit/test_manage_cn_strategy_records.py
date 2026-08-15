@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import csv
+from decimal import Decimal
 import hashlib
 import io
 import json
@@ -10,15 +12,28 @@ import shutil
 import tarfile
 
 import pytest
+import pyarrow as pa
+import pyarrow.parquet as pq
 
+from quant_investor.strategy_records.performance import (
+    MAX_PERFORMANCE_JSON_BYTES,
+    build_manifest as build_performance_manifest,
+    build_owner_declaration,
+    build_performance_history_ref,
+    immutable_write,
+    load_performance_history,
+    write_deterministic_parquet,
+)
 from quant_investor.strategy_records.store import (
     CATALOG_SCHEMA_V2,
+    CATALOG_SCHEMA_V3,
     StrategyRecordConflict,
     StrategyRecordStoreError,
     bootstrap_catalog,
     canonical_json_bytes,
     content_sha256,
     load_registered_catalog,
+    publish_catalog,
 )
 from scripts import manage_cn_strategy_records as manager
 from scripts.cn_dashboard_common import DashboardInputError
@@ -73,6 +88,638 @@ def test_inventory_reports_unregistered_legacy_and_registered_orphans(
     assert after["registered"] is True
     assert after["orphan_record_dirs"] == ["legacy"]
     assert after["orphans_preserved"] is True
+
+
+def test_reselect_catalog_command_requires_explicit_owner_approval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = _args(
+        record_root="/governed/root",
+        expected_current_pointer_sha="a" * 64,
+        target_generation_id="g-pre-cutover",
+        target_catalog_path=(
+            "_record_store/catalogs/g-pre-cutover/catalog.v2.json"
+        ),
+        target_catalog_sha="b" * 64,
+        published_at="2026-08-15T08:00:00Z",
+        owner_approved_by="not-owner",
+        approval_reason="owner-approved rollback",
+    )
+    with pytest.raises(StrategyRecordStoreError, match="explicit owner approval"):
+        manager.command_reselect_catalog(values)
+
+    captured: dict[str, object] = {}
+
+    def fake_reselect(record_root: str, **kwargs: object) -> dict[str, object]:
+        captured.update({"record_root": record_root, **kwargs})
+        return {
+            "pointer_sha256": "c" * 64,
+            "pointer": {
+                "generation_id": "g-pre-cutover",
+                "catalog_path": (
+                    "_record_store/catalogs/g-pre-cutover/catalog.v2.json"
+                ),
+                "catalog_sha256": "b" * 64,
+            },
+            "catalog": {"schema_id": CATALOG_SCHEMA_V2},
+        }
+
+    monkeypatch.setattr(manager, "reselect_catalog", fake_reselect)
+    values.owner_approved_by = "maxwell"
+    result = manager.command_reselect_catalog(values)
+    assert result["catalog_reselected"] is True
+    assert result["catalog_created"] is False
+    assert result["performance_contract_ready"] is False
+    assert captured["expected_current_pointer_sha256"] == "a" * 64
+
+    parsed = manager.build_parser().parse_args(
+        [
+            "reselect-catalog",
+            "--record-root",
+            "/governed/root",
+            "--expected-current-pointer-sha",
+            "a" * 64,
+            "--target-generation-id",
+            "g-pre-cutover",
+            "--target-catalog-path",
+            "_record_store/catalogs/g-pre-cutover/catalog.v2.json",
+            "--target-catalog-sha",
+            "b" * 64,
+            "--published-at",
+            "2026-08-15T08:00:00Z",
+            "--owner-approved-by",
+            "maxwell",
+            "--approval-reason",
+            "owner-approved rollback",
+        ]
+    )
+    assert parsed.handler is manager.command_reselect_catalog
+    assert parsed.mutating is True
+
+
+def test_identity_declaration_is_create_once_and_exact(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    record_root = project / (
+        "results/strategy_records/CN/aggressive_tech_manufacturing"
+    )
+    record_root.mkdir(parents=True)
+    values = _args(
+        record_root=str(record_root),
+        project_root=str(project),
+        identity_path=manager.IDENTITY_RELATIVE_PATH,
+        declared_at="2026-08-15T06:00:00Z",
+        provenance=None,
+    )
+    first = manager.command_declare_strategy_identity(values)
+    second = manager.command_declare_strategy_identity(values)
+    identity = project / manager.IDENTITY_RELATIVE_PATH
+
+    assert first == second
+    assert hashlib.sha256(identity.read_bytes()).hexdigest() == first[
+        "identity_sha256"
+    ]
+    assert oct(identity.stat().st_mode & 0o777) == "0o600"
+    with pytest.raises(StrategyRecordConflict, match="conflict"):
+        manager.command_declare_strategy_identity(
+            _args(
+                record_root=str(record_root),
+                project_root=str(project),
+                identity_path=manager.IDENTITY_RELATIVE_PATH,
+                declared_at="2026-08-15T06:00:00Z",
+                provenance="different exact owner declaration",
+            )
+        )
+
+
+def _performance_record(record_id: str, *, active: bool) -> dict[str, object]:
+    return {
+        "record_id": record_id,
+        "relative_path": record_id,
+        "state": "ONLINE",
+        "storage_state": "ONLINE",
+        "sealed_at": "2026-08-15T06:00:00Z",
+        "inventory": [],
+        "inventory_sha256": hashlib.sha256(b"[]\n").hexdigest(),
+        "file_count": 0,
+        "total_bytes": 0,
+        "manifest_path": f"{record_id}/manifest.json",
+        "manifest_sha256": ("7" if active else "8") * 64,
+        "manual_manifest_path": f"{record_id}/manual_execution_manifest.json",
+        "manual_manifest_sha256": ("a" if active else "b") * 64,
+        "ledger_path": f"{record_id}/ledger_after_manual_switch.parquet",
+        "ledger_sha256": ("c" if active else "d") * 64,
+        "financial_state_sha256": ("e" if active else "f") * 64,
+    }
+
+
+def test_prepare_performance_migration_writes_tmp_candidate_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    record_root = project / (
+        "results/strategy_records/CN/aggressive_tech_manufacturing"
+    )
+    previous_id = "20260813_1800"
+    active_id = "20260814_1800"
+    for record_id in (previous_id, active_id):
+        (record_root / record_id).mkdir(parents=True)
+    records = [
+        _performance_record(previous_id, active=False),
+        _performance_record(active_id, active=True),
+    ]
+    projection = {
+        "valid_records": [
+            {
+                "record": previous_id,
+                "source_record": None,
+                "data_date": "2026-08-13",
+                "execution_kind": "carry_forward",
+                "execution_status": "no_action_carry_forward_official_valuation",
+                "official_valuation": True,
+            },
+            {
+                "record": active_id,
+                "source_record": previous_id,
+                "data_date": "2026-08-14",
+                "execution_kind": "carry_forward",
+                "execution_status": "no_action_carry_forward_official_valuation",
+                "official_valuation": True,
+            },
+        ],
+        "historical_records": [
+            {
+                "record": previous_id,
+                "valuation_date": "2026-08-13",
+                "accounting": {
+                    "cash_after": 1_000_000,
+                    "market_value_after": 0,
+                    "total_value_after": 1_000_000,
+                    "portfolio_pnl_after": 0,
+                },
+                "capital_base": 1_000_000,
+                "funding": None,
+                "funding_correction": None,
+                "evidence_status": "REGISTERED",
+                "source_refs": [
+                    {
+                        "path": "forbidden/ledger.csv",
+                        "sha256": "9" * 64,
+                    }
+                ],
+            },
+            {
+                "record": active_id,
+                "valuation_date": "2026-08-14",
+                "accounting": {
+                    "cash_after": 1_010_000,
+                    "market_value_after": 0,
+                    "total_value_after": 1_010_000,
+                    "portfolio_pnl_after": 10_000,
+                },
+                "capital_base": 1_000_000,
+                "funding": None,
+                "funding_correction": None,
+                "evidence_status": "REGISTERED",
+                "source_refs": [
+                    {
+                        "path": "forbidden/ledger.csv",
+                        "sha256": "8" * 64,
+                    }
+                ],
+            },
+        ],
+        "rejected": [],
+        "historical_rejected": [],
+        "latest_seen": active_id,
+    }
+    initial = bootstrap_catalog(
+        record_root,
+        records=records,
+        dashboard_projection=projection,
+        active_record_id=active_id,
+        previous_record_id=previous_id,
+        generation_id="g-v2",
+        published_at="2026-08-15T06:00:00Z",
+        catalog_schema=CATALOG_SCHEMA_V2,
+    )
+    identity = manager.command_declare_strategy_identity(
+        _args(
+            record_root=str(record_root),
+            project_root=str(project),
+            identity_path=manager.IDENTITY_RELATIVE_PATH,
+            declared_at="2026-08-15T06:00:00Z",
+            provenance=None,
+        )
+    )
+    output = tmp_path / "candidate"
+    monkeypatch.setattr(manager, "assert_private_tmp", lambda path: Path(path))
+    original_read_bytes = Path.read_bytes
+
+    def guarded_read_bytes(path: Path) -> bytes:
+        if path.name == "ledger.csv":
+            raise AssertionError("migration attempted to read the disabled ledger")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", guarded_read_bytes)
+    result = manager.command_prepare_performance_migration(
+        _args(
+            record_root=str(record_root),
+            project_root=str(project),
+            expected_pointer_sha=initial["pointer_sha256"],
+            performance_generation_id="p-seed",
+            identity_path=manager.IDENTITY_RELATIVE_PATH,
+            identity_sha=identity["identity_sha256"],
+            generated_at="2026-08-15T06:01:00Z",
+            owner_declared_at="2026-08-15T06:01:00Z",
+            output_dir=str(output),
+        )
+    )
+
+    assert result["prepared"] is True
+    assert result["published"] is False
+    assert result["store_pointer_modified"] is False
+    assert result["row_count"] == 2
+    assert _pointer_sha(record_root) == initial["pointer_sha256"]
+    assert not (output / "owner_declaration.v1.json").exists()
+    for candidate in output.iterdir():
+        assert b"ledger.csv" not in candidate.read_bytes().lower()
+
+    owner = manager.command_seal_performance_owner_declaration(
+        _args(
+            candidate_dir=str(output),
+            candidate_receipt_sha=result["candidate_receipt_sha256"],
+            approved_manifest_sha=result["candidate_manifest_sha256"],
+            approved_series_sha=result["series_sha256"],
+            approved_owner_declaration_sha=result[
+                "prospective_owner_declaration_sha256"
+            ],
+        )
+    )
+    published = manager.command_publish_performance_migration(
+        _args(
+            record_root=str(record_root),
+            expected_pointer_sha=initial["pointer_sha256"],
+            candidate_dir=str(output),
+            candidate_receipt_sha=result["candidate_receipt_sha256"],
+            candidate_manifest_sha=result["candidate_manifest_sha256"],
+            series_sha=result["series_sha256"],
+            owner_declaration_sha=owner["owner_declaration_sha256"],
+            lineage_document_sha=result["lineage_document_sha256"],
+            performance_generation_id="p-seed",
+            catalog_generation_id="g-v3",
+            published_at="2026-08-15T06:02:00Z",
+        )
+    )
+    verified = manager.command_verify(_args(record_root=str(record_root)))
+
+    assert published["performance_contract_ready"] is True
+    assert verified["catalog_schema"] == "myquant.strategy_record_catalog.v3"
+    assert verified["performance_contract_ready"] is True
+
+
+def _initial_v3_store(project: Path) -> tuple[Path, dict[str, object]]:
+    root = project / "results/strategy_records/CN/aggressive_tech_manufacturing"
+    previous_id = "20260101_1000"
+    active_id = "20260102_1000"
+    sha = {
+        previous_id: {"manifest": "1" * 64, "manual": "2" * 64, "ledger": "3" * 64, "fs": "4" * 64},
+        active_id: {"manifest": "5" * 64, "manual": "6" * 64, "ledger": "7" * 64, "fs": "8" * 64},
+    }
+    records: list[dict[str, object]] = []
+    for record_id in (previous_id, active_id):
+        record_dir = root / record_id
+        record_dir.mkdir(parents=True)
+        inventory = manager.build_inventory(record_dir, enforce_new_record_budget=True)
+        records.append(
+            {
+                "record_id": record_id,
+                "relative_path": record_id,
+                "state": "ONLINE",
+                "storage_state": "ONLINE",
+                "sealed_at": "2026-01-02T02:00:00Z",
+                **inventory,
+                "manifest_path": f"{record_id}/manifest.json",
+                "manifest_sha256": sha[record_id]["manifest"],
+                "manual_manifest_path": f"{record_id}/manual_execution_manifest.json",
+                "manual_manifest_sha256": sha[record_id]["manual"],
+                "ledger_path": f"{record_id}/ledger_after_manual_switch.parquet",
+                "ledger_sha256": sha[record_id]["ledger"],
+                "financial_state_sha256": sha[record_id]["fs"],
+            }
+        )
+    initial = bootstrap_catalog(
+        root,
+        records=records,
+        active_record_id=active_id,
+        previous_record_id=previous_id,
+        generation_id="g-v2",
+        published_at="2026-01-02T02:00:00Z",
+        catalog_schema=CATALOG_SCHEMA_V2,
+    )
+    rows = []
+    for sequence, record_id, day, nav in (
+        (1, previous_id, "2026-01-01", Decimal("1000000.0000")),
+        (2, active_id, "2026-01-02", Decimal("1010000.0000")),
+    ):
+        unit_nav = nav / Decimal("1000000")
+        rows.append(
+            {
+                "sequence_no": sequence,
+                "record_id": record_id,
+                "valuation_at": f"{day}T02:00:00Z",
+                "valuation_date": day,
+                "cash_cny": nav,
+                "equity_market_value_cny": Decimal("0.0000"),
+                "raw_nav_cny": nav,
+                "portfolio_pnl_cny": nav - Decimal("1000000"),
+                "excluded_external_flow_cny": Decimal("0.0000"),
+                "adjusted_nav_cny": nav,
+                "unit_count": Decimal("1000000.000000000000"),
+                "unit_nav": unit_nav,
+                "interval_return": Decimal("0.000000000000") if sequence == 1 else Decimal("0.010000000000"),
+                "cumulative_return": Decimal("0.000000000000") if sequence == 1 else Decimal("0.010000000000"),
+                "drawdown": Decimal("0.000000000000"),
+                "evidence_kind": "OWNER_DECLARED_REGISTERED_PROJECTION_MIGRATION",
+                "manual_manifest_sha256": sha[record_id]["manual"],
+                "ledger_parquet_sha256": sha[record_id]["ledger"],
+                "financial_state_sha256": sha[record_id]["fs"],
+            }
+        )
+    performance_generation = "p-parent"
+    prefix = root / "_record_store/performance" / performance_generation
+    prefix.mkdir(parents=True)
+    series_sha, series_bytes = write_deterministic_parquet(
+        rows, prefix / "series.parquet"
+    )
+    owner = build_owner_declaration(
+        performance_generation_id=performance_generation,
+        declared_at="2026-01-02T02:01:00Z",
+        series_path=f"_record_store/performance/{performance_generation}/series.parquet",
+        series_sha256=series_sha,
+        series_bytes=series_bytes,
+        source_pointer_sha256=initial["pointer_sha256"],
+        source_catalog_sha256=initial["pointer"]["catalog_sha256"],
+        normalized_projection_semantic_sha256="9" * 64,
+    )
+    owner_raw = canonical_json_bytes(owner)
+    owner_sha = immutable_write(
+        prefix / "owner_declaration.v1.json",
+        owner_raw,
+        max_bytes=MAX_PERFORMANCE_JSON_BYTES,
+    )
+    manifest = build_performance_manifest(
+        performance_generation_id=performance_generation,
+        generated_at="2026-01-02T02:01:00Z",
+        identity_path=manager.IDENTITY_RELATIVE_PATH,
+        identity_sha256="a" * 64,
+        parent_performance_manifest_sha256=None,
+        source_pointer_sha256=initial["pointer_sha256"],
+        source_catalog_generation_id="g-v2",
+        source_catalog_sha256=initial["pointer"]["catalog_sha256"],
+        dashboard_projection_sha256="b" * 64,
+        normalized_projection_semantic_sha256="9" * 64,
+        series_path=f"_record_store/performance/{performance_generation}/series.parquet",
+        series_sha256=series_sha,
+        series_bytes=series_bytes,
+        owner_path=f"_record_store/performance/{performance_generation}/owner_declaration.v1.json",
+        owner_sha256=owner_sha,
+        owner_bytes=len(owner_raw),
+        rows=rows,
+    )
+    manifest_raw = canonical_json_bytes(manifest)
+    manifest_sha = immutable_write(
+        prefix / "manifest.v1.json",
+        manifest_raw,
+        max_bytes=MAX_PERFORMANCE_JSON_BYTES,
+    )
+    performance_ref = build_performance_history_ref(
+        manifest=manifest,
+        manifest_sha256=manifest_sha,
+        manifest_bytes=len(manifest_raw),
+    )
+    lineage: list[dict[str, object]] = []
+    parent: str | None = None
+    for record_id, day in ((previous_id, "2026-01-01"), (active_id, "2026-01-02")):
+        lineage.append(
+            {
+                "record_id": record_id,
+                "source_record_id": parent,
+                "supersedes_record_id": None,
+                "valuation_date": day,
+                "execution_class": "NO_TRADE",
+                "publication_class": "OFFICIAL_FINANCIAL_STATE",
+                "storage_state": "ONLINE",
+                "manifest_ref": {"path": f"{record_id}/manifest.json", "sha256": sha[record_id]["manifest"]},
+                "manual_manifest_ref": {"path": f"{record_id}/manual_execution_manifest.json", "sha256": sha[record_id]["manual"]},
+                "effective_ledger_ref": {"path": f"{record_id}/ledger_after_manual_switch.parquet", "sha256": sha[record_id]["ledger"]},
+                "financial_state_sha256": sha[record_id]["fs"],
+                "ledger_parquet_sha256": sha[record_id]["ledger"],
+            }
+        )
+        parent = record_id
+    published = publish_catalog(
+        root,
+        expected_pointer_sha256=initial["pointer_sha256"],
+        records=records,
+        active_record_id=active_id,
+        previous_record_id=previous_id,
+        generation_id="g-v3",
+        published_at="2026-01-02T02:02:00Z",
+        catalog_schema=CATALOG_SCHEMA_V3,
+        inherit_history_registry=False,
+        lineage_index=lineage,
+        performance_history_ref=performance_ref,
+    )
+    return root, published
+
+
+def _write_applied_parquet_record(
+    stage: Path, *, record_id: str, source_record_id: str
+) -> None:
+    ledger_path = stage / "ledger_after_manual_switch.parquet"
+    pq.write_table(
+        pa.Table.from_pylist(
+            [
+                {
+                    "symbol": "000001.SZ",
+                    "name": "平安银行",
+                    "shares": 100,
+                    "avg_cost": 10.0,
+                    "cost_basis": 1000.0,
+                    "current_price": 11.0,
+                    "current_value": 1100.0,
+                    "unrealized_pnl": 100.0,
+                    "equity_sleeve_weight": 1.0,
+                    "nav_weight": 1100.0 / 1_020_000.0,
+                    "thesis_status": "FORMAL_RESEARCH",
+                }
+            ]
+        ),
+        ledger_path,
+    )
+    ledger_sha = hashlib.sha256(ledger_path.read_bytes()).hexdigest()
+    pnl_path = stage / "pnl_summary.csv"
+    with pnl_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "initial_capital",
+                "cash_after",
+                "market_value_after",
+                "total_value_after",
+                "portfolio_pnl_after",
+                "realized_pnl_from_rebalance",
+            ],
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "initial_capital": 1_000_000,
+                "cash_after": 1_018_900,
+                "market_value_after": 1100,
+                "total_value_after": 1_020_000,
+                "portfolio_pnl_after": 20_000,
+                "realized_pnl_from_rebalance": 0,
+            }
+        )
+    manual = {
+        "schema_version": "cn_aggressive_manual_execution.v3",
+        "status": "manual_execution_applied",
+        "execution_status": "manual_execution_applied",
+        "record_timestamp": record_id,
+        "capital_cny": 1_000_000,
+        "no_broker_api_called": True,
+        "no_trade_performed": False,
+        "effective_manual_ledger_path": "ledger_after_manual_switch.parquet",
+        "next_ledger_path": "ledger_after_manual_switch.parquet",
+        "next_ledger_sha256": ledger_sha,
+        "ledger_after_manual_switch_parquet_sha256": ledger_sha,
+        "ledger_provenance": {
+            "contained_in_run_directory": True,
+            "regular_non_symlink_file": True,
+            "stable_double_read": True,
+            "declared_sha256": ledger_sha,
+        },
+        "effective_manual_holding_count": 1,
+        "cash_after": 1_018_900,
+        "market_value_after": 1100,
+        "total_value_after": 1_020_000,
+        "portfolio_pnl_after": 20_000,
+        "realized_pnl_from_rebalance": 0,
+        "financial_state_sha256": "c" * 64,
+        "applied_owner_declared_trades": [
+            {
+                "symbol": "000001.SZ",
+                "name": "平安银行",
+                "side": "BUY",
+                "shares": 100,
+                "execution_price": 10.0,
+                "trade_date": "2026-01-03",
+            }
+        ],
+    }
+    (stage / "manual_execution_manifest.json").write_text(
+        json.dumps(manual, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    manifest = {
+        "market": "CN",
+        "strategy": "aggressive_tech_manufacturing",
+        "timestamp": record_id,
+        "recorded_at": "2026-01-03 10:00:00 CST",
+        "source_record": source_record_id,
+        "files": {
+            "manual_execution_manifest": "manual_execution_manifest.json",
+            "pnl_summary": "pnl_summary.csv",
+        },
+        "manual_execution": manual,
+        "data_snapshot": {"analysis_trade_date": "20260103"},
+    }
+    (stage / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+def test_catalog_v3_seal_publish_advances_performance_and_no_action_inherits(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    root, initial = _initial_v3_store(project)
+    record_id = "20260103_1000"
+    stage = Path(
+        manager.command_stage_init(
+            _args(record_root=str(root), record_id=record_id)
+        )["staging_dir"]
+    )
+    _write_applied_parquet_record(
+        stage, record_id=record_id, source_record_id="20260102_1000"
+    )
+    published = manager.command_seal_publish(
+        _args(
+            record_root=str(root),
+            record_id=record_id,
+            expected_pointer_sha=initial["pointer_sha256"],
+            project_root=str(project),
+            generation_id="g-v3-next",
+            performance_generation_id="p-next",
+            cash_flow_artifact=[],
+            published_at="2026-01-03T02:01:00Z",
+        )
+    )
+    pointer, catalog = load_registered_catalog(root) or ({}, {})
+    performance = load_performance_history(root, catalog["performance_history_ref"])
+
+    assert pointer["active_record_id"] == record_id
+    assert pointer["previous_record_id"] == "20260102_1000"
+    assert performance["rows"][-1]["record_id"] == record_id
+    assert performance["rows"][-1]["cumulative_return"] == Decimal("0.020000000000")
+    assert catalog["lineage_index"][-1]["execution_class"] == "APPLIED_TRADES"
+
+    replay = manager.command_seal_publish(
+        _args(
+            record_root=str(root),
+            record_id=record_id,
+            expected_pointer_sha=published["pointer_sha256"],
+            project_root=str(project),
+            generation_id="unused-replay",
+            performance_generation_id="unused-replay",
+            cash_flow_artifact=[],
+            published_at="2026-01-03T02:02:00Z",
+        )
+    )
+    assert replay["idempotent"] is True
+
+    performance_ref_before = catalog["performance_history_ref"]
+    no_action = manager.command_no_action(
+        _args(
+            record_root=str(root),
+            receipt_id="weekly-no-action-2026-w01",
+            reason="No new official financial state",
+            expected_pointer_sha=published["pointer_sha256"],
+            generation_id="g-v3-receipt",
+            published_at="2026-01-03T02:03:00Z",
+        )
+    )
+    _, after = load_registered_catalog(root) or ({}, {})
+    assert no_action["catalog"]["schema_id"] == CATALOG_SCHEMA_V3
+    assert after["performance_history_ref"] == performance_ref_before
+
+
+def test_catalog_v3_rejects_named_or_symlinked_legacy_ledger_before_hashing(
+    tmp_path: Path,
+) -> None:
+    direct = tmp_path / "direct"
+    direct.mkdir()
+    (direct / "ledger.csv").write_text("disabled", encoding="utf-8")
+    with pytest.raises(StrategyRecordStoreError, match="legacy ledger"):
+        manager._reject_disabled_ledger_candidates(direct)
+
+    linked = tmp_path / "linked"
+    linked.mkdir()
+    target = tmp_path / "outside.csv"
+    target.write_text("disabled", encoding="utf-8")
+    (linked / "ledger_after_manual_switch.csv").symlink_to(target)
+    with pytest.raises(StrategyRecordStoreError, match="legacy ledger"):
+        manager._reject_disabled_ledger_candidates(linked)
 
 
 def test_bootstrap_live_expectations_fail_before_registration(

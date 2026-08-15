@@ -89,11 +89,40 @@ def run_fundamental_maintenance(**kwargs):
 
 
 def run_fundamental_promotion(**kwargs):
+    values = dict(kwargs)
+    safe_successor = bool(values.pop("safe_incremental_successor", False))
+    recover = bool(values.pop("recover", False))
+    execute = bool(values.pop("execute", False))
+    journal_root = values.pop("journal_root", None)
+    journal_run_id = values.pop("journal_run_id", None)
+    if safe_successor:
+        from quant_investor.market.fundamental_successor_promotion import (
+            promote_successor_generation,
+            recover_successor_promotion,
+        )
+
+        if recover:
+            return recover_successor_promotion(
+                canonical_root=values["canonical_root"],
+                journal_root=journal_root,
+                journal_run_id=journal_run_id,
+                execute=execute,
+            )
+        return promote_successor_generation(
+            staging_root=values["staging_root"],
+            canonical_root=values["canonical_root"],
+            expected_pointer_sha256=values["expected_pointer_sha256"],
+            execute=execute,
+            journal_root=journal_root,
+            journal_run_id=journal_run_id,
+        )
+    if recover or execute or journal_root or journal_run_id:
+        raise ValueError("safe-successor promotion flags require safe mode")
     from quant_investor.market.fundamental_generation import (
         promote_staged_fundamental_generation,
     )
 
-    return promote_staged_fundamental_generation(**kwargs)
+    return promote_staged_fundamental_generation(**values)
 
 
 def run_macro_maintenance(**kwargs):
@@ -386,9 +415,22 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="在隔离 data root 执行 scope/hash/PIT/audit 绑定的权威全量重建",
     )
+    market_fundamental.add_argument(
+        "--safe-incremental-successor",
+        action="store_true",
+        help="冻结健康 predecessor，仅在隔离 staging 构造 append-only successor",
+    )
+    market_fundamental.add_argument("--canonical-predecessor-root", default="")
+    market_fundamental.add_argument("--expected-pointer-sha256", default="")
     market_fundamental.add_argument("--canonical-scope-path", default="")
     market_fundamental.add_argument("--canonical-market-pointer-path", default="")
+    market_fundamental.add_argument("--canonical-pit-pointer-path", default="")
     market_fundamental.add_argument("--canonical-membership-path", default="")
+    market_fundamental.add_argument("--history-audit-path", default="")
+    market_fundamental.add_argument(
+        "--expected-history-audit-sha256",
+        default="",
+    )
     market_fundamental.add_argument("--checkpoint-root", default="")
     market_fundamental.add_argument("--checkpoint-batch-size", type=int, default=500)
     market_fundamental.add_argument("--max-attempts", type=int, default=3)
@@ -404,15 +446,32 @@ def _build_parser() -> argparse.ArgumentParser:
         "fundamental-promote",
         help="以 expected-pointer SHA 原子晋升已验证的 Fundamental staging generation",
     )
-    market_fundamental_promote.add_argument("--staging-root", required=True)
+    market_fundamental_promote.add_argument("--staging-root", default="")
     market_fundamental_promote.add_argument(
         "--canonical-root",
         default="data/parquet/cn",
     )
     market_fundamental_promote.add_argument(
         "--expected-pointer-sha256",
-        required=True,
+        default="",
     )
+    market_fundamental_promote.add_argument(
+        "--safe-incremental-successor",
+        action="store_true",
+        help="对 safe successor 执行只读 preflight 或显式 journaled CAS",
+    )
+    market_fundamental_promote.add_argument(
+        "--execute",
+        action="store_true",
+        help="仅在 safe successor 模式执行 canonical CAS；省略时严格只读",
+    )
+    market_fundamental_promote.add_argument(
+        "--recover",
+        action="store_true",
+        help="检查或恢复指定 safe-successor promotion journal",
+    )
+    market_fundamental_promote.add_argument("--journal-root", default="")
+    market_fundamental_promote.add_argument("--journal-run-id", default="")
 
     market_macro = market_subparsers.add_parser(
         "macro-maintain",
@@ -637,6 +696,11 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     if args.command == "market" and args.market_command == "fundamental-maintain":
+        if args.authoritative_full_rebuild and args.safe_incremental_successor:
+            parser.error(
+                "--authoritative-full-rebuild and --safe-incremental-successor "
+                "are mutually exclusive"
+            )
         if args.authoritative_full_rebuild and (
             not args.canonical_scope_path
             or not args.canonical_market_pointer_path
@@ -649,6 +713,40 @@ def main(argv: list[str] | None = None) -> None:
                 "--canonical-scope-path, --canonical-market-pointer-path, "
                 "--canonical-membership-path, and --checkpoint-root"
             )
+        if args.safe_incremental_successor:
+            required_successor_args = {
+                "--run-id": args.run_id,
+                "--as-of": args.as_of,
+                "--canonical-predecessor-root": args.canonical_predecessor_root,
+                "--expected-pointer-sha256": args.expected_pointer_sha256,
+                "--canonical-scope-path": args.canonical_scope_path,
+                "--canonical-market-pointer-path": (
+                    args.canonical_market_pointer_path
+                ),
+                "--canonical-pit-pointer-path": args.canonical_pit_pointer_path,
+                "--canonical-membership-path": args.canonical_membership_path,
+                "--history-audit-path": args.history_audit_path,
+                "--expected-history-audit-sha256": (
+                    args.expected_history_audit_sha256
+                ),
+                "--checkpoint-root": args.checkpoint_root,
+            }
+            missing_successor_args = sorted(
+                name for name, value in required_successor_args.items() if not value
+            )
+            if not args.allow_live:
+                missing_successor_args.append("--allow-live")
+            if [item.strip().lower() for item in args.universes.split(",") if item.strip()] != [
+                "full_a"
+            ]:
+                parser.error(
+                    "--safe-incremental-successor requires --universes full_a"
+                )
+            if missing_successor_args:
+                parser.error(
+                    "--safe-incremental-successor requires "
+                    + ", ".join(missing_successor_args)
+                )
         result = run_fundamental_maintenance(
             market=args.market,
             universes=args.universes,
@@ -662,11 +760,23 @@ def main(argv: list[str] | None = None) -> None:
             allow_live=args.allow_live,
             run_id=args.run_id,
             authoritative_full_rebuild=args.authoritative_full_rebuild,
+            safe_incremental_successor=args.safe_incremental_successor,
+            canonical_predecessor_root=(
+                args.canonical_predecessor_root or None
+            ),
+            expected_pointer_sha256=args.expected_pointer_sha256,
             canonical_scope_path=args.canonical_scope_path or None,
             canonical_market_pointer_path=(
                 args.canonical_market_pointer_path or None
             ),
+            canonical_pit_pointer_path=(
+                args.canonical_pit_pointer_path or None
+            ),
             canonical_membership_path=args.canonical_membership_path or None,
+            history_audit_path=args.history_audit_path or None,
+            expected_history_audit_sha256=(
+                args.expected_history_audit_sha256
+            ),
             checkpoint_root=args.checkpoint_root or None,
             checkpoint_batch_size=args.checkpoint_batch_size,
             max_attempts=args.max_attempts,
@@ -674,16 +784,49 @@ def main(argv: list[str] | None = None) -> None:
             max_retry_backoff_seconds=args.max_retry_backoff_seconds,
             requests_per_second=args.requests_per_second,
         )
-        if args.authoritative_full_rebuild:
+        if args.authoritative_full_rebuild or args.safe_incremental_successor:
             _print_json(result)
         return
 
     if args.command == "market" and args.market_command == "fundamental-promote":
+        if not args.safe_incremental_successor:
+            if args.recover or args.execute or args.journal_root or args.journal_run_id:
+                parser.error(
+                    "--recover, --execute, and journal flags require "
+                    "--safe-incremental-successor"
+                )
+            if not args.staging_root or not args.expected_pointer_sha256:
+                parser.error(
+                    "fundamental-promote requires --staging-root and "
+                    "--expected-pointer-sha256"
+                )
+        elif args.recover:
+            if not args.journal_root or not args.journal_run_id:
+                parser.error(
+                    "safe successor recovery requires --journal-root and "
+                    "--journal-run-id"
+                )
+        else:
+            if not args.staging_root or not args.expected_pointer_sha256:
+                parser.error(
+                    "safe successor promotion requires --staging-root and "
+                    "--expected-pointer-sha256"
+                )
+            if args.execute and (not args.journal_root or not args.journal_run_id):
+                parser.error(
+                    "safe successor --execute requires --journal-root and "
+                    "--journal-run-id"
+                )
         _print_json(
             run_fundamental_promotion(
                 staging_root=args.staging_root,
                 canonical_root=args.canonical_root,
                 expected_pointer_sha256=args.expected_pointer_sha256,
+                safe_incremental_successor=args.safe_incremental_successor,
+                recover=args.recover,
+                execute=args.execute,
+                journal_root=args.journal_root or None,
+                journal_run_id=args.journal_run_id or None,
             )
         )
         return

@@ -49,7 +49,7 @@ class TushareHttpsError(RuntimeError):
 
 @dataclass(frozen=True)
 class TushareResponse:
-    """Validated, immutable response rows without raw transport material."""
+    """Validated response rows plus optional exact response evidence bytes."""
 
     api_name: str
     request_id: str
@@ -57,6 +57,9 @@ class TushareResponse:
     has_more: bool
     fields: tuple[str, ...]
     rows: tuple[tuple[Any, ...], ...]
+    raw_body: bytes | None = None
+    provider_reported_count: int | None = None
+    item_count: int | None = None
 
 
 @dataclass(frozen=True)
@@ -387,6 +390,31 @@ def _decode_response(
         has_more=has_more,
         fields=expected_fields,
         rows=tuple(rows),
+        raw_body=bytes(raw),
+        provider_reported_count=reported_count,
+        item_count=len(rows),
+    )
+
+
+def replay_tushare_response_bytes(
+    raw: bytes,
+    *,
+    api_name: str,
+    expected_fields: Sequence[str],
+    strict_decimal_decode: bool = True,
+    max_response_items: int = MAX_CONTAINER_ITEMS,
+) -> TushareResponse:
+    """Independently replay one exact response entity under the public policy."""
+
+    if type(raw) is not bytes or not raw:
+        _fail("TUSHARE_RESPONSE_INVALID")
+    fields = tuple(expected_fields)
+    return _decode_response(
+        raw,
+        api_name=api_name,
+        expected_fields=fields,
+        strict_decimal_decode=strict_decimal_decode,
+        max_response_items=max_response_items,
     )
 
 
@@ -560,5 +588,6 @@ __all__ = [
     "TushareHttpsError",
     "TushareResponse",
     "TushareSchemaDiagnostic",
+    "replay_tushare_response_bytes",
     "validate_official_endpoint",
 ]

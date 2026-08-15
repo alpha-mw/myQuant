@@ -24,6 +24,7 @@ from quant_investor.strategy_records.store import (
     load_archive_binding,
     load_registered_catalog,
 )
+from quant_investor.strategy_records.performance import load_performance_history
 
 SCHEMA_VERSION = "cn_aggressive_dashboard.v1"
 HISTORY_INTEGRITY_SCHEMA_VERSION = (
@@ -43,6 +44,8 @@ TRANSACTION_BACKFILL_PROVENANCE_SCHEMA_VERSION = (
 )
 MARKET = "CN"
 STRATEGY = "aggressive_tech_manufacturing"
+LEGACY_RETURN_METHOD = "initial_capital_return_excluding_external_flows"
+CANONICAL_RETURN_METHOD = "flow_neutral_unitization_v1"
 RECORD_NAME_RE = re.compile(r"^[0-9]{8}_[0-9]{4}$")
 SYMBOL_RE = re.compile(r"^[0-9]{6}\.(?:SH|SZ|BJ)$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -1868,6 +1871,289 @@ def _registered_dashboard_projection(
     if registered is None:
         return None
     pointer, catalog = registered
+    schema_id = catalog.get("schema_id")
+    if schema_id == "myquant.strategy_record_catalog.v3":
+        return _registered_dashboard_v3_projection(
+            record_root=record_root,
+            project_root=project_root,
+            pointer=pointer,
+            catalog=catalog,
+            registered_override=registered_override,
+        )
+    if catalog.get("fixture_only_legacy_dashboard") is True:
+        return _legacy_registered_dashboard_projection_body(
+            record_root=record_root,
+            project_root=project_root,
+            pointer=pointer,
+            catalog=catalog,
+            registered_override=registered_override,
+        )
+    if schema_id in {
+        "myquant.strategy_record_catalog.v1",
+        "myquant.strategy_record_catalog.v2",
+    }:
+        raise DashboardInputError("CANONICAL_PERFORMANCE_CLOSURE_MISSING")
+    raise DashboardInputError("record_catalog_schema_unsupported")
+
+
+def _registered_dashboard_v3_projection(
+    *,
+    record_root: Path,
+    project_root: Path,
+    pointer: dict[str, Any],
+    catalog: dict[str, Any],
+    registered_override: tuple[dict[str, Any], dict[str, Any]] | None,
+) -> tuple[
+    list[dict[str, Any]],
+    list[str],
+    str | None,
+    list[dict[str, Any]],
+    list[str],
+    dict[str, Any],
+    list[StableArtifact],
+    dict[str, Any],
+]:
+    """Build the Dashboard adapter solely from catalog v3 closures."""
+
+    if catalog.get("performance_contract_ready") is not True:
+        raise DashboardInputError("CANONICAL_PERFORMANCE_CLOSURE_MISSING")
+    try:
+        performance = load_performance_history(
+            record_root, catalog["performance_history_ref"]
+        )
+    except (KeyError, StrategyRecordStoreError) as exc:
+        raise DashboardInputError(f"canonical_performance_invalid:{exc}") from exc
+    catalog_by_id = {
+        row["record_id"]: row
+        for row in catalog.get("records", [])
+        if isinstance(row, dict) and isinstance(row.get("record_id"), str)
+    }
+    active_id = pointer.get("active_record_id")
+    previous_id = pointer.get("previous_record_id")
+    if (
+        not isinstance(active_id, str)
+        or not isinstance(previous_id, str)
+        or active_id == previous_id
+    ):
+        raise DashboardInputError("record_catalog_pointer_selection_invalid")
+
+    def load_selected(record_id: str) -> dict[str, Any]:
+        catalog_row = catalog_by_id.get(record_id)
+        if (
+            catalog_row is None
+            or catalog_row.get("state", catalog_row.get("storage_state")) != "ONLINE"
+            or catalog_row.get("ledger_path")
+            != f"{catalog_row.get('relative_path')}/ledger_after_manual_switch.parquet"
+        ):
+            raise DashboardInputError(
+                "catalog_v3_selected_record_parquet_closure_invalid:" + record_id
+            )
+        record_dir = record_root / str(catalog_row["relative_path"])
+        row = validate_record(record_dir, record_root, project_root)
+        for row_key, catalog_key in (
+            ("manifest_sha256", "manifest_sha256"),
+            ("manual_manifest_sha256", "manual_manifest_sha256"),
+            ("ledger_sha256", "ledger_sha256"),
+            ("financial_state_sha256", "financial_state_sha256"),
+        ):
+            if row.get(row_key) != catalog_row.get(catalog_key):
+                raise DashboardInputError(
+                    "catalog_v3_selected_record_sha_mismatch:" + record_id
+                )
+        row["storage_state"] = "ONLINE"
+        row["record_inventory_sha256"] = catalog_row.get("inventory_sha256")
+        row["evidence_status"] = "CATALOG_V3_ACTIVE_CLOSURE"
+        return row
+
+    previous = load_selected(previous_id)
+    latest = load_selected(active_id)
+    performance_ref = catalog["performance_history_ref"]
+    try:
+        record_root_relative = record_root.resolve(strict=True).relative_to(
+            project_root.resolve(strict=True)
+        ).as_posix()
+    except (OSError, ValueError) as exc:
+        raise DashboardInputError("catalog_v3_record_root_escape") from exc
+    performance_source_refs = [
+        {
+            "path": f"{record_root_relative}/{performance_ref[key]['path']}",
+            "sha256": performance_ref[key]["sha256"],
+        }
+        for key in ("manifest", "series", "owner_declaration")
+    ]
+    for selected in (previous, latest):
+        selected["source_refs"] = [
+            {
+                "path": selected[key],
+                "sha256": selected[key.replace("_path", "_sha256")],
+            }
+            for key in ("manifest_path", "manual_manifest_path", "ledger_path", "pnl_path")
+            if selected.get(key) is not None
+            and selected.get(key.replace("_path", "_sha256")) is not None
+        ]
+        selected["logical_source_refs"] = list(selected["source_refs"])
+        selected["_physical_source_refs"] = list(selected["source_refs"])
+
+    historical: list[dict[str, Any]] = []
+    canonical_points: list[dict[str, Any]] = []
+    funding_events: list[dict[str, Any]] = []
+    prior_excluded = 0.0
+    initial_units = 1_000_000.0
+    for raw in performance["rows"]:
+        record_id = raw["record_id"]
+        stored = catalog_by_id.get(record_id, {})
+        cash = float(raw["cash_cny"])
+        equity = float(raw["equity_market_value_cny"])
+        total = float(raw["raw_nav_cny"])
+        # The canonical series carries cumulative declared external flow
+        # separately from the flow-neutral adjusted NAV.  Re-deriving this as
+        # raw NAV minus adjusted NAV would incorrectly include investment
+        # gains or losses earned by contributed units.
+        excluded = float(raw["excluded_external_flow_cny"])
+        canonical_points.append(
+            {
+                "date": raw["valuation_date"],
+                "record": record_id,
+                "unit_nav": float(raw["unit_nav"]),
+                "total_value": total,
+                "excluded_external_flow": excluded,
+                "adjusted_total_value": float(raw["unit_nav"]) * initial_units,
+                "performance_initial_capital": initial_units,
+                "evidence_status": "CANONICAL_PERFORMANCE_CLOSURE",
+                "interval_return": float(raw["interval_return"]),
+                "cumulative_return": float(raw["cumulative_return"]),
+                "drawdown": float(raw["drawdown"]),
+                "financial_state_sha256": raw.get(
+                    "financial_state_sha256"
+                ),
+            }
+        )
+        flow_delta = excluded - prior_excluded
+        if not _almost_equal(flow_delta, 0.0):
+            if not canonical_points[:-1]:
+                raise DashboardInputError(
+                    "canonical_initial_performance_point_contains_flow"
+                )
+            previous_point = canonical_points[-2]
+            funding_events.append(
+                {
+                    "record": record_id,
+                    "date": raw["valuation_date"],
+                    "amount": flow_delta,
+                    "direction": "CONTRIBUTION" if flow_delta > 0 else "REDEMPTION_OR_CORRECTION",
+                    "evidence_path": performance_source_refs[0]["path"],
+                    "evidence_sha256": performance_ref["manifest"]["sha256"],
+                    "binding_status": "CANONICAL_PERFORMANCE_CLOSURE",
+                    "total_value_before": previous_point["total_value"],
+                    "total_value_after": total,
+                    "pre_flow_record": previous_point["record"],
+                    "post_flow_record": record_id,
+                }
+            )
+        prior_excluded = excluded
+        historical.append(
+            {
+                "record": record_id,
+                "valuation_date": raw["valuation_date"],
+                "data_date": raw["valuation_date"],
+                "recorded_at": raw["valuation_at"],
+                "source_record": None,
+                "accounting": {
+                    "cash_after": cash,
+                    "market_value_after": equity,
+                    "total_value_after": total,
+                    "portfolio_pnl_after": float(raw["portfolio_pnl_cny"]),
+                    "realized_pnl_from_rebalance": 0.0,
+                },
+                "capital_base": initial_units,
+                "funding": None,
+                "funding_correction": None,
+                "evidence_status": "CANONICAL_PERFORMANCE_CLOSURE",
+                "manifest_path": performance_source_refs[0]["path"],
+                "manifest_sha256": performance_ref["manifest"]["sha256"],
+                "manual_manifest_path": stored.get("manual_manifest_path"),
+                "manual_manifest_sha256": raw.get("manual_manifest_sha256"),
+                "ledger_path": (
+                    stored.get("ledger_path")
+                    if raw.get("ledger_parquet_sha256") is not None
+                    else None
+                ),
+                "ledger_sha256": raw.get("ledger_parquet_sha256"),
+                "pnl_path": stored.get("pnl_path"),
+                "pnl_sha256": stored.get("pnl_sha256"),
+                "financial_state_sha256": raw.get("financial_state_sha256"),
+                "source_refs": list(performance_source_refs),
+                "logical_source_refs": list(performance_source_refs),
+                "_physical_source_refs": list(performance_source_refs),
+                "storage_state": stored.get("state", stored.get("storage_state", "ARCHIVED")),
+                "record_inventory_sha256": stored.get("inventory_sha256"),
+            }
+        )
+
+    catalog_artifacts: list[StableArtifact] = []
+    if registered_override is None:
+        pointer_artifact = stable_read(
+            record_root / "_record_store/current.v1.json", project_root
+        )
+        catalog_artifact = stable_read(
+            record_root / str(pointer["catalog_path"]), project_root
+        )
+        if load_json(pointer_artifact) != pointer or load_json(catalog_artifact) != catalog:
+            raise DashboardInputError("catalog_v3_readback_mismatch")
+        catalog_artifacts.extend([pointer_artifact, catalog_artifact])
+        for ref in performance_source_refs:
+            artifact = stable_read(project_root / ref["path"], project_root)
+            if artifact.sha256 != ref["sha256"]:
+                raise DashboardInputError("canonical_performance_source_sha_mismatch")
+            catalog_artifacts.append(artifact)
+    return (
+        [previous, latest],
+        [],
+        active_id,
+        historical,
+        [],
+        {
+            "latest": latest,
+            "previous": previous,
+            "active_record_id": active_id,
+            "previous_record_id": previous_id,
+        },
+        catalog_artifacts,
+        {
+            "publication_generation_id": pointer["generation_id"],
+            "intended_generation_id": pointer["generation_id"],
+            "dashboard_projection_sha256": None,
+            "archive_bindings": {},
+            "history_registry_ref": None,
+            "history_registry": None,
+            "canonical_performance_points": canonical_points,
+            "canonical_funding_events": funding_events,
+            "performance_history_ref": performance_ref,
+            "lineage_index_sha256": catalog["lineage_index_sha256"],
+        },
+    )
+
+
+def _legacy_registered_dashboard_projection_body(
+    *,
+    record_root: Path,
+    project_root: Path,
+    pointer: dict[str, Any],
+    catalog: dict[str, Any],
+    registered_override: tuple[dict[str, Any], dict[str, Any]] | None = None,
+) -> tuple[
+    list[dict[str, Any]],
+    list[str],
+    str | None,
+    list[dict[str, Any]],
+    list[str],
+    dict[str, Any],
+    list[StableArtifact],
+    dict[str, Any],
+]:
+
+    # The code below is retained only as fixture/migration implementation.  All
+    # governed registered roots returned above, so it cannot be reached.
     publication_generation_id = pointer.get("generation_id")
     if catalog.get("schema_id") == "myquant.strategy_record_catalog.v2" and (
         not isinstance(publication_generation_id, str)
@@ -2726,6 +3012,37 @@ def _economic_portfolio_view(
     return view, adjusted_cash, adjusted_total
 
 
+def _official_financial_state_view(
+    record: dict[str, Any],
+) -> tuple[dict[str, Any], float, float]:
+    """Return holdings weights against the registered raw financial state.
+
+    Catalog v3 performance unitization is a return-accounting projection.  It
+    must not replace the cash, NAV, or exposure denominator of the exact
+    pointer-selected financial state after a contribution or redemption.
+    """
+
+    accounting = record["accounting"]
+    cash = float(accounting["cash_after"])
+    market_value = float(accounting["market_value_after"])
+    total = float(accounting["total_value_after"])
+    if total <= 0:
+        raise DashboardInputError(
+            "official_financial_state_total_not_positive:" + record["record"]
+        )
+    if not _almost_equal(cash + market_value, total):
+        raise DashboardInputError(
+            "official_financial_state_accounting_mismatch:" + record["record"]
+        )
+    view = dict(record)
+    view["positions"] = []
+    for original in record["positions"]:
+        position = dict(original)
+        position["nav_weight"] = position["market_value"] / total
+        view["positions"].append(position)
+    return view, cash, total
+
+
 def _exclude_external_funding(
     records_by_date: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -2835,6 +3152,16 @@ def build_bundle(
     if len(valid) < 2:
         raise DashboardInputError("fewer_than_two_hash_bound_valid_records")
     assert latest is not None and previous is not None
+    canonical_performance_points = integrity_context.get(
+        "canonical_performance_points"
+    )
+    if (
+        canonical_performance_points is not None
+        and history_integrity_path is not None
+    ):
+        raise DashboardInputError(
+            "catalog_v3_history_integrity_path_forbidden"
+        )
     history_integrity_artifact: StableArtifact | None = None
     history_registry_bound_count = 0
     required_registry_ref = integrity_context.get("history_registry_ref")
@@ -2904,7 +3231,12 @@ def build_bundle(
                     "DASHBOARD_POST_HOC_SHA_REGISTRY_BOUND"
                 )
                 history_registry_bound_count += 1
-    unitized_raw = _exclude_external_funding(historical_records)
+    if canonical_performance_points is not None:
+        if not isinstance(canonical_performance_points, list):
+            raise DashboardInputError("canonical_performance_points_invalid")
+        unitized_raw = [dict(point) for point in canonical_performance_points]
+    else:
+        unitized_raw = _exclude_external_funding(historical_records)
     unitized_by_record = {point["record"]: point for point in unitized_raw}
 
     def economic_point_for(record: dict[str, Any]) -> dict[str, Any]:
@@ -2919,6 +3251,20 @@ def build_bundle(
                 + record["record"]
             )
         prior = unitized_raw[-1]
+        if canonical_performance_points is not None:
+            if (
+                record.get("financial_state_sha256")
+                != prior.get("financial_state_sha256")
+                or not _almost_equal(
+                    float(record["accounting"]["total_value_after"]),
+                    float(prior["total_value"]),
+                )
+            ):
+                raise DashboardInputError(
+                    "canonical_performance_financial_state_missing:"
+                    + record["record"]
+                )
+            return dict(prior)
         excluded_flow = float(prior["excluded_external_flow"])
         total_value = float(record["accounting"]["total_value_after"])
         adjusted_total = total_value - excluded_flow
@@ -2933,11 +3279,23 @@ def build_bundle(
         }
 
     latest_economic_point = economic_point_for(latest)
-    latest_view, adjusted_cash, adjusted_total = _economic_portfolio_view(
-        latest, latest_economic_point
-    )
-    previous_view, _, previous_adjusted_total = _economic_portfolio_view(
-        previous, economic_point_for(previous)
+    previous_economic_point = economic_point_for(previous)
+    if canonical_performance_points is not None:
+        latest_view, portfolio_cash, portfolio_total = (
+            _official_financial_state_view(latest)
+        )
+        previous_view, _, previous_portfolio_total = (
+            _official_financial_state_view(previous)
+        )
+    else:
+        latest_view, portfolio_cash, portfolio_total = (
+            _economic_portfolio_view(latest, latest_economic_point)
+        )
+        previous_view, _, previous_portfolio_total = (
+            _economic_portfolio_view(previous, previous_economic_point)
+        )
+    performance_adjusted_total = float(
+        latest_economic_point["adjusted_total_value"]
     )
     collapsed_unitized: dict[str, dict[str, Any]] = {}
     for point in unitized_raw:
@@ -2987,13 +3345,15 @@ def build_bundle(
     aligned_risk_free = _align_risk_free_rows(risk_free_rows, required_dates)
 
     portfolio_nav = [row["unit_nav"] for row in unitized]
-    cumulative_return = portfolio_nav[-1] - 1.0
+    cumulative_return = float(
+        unitized[-1].get("cumulative_return", portfolio_nav[-1] - 1.0)
+    )
     changes = _changes(latest_view, previous_view)
     gross = (
         latest["accounting"]["market_value_after"]
-        / adjusted_total
+        / portfolio_total
     )
-    cash_weight = adjusted_cash / adjusted_total
+    cash_weight = portfolio_cash / portfolio_total
     equity_weights = sorted(
         (position["equity_weight"] for position in latest["positions"]),
         reverse=True,
@@ -3029,21 +3389,27 @@ def build_bundle(
         for record in historical_records
         if record.get("funding_correction") is not None
     }
-    funding_events = [
-        {
-            "record": record["record"],
-            "date": record["valuation_date"],
-            "amount": record["funding"]["amount"],
-            "total_value_before": record["funding"]["total_value_before"],
-            "total_value_after": record["funding"]["total_value_after"],
-            "evidence_path": record["funding"]["evidence_path"],
-            "evidence_sha256": record["funding"]["evidence_sha256"],
-            "binding_status": record["funding"]["binding_status"],
-        }
-        for record in historical_records
-        if record.get("funding") is not None
-        and record["record"] not in reversed_funding_records
-    ]
+    if canonical_performance_points is not None:
+        funding_events = [
+            dict(event)
+            for event in integrity_context.get("canonical_funding_events", [])
+        ]
+    else:
+        funding_events = [
+            {
+                "record": record["record"],
+                "date": record["valuation_date"],
+                "amount": record["funding"]["amount"],
+                "total_value_before": record["funding"]["total_value_before"],
+                "total_value_after": record["funding"]["total_value_after"],
+                "evidence_path": record["funding"]["evidence_path"],
+                "evidence_sha256": record["funding"]["evidence_sha256"],
+                "binding_status": record["funding"]["binding_status"],
+            }
+            for record in historical_records
+            if record.get("funding") is not None
+            and record["record"] not in reversed_funding_records
+        ]
     # Disclosure limitations remain visible, but they do not by themselves
     # make the core Dashboard stale.  PARTIAL is reserved for a gap in the
     # selected holdings/performance chain: stale data, a newer unusable
@@ -3260,14 +3626,20 @@ def build_bundle(
             "archive_start_record": historical_records[0]["record"],
             "archive_start_date": unitized[0]["date"],
             "first_pnl_record": next(
-                record["record"]
-                for record in historical_records
-                if record["pnl_path"] is not None
+                (
+                    record["record"]
+                    for record in historical_records
+                    if record.get("pnl_path") is not None
+                ),
+                None,
             ),
             "first_pnl_date": next(
-                record["valuation_date"]
-                for record in historical_records
-                if record["pnl_path"] is not None
+                (
+                    record["valuation_date"]
+                    for record in historical_records
+                    if record.get("pnl_path") is not None
+                ),
+                None,
             ),
             "latest_performance_record": unitized[-1]["record"],
             "latest_performance_date": unitized[-1]["date"],
@@ -3292,12 +3664,16 @@ def build_bundle(
             ),
             "rejected_record_samples": historical_rejected[-12:],
             "evidence_status": (
-                "PARTIAL_LEGACY_EXACT_BYTES_NO_DECLARED_SHA"
-                if legacy_history_count
+                "CANONICAL_PERFORMANCE_CLOSURE"
+                if canonical_performance_points is not None
                 else (
-                    "DASHBOARD_POST_HOC_SHA_REGISTRY_BOUND"
-                    if history_registry_bound_count
-                    else "HASH_BOUND_CURRENT_CLOSURE_ONLY"
+                    "PARTIAL_LEGACY_EXACT_BYTES_NO_DECLARED_SHA"
+                    if legacy_history_count
+                    else (
+                        "DASHBOARD_POST_HOC_SHA_REGISTRY_BOUND"
+                        if history_registry_bound_count
+                        else "HASH_BOUND_CURRENT_CLOSURE_ONLY"
+                    )
                 )
             ),
             "baseline_manifest_path": historical_records[0][
@@ -3314,13 +3690,13 @@ def build_bundle(
         "positions": latest_view["positions"],
         "changes": changes,
         "portfolio": {
-            "cash": adjusted_cash,
+            "cash": portfolio_cash,
             "market_value": latest["accounting"]["market_value_after"],
-            "total_value": adjusted_total,
+            "total_value": portfolio_total,
             "cash_weight": cash_weight,
             "gross_exposure": gross,
             "portfolio_pnl": (
-                adjusted_total
+                performance_adjusted_total
                 - unitized[0]["performance_initial_capital"]
             ),
             "current_unrealized_pnl": current_unrealized,
@@ -3335,9 +3711,9 @@ def build_bundle(
             "excluded_external_flow": latest_economic_point[
                 "excluded_external_flow"
             ],
-            "adjusted_total_value": adjusted_total,
+            "adjusted_total_value": performance_adjusted_total,
             "cumulative_profit_excluding_external_flow": (
-                adjusted_total
+                performance_adjusted_total
                 - unitized[0]["performance_initial_capital"]
             ),
             "cumulative_return": cumulative_return,
@@ -3350,11 +3726,13 @@ def build_bundle(
                 changes,
                 latest_view,
                 previous_view,
-                current_total_value=adjusted_total,
-                previous_total_value=previous_adjusted_total,
+                current_total_value=portfolio_total,
+                previous_total_value=previous_portfolio_total,
             ),
             "return_method": (
-                "initial_capital_return_excluding_external_flows"
+                CANONICAL_RETURN_METHOD
+                if canonical_performance_points is not None
+                else LEGACY_RETURN_METHOD
             ),
             "gross_or_net": "UNKNOWN",
             "fee_basis": "UNKNOWN",
@@ -3532,9 +3910,12 @@ def validate_bundle_shape(bundle: Any) -> list[str]:
                 "cumulative_profit_excluding_external_flow",
                 "cumulative_return",
             )
-            if portfolio.get("return_method") != (
-                "initial_capital_return_excluding_external_flows"
-            ):
+            return_method = portfolio.get("return_method")
+            canonical_return = return_method == CANONICAL_RETURN_METHOD
+            if return_method not in {
+                LEGACY_RETURN_METHOD,
+                CANONICAL_RETURN_METHOD,
+            }:
                 errors.append("portfolio_return_method_invalid")
             elif any(
                 not isinstance(portfolio.get(key), (int, float))
@@ -3580,8 +3961,13 @@ def validate_bundle_shape(bundle: Any) -> list[str]:
             elif any(
                 not _almost_equal(
                     float(point["adjusted_total_value"]),
-                    float(point["total_value"])
-                    - float(point["excluded_external_flow"]),
+                    (
+                        float(point["portfolio_unit_nav"])
+                        * float(portfolio["performance_initial_capital"])
+                        if canonical_return
+                        else float(point["total_value"])
+                        - float(point["excluded_external_flow"])
+                    ),
                 )
                 for point in points
             ):
@@ -3597,23 +3983,43 @@ def validate_bundle_shape(bundle: Any) -> list[str]:
                 float(portfolio.get("total_value", math.nan)),
             ):
                 errors.append("economic_portfolio_accounting_mismatch")
-            elif not _almost_equal(
-                float(portfolio.get("total_value", math.nan)),
-                float(portfolio["adjusted_total_value"]),
+            elif (
+                not canonical_return
+                and not _almost_equal(
+                    float(portfolio.get("total_value", math.nan)),
+                    float(portfolio["adjusted_total_value"]),
+                )
             ):
                 errors.append("economic_portfolio_total_mismatch")
             elif (
                 not str(portfolio.get("current_valuation_status") or "")
                 .startswith("BLOCKED")
                 and not _almost_equal(
-                    float(portfolio.get("total_value", math.nan)),
+                    float(
+                        portfolio.get(
+                            (
+                                "adjusted_total_value"
+                                if canonical_return
+                                else "total_value"
+                            ),
+                            math.nan,
+                        )
+                    ),
                     float(points[-1]["adjusted_total_value"]),
                 )
             ):
                 errors.append("economic_portfolio_performance_total_mismatch")
             elif not _almost_equal(
                 float(portfolio.get("portfolio_pnl", math.nan)),
-                float(portfolio["total_value"])
+                float(
+                    portfolio[
+                        (
+                            "adjusted_total_value"
+                            if canonical_return
+                            else "total_value"
+                        )
+                    ]
+                )
                 - float(portfolio["performance_initial_capital"]),
             ):
                 errors.append("economic_portfolio_pnl_mismatch")

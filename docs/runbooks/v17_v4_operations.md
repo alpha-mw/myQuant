@@ -145,3 +145,66 @@ The command must not import or restore the retired
 `quant_investor.market.macro_mart` producer. It does not run analysis, create
 candidates or portfolios, activate Factor or Mainline state, render Dashboard
 output, connect a broker, create an order, or trade.
+
+## 9. CN Fundamental safe-successor maintenance
+
+Production cutoff advancement must use the registered safe-successor mode.
+Do not use the ordinary live merge as a fallback: that compatibility path can
+represent a partial provider result and does not prove an operator-frozen
+predecessor or an append-only historical prefix.
+
+The safe workflow is deliberately two phase:
+
+1. `market fundamental-maintain --safe-incremental-successor` captures the
+   exact Fundamental predecessor, market pointer and PIT pointer bytes before
+   acquisition. It fetches the registered target support window into an
+   isolated fileset, requires zero failed, malformed or paginated responses,
+   freezes a canonical subject set equal to the union of predecessor subjects,
+   every delta session's PIT-expected and observed-bar subjects, and the target
+   full-A scope, proves the daily-basic keyset against canonical bars and
+   reason-coded non-bar classifications, freezes the predecessor prefix,
+   derives only the open successor window, and writes a promotion-ready
+   staging generation.
+2. `market fundamental-promote --safe-incremental-successor` performs a
+   read-only preflight by default. Canonical mutation additionally requires
+   `--execute`, an explicit journal root, the expected predecessor pointer SHA,
+   and unchanged captured market and PIT pointer bytes. The promoter acquires
+   the market, PIT and Fundamental locks in that order, installs an immutable
+   generation, advances the pointer by CAS, and performs exact post-write
+   readback. A failed post-check rolls back with the sealed predecessor pointer
+   bytes when the candidate pointer is still current.
+
+The successor is a versioned mixed generation. The original seam remains the
+first trusted predecessor cutoff, while later daily successors append after
+the immediate predecessor cutoff without rewriting an earlier successor.
+Pointer, manifest, readiness and binding-aware loader output must agree on:
+
+```text
+mixed=true
+legacy_direct_reader_provenance=limited
+binding_aware_research_ready=true
+homogeneous_history_ready=false
+```
+
+These fields are a limitation, not a warning that may be ignored. Research
+that crosses the seam must preserve the verified derivation binding and treat
+the seam as a methodology boundary. A direct-path consumer that drops pointer
+and manifest provenance cannot claim seam-aware or homogeneous-history
+readiness.
+
+Exact-date provider endpoints may return a global symbol partition that is a
+strict superset of the frozen canonical subject set. The source fileset must
+retain the exact raw response bytes and every normalized row, bind separate
+request-envelope and canonical-subject scope references, and reconcile each
+response as disjoint in-scope plus out-of-scope observations. Out-of-scope
+observations remain permanent audit evidence but cannot enter canonical winner
+selection. This authority-bound projection is not an allowlist: any malformed
+row, ambiguous code identity, scope collision, count/hash mismatch, or changed
+in-scope candidate fingerprint blocks staging and leaves canonical unchanged.
+
+Any source, schema, canonicalization, hidden PIT dependency, keyset, SHA, CAS,
+readback, journal-recovery or pointer-drift blocker leaves the current healthy
+Fundamental pointer unchanged. The automation must report `blocked` or
+`partial`; it must not retry through ordinary `--allow-live`, generate
+synthetic rows, apply an allowlist, activate Factor or Mainline state, write a
+Dashboard or Paper ledger, connect a broker, create an order, or trade.

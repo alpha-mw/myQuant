@@ -11,6 +11,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from quant_investor.strategy_records.store import (
+    CATALOG_SCHEMA_V3,
     StrategyRecordStoreError,
     load_registered_catalog,
 )
@@ -51,7 +52,7 @@ def _catalog_history_integrity_path(
     project_root: Path,
     record_root: Path,
     requested: Path,
-) -> Path:
+) -> Path | None:
     try:
         registered = load_registered_catalog(record_root)
     except StrategyRecordStoreError as exc:
@@ -60,17 +61,25 @@ def _catalog_history_integrity_path(
         ) from exc
     if registered is None:
         return requested.resolve()
-    ref = registered[1].get("history_registry_ref")
-    if ref is None:
-        return requested.resolve()
-    if not isinstance(ref, dict) or not isinstance(ref.get("path"), str):
-        raise DashboardInputError("catalog_history_registry_ref_invalid")
+    catalog = registered[1]
+    requested_path = requested.resolve()
     legacy_default = (
         project_root
         / "portfolio_dashboard/private/generated/"
         "cn_aggressive_history_integrity.v1.json"
     ).resolve()
-    requested_path = requested.resolve()
+    if catalog.get("schema_id") == CATALOG_SCHEMA_V3:
+        default_paths = {legacy_default, DEFAULT_HISTORY_INTEGRITY.resolve()}
+        if requested_path not in default_paths:
+            raise DashboardInputError(
+                "catalog_v3_history_integrity_path_forbidden"
+            )
+        return None
+    ref = catalog.get("history_registry_ref")
+    if ref is None:
+        return requested_path
+    if not isinstance(ref, dict) or not isinstance(ref.get("path"), str):
+        raise DashboardInputError("catalog_history_registry_ref_invalid")
     bound_path = (project_root / ref["path"]).resolve()
     if requested_path == legacy_default:
         return bound_path

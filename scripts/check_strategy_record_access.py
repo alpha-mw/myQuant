@@ -123,6 +123,15 @@ ALLOW_RULES: tuple[AllowRule, ...] = (
         ),
     ),
     AllowRule(
+        path="quant_investor/strategy_records/performance.py",
+        operations=("mkdir", "open"),
+        reason=(
+            "The catalog-v3 performance backend reads and writes only generation-bound "
+            "manifest, decimal Parquet, and owner-declaration closures; it has no raw "
+            "history scanner, archive extractor, or legacy-ledger fallback."
+        ),
+    ),
+    AllowRule(
         path="scripts/build_cn_dashboard_history_integrity.py",
         operations=(),
         reason="Invokes the named legacy bootstrap projection; it does not mutate records.",
@@ -153,6 +162,23 @@ ALLOW_RULES: tuple[AllowRule, ...] = (
         path="scripts/export_cn_aggressive_dashboard_data.py",
         operations=(),
         reason="Passes the registered root to the common exporter and writes bundles elsewhere.",
+    ),
+    AllowRule(
+        path="scripts/export_cn_weekly_review_evidence.py",
+        operations=("open",),
+        reason=(
+            "The scheduled weekly exporter uses registered Store and Dashboard APIs and "
+            "uses the V17 descriptor-safe exact reader for formal evidence; it writes "
+            "only an explicit /private/tmp evidence bundle and envelope candidate."
+        ),
+    ),
+    AllowRule(
+        path="scripts/check_cn_weekly_review_evidence.py",
+        operations=(),
+        reason=(
+            "The weekly checker reopens exact registered refs and the temporary bundle "
+            "without scanning or mutating strategy records."
+        ),
     ),
     AllowRule(
         path="scripts/manage_cn_strategy_records.py",
