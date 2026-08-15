@@ -173,7 +173,14 @@ System-owned gate set. `run_cutover_gate` selects repository-defined argv and a
 scrubbed environment from `gate_id`; callers cannot supply a command or convert
 an arbitrary `exit 0` into evidence. Each result seals the exact commit/tree,
 runner source bytes, runner specification, executable identity, stdout,
-stderr, exit status, timestamps, and subject reference. Long-running tests are
+stderr, stdin SHA-256, exit status, timestamps, and subject reference. The
+replacement-selector gate loads the canonical ledger, expands all 130 unique
+selectors, and rejects any missing collection/execution, deselection, skip, or
+xfail. The release-origin gate consumes an exact evidence/release pair on
+stdin; it requires frozen Git package bytes, sdist bytes, wheel bytes, a locked
+non-editable dependency installation, isolated import origin, installed code
+manifest, and compiled contract catalog to agree. A zero-selected pytest run
+cannot satisfy either gate. Long-running tests are
 executed before the active lock. Under the lock the System revalidates their
 immutable receipts and the current frozen tree; it does not rerun pytest.
 

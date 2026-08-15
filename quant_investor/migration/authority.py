@@ -182,11 +182,8 @@ _GATE_SPECS: Final[dict[str, tuple[tuple[str, ...], ...]]] = {
         (
             "uv",
             "run",
-            "pytest",
-            "tests/unit/test_unified_migration_resolver.py",
-            "tests/unit/test_unified_factor_prospective.py",
-            "tests/unit/test_unified_factor_status.py",
-            "-q",
+            "python",
+            "scripts/run_unified_replacement_selectors.py",
         ),
     ),
 }
