@@ -197,6 +197,18 @@ def git_code_manifest_sha256(repository_root: str | os.PathLike[str], commit: st
 
 
 def _regular_file(path: Path, *, label: str) -> tuple[bytes, os.stat_result]:
+    def identity(value: os.stat_result) -> tuple[int, ...]:
+        return (
+            value.st_dev,
+            value.st_ino,
+            value.st_mode,
+            value.st_uid,
+            value.st_nlink,
+            value.st_size,
+            value.st_mtime_ns,
+            value.st_ctime_ns,
+        )
+
     try:
         before = path.lstat()
         if (
@@ -214,7 +226,7 @@ def _regular_file(path: Path, *, label: str) -> tuple[bytes, os.stat_result]:
         raise
     except OSError as exc:
         raise SystemSecurityError(f"{label} cannot be read") from exc
-    if before != after or len(raw) != after.st_size:
+    if identity(before) != identity(after) or len(raw) != after.st_size:
         raise SystemSecurityError(f"{label} changed during readback")
     return raw, after
 
