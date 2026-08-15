@@ -19,6 +19,7 @@ import secrets
 import shutil
 import stat
 import subprocess
+import sys
 from typing import Any, Final, Literal
 
 from quant_investor.contracts import (
@@ -171,9 +172,7 @@ _GATE_SPECS: Final[dict[str, tuple[tuple[str, ...], ...]]] = {
     "projection": (("uv", "run", "python", "operations/codex/verify_projection.py"),),
     "release_install_origin": (
         (
-            "uv",
-            "run",
-            "python",
+            "FROZEN_PYTHON",
             "-m",
             "quant_investor.system.release_install",
         ),
@@ -717,10 +716,13 @@ def run_cutover_gate(  # noqa: C901
     results: list[dict[str, Any]] = []
     started = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     for argv in _GATE_SPECS[gate]:
-        executable = shutil.which(argv[0], path=environment["PATH"])
-        if executable is None:
-            raise SystemPreconditionError("cutover gate executable is unavailable")
-        executable_path = Path(executable).resolve(strict=True)
+        if argv[0] == "FROZEN_PYTHON":
+            executable_path = Path(sys.executable).resolve(strict=True)
+        else:
+            executable = shutil.which(argv[0], path=environment["PATH"])
+            if executable is None:
+                raise SystemPreconditionError("cutover gate executable is unavailable")
+            executable_path = Path(executable).resolve(strict=True)
         executable_raw = executable_path.read_bytes()
         try:
             completed = subprocess.run(
