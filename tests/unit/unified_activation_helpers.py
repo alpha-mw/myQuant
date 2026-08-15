@@ -208,6 +208,19 @@ def _test_final_authorization(
                     "import_origin": install_evidence["payload"]["import_origin"],
                 }
             )
+        elif gate_id == "clean_detached_clone":
+            subject_ref = release_ref
+            gate_stdin = canonical_json_bytes({"final_commit": commit, "final_tree": tree})
+            gate_stdout = canonical_json_bytes(
+                {
+                    "state": "PASS",
+                    "repository_root": str(root),
+                    "commit": commit,
+                    "tree": tree,
+                    "status_sha256": hashlib.sha256(b"").hexdigest(),
+                    "detached": True,
+                }
+            )
         else:
             subject_ref = release_ref
             gate_stdin = b""
