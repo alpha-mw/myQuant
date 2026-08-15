@@ -45,6 +45,11 @@ def test_frozen_release_build_install_and_exact_origin_replay(tmp_path: Path) ->
     tree = _git(repository, "rev-parse", "HEAD^{tree}")
     release_root = tmp_path / "release"
     release_root.mkdir(mode=0o700)
+    subprocess.run(
+        ["git", "-C", str(repository), "checkout", "--detach", "-q", commit],
+        check=True,
+        stdin=subprocess.DEVNULL,
+    )
 
     prepared = prepare_operational_release(
         repository_root=repository,
@@ -87,3 +92,41 @@ def test_frozen_release_build_install_and_exact_origin_replay(tmp_path: Path) ->
     wheel.write_bytes(wheel.read_bytes() + b"tamper")
     with pytest.raises(SystemPreconditionError, match="archive exact bytes"):
         verify_release_install_input(exact_input, repository_root=repository)
+
+
+def test_release_preparation_requires_exact_clean_detached_checkout(tmp_path: Path) -> None:
+    source = Path(__file__).resolve().parents[2]
+    repository = tmp_path / "repository"
+    subprocess.run(
+        ["git", "clone", "--quiet", "--shared", str(source), str(repository)],
+        check=True,
+        stdin=subprocess.DEVNULL,
+    )
+    commit = _git(repository, "rev-parse", "HEAD^{commit}")
+    tree = _git(repository, "rev-parse", "HEAD^{tree}")
+    release_root = tmp_path / "release"
+    release_root.mkdir(mode=0o700)
+
+    with pytest.raises(SystemPreconditionError, match="attached to a branch"):
+        prepare_operational_release(
+            repository_root=repository,
+            release_root=release_root,
+            final_commit=commit,
+            final_tree=tree,
+            created_at=BASE,
+        )
+
+    subprocess.run(
+        ["git", "-C", str(repository), "checkout", "--detach", "-q", commit],
+        check=True,
+        stdin=subprocess.DEVNULL,
+    )
+    (repository / "untracked-release-drift").write_text("drift", encoding="utf-8")
+    with pytest.raises(SystemPreconditionError, match="not clean"):
+        prepare_operational_release(
+            repository_root=repository,
+            release_root=release_root,
+            final_commit=commit,
+            final_tree=tree,
+            created_at=BASE,
+        )

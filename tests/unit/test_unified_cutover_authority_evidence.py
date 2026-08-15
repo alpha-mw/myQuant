@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 from pathlib import Path
 import subprocess
@@ -7,6 +8,7 @@ import sys
 
 import pytest
 
+from quant_investor.contracts import canonical_json_bytes
 from quant_investor.migration import (
     REQUIRED_FINAL_PREFLIGHT_GATES,
     build_concurrent_task_handoff,
@@ -119,7 +121,11 @@ def _gate_evidence(commit: str, tree: str, subject_ref: dict[str, str]) -> list[
                     "stderr_sha256": hashlib.sha256(b"").hexdigest(),
                     "executable_path": str(executable),
                     "executable_sha256": executable_sha,
-                    "stdin_sha256": hashlib.sha256(b"").hexdigest(),
+                    "stdin_sha256": hashlib.sha256(
+                        canonical_json_bytes({"final_commit": commit, "final_tree": tree})
+                        if gate_id == "clean_detached_clone"
+                        else b""
+                    ).hexdigest(),
                 }
                 for argv in _GATE_SPECS[gate_id]
             ],
@@ -253,10 +259,19 @@ def test_system_owned_gate_runner_executes_only_fixed_argv(tmp_path: Path) -> No
         ["git", "-C", str(root), "config", "user.email", "gate@example.invalid"],
         check=True,
     )
-    source = Path(__import__("quant_investor.migration.authority", fromlist=["x"]).__file__)
-    target = root / "quant_investor/migration/authority.py"
-    target.parent.mkdir(parents=True)
-    target.write_bytes(source.read_bytes())
+    source_root = Path(__file__).resolve().parents[2]
+    tracked_package_paths = subprocess.run(
+        ["git", "-C", str(source_root), "ls-files", "-z", "quant_investor"],
+        check=True,
+        stdout=subprocess.PIPE,
+    ).stdout.split(b"\0")
+    for relative_raw in tracked_package_paths:
+        if not relative_raw:
+            continue
+        relative = relative_raw.decode("utf-8")
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((source_root / relative).read_bytes())
     subprocess.run(["git", "-C", str(root), "add", "."], check=True)
     subprocess.run(["git", "-C", str(root), "commit", "-q", "-m", "gate runner"], check=True)
     commit = (
@@ -278,6 +293,16 @@ def test_system_owned_gate_runner_executes_only_fixed_argv(tmp_path: Path) -> No
         .strip()
     )
 
+    attached = run_cutover_gate(
+        repository_root=root,
+        gate_id="clean_detached_clone",
+        final_commit=commit,
+        final_tree=tree,
+        subject_ref=object_ref_for_artifact(_handoff()),
+    )
+    assert validate_cutover_gate_evidence(attached)["payload"]["state"] == "FAIL"
+
+    subprocess.run(["git", "-C", str(root), "checkout", "--detach", "-q"], check=True)
     evidence = run_cutover_gate(
         repository_root=root,
         gate_id="clean_detached_clone",
@@ -286,10 +311,12 @@ def test_system_owned_gate_runner_executes_only_fixed_argv(tmp_path: Path) -> No
         subject_ref=object_ref_for_artifact(_handoff()),
     )
     validated = validate_cutover_gate_evidence(evidence)
-    assert validated["payload"]["state"] == "PASS"
+    assert validated["payload"]["state"] == "PASS", base64.b64decode(
+        validated["payload"]["batch_results"][0]["stderr_base64"]
+    ).decode("utf-8", errors="replace")
     assert validated["payload"]["batch_results"][0]["argv"] == [
-        "git",
-        "status",
-        "--porcelain=v1",
-        "--untracked-files=all",
+        "FROZEN_PYTHON",
+        "-m",
+        "quant_investor.system.release_install",
+        "verify-detached-checkout",
     ]

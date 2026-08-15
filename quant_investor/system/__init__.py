@@ -56,6 +56,7 @@ from .release_install import (
     git_code_manifest_sha256,
     prepare_operational_release,
     validate_release_install_evidence,
+    verify_detached_checkout,
     verify_release_install_input,
 )
 from .store import (
@@ -232,6 +233,7 @@ __all__ = [
     "validate_activation_authorization",
     "validate_prepared_activation_transaction",
     "validate_release_install_evidence",
+    "verify_detached_checkout",
     "validate_candidate_transaction_intent",
     "validate_installed_component_manifest",
     "validate_custody_record",

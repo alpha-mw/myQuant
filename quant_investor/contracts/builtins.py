@@ -1300,6 +1300,34 @@ SYSTEM_EXCHANGE_CALENDAR_CAPTURE_CONTRACT: Final = _exact_contract(
     "calendar_capture_id",
     SYSTEM_EXCHANGE_CALENDAR_CAPTURE_FIELDS,
 )
+SYSTEM_EXCHANGE_CALENDAR_DECODER_ADMISSION_FIELDS: Final = frozenset(
+    {
+        "decoder_admission_id",
+        "state",
+        "exchange_id",
+        "evidence_role",
+        "issuer",
+        "endpoint_scheme",
+        "endpoint_host",
+        "endpoint_path_query_template",
+        "redirect_policy",
+        "http_status",
+        "raw_media_type",
+        "response_headers",
+        "fixture_raw_file_ref",
+        "fixture_raw_sha256",
+        "fixture_captured_at",
+        "decoder_id",
+        "decoder_sha256",
+        "fixture_projection_sha256",
+        "review_basis",
+    }
+)
+SYSTEM_EXCHANGE_CALENDAR_DECODER_ADMISSION_CONTRACT: Final = _exact_contract(
+    "system.exchange_calendar_decoder_admission",
+    "decoder_admission_id",
+    SYSTEM_EXCHANGE_CALENDAR_DECODER_ADMISSION_FIELDS,
+)
 SYSTEM_READINESS_CONTRACT: Final = _exact_contract(
     "system.readiness", "readiness_id", READINESS_FIELDS
 )
@@ -1347,6 +1375,8 @@ __all__ = [
     "SYSTEM_BOOTSTRAP_OPERATOR_REQUEST_FIELDS",
     "SYSTEM_EXCHANGE_CALENDAR_MANIFEST_CONTRACT",
     "SYSTEM_EXCHANGE_CALENDAR_MANIFEST_FIELDS",
+    "SYSTEM_EXCHANGE_CALENDAR_DECODER_ADMISSION_CONTRACT",
+    "SYSTEM_EXCHANGE_CALENDAR_DECODER_ADMISSION_FIELDS",
     "SYSTEM_GENERATION_MANIFEST_CONTRACT",
     "SYSTEM_GENERATION_MANIFEST_FIELDS",
     "SYSTEM_INSTALLED_COMPONENT_MANIFEST_CONTRACT",

@@ -20,10 +20,11 @@ from quant_investor.factors.governance import (
 from quant_investor.factors.governance.production import (
     assemble_production_bootstrap,
 )
+import quant_investor.factors.governance.production as production_module
 from quant_investor.market.exchange_calendar_official import (
-    decode_capture_projection,
+    decode_capture_projection as production_decode_capture_projection,
     decoder_code_sha256,
-    decoder_id,
+    decoder_id as production_decoder_id,
 )
 from quant_investor.system import SystemContractError, SystemPreconditionError
 from quant_investor.system import SystemStore, installed_code_manifest_sha256
@@ -41,7 +42,9 @@ from tests.unit.test_fundamental_incremental_successor import _path_backed_case
 SYMBOLS = ["000001.SZ", "000002.SZ", "600000.SH", "600001.SH"]
 
 
-def _native_daily_bytes(exchange: str, rows: list[dict[str, str]]) -> tuple[bytes, str]:
+def _test_only_synthetic_daily_bytes(
+    exchange: str, rows: list[dict[str, str]]
+) -> tuple[bytes, str]:
     if exchange == "SSE":
         body = {
             "result": [
@@ -78,7 +81,7 @@ def _native_daily_bytes(exchange: str, rows: list[dict[str, str]]) -> tuple[byte
     raise AssertionError(exchange)
 
 
-def _native_session_bytes(exchange: str) -> bytes:
+def _test_only_synthetic_session_bytes(exchange: str) -> bytes:
     if exchange == "SSE":
         body = {
             "continuousAuction": [
@@ -106,6 +109,75 @@ def _native_session_bytes(exchange: str) -> bytes:
     else:
         raise AssertionError(exchange)
     return canonical_json_bytes(body)
+
+
+def _test_only_decoder_id(exchange: str, role: str) -> str:
+    return f"test-only.synthetic-calendar.{exchange.lower()}.{role.lower()}"
+
+
+def _test_only_decode_projection(
+    exchange: str, role: str, raw: bytes, *, media_type: str
+) -> dict[str, object]:
+    del media_type
+    if role == "DAILY_STATUS":
+        if exchange == "SSE":
+            prefix = b"sseCalendarCallback("
+            payload_start = len(prefix)
+            value = json.loads(raw[payload_start:-2])
+            rows = [
+                {
+                    "date": row["tradeDate"],
+                    "status": "OPEN" if row["isOpen"] else "CLOSED",
+                }
+                for row in value["result"]
+            ]
+        elif exchange == "SZSE":
+            value = json.loads(raw)
+            rows = [
+                {
+                    "date": (
+                        f"{row['tradeDate'][:4]}-{row['tradeDate'][4:6]}-" f"{row['tradeDate'][6:]}"
+                    ),
+                    "status": "OPEN" if row["tradeFlag"] == "1" else "CLOSED",
+                }
+                for row in value["data"]
+            ]
+        else:
+            value = json.loads(raw)
+            rows = [
+                {
+                    "date": row["trade_date"],
+                    "status": "OPEN" if row["market_status"] == "TRADING" else "CLOSED",
+                }
+                for row in value["result"]
+            ]
+        return {"daily_status_rows": rows}
+    value = json.loads(raw)
+    if exchange == "SSE":
+        intervals = [
+            {"opens_local": row["beginTime"], "closes_local": row["endTime"]}
+            for row in value["continuousAuction"]
+        ]
+    elif exchange == "SZSE":
+        intervals = [
+            {"opens_local": row["start"], "closes_local": row["end"]} for row in value["sessions"]
+        ]
+    else:
+        intervals = [
+            {"opens_local": row.split("/")[0], "closes_local": row.split("/")[1]}
+            for row in value["data"]["continuousTradingPeriods"]
+        ]
+    return {"session_intervals": intervals}
+
+
+@pytest.fixture(autouse=True)
+def _synthetic_calendar_decoder_is_test_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(production_module, "decoder_id", _test_only_decoder_id)
+    monkeypatch.setattr(
+        production_module,
+        "decode_capture_projection",
+        _test_only_decode_projection,
+    )
 
 
 def _raw_market_rows(sessions: list[date]) -> list[dict[str, Any]]:
@@ -401,15 +473,18 @@ def _inputs(root: Path) -> dict[str, dict[str, str] | list[dict[str, str]]]:
         for role in ("DAILY_STATUS", "SESSION_RULE"):
             role_name = "daily" if role == "DAILY_STATUS" else "rules"
             if role == "DAILY_STATUS":
-                raw_body, media_type = _native_daily_bytes(exchange, daily_status_rows)
+                raw_body, media_type = _test_only_synthetic_daily_bytes(exchange, daily_status_rows)
             else:
-                raw_body, media_type = _native_session_bytes(exchange), "application/json"
+                raw_body, media_type = (
+                    _test_only_synthetic_session_bytes(exchange),
+                    "application/json",
+                )
             raw_relative = f"closure/calendar-{role_name}-raw-{exchange.lower()}.bin"
             _write(root, raw_relative, raw_body)
             raw_ref = _byte_ref(root, raw_relative)
             source_url = f"https://{host}/official/calendar/{role_name}"
             projection = dict(
-                decode_capture_projection(exchange, role, raw_body, media_type=media_type)
+                _test_only_decode_projection(exchange, role, raw_body, media_type=media_type)
             )
             capture = seal_artifact(
                 "system.exchange_calendar_capture",
@@ -433,7 +508,7 @@ def _inputs(root: Path) -> dict[str, dict[str, str] | list[dict[str, str]]]:
                     "raw_sha256": raw_ref["byte_sha256"],
                     "raw_byte_length": len(raw_body),
                     "raw_media_type": media_type,
-                    "decoder_id": decoder_id(exchange, role),
+                    "decoder_id": _test_only_decoder_id(exchange, role),
                     "decoder_sha256": code_sha,
                     "timezone": "Asia/Shanghai",
                     "session_intervals": projection.get("session_intervals", []),
@@ -540,7 +615,7 @@ def _inputs(root: Path) -> dict[str, dict[str, str] | list[dict[str, str]]]:
     return result
 
 
-def _replace_native_calendar_capture(
+def _replace_synthetic_calendar_capture(
     root: Path,
     files: dict[str, dict[str, str] | list[dict[str, str]]],
     *,
@@ -557,7 +632,7 @@ def _replace_native_calendar_capture(
     capture = json.loads(capture_path.read_bytes())
     payload = capture["payload"]
     projection = dict(
-        decode_capture_projection(
+        _test_only_decode_projection(
             exchange,
             role,
             raw_body,
@@ -825,61 +900,22 @@ def test_production_bootstrap_requires_explicit_daily_open_closed_evidence(
         )
 
 
-def test_production_bootstrap_rejects_placeholder_official_calendar_raw(
-    tmp_path: Path,
+def test_production_bootstrap_rejects_unadmitted_synthetic_calendar_body(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     workspace, release_ref = _seed_workspace(tmp_path)
     input_root = tmp_path / "sealed-inputs"
     files = _inputs(input_root)
-    raw_relative = "closure/calendar-daily-raw-sse.bin"
-    placeholder = canonical_json_bytes({"issuer": "SSE_OFFICIAL", "raw": "sealed"})
-    _write(input_root, raw_relative, placeholder)
-    raw_ref = _byte_ref(input_root, raw_relative)
-    raw_refs = [
-        raw_ref if row["relative_path"] == raw_relative else row
-        for row in files["calendar_raw_file_refs"]
-    ]
-    files["calendar_raw_file_refs"] = sorted(raw_refs, key=lambda value: value["relative_path"])
-
-    capture_path = input_root / "closure/calendar-daily-capture-sse.json"
-    capture = json.loads(capture_path.read_bytes())
-    capture_payload = capture["payload"]
-    capture_payload["raw_file_ref"] = raw_ref
-    capture_payload["raw_sha256"] = raw_ref["byte_sha256"]
-    capture_payload["raw_byte_length"] = len(placeholder)
-    _write(
-        input_root,
-        "closure/calendar-daily-capture-sse.json",
-        canonical_json_bytes(
-            seal_artifact("system.exchange_calendar_capture", capture_payload, created_at=BASE)
-        ),
+    monkeypatch.setattr(production_module, "decoder_id", production_decoder_id)
+    monkeypatch.setattr(
+        production_module,
+        "decode_capture_projection",
+        production_decode_capture_projection,
     )
-    capture_ref = _byte_ref(input_root, "closure/calendar-daily-capture-sse.json")
-    capture_refs = [
-        capture_ref if row["relative_path"] == "closure/calendar-daily-capture-sse.json" else row
-        for row in files["calendar_capture_file_refs"]
-    ]
-    files["calendar_capture_file_refs"] = sorted(
-        capture_refs, key=lambda value: value["relative_path"]
-    )
-    manifest_path = input_root / "closure/calendar_manifest.json"
-    manifest = json.loads(manifest_path.read_bytes())
-    manifest["payload"]["exchange_rows"][0]["daily_status_raw_file_ref"] = raw_ref
-    manifest["payload"]["exchange_rows"][0]["daily_status_capture_file_ref"] = capture_ref
-    _write(
-        input_root,
-        "closure/calendar_manifest.json",
-        canonical_json_bytes(
-            seal_artifact(
-                "system.exchange_calendar_manifest",
-                manifest["payload"],
-                created_at=BASE,
-            )
-        ),
-    )
-    files["calendar_manifest_file_ref"] = _byte_ref(input_root, "closure/calendar_manifest.json")
-
-    with pytest.raises(SystemContractError, match="JSONP framing"):
+    with pytest.raises(
+        SystemContractError,
+        match="OFFICIAL_CALENDAR_WIRE_CONTRACT_UNVERIFIED",
+    ):
         assemble_production_bootstrap(
             workspace_root=workspace,
             input_root=input_root,
@@ -887,14 +923,14 @@ def test_production_bootstrap_rejects_placeholder_official_calendar_raw(
         )
 
 
-def test_production_bootstrap_rejects_native_daily_date_gap(tmp_path: Path) -> None:
+def test_production_bootstrap_rejects_synthetic_daily_date_gap(tmp_path: Path) -> None:
     workspace, release_ref = _seed_workspace(tmp_path)
     input_root = tmp_path / "sealed-inputs"
     files = _inputs(input_root)
     raw_path = input_root / "closure/calendar-daily-raw-szse.bin"
     native = json.loads(raw_path.read_bytes())
     native["data"].pop(10)
-    _replace_native_calendar_capture(
+    _replace_synthetic_calendar_capture(
         input_root,
         files,
         exchange="SZSE",
@@ -920,7 +956,7 @@ def test_production_bootstrap_rejects_cross_exchange_calendar_disagreement(
     native = json.loads(raw_path.read_bytes())
     open_row = next(row for row in native["data"] if row["tradeFlag"] == "1")
     open_row["tradeFlag"] = "0"
-    _replace_native_calendar_capture(
+    _replace_synthetic_calendar_capture(
         input_root,
         files,
         exchange="SZSE",
@@ -945,7 +981,7 @@ def test_production_bootstrap_rejects_unsupported_official_session_hours(
     raw_path = input_root / "closure/calendar-rules-raw-sse.bin"
     native = json.loads(raw_path.read_bytes())
     native["continuousAuction"][0]["beginTime"] = "09:31:00"
-    _replace_native_calendar_capture(
+    _replace_synthetic_calendar_capture(
         input_root,
         files,
         exchange="SSE",

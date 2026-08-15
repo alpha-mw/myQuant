@@ -183,6 +183,9 @@ manifest, and compiled contract catalog to agree. A zero-selected pytest run
 cannot satisfy either gate. Long-running tests are
 executed before the active lock. Under the lock the System revalidates their
 immutable receipts and the current frozen tree; it does not rerun pytest.
+The `clean_detached_clone` gate and release builder both require an exact clean
+detached HEAD, double-read the commit/tree/status/root, and reject even a clean
+checkout that remains attached to a branch.
 
 Final authorization validation has two distinct modes. `PRE_CAS_CURRENT`
 requires current HEAD/tree and a clean checkout to equal the frozen release.
@@ -191,16 +194,21 @@ activation but deliberately does not require future HEAD to remain pinned to
 the initial release. This preserves the permanent marker across legitimate
 descendant releases without weakening the first-CAS gate.
 
-The production bootstrap assembler accepts official calendar HTTP entity bytes
-unchanged. It independently invokes the stable SSE, SZSE, or BSE native-body
-decoder and binds the exact decoder module bytes. Daily `OPEN`/`CLOSED` evidence
-and official continuous-session rule evidence are separate captures; normalized
-project JSON is never accepted as the issuer response. Missing dates, inferred
-weekdays, unsupported hours, exchange disagreement, raw tamper, decoder drift,
-or an exchange required by the sealed PIT cohort without both captures blocks
-before generation publication. The assembler performs no network call; an
-authorized read-only source-ingestion step must capture the official bodies
-first.
+The production calendar decoder registry is intentionally empty in this
+release. No SSE, SZSE, or BSE response format has yet been admitted from a
+retained native issuer capture, so every calendar assembly stops with
+`OFFICIAL_CALENDAR_WIRE_CONTRACT_UNVERIFIED`. Project-authored JSON, test
+fixtures, official-hostname assertions, weekday/holiday inference, bars,
+Macro data, provider calendars, and legacy calendars cannot satisfy this gate.
+A future decoder admission must bind the exchange and evidence role to the
+exact HTTPS endpoint/query contract, redirect policy, real status/content type
+and response headers, retained native body bytes and SHA, capture time,
+decoder bytes, and normalized projection SHA. Decoder tests must replay that
+retained capture rather than manufacture a body from the expected projection.
+Daily `OPEN`/`CLOSED` evidence and official continuous-session evidence remain
+separate roles. Until both admitted roles cover every exchange in the sealed
+PIT cohort through the exact cutoff, production generation publication and CAS
+remain blocked.
 
 Any unknown pointer, caller, writer, authority claim, resolver difference,
 custody failure, source-closure mismatch, test failure,

@@ -20,7 +20,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-from typing import Any, Final
+from typing import Any, Final, Sequence
 import zipfile
 
 from quant_investor.contracts import (
@@ -124,6 +124,61 @@ def _git_scalar(root: Path, *arguments: str) -> str:
     except UnicodeDecodeError as exc:
         raise SystemPreconditionError("release Git identity is not ASCII") from exc
     return _git_oid(value, label="release Git identity")
+
+
+def _detached_snapshot(root: Path) -> dict[str, object]:
+    try:
+        top_level_text = _git(root, "rev-parse", "--show-toplevel").decode("utf-8").strip()
+    except UnicodeDecodeError as exc:
+        raise SystemPreconditionError("release Git root is not UTF-8") from exc
+    top_level = Path(top_level_text).resolve(strict=True)
+    try:
+        symbolic = subprocess.run(
+            ["git", "-C", str(root), "symbolic-ref", "-q", "HEAD"],
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise SystemPreconditionError("release detached-HEAD verification could not run") from exc
+    if symbolic.returncode == 0:
+        raise SystemPreconditionError("release checkout is attached to a branch")
+    if symbolic.returncode != 1 or symbolic.stdout or symbolic.stderr:
+        raise SystemPreconditionError("release detached-HEAD verification failed")
+    status = _git(root, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+    return {
+        "repository_root": str(top_level),
+        "commit": _git_scalar(root, "rev-parse", "HEAD^{commit}"),
+        "tree": _git_scalar(root, "rev-parse", "HEAD^{tree}"),
+        "status_sha256": _sha256(status),
+        "detached": True,
+    }
+
+
+def verify_detached_checkout(
+    repository_root: str | os.PathLike[str],
+    *,
+    final_commit: str,
+    final_tree: str,
+) -> dict[str, object]:
+    """Double-read an exact clean detached release checkout."""
+
+    root = Path(repository_root).resolve(strict=True)
+    commit = _git_oid(final_commit, label="final_commit")
+    tree = _git_oid(final_tree, label="final_tree")
+    first = _detached_snapshot(root)
+    second = _detached_snapshot(root)
+    if first != second:
+        raise SystemPreconditionError("release detached checkout changed during readback")
+    if first["repository_root"] != str(root):
+        raise SystemPreconditionError("release checkout root differs")
+    if first["commit"] != commit or first["tree"] != tree:
+        raise SystemPreconditionError("release detached checkout identity differs")
+    if first["status_sha256"] != _sha256(b""):
+        raise SystemPreconditionError("release detached checkout is not clean")
+    return {"state": "PASS", **first}
 
 
 def _tree_rows(root: Path, commit: str) -> list[dict[str, str]]:
@@ -561,12 +616,7 @@ def prepare_operational_release(  # noqa: C901
     root = Path(repository_root).resolve(strict=True)
     commit = _git_oid(final_commit, label="final_commit")
     tree = _git_oid(final_tree, label="final_tree")
-    if (
-        _git_scalar(root, "rev-parse", "HEAD^{commit}") != commit
-        or _git_scalar(root, "rev-parse", "HEAD^{tree}") != tree
-        or _git(root, "status", "--porcelain=v1", "-z", "--untracked-files=all")
-    ):
-        raise SystemPreconditionError("release preparation checkout is not exact and clean")
+    verify_detached_checkout(root, final_commit=commit, final_tree=tree)
     release_base = _owner_directory(Path(release_root), create=True, label="release root")
     if release_base == root or root in release_base.parents or release_base in root.parents:
         raise SystemSecurityError("release root overlaps the source checkout")
@@ -768,12 +818,11 @@ def verify_release_install_input(  # noqa: C901
 
     root = Path(repository_root).resolve(strict=True)
     commit = payload["final_commit"]
-    if _git_scalar(root, "rev-parse", "HEAD^{commit}") != commit:
-        raise SystemPreconditionError("release install checkout is not frozen HEAD")
-    if _git_scalar(root, "rev-parse", "HEAD^{tree}") != payload["final_tree"]:
-        raise SystemPreconditionError("release install checkout tree differs")
-    if _git(root, "status", "--porcelain=v1", "-z", "--untracked-files=all"):
-        raise SystemPreconditionError("release install checkout is not clean")
+    verify_detached_checkout(
+        root,
+        final_commit=commit,
+        final_tree=payload["final_tree"],
+    )
     observed_tree_sha = code_tree_sha256(root, commit)
     observed_git_manifest = git_code_manifest_sha256(root, commit)
     if (
@@ -846,9 +895,7 @@ def verify_release_install_input(  # noqa: C901
     }
 
 
-def release_install_gate_main() -> int:
-    """Fixed stdin-only entry point used by the final cutover gate runner."""
-
+def _bounded_stdin() -> bytes:
     chunks: list[bytes] = []
     total = 0
     while True:
@@ -862,6 +909,30 @@ def release_install_gate_main() -> int:
     raw = b"".join(chunks)
     if len(raw) > 64 * 1024 * 1024:
         raise SystemContractError("release install gate input exceeds byte bound")
+    return raw
+
+
+def release_install_gate_main(argv: Sequence[str] | None = None) -> int:
+    """Fixed stdin-only entry point used by final cutover gate runners."""
+
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    raw = _bounded_stdin()
+    if arguments == ["verify-detached-checkout"]:
+        try:
+            value = parse_canonical_json_bytes(raw)
+        except ContractError as exc:
+            raise SystemContractError("detached checkout gate input is not canonical") from exc
+        if type(value) is not dict or set(value) != {"final_commit", "final_tree"}:
+            raise SystemContractError("detached checkout gate input fields are not exact")
+        result = verify_detached_checkout(
+            Path.cwd(),
+            final_commit=value["final_commit"],
+            final_tree=value["final_tree"],
+        )
+        os.write(1, canonical_json_bytes(result))
+        return 0
+    if arguments:
+        raise SystemContractError("release gate command is unsupported")
     result = verify_release_install_input(raw, repository_root=Path.cwd())
     os.write(1, canonical_json_bytes(result))
     return 0
@@ -880,5 +951,6 @@ __all__ = [
     "prepare_operational_release",
     "release_install_gate_main",
     "validate_release_install_evidence",
+    "verify_detached_checkout",
     "verify_release_install_input",
 ]

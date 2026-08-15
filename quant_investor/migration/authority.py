@@ -22,6 +22,8 @@ import subprocess
 import sys
 from typing import Any, Final, Literal
 
+import quant_investor.system.release_install as release_install_module
+
 from quant_investor.contracts import (
     ContractError,
     canonical_json_bytes,
@@ -115,7 +117,14 @@ REQUIRED_FINAL_PREFLIGHT_GATES: Final = frozenset(
 FinalAuthorizationValidationMode = Literal["PRE_CAS_CURRENT", "HISTORICAL"]
 _GATE_RUNNER_ID: Final = "myquant.system.final-cutover-gate-runner"
 _GATE_SPECS: Final[dict[str, tuple[tuple[str, ...], ...]]] = {
-    "clean_detached_clone": (("git", "status", "--porcelain=v1", "--untracked-files=all"),),
+    "clean_detached_clone": (
+        (
+            "FROZEN_PYTHON",
+            "-m",
+            "quant_investor.system.release_install",
+            "verify-detached-checkout",
+        ),
+    ),
     "contract_catalog": (("uv", "run", "pytest", "tests/unit/test_unified_contracts.py", "-q"),),
     "flake8": (
         (
@@ -581,6 +590,11 @@ def _seal_cutover_gate_evidence(  # noqa: C901
     )
     if len(batch_results) != len(expected_batches):
         raise SystemContractError("cutover gate batch count differs from fixed runner")
+    normalized_commit = _git_oid(final_commit, label="final_commit")
+    normalized_tree = _git_oid(final_tree, label="final_tree")
+    detached_input_sha = _sha256(
+        canonical_json_bytes({"final_commit": normalized_commit, "final_tree": normalized_tree})
+    )
     normalized_results: list[dict[str, Any]] = []
     all_passed = True
     for index, (raw_row, expected_argv) in enumerate(zip(batch_results, expected_batches)):
@@ -622,7 +636,11 @@ def _seal_cutover_gate_evidence(  # noqa: C901
                 ),
             }
         )
-        if gate != "release_install_origin" and row["stdin_sha256"] != _sha256(b""):
+        if gate == "clean_detached_clone" and row["stdin_sha256"] != detached_input_sha:
+            raise SystemContractError("detached checkout gate stdin binding differs")
+        if gate not in {"clean_detached_clone", "release_install_origin"} and row[
+            "stdin_sha256"
+        ] != _sha256(b""):
             raise SystemContractError("non-release cutover gate stdin is not empty")
         all_passed = all_passed and exit_code == 0
     started = _canonical_timestamp(started_at, label="started_at")
@@ -635,8 +653,8 @@ def _seal_cutover_gate_evidence(  # noqa: C901
         "runner_id": _GATE_RUNNER_ID,
         "runner_spec_sha256": _gate_runner_spec_sha256(gate, expected_batches),
         "runner_code_sha256": _sha(runner_code_sha256, label="runner_code_sha256"),
-        "final_commit": _git_oid(final_commit, label="final_commit"),
-        "final_tree": _git_oid(final_tree, label="final_tree"),
+        "final_commit": normalized_commit,
+        "final_tree": normalized_tree,
         "environment_sha256": _sha(environment_sha256, label="environment_sha256"),
         "batch_results": normalized_results,
         "subject_ref": validate_object_ref(subject_ref, label="subject_ref"),
@@ -681,12 +699,25 @@ def run_cutover_gate(  # noqa: C901
     _mode, _oid, runner_raw = _git_blob(root, commit, "quant_investor/migration/authority.py")
     if Path(__file__).resolve(strict=True).read_bytes() != runner_raw:
         raise SystemPreconditionError("executing gate runner differs from frozen source")
+    if gate in {"clean_detached_clone", "release_install_origin"}:
+        _mode, _oid, release_runner_raw = _git_blob(
+            root, commit, "quant_investor/system/release_install.py"
+        )
+        if (
+            Path(release_install_module.__file__).resolve(strict=True).read_bytes()
+            != release_runner_raw
+        ):
+            raise SystemPreconditionError(
+                "executing release gate helper differs from frozen source"
+            )
     environment = {
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
         "PATH": os.environ.get("PATH", ""),
+        "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONHASHSEED": "0",
         "PYTHONPATH": "",
+        "TMPDIR": "/tmp",
         "UV_CACHE_DIR": "/tmp/myquant-cutover-uv-cache",
     }
     environment_sha = _sha256(canonical_json_bytes(environment))
@@ -709,6 +740,10 @@ def run_cutover_gate(  # noqa: C901
                 "deployed_release": release,
             }
         )
+    elif gate == "clean_detached_clone":
+        if release_install_evidence is not None or deployed_release is not None:
+            raise SystemContractError("detached checkout gate rejects release inputs")
+        gate_stdin = canonical_json_bytes({"final_commit": commit, "final_tree": tree})
     else:
         if release_install_evidence is not None or deployed_release is not None:
             raise SystemContractError("non-release cutover gate rejects release inputs")
