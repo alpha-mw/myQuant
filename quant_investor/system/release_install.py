@@ -576,6 +576,7 @@ def prepare_operational_release(  # noqa: C901
         "SOURCE_DATE_EPOCH": source_epoch,
         "UV_OFFLINE": "1",
         "UV_PYTHON_DOWNLOADS": "never",
+        "UV_CACHE_DIR": os.environ.get("UV_CACHE_DIR", str(release_base / "uv-cache")),
     }
     with tempfile.TemporaryDirectory(prefix="release-build-", dir=release_base) as directory:
         build_root = Path(directory)
