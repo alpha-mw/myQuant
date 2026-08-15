@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import os
 from pathlib import Path
 import subprocess
+import sys
 from typing import Any
 
-from quant_investor.contracts import canonical_json_bytes
+from quant_investor.contracts import canonical_json_bytes, contract_catalog_sha256
 from quant_investor.migration.authority import (
+    _GATE_SPECS,
+    _seal_cutover_gate_evidence,
     REQUIRED_FINAL_PREFLIGHT_GATES,
     build_concurrent_task_handoff,
-    build_cutover_gate_evidence,
     build_final_cutover_authorization,
     build_legacy_source_disposition,
 )
@@ -20,6 +23,7 @@ from quant_investor.migration.migration import (
     build_pre_cas_migration_receipt,
 )
 from quant_investor.system.activation import build_activation_authorization
+from quant_investor.system.release_install import build_release_install_evidence
 from quant_investor.system.store import SystemStore
 
 from test_unified_migration_custody import _inventory, _workspace
@@ -48,7 +52,14 @@ def _test_final_authorization(
         (root / ".git" / "info" / "exclude").write_text("*\n", encoding="utf-8")
         anchor = root / ".authority-anchor"
         anchor.write_bytes(b"unified-authority-anchor\n")
-        _git(root, "add", "-f", ".authority-anchor")
+        runner = root / "quant_investor/migration/authority.py"
+        runner.parent.mkdir(parents=True, exist_ok=True)
+        runner.write_bytes(
+            Path(
+                __import__("quant_investor.migration.authority", fromlist=["x"]).__file__
+            ).read_bytes()
+        )
+        _git(root, "add", "-f", ".authority-anchor", runner.relative_to(root).as_posix())
         _git(root, "commit", "-q", "-m", "authority test anchor")
     commit = _git(root, "rev-parse", "HEAD^{commit}").decode().strip()
     tree = _git(root, "rev-parse", "HEAD^{tree}").decode().strip()
@@ -119,21 +130,114 @@ def _test_final_authorization(
     )
     handoff_ref = store.put_object(handoff)
     disposition_ref = store.put_object(disposition)
-    inventory_rows = [{"path": path, "mode": mode, "git_blob_oid": blob}]
+    runner_ls_tree = (
+        _git(root, "ls-tree", "HEAD", "--", "quant_investor/migration/authority.py")
+        .decode()
+        .strip()
+    )
+    runner_mode, _runner_kind, runner_blob_and_path = runner_ls_tree.split(" ", 2)
+    runner_blob, runner_path = runner_blob_and_path.split("\t", 1)
+    inventory_rows = sorted(
+        [
+            {"path": path, "mode": mode, "git_blob_oid": blob},
+            {
+                "path": runner_path,
+                "mode": runner_mode,
+                "git_blob_oid": runner_blob,
+            },
+        ],
+        key=lambda row: row["path"],
+    )
     inventory_sha = hashlib.sha256(canonical_json_bytes(inventory_rows)).hexdigest()
-    gate_rows: list[dict[str, Any]] = []
+    gate_evidence: list[dict[str, Any]] = []
+    runner_raw = _git(root, "show", f"{commit}:quant_investor/migration/authority.py")
+    executable = Path(sys.executable).resolve()
+    executable_sha = hashlib.sha256(executable.read_bytes()).hexdigest()
+    release = store.get_object(release_ref)
+    anchor_path = (root / path).resolve(strict=True)
+    install_evidence = build_release_install_evidence(
+        final_commit=commit,
+        final_tree=tree,
+        code_tree_sha256_value=release["payload"]["code_sha256"],
+        git_code_manifest_sha256_value=release["payload"]["code_manifest_sha256"],
+        release_ref=release_ref,
+        source_archive={
+            "path": str(anchor_path),
+            "byte_sha256": hashlib.sha256(anchor_raw).hexdigest(),
+            "size": len(anchor_raw),
+        },
+        wheel={
+            "path": str(anchor_path),
+            "byte_sha256": release["payload"]["wheel_sha256"],
+            "size": len(anchor_raw),
+        },
+        install_root=str(root),
+        python_executable=str(executable),
+        python_executable_sha256=executable_sha,
+        import_origin=str(
+            Path(__import__("quant_investor", fromlist=["x"]).__file__).resolve(strict=True)
+        ),
+        installed_code_manifest_sha256=release["payload"]["code_manifest_sha256"],
+        contract_catalog_sha256_value=contract_catalog_sha256(),
+        lockfile_sha256=hashlib.sha256(anchor_raw).hexdigest(),
+        created_at=created_at,
+    )
+    install_evidence_ref = store.put_object(install_evidence)
     for gate_id in sorted(REQUIRED_FINAL_PREFLIGHT_GATES):
-        evidence = build_cutover_gate_evidence(
+        if gate_id == "release_install_origin":
+            subject_ref = install_evidence_ref
+            gate_stdin = canonical_json_bytes(
+                {
+                    "release_install_evidence": install_evidence,
+                    "deployed_release": release,
+                }
+            )
+            gate_stdout = canonical_json_bytes(
+                {
+                    "state": "PASS",
+                    "release_ref": release_ref,
+                    "source_archive_sha256": install_evidence["payload"]["source_archive"][
+                        "byte_sha256"
+                    ],
+                    "wheel_sha256": release["payload"]["wheel_sha256"],
+                    "code_tree_sha256": release["payload"]["code_sha256"],
+                    "installed_code_manifest_sha256": release["payload"]["code_manifest_sha256"],
+                    "contract_catalog_sha256": install_evidence["payload"][
+                        "contract_catalog_sha256"
+                    ],
+                    "import_origin": install_evidence["payload"]["import_origin"],
+                }
+            )
+        else:
+            subject_ref = release_ref
+            gate_stdin = b""
+            gate_stdout = b""
+        evidence = _seal_cutover_gate_evidence(
             gate_id=gate_id,
             final_commit=commit,
             final_tree=tree,
-            command=f"test-gate {gate_id}",
-            exit_code=0,
-            stdout_sha256=hashlib.sha256(gate_id.encode()).hexdigest(),
-            subject_ref=release_ref,
-            observed_at=created_at,
+            runner_code_sha256=hashlib.sha256(runner_raw).hexdigest(),
+            environment_sha256=hashlib.sha256(b"unit-fixture-environment").hexdigest(),
+            batch_results=[
+                {
+                    "argv": list(argv),
+                    "exit_code": 0,
+                    "stdout_base64": base64.b64encode(gate_stdout).decode("ascii"),
+                    "stdout_sha256": hashlib.sha256(gate_stdout).hexdigest(),
+                    "stderr_base64": "",
+                    "stderr_sha256": hashlib.sha256(b"").hexdigest(),
+                    "executable_path": str(executable),
+                    "executable_sha256": executable_sha,
+                    "stdin_sha256": hashlib.sha256(gate_stdin).hexdigest(),
+                }
+                for argv in _GATE_SPECS[gate_id]
+            ],
+            subject_ref=subject_ref,
+            started_at=created_at,
+            finished_at=created_at,
         )
-        gate_rows.append({"gate_id": gate_id, "evidence_ref": store.put_object(evidence)})
+        store.put_object(evidence)
+        gate_evidence.append(evidence)
     readbacks = [
         {
             "commit": commit,
@@ -167,7 +271,7 @@ def _test_final_authorization(
         final_worktree_inventory_sha256=inventory_sha,
         clean_checkout_readback_rows=readbacks,
         user_authorization_basis="explicit test-only activation authorization",
-        preflight_rows=gate_rows,
+        preflight_evidence=gate_evidence,
         created_at=created_at,
     )
     store.put_object(final_authorization)

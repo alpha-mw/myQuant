@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -185,6 +186,42 @@ def test_completed_activation_replay_is_exact_and_never_repeats_cas(
     assert second["activation"]["cas_performed"] is False
     assert first["pointer"] == second["pointer"]
     assert first["migration_completion"]["marker"] == second["migration_completion"]["marker"]
+
+
+def test_initial_marker_remains_valid_after_descendant_release_commit(tmp_path: Path) -> None:
+    closure, _generation, inputs = _case(tmp_path)
+    store = closure["store"]
+    activated = store.activate_initial_generation(**inputs)
+
+    descendant = closure["workspace"] / ".descendant-release"
+    descendant.write_bytes(b"legitimate-descendant-release\n")
+    runner = closure["workspace"] / "quant_investor/migration/authority.py"
+    runner.write_bytes(runner.read_bytes() + b"\n# descendant runner change\n")
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(closure["workspace"]),
+            "add",
+            "-f",
+            descendant.name,
+            runner.relative_to(closure["workspace"]).as_posix(),
+        ],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    subprocess.run(
+        ["git", "-C", str(closure["workspace"]), "commit", "-q", "-m", "descendant"],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    readback = store.read_active()
+    assert readback is not None
+    assert readback["pointer"] == activated["pointer"]
+    assert readback["migration_completion"]["marker"]["payload"]["migration_replay_refused"] is True
 
 
 def test_marker_only_and_different_pointer_are_never_overwritten(tmp_path: Path) -> None:

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -10,10 +13,16 @@ from quant_investor.migration import (
     build_final_cutover_authorization,
     build_legacy_source_disposition,
     publish_authority_artifact,
+    run_cutover_gate,
     validate_concurrent_task_handoff,
     validate_final_cutover_authorization,
+    validate_cutover_gate_evidence,
 )
-from quant_investor.system import SystemPreconditionError
+from quant_investor.migration.authority import (
+    _GATE_SPECS,
+    _seal_cutover_gate_evidence,
+)
+from quant_investor.system import SystemContractError, SystemPreconditionError
 from quant_investor.system.store import object_ref_for_artifact
 
 BASE = "2026-08-16T00:00:00Z"
@@ -90,6 +99,38 @@ def _disposition() -> dict[str, object]:
     )
 
 
+def _gate_evidence(commit: str, tree: str, subject_ref: dict[str, str]) -> list[dict[str, object]]:
+    executable = Path(sys.executable).resolve()
+    executable_sha = hashlib.sha256(executable.read_bytes()).hexdigest()
+    return [
+        _seal_cutover_gate_evidence(
+            gate_id=gate_id,
+            final_commit=commit,
+            final_tree=tree,
+            runner_code_sha256="7" * 64,
+            environment_sha256="8" * 64,
+            batch_results=[
+                {
+                    "argv": list(argv),
+                    "exit_code": 0,
+                    "stdout_base64": "",
+                    "stdout_sha256": hashlib.sha256(b"").hexdigest(),
+                    "stderr_base64": "",
+                    "stderr_sha256": hashlib.sha256(b"").hexdigest(),
+                    "executable_path": str(executable),
+                    "executable_sha256": executable_sha,
+                    "stdin_sha256": hashlib.sha256(b"").hexdigest(),
+                }
+                for argv in _GATE_SPECS[gate_id]
+            ],
+            subject_ref=subject_ref,
+            started_at=BASE,
+            finished_at=BASE,
+        )
+        for gate_id in sorted(REQUIRED_FINAL_PREFLIGHT_GATES)
+    ]
+
+
 def test_concurrent_handoff_requires_clean_stable_double_read(tmp_path: Path) -> None:
     artifact = _handoff()
     assert validate_concurrent_task_handoff(artifact) == artifact
@@ -153,10 +194,7 @@ def test_final_cutover_authorization_is_machine_derived_from_passed_gates() -> N
         final_worktree_inventory_sha256="6" * 64,
         clean_checkout_readback_rows=_readbacks("4" * 40, "5" * 40),
         user_authorization_basis="explicit current-task production authorization",
-        preflight_rows=[
-            {"gate_id": gate_id, "evidence_ref": handoff_ref}
-            for gate_id in sorted(REQUIRED_FINAL_PREFLIGHT_GATES)
-        ],
+        preflight_evidence=_gate_evidence("4" * 40, "5" * 40, handoff_ref),
         created_at=BASE,
     )
 
@@ -182,6 +220,76 @@ def test_final_cutover_authorization_is_machine_derived_from_passed_gates() -> N
             final_worktree_inventory_sha256="6" * 64,
             clean_checkout_readback_rows=_readbacks("4" * 40, "5" * 40),
             user_authorization_basis="explicit current-task production authorization",
-            preflight_rows=[],
+            preflight_evidence=[],
             created_at=BASE,
         )
+
+
+def test_arbitrary_command_exit_zero_cannot_be_sealed_as_a_cutover_gate() -> None:
+    subject_ref = object_ref_for_artifact(_handoff())
+    row = _gate_evidence("4" * 40, "5" * 40, subject_ref)[0]["payload"]["batch_results"][0]
+    forged = dict(row)
+    forged["argv"] = ["sh", "-c", "exit 0"]
+    with pytest.raises(SystemContractError, match="fixed runner"):
+        _seal_cutover_gate_evidence(
+            gate_id=sorted(REQUIRED_FINAL_PREFLIGHT_GATES)[0],
+            final_commit="4" * 40,
+            final_tree="5" * 40,
+            runner_code_sha256="7" * 64,
+            environment_sha256="8" * 64,
+            batch_results=[forged],
+            subject_ref=subject_ref,
+            started_at=BASE,
+            finished_at=BASE,
+        )
+
+
+def test_system_owned_gate_runner_executes_only_fixed_argv(tmp_path: Path) -> None:
+    root = tmp_path / "repository"
+    root.mkdir()
+    subprocess.run(["git", "-C", str(root), "init", "-q"], check=True)
+    subprocess.run(["git", "-C", str(root), "config", "user.name", "Gate Test"], check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "config", "user.email", "gate@example.invalid"],
+        check=True,
+    )
+    source = Path(__import__("quant_investor.migration.authority", fromlist=["x"]).__file__)
+    target = root / "quant_investor/migration/authority.py"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(source.read_bytes())
+    subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(root), "commit", "-q", "-m", "gate runner"], check=True)
+    commit = (
+        subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD^{commit}"],
+            check=True,
+            stdout=subprocess.PIPE,
+        )
+        .stdout.decode()
+        .strip()
+    )
+    tree = (
+        subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD^{tree}"],
+            check=True,
+            stdout=subprocess.PIPE,
+        )
+        .stdout.decode()
+        .strip()
+    )
+
+    evidence = run_cutover_gate(
+        repository_root=root,
+        gate_id="clean_detached_clone",
+        final_commit=commit,
+        final_tree=tree,
+        subject_ref=object_ref_for_artifact(_handoff()),
+    )
+    validated = validate_cutover_gate_evidence(evidence)
+    assert validated["payload"]["state"] == "PASS"
+    assert validated["payload"]["batch_results"][0]["argv"] == [
+        "git",
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=all",
+    ]

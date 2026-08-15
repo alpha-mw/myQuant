@@ -2195,6 +2195,7 @@ class SystemStore:
                 repository_root=self.workspace_root,
                 object_resolver=self.get_object,
                 deployed_release_ref=deployed_release_ref,
+                validation_mode="PRE_CAS_CURRENT",
             )
 
             authorization, marker = validate_activation_authorization(
@@ -2228,6 +2229,7 @@ class SystemStore:
                 repository_root=self.workspace_root,
                 object_resolver=self.get_object,
                 deployed_release_ref=deployed_release_ref,
+                validation_mode="PRE_CAS_CURRENT",
             )
 
         result = self._storage._commit_initial_activation(
@@ -2328,6 +2330,7 @@ class SystemStore:
                 repository_root=self.workspace_root,
                 object_resolver=self.get_object,
                 deployed_release_ref=deployed_ref,
+                validation_mode="HISTORICAL",
             )
             validated_authorization, expected_marker = validate_activation_authorization(
                 authorization_stored.data,

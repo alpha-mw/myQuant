@@ -7,20 +7,25 @@ trading-side authority.
 
 from __future__ import annotations
 
+import ast
 from collections.abc import Callable, Mapping, Sequence
+import base64
+from datetime import datetime, timezone
 import hashlib
 import os
 from pathlib import Path, PurePosixPath
 import re
 import secrets
+import shutil
 import stat
 import subprocess
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 from quant_investor.contracts import (
     ContractError,
     canonical_json_bytes,
     get_contract,
+    parse_canonical_json_bytes,
     seal_artifact,
     validate_artifact,
 )
@@ -29,6 +34,10 @@ from quant_investor.system.errors import (
     SystemPreconditionError,
     SystemSecurityError,
     SystemStorageError,
+)
+from quant_investor.system.release_install import (
+    RELEASE_INSTALL_EVIDENCE_KIND,
+    validate_release_install_evidence,
 )
 from quant_investor.system.store import object_ref_for_artifact, validate_object_ref
 
@@ -42,6 +51,7 @@ AUTHORITY_KINDS: Final = frozenset(
         LEGACY_DISPOSITION_KIND,
         FINAL_AUTHORIZATION_KIND,
         GATE_EVIDENCE_KIND,
+        RELEASE_INSTALL_EVIDENCE_KIND,
     }
 )
 _CONTRACT_SHA256S: Final = {kind: get_contract(kind).contract_sha256 for kind in AUTHORITY_KINDS}
@@ -74,6 +84,19 @@ _DISPOSITION_ROW_FIELDS: Final = frozenset(
 )
 _ANCESTRY_ROW_FIELDS: Final = frozenset({"ancestor", "descendant", "proved"})
 _PREFLIGHT_ROW_FIELDS: Final = frozenset({"gate_id", "evidence_ref"})
+_GATE_BATCH_FIELDS: Final = frozenset(
+    {
+        "argv",
+        "exit_code",
+        "stdout_base64",
+        "stdout_sha256",
+        "stderr_base64",
+        "stderr_sha256",
+        "executable_path",
+        "executable_sha256",
+        "stdin_sha256",
+    }
+)
 _EXCLUDED_ROW_FIELDS: Final = frozenset({"commit", "descendant", "proved_not_ancestor"})
 REQUIRED_FINAL_PREFLIGHT_GATES: Final = frozenset(
     {
@@ -88,6 +111,140 @@ REQUIRED_FINAL_PREFLIGHT_GATES: Final = frozenset(
         "replacement_selectors",
     }
 )
+FinalAuthorizationValidationMode = Literal["PRE_CAS_CURRENT", "HISTORICAL"]
+_GATE_RUNNER_ID: Final = "myquant.system.final-cutover-gate-runner"
+_GATE_SPECS: Final[dict[str, tuple[tuple[str, ...], ...]]] = {
+    "clean_detached_clone": (("git", "status", "--porcelain=v1", "--untracked-files=all"),),
+    "contract_catalog": (("uv", "run", "pytest", "tests/unit/test_unified_contracts.py", "-q"),),
+    "flake8": (
+        (
+            "uv",
+            "run",
+            "flake8",
+            "quant_investor",
+            "--count",
+            "--select=E9,F63,F7,F82",
+            "--show-source",
+            "--statistics",
+        ),
+        (
+            "uv",
+            "run",
+            "flake8",
+            "quant_investor/contracts",
+            "quant_investor/system",
+            "quant_investor/factors/governance",
+            "quant_investor/intelligence",
+            "quant_investor/mainline",
+            "quant_investor/cli",
+            "--max-complexity=10",
+            "--max-line-length=100",
+        ),
+    ),
+    "full_pytest": (("uv", "run", "pytest", "tests/unit", "-q", "-ra"),),
+    "legacy_zero_call": (
+        (
+            "uv",
+            "run",
+            "pytest",
+            "tests/unit/test_unified_migration_resolver.py",
+            "tests/unit/test_unified_cli_commands.py",
+            "tests/unit/test_unified_cli_input.py",
+            "tests/unit/test_unified_cli_output.py",
+            "-q",
+        ),
+    ),
+    "mypy": (
+        (
+            "uv",
+            "run",
+            "mypy",
+            "quant_investor/contracts",
+            "quant_investor/system",
+            "quant_investor/factors/governance",
+            "quant_investor/intelligence",
+            "quant_investor/mainline",
+            "quant_investor/cli",
+            "--ignore-missing-imports",
+        ),
+    ),
+    "projection": (("uv", "run", "python", "operations/codex/verify_projection.py"),),
+    "release_install_origin": (
+        (
+            "uv",
+            "run",
+            "python",
+            "-m",
+            "quant_investor.system.release_install",
+        ),
+    ),
+    "replacement_selectors": (
+        (
+            "uv",
+            "run",
+            "pytest",
+            "tests/unit/test_unified_migration_resolver.py",
+            "tests/unit/test_unified_factor_prospective.py",
+            "tests/unit/test_unified_factor_status.py",
+            "-q",
+        ),
+    ),
+}
+_GATE_OUTPUT_MAX_BYTES: Final = 64 * 1024 * 1024
+
+
+def _gate_runner_spec_sha256(gate_id: str, batches: Sequence[Sequence[str]]) -> str:
+    return _sha256(
+        canonical_json_bytes(
+            {
+                "runner_id": _GATE_RUNNER_ID,
+                "gate_id": gate_id,
+                "batches": [list(argv) for argv in batches],
+            }
+        )
+    )
+
+
+def _gate_specs_from_runner_source(  # noqa: C901
+    raw: bytes,
+) -> dict[str, tuple[tuple[str, ...], ...]]:
+    """Recover the fixed spec literal from the independently authorized blob."""
+
+    try:
+        module = ast.parse(raw.decode("utf-8"))
+    except (SyntaxError, UnicodeDecodeError) as exc:
+        raise SystemPreconditionError("historical gate runner source is invalid") from exc
+    literal: Any = None
+    for node in module.body:
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            if node.target.id == "_GATE_SPECS" and node.value is not None:
+                try:
+                    literal = ast.literal_eval(node.value)
+                except (ValueError, TypeError, SyntaxError) as exc:
+                    raise SystemPreconditionError(
+                        "historical gate runner spec is not a literal"
+                    ) from exc
+                break
+    if type(literal) is not dict or set(literal) != REQUIRED_FINAL_PREFLIGHT_GATES:
+        raise SystemPreconditionError("historical gate runner set differs")
+    result: dict[str, tuple[tuple[str, ...], ...]] = {}
+    for gate, batches in literal.items():
+        if (
+            type(gate) is not str
+            or type(batches) is not tuple
+            or not batches
+            or any(
+                type(argv) is not tuple
+                or not argv
+                or any(type(argument) is not str or not argument for argument in argv)
+                for argv in batches
+            )
+        ):
+            raise SystemPreconditionError("historical gate runner spec is malformed")
+        result[gate] = batches
+    return result
+
+
 _ALLOWED_DISPOSITIONS: Final = frozenset(
     {
         "PORTED_TO_STABLE",
@@ -380,45 +537,237 @@ def validate_legacy_source_disposition(
     return artifact
 
 
-def build_cutover_gate_evidence(
+def _canonical_timestamp(value: Any, *, label: str) -> str:
+    text = _text(value, label=label)
+    try:
+        parsed = datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError as exc:
+        raise SystemContractError(f"{label} is not canonical UTC") from exc
+    if parsed.strftime("%Y-%m-%dT%H:%M:%SZ") != text:
+        raise SystemContractError(f"{label} is not canonical UTC")
+    return text
+
+
+def _raw_result(value: Any, *, label: str) -> tuple[str, str]:
+    if type(value) is not str:
+        raise SystemContractError(f"{label} is not base64 text")
+    try:
+        raw = base64.b64decode(value, validate=True)
+    except (ValueError, TypeError) as exc:
+        raise SystemContractError(f"{label} is not canonical base64") from exc
+    if len(raw) > _GATE_OUTPUT_MAX_BYTES or base64.b64encode(raw).decode("ascii") != value:
+        raise SystemContractError(f"{label} is not bounded canonical base64")
+    return value, _sha256(raw)
+
+
+def _seal_cutover_gate_evidence(  # noqa: C901
     *,
     gate_id: str,
     final_commit: str,
     final_tree: str,
-    command: str,
-    exit_code: int,
-    stdout_sha256: str,
+    runner_code_sha256: str,
+    environment_sha256: str,
+    batch_results: Sequence[Mapping[str, Any]],
     subject_ref: Mapping[str, Any],
-    observed_at: str,
+    started_at: str,
+    finished_at: str,
+    _expected_batches: Sequence[Sequence[str]] | None = None,
 ) -> dict[str, Any]:
-    """Seal one exact, commit-bound machine gate result.
-
-    The final authorization accepts only the complete fixed gate set and
-    resolves every subject reference again.  A non-zero result cannot be
-    represented as an authorized gate.
-    """
+    """Private sealing primitive used by the fixed runner and unit fixtures."""
 
     gate = _text(gate_id, label="gate_id")
     if gate not in REQUIRED_FINAL_PREFLIGHT_GATES:
         raise SystemContractError("cutover gate id is not in the fixed allowlist")
-    if type(exit_code) is not int or exit_code != 0:
-        raise SystemPreconditionError("cutover gate command did not pass")
+    expected_batches = (
+        tuple(tuple(argument for argument in argv) for argv in _expected_batches)
+        if _expected_batches is not None
+        else _GATE_SPECS[gate]
+    )
+    if len(batch_results) != len(expected_batches):
+        raise SystemContractError("cutover gate batch count differs from fixed runner")
+    normalized_results: list[dict[str, Any]] = []
+    all_passed = True
+    for index, (raw_row, expected_argv) in enumerate(zip(batch_results, expected_batches)):
+        row = dict(raw_row)
+        if set(row) != _GATE_BATCH_FIELDS:
+            raise SystemContractError("cutover gate batch fields are not exact")
+        argv = row["argv"]
+        if argv != list(expected_argv):
+            raise SystemContractError("cutover gate argv differs from fixed runner")
+        exit_code = row["exit_code"]
+        if type(exit_code) is not int or exit_code < 0 or exit_code > 255:
+            raise SystemContractError("cutover gate exit code is invalid")
+        stdout_base64, stdout_sha = _raw_result(
+            row["stdout_base64"], label=f"batch_results[{index}].stdout_base64"
+        )
+        stderr_base64, stderr_sha = _raw_result(
+            row["stderr_base64"], label=f"batch_results[{index}].stderr_base64"
+        )
+        executable_path = row["executable_path"]
+        if type(executable_path) is not str or not Path(executable_path).is_absolute():
+            raise SystemContractError("cutover gate executable path is not absolute")
+        if row["stdout_sha256"] != stdout_sha or row["stderr_sha256"] != stderr_sha:
+            raise SystemContractError("cutover gate exact output hash differs")
+        normalized_results.append(
+            {
+                "argv": list(expected_argv),
+                "exit_code": exit_code,
+                "stdout_base64": stdout_base64,
+                "stdout_sha256": stdout_sha,
+                "stderr_base64": stderr_base64,
+                "stderr_sha256": stderr_sha,
+                "executable_path": executable_path,
+                "executable_sha256": _sha(
+                    row["executable_sha256"],
+                    label=f"batch_results[{index}].executable_sha256",
+                ),
+                "stdin_sha256": _sha(
+                    row["stdin_sha256"], label=f"batch_results[{index}].stdin_sha256"
+                ),
+            }
+        )
+        if gate != "release_install_origin" and row["stdin_sha256"] != _sha256(b""):
+            raise SystemContractError("non-release cutover gate stdin is not empty")
+        all_passed = all_passed and exit_code == 0
+    started = _canonical_timestamp(started_at, label="started_at")
+    finished = _canonical_timestamp(finished_at, label="finished_at")
+    if finished < started:
+        raise SystemContractError("cutover gate finish precedes start")
     body = {
-        "state": "PASS",
+        "state": "PASS" if all_passed else "FAIL",
         "gate_id": gate,
+        "runner_id": _GATE_RUNNER_ID,
+        "runner_spec_sha256": _gate_runner_spec_sha256(gate, expected_batches),
+        "runner_code_sha256": _sha(runner_code_sha256, label="runner_code_sha256"),
         "final_commit": _git_oid(final_commit, label="final_commit"),
         "final_tree": _git_oid(final_tree, label="final_tree"),
-        "command": _text(command, label="command"),
-        "exit_code": 0,
-        "stdout_sha256": _sha(stdout_sha256, label="stdout_sha256"),
+        "environment_sha256": _sha(environment_sha256, label="environment_sha256"),
+        "batch_results": normalized_results,
         "subject_ref": validate_object_ref(subject_ref, label="subject_ref"),
-        "observed_at": _text(observed_at, label="observed_at"),
+        "started_at": started,
+        "finished_at": finished,
     }
     evidence_id = "cutover-gate-" + _sha256(canonical_json_bytes(body))
     return seal_artifact(
         GATE_EVIDENCE_KIND,
         {**body, "evidence_id": evidence_id},
-        created_at=observed_at,
+        created_at=finished,
+    )
+
+
+def run_cutover_gate(  # noqa: C901
+    *,
+    repository_root: str | os.PathLike[str],
+    gate_id: str,
+    final_commit: str,
+    final_tree: str,
+    subject_ref: Mapping[str, Any],
+    release_install_evidence: Mapping[str, Any] | bytes | None = None,
+    deployed_release: Mapping[str, Any] | bytes | None = None,
+    timeout_seconds: int = 7200,
+) -> dict[str, Any]:
+    """Execute one repository-owned final gate without caller-supplied argv."""
+
+    gate = _text(gate_id, label="gate_id")
+    if gate not in REQUIRED_FINAL_PREFLIGHT_GATES:
+        raise SystemContractError("cutover gate id is not in the fixed allowlist")
+    if type(timeout_seconds) is not int or timeout_seconds <= 0 or timeout_seconds > 14400:
+        raise SystemContractError("cutover gate timeout is invalid")
+    root = Path(repository_root).resolve(strict=True)
+    commit = _git_oid(final_commit, label="final_commit")
+    tree = _git_oid(final_tree, label="final_tree")
+    if _git_scalar(root, "rev-parse", "HEAD^{commit}") != commit:
+        raise SystemPreconditionError("cutover gate checkout is not frozen HEAD")
+    if _git_scalar(root, "rev-parse", "HEAD^{tree}") != tree:
+        raise SystemPreconditionError("cutover gate checkout tree differs")
+    if _git(root, "status", "--porcelain=v1", "-z", "--untracked-files=all"):
+        raise SystemPreconditionError("cutover gate checkout is not clean")
+    _mode, _oid, runner_raw = _git_blob(root, commit, "quant_investor/migration/authority.py")
+    if Path(__file__).resolve(strict=True).read_bytes() != runner_raw:
+        raise SystemPreconditionError("executing gate runner differs from frozen source")
+    environment = {
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "PATH": os.environ.get("PATH", ""),
+        "PYTHONHASHSEED": "0",
+        "PYTHONPATH": "",
+    }
+    environment_sha = _sha256(canonical_json_bytes(environment))
+    normalized_subject_ref = validate_object_ref(subject_ref, label="subject_ref")
+    if gate == "release_install_origin":
+        if release_install_evidence is None or deployed_release is None:
+            raise SystemPreconditionError("release install gate inputs are absent")
+        evidence = validate_release_install_evidence(release_install_evidence)
+        try:
+            release = validate_artifact(deployed_release, expected_kind="system.release")
+        except ContractError as exc:
+            raise SystemContractError("release install gate release contract failed") from exc
+        if object_ref_for_artifact(evidence) != normalized_subject_ref:
+            raise SystemPreconditionError("release install gate subject differs")
+        if object_ref_for_artifact(release) != evidence["payload"]["release_ref"]:
+            raise SystemPreconditionError("release install gate release differs")
+        gate_stdin = canonical_json_bytes(
+            {
+                "release_install_evidence": evidence,
+                "deployed_release": release,
+            }
+        )
+    else:
+        if release_install_evidence is not None or deployed_release is not None:
+            raise SystemContractError("non-release cutover gate rejects release inputs")
+        gate_stdin = b""
+    results: list[dict[str, Any]] = []
+    started = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for argv in _GATE_SPECS[gate]:
+        executable = shutil.which(argv[0], path=environment["PATH"])
+        if executable is None:
+            raise SystemPreconditionError("cutover gate executable is unavailable")
+        executable_path = Path(executable).resolve(strict=True)
+        executable_raw = executable_path.read_bytes()
+        try:
+            completed = subprocess.run(
+                [str(executable_path), *argv[1:]],
+                cwd=root,
+                env=environment,
+                input=gate_stdin,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                timeout=timeout_seconds,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise SystemPreconditionError("fixed cutover gate execution failed") from exc
+        results.append(
+            {
+                "argv": list(argv),
+                "exit_code": completed.returncode,
+                "stdout_base64": base64.b64encode(completed.stdout).decode("ascii"),
+                "stdout_sha256": _sha256(completed.stdout),
+                "stderr_base64": base64.b64encode(completed.stderr).decode("ascii"),
+                "stderr_sha256": _sha256(completed.stderr),
+                "executable_path": str(executable_path),
+                "executable_sha256": _sha256(executable_raw),
+                "stdin_sha256": _sha256(gate_stdin),
+            }
+        )
+    if (
+        _git_scalar(root, "rev-parse", "HEAD^{commit}") != commit
+        or _git_scalar(root, "rev-parse", "HEAD^{tree}") != tree
+    ):
+        raise SystemPreconditionError("cutover gate changed frozen Git identity")
+    if _git(root, "status", "--porcelain=v1", "-z", "--untracked-files=all"):
+        raise SystemPreconditionError("cutover gate changed frozen checkout")
+    finished = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return _seal_cutover_gate_evidence(
+        gate_id=gate,
+        final_commit=commit,
+        final_tree=tree,
+        runner_code_sha256=_sha256(runner_raw),
+        environment_sha256=environment_sha,
+        batch_results=results,
+        subject_ref=normalized_subject_ref,
+        started_at=started,
+        finished_at=finished,
     )
 
 
@@ -427,18 +776,49 @@ def validate_cutover_gate_evidence(
 ) -> dict[str, Any]:
     artifact = _artifact(document, GATE_EVIDENCE_KIND)
     payload = artifact["payload"]
-    rebuilt = build_cutover_gate_evidence(
+    rebuilt = _seal_cutover_gate_evidence(
         gate_id=payload["gate_id"],
         final_commit=payload["final_commit"],
         final_tree=payload["final_tree"],
-        command=payload["command"],
-        exit_code=payload["exit_code"],
-        stdout_sha256=payload["stdout_sha256"],
+        runner_code_sha256=payload["runner_code_sha256"],
+        environment_sha256=payload["environment_sha256"],
+        batch_results=payload["batch_results"],
         subject_ref=payload["subject_ref"],
-        observed_at=payload["observed_at"],
+        started_at=payload["started_at"],
+        finished_at=payload["finished_at"],
     )
     if canonical_json_bytes(rebuilt) != canonical_json_bytes(artifact):
         raise SystemContractError("cutover gate evidence semantic replay differs")
+    return artifact
+
+
+def _validate_historical_cutover_gate_evidence(
+    document: Mapping[str, Any] | bytes,
+    *,
+    authorized_runner_source: bytes,
+) -> dict[str, Any]:
+    """Replay a receipt from the exact initial runner blob, never current HEAD."""
+
+    artifact = _artifact(document, GATE_EVIDENCE_KIND)
+    payload = artifact["payload"]
+    gate = payload.get("gate_id")
+    specs = _gate_specs_from_runner_source(authorized_runner_source)
+    if gate not in specs:
+        raise SystemPreconditionError("historical gate is absent from authorized runner")
+    rebuilt = _seal_cutover_gate_evidence(
+        gate_id=gate,
+        final_commit=payload["final_commit"],
+        final_tree=payload["final_tree"],
+        runner_code_sha256=payload["runner_code_sha256"],
+        environment_sha256=payload["environment_sha256"],
+        batch_results=payload["batch_results"],
+        subject_ref=payload["subject_ref"],
+        started_at=payload["started_at"],
+        finished_at=payload["finished_at"],
+        _expected_batches=specs[gate],
+    )
+    if canonical_json_bytes(rebuilt) != canonical_json_bytes(artifact):
+        raise SystemContractError("historical cutover gate semantic replay differs")
     return artifact
 
 
@@ -564,7 +944,7 @@ def _is_ancestor(repository_root: Path, ancestor: str, descendant: str) -> bool:
     return completed.returncode == 0
 
 
-def build_final_cutover_authorization(  # noqa: C901
+def _seal_final_cutover_authorization(  # noqa: C901
     *,
     final_authorization_id: str,
     accepted_baseline_commit: str,
@@ -673,6 +1053,72 @@ def build_final_cutover_authorization(  # noqa: C901
     )
 
 
+def build_final_cutover_authorization(  # noqa: C901
+    *,
+    final_authorization_id: str,
+    accepted_baseline_commit: str,
+    historical_integration_commit: str,
+    historical_dirty_evidence_ref: Mapping[str, Any],
+    concurrent_task_handoff_ref: Mapping[str, Any],
+    legacy_disposition_ref: Mapping[str, Any],
+    deployed_release_ref: Mapping[str, Any],
+    release_commit: str,
+    release_tree: str,
+    final_integration_commit: str,
+    final_integration_tree: str,
+    ancestry_rows: Sequence[Mapping[str, Any]],
+    excluded_commit_rows: Sequence[Mapping[str, Any]],
+    final_worktree_inventory_sha256: str,
+    clean_checkout_readback_rows: Sequence[Mapping[str, Any]],
+    user_authorization_basis: str,
+    preflight_evidence: Sequence[Mapping[str, Any] | bytes],
+    created_at: str,
+) -> dict[str, Any]:
+    """Derive final build/CAS authority from the exact fixed-runner receipts."""
+
+    commit = _git_oid(final_integration_commit, label="final_integration_commit")
+    tree = _git_oid(final_integration_tree, label="final_integration_tree")
+    rows: list[dict[str, Any]] = []
+    for raw in preflight_evidence:
+        evidence = validate_cutover_gate_evidence(raw)
+        payload = evidence["payload"]
+        if (
+            payload["state"] != "PASS"
+            or payload["final_commit"] != commit
+            or payload["final_tree"] != tree
+            or any(batch["exit_code"] != 0 for batch in payload["batch_results"])
+        ):
+            raise SystemPreconditionError("final preflight fixed-runner receipt did not pass")
+        rows.append(
+            {
+                "gate_id": payload["gate_id"],
+                "evidence_ref": object_ref_for_artifact(evidence),
+            }
+        )
+    rows.sort(key=lambda row: row["gate_id"])
+    _validate_preflight_rows(rows)
+    return _seal_final_cutover_authorization(
+        final_authorization_id=final_authorization_id,
+        accepted_baseline_commit=accepted_baseline_commit,
+        historical_integration_commit=historical_integration_commit,
+        historical_dirty_evidence_ref=historical_dirty_evidence_ref,
+        concurrent_task_handoff_ref=concurrent_task_handoff_ref,
+        legacy_disposition_ref=legacy_disposition_ref,
+        deployed_release_ref=deployed_release_ref,
+        release_commit=release_commit,
+        release_tree=release_tree,
+        final_integration_commit=commit,
+        final_integration_tree=tree,
+        ancestry_rows=ancestry_rows,
+        excluded_commit_rows=excluded_commit_rows,
+        final_worktree_inventory_sha256=final_worktree_inventory_sha256,
+        clean_checkout_readback_rows=clean_checkout_readback_rows,
+        user_authorization_basis=user_authorization_basis,
+        preflight_rows=rows,
+        created_at=created_at,
+    )
+
+
 def validate_final_cutover_authorization(
     document: Mapping[str, Any] | bytes,
 ) -> dict[str, Any]:
@@ -683,7 +1129,7 @@ def validate_final_cutover_authorization(
         or payload.get("cas_authorized") is not True
     ):
         raise SystemPreconditionError("final cutover authorization is not machine-authorized")
-    rebuilt = build_final_cutover_authorization(
+    rebuilt = _seal_final_cutover_authorization(
         final_authorization_id=payload["final_authorization_id"],
         accepted_baseline_commit=payload["accepted_baseline_commit"],
         historical_integration_commit=payload["historical_integration_commit"],
@@ -714,8 +1160,15 @@ def validate_final_cutover_authorization_closure(  # noqa: C901
     repository_root: str | os.PathLike[str],
     object_resolver: Callable[[Mapping[str, Any]], Mapping[str, Any]],
     deployed_release_ref: Mapping[str, Any],
+    validation_mode: FinalAuthorizationValidationMode,
 ) -> dict[str, Any]:
-    """Independently replay the final Git/evidence/release authority closure."""
+    """Replay current pre-CAS or immutable historical cutover authority.
+
+    ``PRE_CAS_CURRENT`` proves that the checkout about to perform the first
+    pointer CAS is still the exact clean frozen tree. ``HISTORICAL`` proves the
+    anchored Git objects and evidence after activation without requiring HEAD
+    to remain pinned forever to the initial cutover commit.
+    """
 
     artifact = validate_final_cutover_authorization(document)
     payload = artifact["payload"]
@@ -725,10 +1178,17 @@ def validate_final_cutover_authorization_closure(  # noqa: C901
         raise SystemPreconditionError("final authorization repository root differs")
     final_commit = payload["final_integration_commit"]
     final_tree = payload["final_integration_tree"]
-    if _git_scalar(root, "rev-parse", "HEAD^{commit}") != final_commit:
-        raise SystemPreconditionError("authorized final commit is not current HEAD")
-    if _git_scalar(root, "rev-parse", "HEAD^{tree}") != final_tree:
-        raise SystemPreconditionError("authorized final tree is not current HEAD tree")
+    if validation_mode not in {"PRE_CAS_CURRENT", "HISTORICAL"}:
+        raise SystemContractError("final authorization validation mode is invalid")
+    if _git_scalar(root, "rev-parse", f"{final_commit}^{{commit}}") != final_commit:
+        raise SystemPreconditionError("authorized final commit object is absent")
+    if _git_scalar(root, "rev-parse", f"{final_commit}^{{tree}}") != final_tree:
+        raise SystemPreconditionError("authorized final tree object differs")
+    if validation_mode == "PRE_CAS_CURRENT":
+        if _git_scalar(root, "rev-parse", "HEAD^{commit}") != final_commit:
+            raise SystemPreconditionError("authorized final commit is not current HEAD")
+        if _git_scalar(root, "rev-parse", "HEAD^{tree}") != final_tree:
+            raise SystemPreconditionError("authorized final tree is not current HEAD tree")
     if payload["release_commit"] != final_commit or payload["release_tree"] != final_tree:
         raise SystemPreconditionError("release identity is not the frozen final tree")
     normalized_release = validate_object_ref(deployed_release_ref, label="deployed_release_ref")
@@ -740,9 +1200,14 @@ def validate_final_cutover_authorization_closure(  # noqa: C901
     if object_ref_for_artifact(release) != normalized_release:
         raise SystemPreconditionError("deployed release exact object differs")
 
-    status_raw = _git(root, "status", "--porcelain=v1", "-z", "--untracked-files=all")
-    if status_raw:
-        raise SystemPreconditionError("authorized final checkout is not clean")
+    empty_status_sha = _sha256(b"")
+    if validation_mode == "PRE_CAS_CURRENT":
+        status_raw = _git(root, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+        if status_raw:
+            raise SystemPreconditionError("authorized final checkout is not clean")
+        status_sha = _sha256(status_raw)
+    else:
+        status_sha = empty_status_sha
     inventory, inventory_sha = _git_inventory(root, final_commit)
     if inventory_sha != payload["final_worktree_inventory_sha256"]:
         raise SystemPreconditionError("authorized final tree inventory differs")
@@ -750,7 +1215,7 @@ def validate_final_cutover_authorization_closure(  # noqa: C901
         if (
             row["commit"] != final_commit
             or row["tree"] != final_tree
-            or row["status_porcelain_sha256"] != _sha256(status_raw)
+            or row["status_porcelain_sha256"] != status_sha
             or row["path_inventory_sha256"] != inventory_sha
         ):
             raise SystemPreconditionError("clean checkout readback is not reproducible")
@@ -835,22 +1300,103 @@ def validate_final_cutover_authorization_closure(  # noqa: C901
         raise SystemPreconditionError("active V17 package remains in final tree")
 
     observed_gates: set[str] = set()
+    _mode, _runner_oid, runner_code = _git_blob(
+        root, final_commit, "quant_investor/migration/authority.py"
+    )
+    runner_code_sha = _sha256(runner_code)
     for row in payload["preflight_rows"]:
-        evidence = validate_cutover_gate_evidence(object_resolver(row["evidence_ref"]))
+        resolved_evidence = object_resolver(row["evidence_ref"])
+        if validation_mode == "PRE_CAS_CURRENT":
+            evidence = validate_cutover_gate_evidence(resolved_evidence)
+        else:
+            evidence = _validate_historical_cutover_gate_evidence(
+                resolved_evidence,
+                authorized_runner_source=runner_code,
+            )
         evidence_payload = evidence["payload"]
         if (
-            evidence_payload["gate_id"] != row["gate_id"]
+            object_ref_for_artifact(evidence) != row["evidence_ref"]
+            or evidence_payload["gate_id"] != row["gate_id"]
             or evidence_payload["final_commit"] != final_commit
             or evidence_payload["final_tree"] != final_tree
             or evidence_payload["state"] != "PASS"
-            or evidence_payload["exit_code"] != 0
+            or evidence_payload["runner_id"] != _GATE_RUNNER_ID
+            or evidence_payload["runner_code_sha256"] != runner_code_sha
+            or any(batch["exit_code"] != 0 for batch in evidence_payload["batch_results"])
         ):
             raise SystemPreconditionError("final preflight evidence binding differs")
-        object_resolver(evidence_payload["subject_ref"])
-        if row["gate_id"] == "release_install_origin" and (
-            evidence_payload["subject_ref"] != normalized_release
-        ):
-            raise SystemPreconditionError("release install gate subject differs")
+        if validation_mode == "PRE_CAS_CURRENT" and evidence_payload[
+            "runner_spec_sha256"
+        ] != _gate_runner_spec_sha256(row["gate_id"], _GATE_SPECS[row["gate_id"]]):
+            raise SystemPreconditionError("current cutover gate runner spec differs")
+        if validation_mode == "PRE_CAS_CURRENT":
+            for batch in evidence_payload["batch_results"]:
+                try:
+                    executable_raw = (
+                        Path(batch["executable_path"]).resolve(strict=True).read_bytes()
+                    )
+                except OSError as exc:
+                    raise SystemPreconditionError(
+                        "cutover gate executable readback failed"
+                    ) from exc
+                if _sha256(executable_raw) != batch["executable_sha256"]:
+                    raise SystemPreconditionError("cutover gate executable identity drifted")
+        subject = object_resolver(evidence_payload["subject_ref"])
+        if object_ref_for_artifact(subject) != evidence_payload["subject_ref"]:
+            raise SystemPreconditionError("cutover gate subject exact object differs")
+        if row["gate_id"] == "release_install_origin":
+            install_evidence = validate_release_install_evidence(subject)
+            if install_evidence["payload"]["release_ref"] != normalized_release:
+                raise SystemPreconditionError("release install gate release differs")
+            if (
+                install_evidence["payload"]["code_tree_sha256"] != release["payload"]["code_sha256"]
+                or install_evidence["payload"]["wheel"]["byte_sha256"]
+                != release["payload"]["wheel_sha256"]
+                or install_evidence["payload"]["installed_code_manifest_sha256"]
+                != release["payload"]["code_manifest_sha256"]
+            ):
+                raise SystemPreconditionError("release install evidence identity differs")
+            exact_input = canonical_json_bytes(
+                {
+                    "release_install_evidence": install_evidence,
+                    "deployed_release": release,
+                }
+            )
+            batches = evidence_payload["batch_results"]
+            if len(batches) != 1 or batches[0]["stdin_sha256"] != _sha256(exact_input):
+                raise SystemPreconditionError("release install gate exact input differs")
+            try:
+                output = parse_canonical_json_bytes(
+                    base64.b64decode(batches[0]["stdout_base64"], validate=True)
+                )
+            except (ContractError, ValueError, TypeError) as exc:
+                raise SystemPreconditionError("release install gate output is invalid") from exc
+            if (
+                type(output) is not dict
+                or set(output)
+                != {
+                    "state",
+                    "release_ref",
+                    "source_archive_sha256",
+                    "wheel_sha256",
+                    "code_tree_sha256",
+                    "installed_code_manifest_sha256",
+                    "contract_catalog_sha256",
+                    "import_origin",
+                }
+                or output["state"] != "PASS"
+                or output["release_ref"] != normalized_release
+                or output["source_archive_sha256"]
+                != install_evidence["payload"]["source_archive"]["byte_sha256"]
+                or output["wheel_sha256"] != install_evidence["payload"]["wheel"]["byte_sha256"]
+                or output["code_tree_sha256"] != install_evidence["payload"]["code_tree_sha256"]
+                or output["installed_code_manifest_sha256"]
+                != install_evidence["payload"]["installed_code_manifest_sha256"]
+                or output["contract_catalog_sha256"]
+                != install_evidence["payload"]["contract_catalog_sha256"]
+                or output["import_origin"] != install_evidence["payload"]["import_origin"]
+            ):
+                raise SystemPreconditionError("release install gate output binding differs")
         observed_gates.add(row["gate_id"])
     if observed_gates != REQUIRED_FINAL_PREFLIGHT_GATES:
         raise SystemPreconditionError("final preflight evidence set is incomplete")
@@ -868,6 +1414,7 @@ def publish_authority_artifact(  # noqa: C901
         LEGACY_DISPOSITION_KIND: validate_legacy_source_disposition,
         FINAL_AUTHORIZATION_KIND: validate_final_cutover_authorization,
         GATE_EVIDENCE_KIND: validate_cutover_gate_evidence,
+        RELEASE_INSTALL_EVIDENCE_KIND: validate_release_install_evidence,
     }
     artifact = validators[kind](document)
     raw = canonical_json_bytes(artifact)
@@ -942,10 +1489,10 @@ __all__ = [
     "LEGACY_DISPOSITION_KIND",
     "REQUIRED_FINAL_PREFLIGHT_GATES",
     "build_concurrent_task_handoff",
-    "build_cutover_gate_evidence",
     "build_final_cutover_authorization",
     "build_legacy_source_disposition",
     "publish_authority_artifact",
+    "run_cutover_gate",
     "validate_concurrent_task_handoff",
     "validate_cutover_gate_evidence",
     "validate_final_cutover_authorization",

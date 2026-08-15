@@ -66,12 +66,16 @@ results/system/validation_runs/<namespace_hash>/...
 results/system/validation_custody/<attestation_byte_sha256>/...
 results/system/source_verification_cache/<attestation_byte_sha256>/snapshot.json
 results/system/_active.json
+results/system/_migration_complete.json
 ```
 
 Candidate-state, validation-request, intent/prepared/completion, source-snapshot,
 and validation-custody records are owner-only and non-authorizing. Their exact
-readback is required by the OPERATIONAL generation verifier, but only
-`_active.json` is activation authority.
+readback is required by the OPERATIONAL generation verifier. The active pointer
+is runtime authority only when the permanent initial-migration marker closes
+the detached receipt, final cutover authorization, prepared pointer bytes,
+initial generation, and deployed release. An operational pointer without that
+exact marker never grants Factor `ACTIVE` authority.
 
 System status is one of `UNINITIALIZED`, `PARTIAL`, `ACTIVE`, `BLOCKED`, or
 `SUSPENDED`. External routing is independently `ACTIVE`, `UNCONFIRMED`,
@@ -163,6 +167,33 @@ integration commit. Any later HEAD, status, path, size, byte, missing-row, or
 extra-row drift blocks before the final build or CAS. A successful report only
 makes the checkout eligible for the next preflight gate; it sets both
 `final_build_authorized` and `cas_authorized` to false.
+
+Final build and CAS authority is derived only from the complete fixed
+System-owned gate set. `run_cutover_gate` selects repository-defined argv and a
+scrubbed environment from `gate_id`; callers cannot supply a command or convert
+an arbitrary `exit 0` into evidence. Each result seals the exact commit/tree,
+runner source bytes, runner specification, executable identity, stdout,
+stderr, exit status, timestamps, and subject reference. Long-running tests are
+executed before the active lock. Under the lock the System revalidates their
+immutable receipts and the current frozen tree; it does not rerun pytest.
+
+Final authorization validation has two distinct modes. `PRE_CAS_CURRENT`
+requires current HEAD/tree and a clean checkout to equal the frozen release.
+`HISTORICAL` replays the immutable initial Git objects and authority chain after
+activation but deliberately does not require future HEAD to remain pinned to
+the initial release. This preserves the permanent marker across legitimate
+descendant releases without weakening the first-CAS gate.
+
+The production bootstrap assembler accepts official calendar HTTP entity bytes
+unchanged. It independently invokes the stable SSE, SZSE, or BSE native-body
+decoder and binds the exact decoder module bytes. Daily `OPEN`/`CLOSED` evidence
+and official continuous-session rule evidence are separate captures; normalized
+project JSON is never accepted as the issuer response. Missing dates, inferred
+weekdays, unsupported hours, exchange disagreement, raw tamper, decoder drift,
+or an exchange required by the sealed PIT cohort without both captures blocks
+before generation publication. The assembler performs no network call; an
+authorized read-only source-ingestion step must capture the official bodies
+first.
 
 Any unknown pointer, caller, writer, authority claim, resolver difference,
 custody failure, source-closure mismatch, test failure,

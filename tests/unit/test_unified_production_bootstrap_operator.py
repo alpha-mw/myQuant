@@ -18,9 +18,12 @@ from quant_investor.factors.governance import (
     LOW_DOLLAR_VOLUME,
 )
 from quant_investor.factors.governance.production import (
-    _OFFICIAL_CALENDAR_DECODER_SHA256,
-    _OFFICIAL_CALENDAR_DECODERS,
     assemble_production_bootstrap,
+)
+from quant_investor.market.exchange_calendar_official import (
+    decode_capture_projection,
+    decoder_code_sha256,
+    decoder_id,
 )
 from quant_investor.system import SystemContractError, SystemPreconditionError
 from quant_investor.system import SystemStore, installed_code_manifest_sha256
@@ -36,6 +39,73 @@ from quant_investor.market.fundamental_incremental import stage_successor_genera
 from tests.unit.test_fundamental_incremental_successor import _path_backed_case
 
 SYMBOLS = ["000001.SZ", "000002.SZ", "600000.SH", "600001.SH"]
+
+
+def _native_daily_bytes(exchange: str, rows: list[dict[str, str]]) -> tuple[bytes, str]:
+    if exchange == "SSE":
+        body = {
+            "result": [
+                {"tradeDate": row["date"], "isOpen": row["status"] == "OPEN"} for row in rows
+            ]
+        }
+        return b"sseCalendarCallback(" + canonical_json_bytes(body) + b");", (
+            "application/javascript"
+        )
+    if exchange == "SZSE":
+        body = {
+            "code": "0",
+            "data": [
+                {
+                    "tradeDate": row["date"].replace("-", ""),
+                    "tradeFlag": "1" if row["status"] == "OPEN" else "0",
+                }
+                for row in rows
+            ],
+        }
+        return canonical_json_bytes(body), "application/json"
+    if exchange == "BSE":
+        body = {
+            "result": [
+                {
+                    "market_status": "TRADING" if row["status"] == "OPEN" else "CLOSED",
+                    "trade_date": row["date"],
+                }
+                for row in rows
+            ],
+            "success": True,
+        }
+        return canonical_json_bytes(body), "application/json"
+    raise AssertionError(exchange)
+
+
+def _native_session_bytes(exchange: str) -> bytes:
+    if exchange == "SSE":
+        body = {
+            "continuousAuction": [
+                {"beginTime": "09:30:00", "endTime": "11:30:00"},
+                {"beginTime": "13:00:00", "endTime": "15:00:00"},
+            ],
+            "market": "SSE",
+        }
+    elif exchange == "SZSE":
+        body = {
+            "exchange": "SZSE",
+            "sessions": [
+                {"end": "11:30:00", "start": "09:30:00", "type": "CONTINUOUS"},
+                {"end": "15:00:00", "start": "13:00:00", "type": "CONTINUOUS"},
+            ],
+        }
+    elif exchange == "BSE":
+        body = {
+            "code": 0,
+            "data": {
+                "continuousTradingPeriods": ["09:30:00/11:30:00", "13:00:00/15:00:00"],
+                "marketCode": "BSE",
+            },
+        }
+    else:
+        raise AssertionError(exchange)
+    return canonical_json_bytes(body)
 
 
 def _raw_market_rows(sessions: list[date]) -> list[dict[str, Any]]:
@@ -320,74 +390,75 @@ def _inputs(root: Path) -> dict[str, dict[str, str] | list[dict[str, str]]]:
         {"opens_local": "09:30:00", "closes_local": "11:30:00"},
         {"opens_local": "13:00:00", "closes_local": "15:00:00"},
     ]
-    raw_calendar_refs: list[dict[str, str]] = []
-    for exchange, issuer in (("SSE", "SSE_OFFICIAL"), ("SZSE", "SZSE_OFFICIAL")):
-        relative = f"closure/calendar-raw-{exchange.lower()}.json"
-        _write(
-            root,
-            relative,
-            canonical_json_bytes(
+    code_sha = decoder_code_sha256()
+    raw_by_exchange_role: dict[tuple[str, str], dict[str, str]] = {}
+    capture_by_exchange_role: dict[tuple[str, str], dict[str, str]] = {}
+    source_by_exchange_role: dict[tuple[str, str], str] = {}
+    for exchange, issuer, host in (
+        ("SSE", "SSE_OFFICIAL", "www.sse.com.cn"),
+        ("SZSE", "SZSE_OFFICIAL", "www.szse.cn"),
+    ):
+        for role in ("DAILY_STATUS", "SESSION_RULE"):
+            role_name = "daily" if role == "DAILY_STATUS" else "rules"
+            if role == "DAILY_STATUS":
+                raw_body, media_type = _native_daily_bytes(exchange, daily_status_rows)
+            else:
+                raw_body, media_type = _native_session_bytes(exchange), "application/json"
+            raw_relative = f"closure/calendar-{role_name}-raw-{exchange.lower()}.bin"
+            _write(root, raw_relative, raw_body)
+            raw_ref = _byte_ref(root, raw_relative)
+            source_url = f"https://{host}/official/calendar/{role_name}"
+            projection = dict(
+                decode_capture_projection(exchange, role, raw_body, media_type=media_type)
+            )
+            capture = seal_artifact(
+                "system.exchange_calendar_capture",
                 {
-                    "schema_version": "official-exchange-calendar-response.v1",
+                    "calendar_capture_id": (
+                        f"official-calendar-{role_name}-capture-{exchange.lower()}"
+                    ),
+                    "state": "IMMUTABLE",
+                    "evidence_role": role,
                     "exchange_id": exchange,
                     "issuer": issuer,
+                    "source_url": source_url,
+                    "request_url": source_url,
+                    "effective_url": source_url,
+                    "redirect_chain": [],
+                    "http_status": 200,
+                    "issuer_host": host,
+                    "tls_verified": True,
+                    "captured_at": BASE,
+                    "raw_file_ref": raw_ref,
+                    "raw_sha256": raw_ref["byte_sha256"],
+                    "raw_byte_length": len(raw_body),
+                    "raw_media_type": media_type,
+                    "decoder_id": decoder_id(exchange, role),
+                    "decoder_sha256": code_sha,
                     "timezone": "Asia/Shanghai",
-                    "session_intervals": intervals,
+                    "session_intervals": projection.get("session_intervals", []),
                     "coverage_start_date": "2024-01-01",
                     "cutoff_date": cutoff.isoformat(),
-                    "daily_status_rows": daily_status_rows,
-                }
-            ),
-        )
-        raw_calendar_refs.append(_byte_ref(root, relative))
-    capture_refs: list[dict[str, str]] = []
-    for exchange, issuer, source_url, raw_ref in (
-        (
-            "SSE",
-            "SSE_OFFICIAL",
-            "https://www.sse.com.cn/assortment/stock/list/trading/",
-            raw_calendar_refs[0],
-        ),
-        (
-            "SZSE",
-            "SZSE_OFFICIAL",
-            "https://www.szse.cn/market/stock/deal/",
-            raw_calendar_refs[1],
-        ),
-    ):
-        relative = f"closure/calendar-capture-{exchange.lower()}.json"
-        capture = seal_artifact(
-            "system.exchange_calendar_capture",
-            {
-                "calendar_capture_id": f"official-calendar-capture-{exchange.lower()}",
-                "state": "IMMUTABLE",
-                "exchange_id": exchange,
-                "issuer": issuer,
-                "source_url": source_url,
-                "request_url": source_url,
-                "effective_url": source_url,
-                "redirect_chain": [],
-                "http_status": 200,
-                "issuer_host": source_url.split("/")[2],
-                "tls_verified": True,
-                "captured_at": BASE,
-                "raw_file_ref": raw_ref,
-                "raw_sha256": raw_ref["byte_sha256"],
-                "raw_byte_length": (root / raw_ref["relative_path"]).stat().st_size,
-                "raw_media_type": "application/json",
-                "decoder_id": _OFFICIAL_CALENDAR_DECODERS[exchange],
-                "decoder_sha256": _OFFICIAL_CALENDAR_DECODER_SHA256,
-                "timezone": "Asia/Shanghai",
-                "session_intervals": intervals,
-                "coverage_start_date": "2024-01-01",
-                "cutoff_date": cutoff.isoformat(),
-                "daily_status_rows": daily_status_rows,
-                "transform_code_sha256": "5" * 64,
-            },
-            created_at=BASE,
-        )
-        _write(root, relative, canonical_json_bytes(capture))
-        capture_refs.append(_byte_ref(root, relative))
+                    "daily_status_rows": projection.get("daily_status_rows", []),
+                    "projection_sha256": hashlib.sha256(
+                        canonical_json_bytes(projection)
+                    ).hexdigest(),
+                    "transform_code_sha256": code_sha,
+                },
+                created_at=BASE,
+            )
+            capture_relative = f"closure/calendar-{role_name}-capture-{exchange.lower()}.json"
+            _write(root, capture_relative, canonical_json_bytes(capture))
+            key = (exchange, role)
+            raw_by_exchange_role[key] = raw_ref
+            capture_by_exchange_role[key] = _byte_ref(root, capture_relative)
+            source_by_exchange_role[key] = source_url
+    raw_calendar_refs = sorted(
+        raw_by_exchange_role.values(), key=lambda value: value["relative_path"]
+    )
+    capture_refs = sorted(
+        capture_by_exchange_role.values(), key=lambda value: value["relative_path"]
+    )
     calendar_manifest = seal_artifact(
         "system.exchange_calendar_manifest",
         {
@@ -397,34 +468,30 @@ def _inputs(root: Path) -> dict[str, dict[str, str] | list[dict[str, str]]]:
             "cutoff_date": cutoff.isoformat(),
             "timezone": "Asia/Shanghai",
             "calendar_file_ref": calendar_file_ref,
-            "transform_code_sha256": "5" * 64,
+            "transform_code_sha256": code_sha,
             "exchange_rows": [
                 {
                     "exchange_id": exchange,
                     "issuer": issuer,
-                    "source_url": source_url,
-                    "captured_at": BASE,
-                    "raw_file_ref": raw_ref,
-                    "capture_file_ref": capture_ref,
+                    "daily_status_source_url": source_by_exchange_role[(exchange, "DAILY_STATUS")],
+                    "daily_status_captured_at": BASE,
+                    "daily_status_raw_file_ref": raw_by_exchange_role[(exchange, "DAILY_STATUS")],
+                    "daily_status_capture_file_ref": capture_by_exchange_role[
+                        (exchange, "DAILY_STATUS")
+                    ],
+                    "session_rule_source_url": source_by_exchange_role[(exchange, "SESSION_RULE")],
+                    "session_rule_captured_at": BASE,
+                    "session_rule_raw_file_ref": raw_by_exchange_role[(exchange, "SESSION_RULE")],
+                    "session_rule_capture_file_ref": capture_by_exchange_role[
+                        (exchange, "SESSION_RULE")
+                    ],
                     "open_session_count": len(calendar_rows),
                     "open_session_sha256": session_sha,
                     "session_intervals": intervals,
                 }
-                for exchange, issuer, source_url, raw_ref, capture_ref in (
-                    (
-                        "SSE",
-                        "SSE_OFFICIAL",
-                        "https://www.sse.com.cn/assortment/stock/list/trading/",
-                        raw_calendar_refs[0],
-                        capture_refs[0],
-                    ),
-                    (
-                        "SZSE",
-                        "SZSE_OFFICIAL",
-                        "https://www.szse.cn/market/stock/deal/",
-                        raw_calendar_refs[1],
-                        capture_refs[1],
-                    ),
+                for exchange, issuer in (
+                    ("SSE", "SSE_OFFICIAL"),
+                    ("SZSE", "SZSE_OFFICIAL"),
                 )
             ],
         },
@@ -471,6 +538,78 @@ def _inputs(root: Path) -> dict[str, dict[str, str] | list[dict[str, str]]]:
         if path.is_file()
     ]
     return result
+
+
+def _replace_native_calendar_capture(
+    root: Path,
+    files: dict[str, dict[str, str] | list[dict[str, str]]],
+    *,
+    exchange: str,
+    role: str,
+    raw_body: bytes,
+) -> None:
+    role_name = "daily" if role == "DAILY_STATUS" else "rules"
+    raw_relative = f"closure/calendar-{role_name}-raw-{exchange.lower()}.bin"
+    capture_relative = f"closure/calendar-{role_name}-capture-{exchange.lower()}.json"
+    _write(root, raw_relative, raw_body)
+    raw_ref = _byte_ref(root, raw_relative)
+    capture_path = root / capture_relative
+    capture = json.loads(capture_path.read_bytes())
+    payload = capture["payload"]
+    projection = dict(
+        decode_capture_projection(
+            exchange,
+            role,
+            raw_body,
+            media_type=payload["raw_media_type"],
+        )
+    )
+    payload["raw_file_ref"] = raw_ref
+    payload["raw_sha256"] = raw_ref["byte_sha256"]
+    payload["raw_byte_length"] = len(raw_body)
+    payload["daily_status_rows"] = projection.get("daily_status_rows", [])
+    payload["session_intervals"] = projection.get("session_intervals", [])
+    payload["projection_sha256"] = hashlib.sha256(canonical_json_bytes(projection)).hexdigest()
+    _write(
+        root,
+        capture_relative,
+        canonical_json_bytes(
+            seal_artifact("system.exchange_calendar_capture", payload, created_at=BASE)
+        ),
+    )
+    capture_ref = _byte_ref(root, capture_relative)
+    raw_refs = [
+        raw_ref if row["relative_path"] == raw_relative else row
+        for row in files["calendar_raw_file_refs"]
+    ]
+    capture_refs = [
+        capture_ref if row["relative_path"] == capture_relative else row
+        for row in files["calendar_capture_file_refs"]
+    ]
+    files["calendar_raw_file_refs"] = sorted(raw_refs, key=lambda value: value["relative_path"])
+    files["calendar_capture_file_refs"] = sorted(
+        capture_refs, key=lambda value: value["relative_path"]
+    )
+    manifest_path = root / "closure/calendar_manifest.json"
+    manifest = json.loads(manifest_path.read_bytes())
+    row = next(
+        item for item in manifest["payload"]["exchange_rows"] if item["exchange_id"] == exchange
+    )
+    prefix = "daily_status" if role == "DAILY_STATUS" else "session_rule"
+    row[f"{prefix}_raw_file_ref"] = raw_ref
+    row[f"{prefix}_capture_file_ref"] = capture_ref
+    _write(
+        root,
+        "closure/calendar_manifest.json",
+        canonical_json_bytes(
+            seal_artifact(
+                "system.exchange_calendar_manifest",
+                manifest["payload"],
+                created_at=BASE,
+            )
+        ),
+    )
+    files["calendar_manifest_file_ref"] = _byte_ref(root, "closure/calendar_manifest.json")
 
 
 def _request(
@@ -605,7 +744,7 @@ def test_production_bootstrap_rejects_unofficial_calendar_authority(
     manifest_path = input_root / "closure/calendar_manifest.json"
     manifest = json.loads(manifest_path.read_bytes())
     payload = manifest["payload"]
-    payload["exchange_rows"][1]["source_url"] = "https://example.com/calendar"
+    payload["exchange_rows"][1]["daily_status_source_url"] = "https://example.com/calendar"
     tampered = seal_artifact(
         "system.exchange_calendar_manifest",
         payload,
@@ -633,13 +772,13 @@ def test_production_bootstrap_requires_explicit_daily_open_closed_evidence(
     workspace, release_ref = _seed_workspace(tmp_path)
     input_root = tmp_path / "sealed-inputs"
     files = _inputs(input_root)
-    capture_path = input_root / "closure/calendar-capture-sse.json"
+    capture_path = input_root / "closure/calendar-daily-capture-sse.json"
     capture = json.loads(capture_path.read_bytes())
     capture_payload = capture["payload"]
     capture_payload["daily_status_rows"].pop(10)
     _write(
         input_root,
-        "closure/calendar-capture-sse.json",
+        "closure/calendar-daily-capture-sse.json",
         canonical_json_bytes(
             seal_artifact(
                 "system.exchange_calendar_capture",
@@ -648,14 +787,23 @@ def test_production_bootstrap_requires_explicit_daily_open_closed_evidence(
             )
         ),
     )
-    new_capture_ref = _byte_ref(input_root, "closure/calendar-capture-sse.json")
+    new_capture_ref = _byte_ref(input_root, "closure/calendar-daily-capture-sse.json")
     capture_refs = list(files["calendar_capture_file_refs"])
-    capture_refs[0] = new_capture_ref
-    files["calendar_capture_file_refs"] = capture_refs
+    capture_refs = [
+        (
+            new_capture_ref
+            if row["relative_path"] == "closure/calendar-daily-capture-sse.json"
+            else row
+        )
+        for row in capture_refs
+    ]
+    files["calendar_capture_file_refs"] = sorted(
+        capture_refs, key=lambda value: value["relative_path"]
+    )
     manifest_path = input_root / "closure/calendar_manifest.json"
     manifest = json.loads(manifest_path.read_bytes())
     manifest_payload = manifest["payload"]
-    manifest_payload["exchange_rows"][0]["capture_file_ref"] = new_capture_ref
+    manifest_payload["exchange_rows"][0]["daily_status_capture_file_ref"] = new_capture_ref
     _write(
         input_root,
         "closure/calendar_manifest.json",
@@ -669,7 +817,7 @@ def test_production_bootstrap_requires_explicit_daily_open_closed_evidence(
     )
     files["calendar_manifest_file_ref"] = _byte_ref(input_root, "closure/calendar_manifest.json")
 
-    with pytest.raises(SystemContractError, match="calendar capture binding"):
+    with pytest.raises(SystemContractError, match="projection binding"):
         assemble_production_bootstrap(
             workspace_root=workspace,
             input_root=input_root,
@@ -683,15 +831,17 @@ def test_production_bootstrap_rejects_placeholder_official_calendar_raw(
     workspace, release_ref = _seed_workspace(tmp_path)
     input_root = tmp_path / "sealed-inputs"
     files = _inputs(input_root)
-    raw_relative = "closure/calendar-raw-sse.json"
+    raw_relative = "closure/calendar-daily-raw-sse.bin"
     placeholder = canonical_json_bytes({"issuer": "SSE_OFFICIAL", "raw": "sealed"})
     _write(input_root, raw_relative, placeholder)
     raw_ref = _byte_ref(input_root, raw_relative)
-    raw_refs = list(files["calendar_raw_file_refs"])
-    raw_refs[0] = raw_ref
-    files["calendar_raw_file_refs"] = raw_refs
+    raw_refs = [
+        raw_ref if row["relative_path"] == raw_relative else row
+        for row in files["calendar_raw_file_refs"]
+    ]
+    files["calendar_raw_file_refs"] = sorted(raw_refs, key=lambda value: value["relative_path"])
 
-    capture_path = input_root / "closure/calendar-capture-sse.json"
+    capture_path = input_root / "closure/calendar-daily-capture-sse.json"
     capture = json.loads(capture_path.read_bytes())
     capture_payload = capture["payload"]
     capture_payload["raw_file_ref"] = raw_ref
@@ -699,19 +849,23 @@ def test_production_bootstrap_rejects_placeholder_official_calendar_raw(
     capture_payload["raw_byte_length"] = len(placeholder)
     _write(
         input_root,
-        "closure/calendar-capture-sse.json",
+        "closure/calendar-daily-capture-sse.json",
         canonical_json_bytes(
             seal_artifact("system.exchange_calendar_capture", capture_payload, created_at=BASE)
         ),
     )
-    capture_ref = _byte_ref(input_root, "closure/calendar-capture-sse.json")
-    capture_refs = list(files["calendar_capture_file_refs"])
-    capture_refs[0] = capture_ref
-    files["calendar_capture_file_refs"] = capture_refs
+    capture_ref = _byte_ref(input_root, "closure/calendar-daily-capture-sse.json")
+    capture_refs = [
+        capture_ref if row["relative_path"] == "closure/calendar-daily-capture-sse.json" else row
+        for row in files["calendar_capture_file_refs"]
+    ]
+    files["calendar_capture_file_refs"] = sorted(
+        capture_refs, key=lambda value: value["relative_path"]
+    )
     manifest_path = input_root / "closure/calendar_manifest.json"
     manifest = json.loads(manifest_path.read_bytes())
-    manifest["payload"]["exchange_rows"][0]["raw_file_ref"] = raw_ref
-    manifest["payload"]["exchange_rows"][0]["capture_file_ref"] = capture_ref
+    manifest["payload"]["exchange_rows"][0]["daily_status_raw_file_ref"] = raw_ref
+    manifest["payload"]["exchange_rows"][0]["daily_status_capture_file_ref"] = capture_ref
     _write(
         input_root,
         "closure/calendar_manifest.json",
@@ -725,7 +879,132 @@ def test_production_bootstrap_rejects_placeholder_official_calendar_raw(
     )
     files["calendar_manifest_file_ref"] = _byte_ref(input_root, "closure/calendar_manifest.json")
 
-    with pytest.raises(SystemContractError, match="raw response fields"):
+    with pytest.raises(SystemContractError, match="JSONP framing"):
+        assemble_production_bootstrap(
+            workspace_root=workspace,
+            input_root=input_root,
+            request_raw=_request(release_ref=release_ref, files=files),
+        )
+
+
+def test_production_bootstrap_rejects_native_daily_date_gap(tmp_path: Path) -> None:
+    workspace, release_ref = _seed_workspace(tmp_path)
+    input_root = tmp_path / "sealed-inputs"
+    files = _inputs(input_root)
+    raw_path = input_root / "closure/calendar-daily-raw-szse.bin"
+    native = json.loads(raw_path.read_bytes())
+    native["data"].pop(10)
+    _replace_native_calendar_capture(
+        input_root,
+        files,
+        exchange="SZSE",
+        role="DAILY_STATUS",
+        raw_body=canonical_json_bytes(native),
+    )
+
+    with pytest.raises(SystemContractError, match="coverage is not consecutive"):
+        assemble_production_bootstrap(
+            workspace_root=workspace,
+            input_root=input_root,
+            request_raw=_request(release_ref=release_ref, files=files),
+        )
+
+
+def test_production_bootstrap_rejects_cross_exchange_calendar_disagreement(
+    tmp_path: Path,
+) -> None:
+    workspace, release_ref = _seed_workspace(tmp_path)
+    input_root = tmp_path / "sealed-inputs"
+    files = _inputs(input_root)
+    raw_path = input_root / "closure/calendar-daily-raw-szse.bin"
+    native = json.loads(raw_path.read_bytes())
+    open_row = next(row for row in native["data"] if row["tradeFlag"] == "1")
+    open_row["tradeFlag"] = "0"
+    _replace_native_calendar_capture(
+        input_root,
+        files,
+        exchange="SZSE",
+        role="DAILY_STATUS",
+        raw_body=canonical_json_bytes(native),
+    )
+
+    with pytest.raises(SystemContractError, match="OPEN/CLOSED calendar differs"):
+        assemble_production_bootstrap(
+            workspace_root=workspace,
+            input_root=input_root,
+            request_raw=_request(release_ref=release_ref, files=files),
+        )
+
+
+def test_production_bootstrap_rejects_unsupported_official_session_hours(
+    tmp_path: Path,
+) -> None:
+    workspace, release_ref = _seed_workspace(tmp_path)
+    input_root = tmp_path / "sealed-inputs"
+    files = _inputs(input_root)
+    raw_path = input_root / "closure/calendar-rules-raw-sse.bin"
+    native = json.loads(raw_path.read_bytes())
+    native["continuousAuction"][0]["beginTime"] = "09:31:00"
+    _replace_native_calendar_capture(
+        input_root,
+        files,
+        exchange="SSE",
+        role="SESSION_RULE",
+        raw_body=canonical_json_bytes(native),
+    )
+
+    with pytest.raises(SystemContractError, match="session-rule projection binding"):
+        assemble_production_bootstrap(
+            workspace_root=workspace,
+            input_root=input_root,
+            request_raw=_request(release_ref=release_ref, files=files),
+        )
+
+
+def test_production_bootstrap_rejects_decoder_code_identity_drift(tmp_path: Path) -> None:
+    workspace, release_ref = _seed_workspace(tmp_path)
+    input_root = tmp_path / "sealed-inputs"
+    files = _inputs(input_root)
+    capture_relative = "closure/calendar-daily-capture-sse.json"
+    capture_path = input_root / capture_relative
+    capture = json.loads(capture_path.read_bytes())
+    capture["payload"]["decoder_sha256"] = "0" * 64
+    _write(
+        input_root,
+        capture_relative,
+        canonical_json_bytes(
+            seal_artifact(
+                "system.exchange_calendar_capture",
+                capture["payload"],
+                created_at=BASE,
+            )
+        ),
+    )
+    capture_ref = _byte_ref(input_root, capture_relative)
+    files["calendar_capture_file_refs"] = sorted(
+        [
+            capture_ref if row["relative_path"] == capture_relative else row
+            for row in files["calendar_capture_file_refs"]
+        ],
+        key=lambda value: value["relative_path"],
+    )
+    manifest_path = input_root / "closure/calendar_manifest.json"
+    manifest = json.loads(manifest_path.read_bytes())
+    manifest["payload"]["exchange_rows"][0]["daily_status_capture_file_ref"] = capture_ref
+    _write(
+        input_root,
+        "closure/calendar_manifest.json",
+        canonical_json_bytes(
+            seal_artifact(
+                "system.exchange_calendar_manifest",
+                manifest["payload"],
+                created_at=BASE,
+            )
+        ),
+    )
+    files["calendar_manifest_file_ref"] = _byte_ref(input_root, "closure/calendar_manifest.json")
+
+    with pytest.raises(SystemContractError, match="decoder identity differs"):
         assemble_production_bootstrap(
             workspace_root=workspace,
             input_root=input_root,

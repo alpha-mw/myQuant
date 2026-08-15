@@ -19,7 +19,7 @@ from pathlib import Path, PurePosixPath
 import re
 import secrets
 import stat
-from typing import Any, Final
+from typing import Any, Final, cast
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
@@ -31,7 +31,6 @@ from quant_investor.contracts import (
     ContractError,
     canonical_json_bytes,
     get_contract,
-    parse_canonical_json_bytes,
     seal_artifact,
     validate_artifact,
 )
@@ -57,6 +56,12 @@ from quant_investor.intelligence import assess_readiness
 from quant_investor.market.fundamental_incremental import (
     SafeSuccessorError,
     validate_successor_provenance,
+)
+from quant_investor.market.exchange_calendar_official import (
+    EvidenceRole,
+    decode_capture_projection,
+    decoder_code_sha256,
+    decoder_id,
 )
 
 from quant_investor.system.controller import build_emergency_controller
@@ -132,10 +137,14 @@ _CALENDAR_EXCHANGE_FIELDS: Final = frozenset(
     {
         "exchange_id",
         "issuer",
-        "source_url",
-        "captured_at",
-        "raw_file_ref",
-        "capture_file_ref",
+        "daily_status_source_url",
+        "daily_status_captured_at",
+        "daily_status_raw_file_ref",
+        "daily_status_capture_file_ref",
+        "session_rule_source_url",
+        "session_rule_captured_at",
+        "session_rule_raw_file_ref",
+        "session_rule_capture_file_ref",
         "open_session_count",
         "open_session_sha256",
         "session_intervals",
@@ -146,6 +155,7 @@ _CALENDAR_CAPTURE_FIELDS: Final = frozenset(
     {
         "calendar_capture_id",
         "state",
+        "evidence_role",
         "exchange_id",
         "issuer",
         "source_url",
@@ -167,6 +177,7 @@ _CALENDAR_CAPTURE_FIELDS: Final = frozenset(
         "coverage_start_date",
         "cutoff_date",
         "daily_status_rows",
+        "projection_sha256",
         "transform_code_sha256",
     }
 )
@@ -177,33 +188,6 @@ _OFFICIAL_CALENDAR_AUTHORITIES: Final = {
     "SZSE": ("SZSE_OFFICIAL", "www.szse.cn"),
     "BSE": ("BSE_OFFICIAL", "www.bse.cn"),
 }
-_OFFICIAL_CALENDAR_DECODERS: Final = {
-    "SSE": "myquant.exchange_calendar.sse_official_json_v1",
-    "SZSE": "myquant.exchange_calendar.szse_official_json_v1",
-    "BSE": "myquant.exchange_calendar.bse_official_json_v1",
-}
-_OFFICIAL_RAW_CALENDAR_FIELDS: Final = frozenset(
-    {
-        "schema_version",
-        "exchange_id",
-        "issuer",
-        "timezone",
-        "session_intervals",
-        "coverage_start_date",
-        "cutoff_date",
-        "daily_status_rows",
-    }
-)
-_OFFICIAL_CALENDAR_DECODER_SHA256: Final = hashlib.sha256(
-    canonical_json_bytes(
-        {
-            "domain": "myquant-official-exchange-calendar-decoder",
-            "decoder_ids": _OFFICIAL_CALENDAR_DECODERS,
-            "raw_fields": sorted(_OFFICIAL_RAW_CALENDAR_FIELDS),
-            "status_fields": sorted(_CALENDAR_STATUS_FIELDS),
-        }
-    )
-).hexdigest()
 _CN_CONTINUOUS_SESSION_INTERVALS: Final = [
     {"opens_local": "09:30:00", "closes_local": "11:30:00"},
     {"opens_local": "13:00:00", "closes_local": "15:00:00"},
@@ -1391,9 +1375,11 @@ def _validate_calendar_capture(  # noqa: C901
     issuer: str,
     source_url: str,
     captured_at: str,
+    evidence_role: EvidenceRole,
     coverage_start: str,
     cutoff: str,
     sessions: Sequence[str],
+    session_intervals: Sequence[Mapping[str, str]],
     transform_code_sha256: str,
 ) -> dict[str, Any]:
     capture_path, _ = _verify_input(input_root, capture_ref)
@@ -1433,24 +1419,26 @@ def _validate_calendar_capture(  # noqa: C901
         raise SystemContractError("official calendar HTTP redirect authority differs")
     raw_path, raw_stored_size = _verify_input(input_root, raw_ref)
     raw = _read_stable_bytes(raw_path, maximum_bytes=_JSON_MAX_BYTES)
+    media_type = payload["raw_media_type"]
+    if type(media_type) is not str or not media_type or media_type.strip() != media_type:
+        raise SystemContractError("official calendar raw media type is invalid")
+    code_sha = decoder_code_sha256()
     if (
         raw_stored_size != len(raw)
         or payload["raw_sha256"] != _sha256(raw)
         or payload["raw_sha256"] != raw_ref["byte_sha256"]
         or payload["raw_byte_length"] != len(raw)
-        or payload["raw_media_type"] != "application/json"
-        or payload["decoder_id"] != _OFFICIAL_CALENDAR_DECODERS[exchange]
-        or payload["decoder_sha256"] != _OFFICIAL_CALENDAR_DECODER_SHA256
+        or payload["decoder_id"] != decoder_id(exchange, evidence_role)
+        or payload["decoder_sha256"] != code_sha
     ):
         raise SystemContractError("official calendar raw/decoder identity differs")
-    try:
-        raw_document = parse_canonical_json_bytes(raw, label="official calendar raw response")
-    except ContractError as exc:
-        raise SystemContractError("official calendar raw response is not canonical JSON") from exc
-    if type(raw_document) is not dict or set(raw_document) != _OFFICIAL_RAW_CALENDAR_FIELDS:
-        raise SystemContractError("official calendar raw response fields are not exact")
+    projection = dict(
+        decode_capture_projection(exchange, evidence_role, raw, media_type=media_type)
+    )
+    projection_sha = _sha256(canonical_json_bytes(projection))
     if (
         payload["state"] != "IMMUTABLE"
+        or payload["evidence_role"] != evidence_role
         or payload["exchange_id"] != exchange
         or payload["issuer"] != issuer
         or payload["source_url"] != source_url
@@ -1461,47 +1449,53 @@ def _validate_calendar_capture(  # noqa: C901
         or payload["captured_at"] != captured_at
         or payload["raw_file_ref"] != raw_ref
         or payload["timezone"] != "Asia/Shanghai"
-        or payload["session_intervals"] != _CN_CONTINUOUS_SESSION_INTERVALS
         or payload["coverage_start_date"] != coverage_start
         or payload["cutoff_date"] != cutoff
         or payload["transform_code_sha256"] != transform_code_sha256
-        or raw_document["schema_version"] != "official-exchange-calendar-response.v1"
-        or raw_document["exchange_id"] != exchange
-        or raw_document["issuer"] != issuer
-        or raw_document["timezone"] != payload["timezone"]
-        or raw_document["session_intervals"] != payload["session_intervals"]
-        or raw_document["coverage_start_date"] != coverage_start
-        or raw_document["cutoff_date"] != cutoff
-        or raw_document["daily_status_rows"] != payload["daily_status_rows"]
+        or transform_code_sha256 != code_sha
+        or payload["projection_sha256"] != projection_sha
     ):
         raise SystemContractError("official calendar capture binding differs")
     _identifier(payload["calendar_capture_id"], label="calendar_capture_id")
-    rows = payload["daily_status_rows"]
-    if type(rows) is not list or not rows:
-        raise SystemContractError("official daily OPEN/CLOSED evidence is absent")
-    expected_date = datetime.strptime(coverage_start, "%Y-%m-%d").date()
-    cutoff_date = datetime.strptime(cutoff, "%Y-%m-%d").date()
-    observed_open: list[str] = []
-    closed_count = 0
-    for index, row in enumerate(rows):
-        if type(row) is not dict or set(row) != _CALENDAR_STATUS_FIELDS:
-            raise SystemContractError("official daily status fields are not exact")
-        date_text = _calendar_date(row["date"], label=f"daily_status_rows[{index}].date")
-        if date_text != expected_date.isoformat() or expected_date > cutoff_date:
-            raise SystemContractError("official daily status coverage is not consecutive")
-        if row["status"] == "OPEN":
-            observed_open.append(date_text)
-        elif row["status"] == "CLOSED":
-            closed_count += 1
-        else:
-            raise SystemContractError("official daily status is not OPEN/CLOSED")
-        expected_date += timedelta(days=1)
-    if (
-        expected_date != cutoff_date + timedelta(days=1)
-        or observed_open != list(sessions)
-        or closed_count <= 0
-    ):
-        raise SystemContractError("official daily OPEN/CLOSED calendar differs")
+    if evidence_role == "DAILY_STATUS":
+        rows = projection.get("daily_status_rows")
+        if payload["daily_status_rows"] != rows or payload["session_intervals"] != []:
+            raise SystemContractError("official daily projection binding differs")
+        expected_date = datetime.strptime(coverage_start, "%Y-%m-%d").date()
+        cutoff_date = datetime.strptime(cutoff, "%Y-%m-%d").date()
+        observed_open: list[str] = []
+        closed_count = 0
+        if type(rows) is not list:
+            raise SystemContractError("official daily OPEN/CLOSED evidence is absent")
+        for index, row in enumerate(rows):
+            if type(row) is not dict or set(row) != _CALENDAR_STATUS_FIELDS:
+                raise SystemContractError("official daily status fields are not exact")
+            date_text = _calendar_date(row["date"], label=f"daily_status_rows[{index}].date")
+            if date_text != expected_date.isoformat() or expected_date > cutoff_date:
+                raise SystemContractError("official daily status coverage is not consecutive")
+            if row["status"] == "OPEN":
+                observed_open.append(date_text)
+            elif row["status"] == "CLOSED":
+                closed_count += 1
+            else:
+                raise SystemContractError("official daily status is not OPEN/CLOSED")
+            expected_date += timedelta(days=1)
+        if (
+            expected_date != cutoff_date + timedelta(days=1)
+            or observed_open != list(sessions)
+            or closed_count <= 0
+        ):
+            raise SystemContractError("official daily OPEN/CLOSED calendar differs")
+    elif evidence_role == "SESSION_RULE":
+        intervals = projection.get("session_intervals")
+        if (
+            payload["daily_status_rows"] != []
+            or payload["session_intervals"] != intervals
+            or intervals != list(session_intervals)
+        ):
+            raise SystemContractError("official session-rule projection binding differs")
+    else:
+        raise SystemContractError("official calendar evidence role is unsupported")
     if capture_ref not in normalized["calendar_capture_file_refs"]:
         raise SystemContractError("official calendar capture is outside request closure")
     return capture
@@ -1533,7 +1527,8 @@ def _validate_calendar_manifest(  # noqa: C901
     if payload["state"] != "IMMUTABLE" or payload["timezone"] != "Asia/Shanghai":
         raise SystemContractError("official calendar manifest state/timezone is invalid")
     _identifier(payload["calendar_manifest_id"], label="calendar_manifest_id")
-    _sha(payload["transform_code_sha256"], label="transform_code_sha256")
+    if payload["transform_code_sha256"] != decoder_code_sha256():
+        raise SystemContractError("calendar transform code differs from installed decoder")
     coverage_start = _calendar_date(payload["coverage_start_date"], label="coverage_start_date")
     cutoff = _calendar_date(payload["cutoff_date"], label="cutoff_date")
     if coverage_start > "2024-01-01":
@@ -1602,23 +1597,33 @@ def _validate_calendar_manifest(  # noqa: C901
         if exchange not in _OFFICIAL_CALENDAR_AUTHORITIES:
             raise SystemContractError("official exchange identity is unsupported")
         issuer, hostname = _OFFICIAL_CALENDAR_AUTHORITIES[exchange]
-        source_url = row["source_url"]
-        parsed_url = urlsplit(source_url) if type(source_url) is str else None
-        if (
-            row["issuer"] != issuer
-            or parsed_url is None
-            or parsed_url.scheme != "https"
-            or parsed_url.hostname != hostname
-            or parsed_url.username is not None
-            or parsed_url.password is not None
-        ):
+        if row["issuer"] != issuer:
             raise SystemContractError("official exchange source authority differs")
-        _timestamp(row["captured_at"], label=f"exchange_rows[{index}].captured_at")
-        raw_ref = _file_ref(row["raw_file_ref"], label=f"exchange_rows[{index}].raw_file_ref")
-        capture_ref = _file_ref(
-            row["capture_file_ref"],
-            label=f"exchange_rows[{index}].capture_file_ref",
-        )
+        source_rows: dict[str, tuple[str, str, dict[str, str], dict[str, str]]] = {}
+        for role, prefix in (("DAILY_STATUS", "daily_status"), ("SESSION_RULE", "session_rule")):
+            source_url = row[f"{prefix}_source_url"]
+            parsed_url = urlsplit(source_url) if type(source_url) is str else None
+            if (
+                parsed_url is None
+                or parsed_url.scheme != "https"
+                or parsed_url.hostname != hostname
+                or parsed_url.username is not None
+                or parsed_url.password is not None
+            ):
+                raise SystemContractError("official exchange source authority differs")
+            captured_at = _timestamp(
+                row[f"{prefix}_captured_at"],
+                label=f"exchange_rows[{index}].{prefix}_captured_at",
+            )
+            raw_ref = _file_ref(
+                row[f"{prefix}_raw_file_ref"],
+                label=f"exchange_rows[{index}].{prefix}_raw_file_ref",
+            )
+            capture_ref = _file_ref(
+                row[f"{prefix}_capture_file_ref"],
+                label=f"exchange_rows[{index}].{prefix}_capture_file_ref",
+            )
+            source_rows[role] = (source_url, captured_at, raw_ref, capture_ref)
         intervals = row["session_intervals"]
         if (
             type(intervals) is not list
@@ -1632,28 +1637,36 @@ def _validate_calendar_manifest(  # noqa: C901
             or row["open_session_sha256"] != session_sha
         ):
             raise SystemContractError("official exchange sessions differ")
-        _validate_calendar_capture(
-            normalized=normalized,
-            input_root=input_root,
-            capture_ref=capture_ref,
-            raw_ref=raw_ref,
-            exchange=exchange,
-            issuer=issuer,
-            source_url=source_url,
-            captured_at=row["captured_at"],
-            coverage_start=coverage_start,
-            cutoff=cutoff,
-            sessions=sessions,
-            transform_code_sha256=payload["transform_code_sha256"],
-        )
+        for role in (
+            cast(EvidenceRole, "DAILY_STATUS"),
+            cast(EvidenceRole, "SESSION_RULE"),
+        ):
+            source_url, captured_at, raw_ref, capture_ref = source_rows[role]
+            _validate_calendar_capture(
+                normalized=normalized,
+                input_root=input_root,
+                capture_ref=capture_ref,
+                raw_ref=raw_ref,
+                exchange=exchange,
+                issuer=issuer,
+                source_url=source_url,
+                captured_at=captured_at,
+                evidence_role=role,
+                coverage_start=coverage_start,
+                cutoff=cutoff,
+                sessions=sessions,
+                session_intervals=intervals,
+                transform_code_sha256=payload["transform_code_sha256"],
+            )
+            observed_raw_refs.append(raw_ref)
+            observed_capture_refs.append(capture_ref)
         observed_exchanges.append(exchange)
-        observed_raw_refs.append(raw_ref)
-        observed_capture_refs.append(capture_ref)
     if (
         observed_exchanges != expected_exchanges
         or observed_exchanges != sorted(set(observed_exchanges))
-        or observed_raw_refs != raw_refs
-        or observed_capture_refs != normalized["calendar_capture_file_refs"]
+        or sorted(observed_raw_refs, key=lambda value: value["relative_path"]) != raw_refs
+        or sorted(observed_capture_refs, key=lambda value: value["relative_path"])
+        != normalized["calendar_capture_file_refs"]
     ):
         raise SystemContractError("official calendar/PIT exchange closure differs")
     return manifest
