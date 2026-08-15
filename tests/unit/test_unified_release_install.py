@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 import subprocess
 
@@ -74,7 +75,9 @@ def test_frozen_release_build_install_and_exact_origin_replay(tmp_path: Path) ->
         deployed_release=release,
     )
     gate_payload = validate_cutover_gate_evidence(gate)["payload"]
-    assert gate_payload["state"] == "PASS"
+    assert gate_payload["state"] == "PASS", base64.b64decode(
+        gate_payload["batch_results"][0]["stderr_base64"]
+    ).decode("utf-8", errors="replace")
     assert (
         gate_payload["batch_results"][0]["stdin_sha256"]
         != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"

@@ -691,6 +691,7 @@ def run_cutover_gate(  # noqa: C901
         "PATH": os.environ.get("PATH", ""),
         "PYTHONHASHSEED": "0",
         "PYTHONPATH": "",
+        "UV_CACHE_DIR": "/tmp/myquant-cutover-uv-cache",
     }
     environment_sha = _sha256(canonical_json_bytes(environment))
     normalized_subject_ref = validate_object_ref(subject_ref, label="subject_ref")
