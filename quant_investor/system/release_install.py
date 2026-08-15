@@ -709,6 +709,7 @@ def prepare_operational_release(  # noqa: C901
             [
                 str(uv),
                 "sync",
+                "--offline",
                 "--locked",
                 "--no-install-project",
                 "--no-install-workspace",
