@@ -49,7 +49,7 @@ class TushareHttpsError(RuntimeError):
 
 @dataclass(frozen=True)
 class TushareResponse:
-    """Validated, immutable response rows without raw transport material."""
+    """Validated response rows with mandatory exact response evidence bytes."""
 
     api_name: str
     request_id: str
@@ -57,6 +57,9 @@ class TushareResponse:
     has_more: bool
     fields: tuple[str, ...]
     rows: tuple[tuple[Any, ...], ...]
+    raw_body: bytes
+    provider_reported_count: int
+    item_count: int
 
 
 @dataclass(frozen=True)
@@ -441,6 +444,52 @@ def _decode_response(
         has_more=has_more,
         fields=expected_fields,
         rows=rows,
+        raw_body=bytes(raw),
+        provider_reported_count=reported_count,
+        item_count=len(rows),
+    )
+
+
+def replay_tushare_response_bytes(
+    raw: bytes,
+    *,
+    api_name: str,
+    expected_fields: Sequence[str],
+    strict_decimal_decode: bool = True,
+    max_response_items: int = MAX_CONTAINER_ITEMS,
+) -> TushareResponse:
+    """Independently replay one exact response entity under the public policy."""
+
+    if type(raw) is not bytes or not raw or len(raw) > MAX_RESPONSE_BYTES:
+        _fail("TUSHARE_RESPONSE_INVALID")
+    if (
+        type(api_name) is not str
+        or _API_NAME_RE.fullmatch(api_name) is None
+        or isinstance(expected_fields, (str, bytes))
+        or type(strict_decimal_decode) is not bool
+        or type(max_response_items) is not int
+        or not 1 <= max_response_items <= _MAX_CONFIGURED_RESPONSE_ITEMS
+    ):
+        _fail("TUSHARE_RESPONSE_INVALID")
+    try:
+        fields = tuple(expected_fields)
+    except TypeError:
+        _fail("TUSHARE_RESPONSE_INVALID")
+    if (
+        not fields
+        or len(fields) != len(set(fields))
+        or any(
+            type(field) is not str or _FIELD_RE.fullmatch(field) is None
+            for field in fields
+        )
+    ):
+        _fail("TUSHARE_RESPONSE_INVALID")
+    return _decode_response(
+        raw,
+        api_name=api_name,
+        expected_fields=fields,
+        strict_decimal_decode=strict_decimal_decode,
+        max_response_items=max_response_items,
     )
 
 
@@ -612,5 +661,6 @@ __all__ = [
     "TushareHttpsError",
     "TushareResponse",
     "TushareSchemaDiagnostic",
+    "replay_tushare_response_bytes",
     "validate_official_endpoint",
 ]

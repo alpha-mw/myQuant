@@ -21,6 +21,7 @@ from typing import Any, Final
 POINTER_SCHEMA: Final = "myquant.strategy_record_store_current.v1"
 CATALOG_SCHEMA_V1: Final = "myquant.strategy_record_catalog.v1"
 CATALOG_SCHEMA_V2: Final = "myquant.strategy_record_catalog.v2"
+CATALOG_SCHEMA_V3: Final = "myquant.strategy_record_catalog.v3"
 # Backward-compatible public name. New archive-aware publications use v2.
 CATALOG_SCHEMA: Final = CATALOG_SCHEMA_V1
 ARCHIVE_MANIFEST_SCHEMA: Final = "myquant.strategy_record_archive_manifest.v1"
@@ -243,6 +244,7 @@ def _validate_pointer(pointer: Mapping[str, Any]) -> None:
     expected_paths = {
         f"_record_store/catalogs/{generation}/catalog.v1.json",
         f"_record_store/catalogs/{generation}/catalog.v2.json",
+        f"_record_store/catalogs/{generation}/catalog.v3.json",
     }
     if pointer.get("catalog_path") not in expected_paths:
         raise StrategyRecordStoreError("pointer catalog_path is not generation-bound")
@@ -309,7 +311,7 @@ def _validate_archive_locator_shape(locator: Any) -> None:
 
 def _validate_catalog(catalog: Mapping[str, Any], *, generation_id: str) -> None:
     schema = catalog.get("schema_id")
-    if schema not in {CATALOG_SCHEMA_V1, CATALOG_SCHEMA_V2}:
+    if schema not in {CATALOG_SCHEMA_V1, CATALOG_SCHEMA_V2, CATALOG_SCHEMA_V3}:
         raise StrategyRecordStoreError("catalog schema is unsupported")
     if catalog.get("generation_id") != generation_id:
         raise StrategyRecordStoreError("catalog generation mismatch")
@@ -333,7 +335,7 @@ def _validate_catalog(catalog: Mapping[str, Any], *, generation_id: str) -> None
         if relative_path in paths or relative_path.startswith("_record_store/"):
             raise StrategyRecordStoreError("catalog record path is invalid or duplicated")
         state = record.get("state", record.get("storage_state"))
-        if schema == CATALOG_SCHEMA_V2 and (
+        if schema in {CATALOG_SCHEMA_V2, CATALOG_SCHEMA_V3} and (
             record.get("state") != record.get("storage_state")
             or state is None
         ):
@@ -345,7 +347,7 @@ def _validate_catalog(catalog: Mapping[str, Any], *, generation_id: str) -> None
             "AUXILIARY_ROOT_FILE",
         }:
             raise StrategyRecordStoreError("catalog record state is invalid")
-        if schema == CATALOG_SCHEMA_V2:
+        if schema in {CATALOG_SCHEMA_V2, CATALOG_SCHEMA_V3}:
             _validate_inventory_fields(record, label=f"record {record_id}")
             if state == "ARCHIVED":
                 _validate_archive_locator_shape(record.get("archive_locator"))
@@ -354,17 +356,38 @@ def _validate_catalog(catalog: Mapping[str, Any], *, generation_id: str) -> None
         identifiers.add(record_id)
         paths.add(relative_path)
 
-    if schema == CATALOG_SCHEMA_V2:
+    if schema in {CATALOG_SCHEMA_V2, CATALOG_SCHEMA_V3}:
         active = catalog.get("active_record_id")
         previous = catalog.get("previous_record_id")
         if not isinstance(active, str) or not isinstance(previous, str) or active == previous:
-            raise StrategyRecordStoreError("catalog v2 active/previous must be distinct")
+            raise StrategyRecordStoreError("catalog active/previous must be distinct")
         by_id = {record["record_id"]: record for record in records}
         for label, record_id in (("active", active), ("previous", previous)):
             row = by_id.get(record_id)
             if row is None or row.get("state") != "ONLINE":
-                raise StrategyRecordStoreError(f"catalog v2 {label} record is not ONLINE")
+                raise StrategyRecordStoreError(f"catalog {label} record is not ONLINE")
+            if schema == CATALOG_SCHEMA_V3:
+                expected_ledger = (
+                    f"{row.get('relative_path')}/ledger_after_manual_switch.parquet"
+                )
+                if row.get("ledger_path") != expected_ledger:
+                    raise StrategyRecordStoreError(
+                        f"catalog v3 {label} record does not bind the Parquet ledger"
+                    )
+                for key in (
+                    "manifest_sha256",
+                    "manual_manifest_sha256",
+                    "ledger_sha256",
+                    "financial_state_sha256",
+                ):
+                    value = row.get(key)
+                    if not isinstance(value, str) or _SHA256.fullmatch(value) is None:
+                        raise StrategyRecordStoreError(
+                            f"catalog v3 {label} record {key} is invalid"
+                        )
         registry_ref = catalog.get("history_registry_ref")
+        if schema == CATALOG_SCHEMA_V3 and registry_ref is not None:
+            raise StrategyRecordStoreError("catalog v3 cannot retain a history registry")
         if registry_ref is not None:
             if not isinstance(registry_ref, dict):
                 raise StrategyRecordStoreError("history registry ref is invalid")
@@ -374,6 +397,24 @@ def _validate_catalog(catalog: Mapping[str, Any], *, generation_id: str) -> None
             digest = registry_ref.get("sha256")
             if not isinstance(digest, str) or _SHA256.fullmatch(digest) is None:
                 raise StrategyRecordStoreError("history registry ref SHA-256 is invalid")
+    if schema == CATALOG_SCHEMA_V3:
+        if catalog.get("performance_contract_ready") is not True:
+            raise StrategyRecordStoreError("catalog v3 performance contract is not ready")
+        if "dashboard_projection" in catalog or "history_registry" in catalog:
+            raise StrategyRecordStoreError("catalog v3 cannot retain legacy performance data")
+        lineage = catalog.get("lineage_index")
+        lineage_sha = catalog.get("lineage_index_sha256")
+        if not isinstance(lineage_sha, str) or _SHA256.fullmatch(lineage_sha) is None:
+            raise StrategyRecordStoreError("catalog v3 lineage_index_sha256 is invalid")
+        if lineage_sha != _sha256(canonical_json_bytes(lineage)):
+            raise StrategyRecordStoreError("catalog v3 lineage_index_sha256 mismatch")
+        from .performance import (
+            validate_lineage_index,
+            validate_performance_history_ref_shape,
+        )
+
+        validate_lineage_index(lineage, active_record_id=catalog.get("active_record_id"))
+        validate_performance_history_ref_shape(catalog.get("performance_history_ref"))
 
 
 def project_root_for_record_root(record_root: str | os.PathLike[str]) -> Path:
@@ -553,7 +594,7 @@ def _validate_pointer_catalog_closure(
     by_id = {record["record_id"]: record for record in catalog["records"]}
     active = pointer.get("active_record_id")
     previous = pointer.get("previous_record_id")
-    if catalog.get("schema_id") == CATALOG_SCHEMA_V2:
+    if catalog.get("schema_id") in {CATALOG_SCHEMA_V2, CATALOG_SCHEMA_V3}:
         if (
             catalog.get("active_record_id") != active
             or catalog.get("previous_record_id") != previous
@@ -573,7 +614,8 @@ def _validate_pointer_catalog_closure(
 
 
 def _validate_external_catalog_bindings(root: Path, catalog: Mapping[str, Any]) -> None:
-    if catalog.get("schema_id") != CATALOG_SCHEMA_V2:
+    schema = catalog.get("schema_id")
+    if schema not in {CATALOG_SCHEMA_V2, CATALOG_SCHEMA_V3}:
         return
     archive_cache: dict[str, dict[str, Any]] = {}
     for record in catalog["records"]:
@@ -620,6 +662,79 @@ def _validate_external_catalog_bindings(root: Path, catalog: Mapping[str, Any]) 
                     )
             if manifest_record.get("member_prefix") != locator["member_prefix"]:
                 raise StrategyRecordStoreError("archive member prefix mismatch")
+    if schema == CATALOG_SCHEMA_V3:
+        from .performance import load_performance_history
+
+        performance = load_performance_history(root, catalog["performance_history_ref"])
+        rows = performance["rows"]
+        last = rows[-1]
+        active_id = catalog.get("active_record_id")
+        if last.get("record_id") != active_id:
+            raise StrategyRecordStoreError(
+                "active performance record does not match catalog active record"
+            )
+        active_record = next(
+            (row for row in catalog["records"] if row.get("record_id") == active_id),
+            None,
+        )
+        active_lineage = next(
+            (row for row in catalog["lineage_index"] if row.get("record_id") == active_id),
+            None,
+        )
+        if active_record is None or active_lineage is None:
+            raise StrategyRecordStoreError("active performance lineage is absent")
+        selected_by_id = {
+            row.get("record_id"): row
+            for row in catalog["records"]
+            if row.get("record_id")
+            in {catalog.get("active_record_id"), catalog.get("previous_record_id")}
+        }
+        lineage_by_id = {
+            row.get("record_id"): row
+            for row in catalog["lineage_index"]
+            if row.get("record_id") in selected_by_id
+        }
+        for selected_id, selected_record in selected_by_id.items():
+            selected_lineage = lineage_by_id.get(selected_id)
+            if selected_lineage is None:
+                raise StrategyRecordStoreError("selected lineage closure is absent")
+            expected_refs = {
+                "manifest_ref": {
+                    "path": selected_record.get("manifest_path"),
+                    "sha256": selected_record.get("manifest_sha256"),
+                },
+                "manual_manifest_ref": {
+                    "path": selected_record.get("manual_manifest_path"),
+                    "sha256": selected_record.get("manual_manifest_sha256"),
+                },
+                "effective_ledger_ref": {
+                    "path": selected_record.get("ledger_path"),
+                    "sha256": selected_record.get("ledger_sha256"),
+                },
+            }
+            if any(
+                selected_lineage.get(key) != expected
+                for key, expected in expected_refs.items()
+            ) or (
+                selected_lineage.get("financial_state_sha256")
+                != selected_record.get("financial_state_sha256")
+                or selected_lineage.get("ledger_parquet_sha256")
+                != selected_record.get("ledger_sha256")
+            ):
+                raise StrategyRecordStoreError("selected lineage exact closure mismatch")
+        if last.get("valuation_date") != active_lineage.get("valuation_date"):
+            raise StrategyRecordStoreError("active performance valuation date mismatch")
+        for series_key, record_key in (
+            ("manual_manifest_sha256", "manual_manifest_sha256"),
+            ("ledger_parquet_sha256", "ledger_sha256"),
+            ("financial_state_sha256", "financial_state_sha256"),
+        ):
+            expected = active_record.get(record_key)
+            if not isinstance(expected, str) or last.get(series_key) != expected:
+                raise StrategyRecordStoreError(
+                    f"active performance {series_key} does not reconcile"
+                )
+        return
     registry_ref = catalog.get("history_registry_ref")
     if registry_ref is None:
         return
@@ -935,6 +1050,103 @@ def _active_closure(
     raise StrategyRecordStoreError("active_record_id is absent from catalog")
 
 
+def reselect_catalog(
+    record_root: str | os.PathLike[str],
+    *,
+    expected_current_pointer_sha256: str,
+    target_generation_id: str,
+    target_catalog_path: str,
+    target_catalog_sha256: str,
+    published_at: str,
+) -> dict[str, Any]:
+    """CAS-select one already-published immutable catalog generation.
+
+    This is the rollback primitive for an explicitly owner-approved cutover
+    reversal.  It never creates or rewrites a catalog and it never infers a
+    target from directory ordering, mtime, or a filename such as ``latest``.
+    """
+
+    root = Path(record_root)
+    _lstat_directory(root, label="record root")
+    loaded = load_registered_catalog(root)
+    if loaded is None:
+        raise StrategyRecordStoreError("catalog reselection requires a registered store")
+    current_pointer, _ = loaded
+    observed_pointer_sha = _sha256(canonical_json_bytes(current_pointer))
+    if observed_pointer_sha != expected_current_pointer_sha256:
+        raise StrategyRecordCASMismatch(
+            expected_current_pointer_sha256, observed_pointer_sha
+        )
+    generation = _generation_id(target_generation_id)
+    catalog_relative = _canonical_relative_path(
+        target_catalog_path, label="target catalog path"
+    )
+    expected_paths = {
+        f"_record_store/catalogs/{generation}/catalog.v2.json",
+        f"_record_store/catalogs/{generation}/catalog.v3.json",
+    }
+    if catalog_relative not in expected_paths:
+        raise StrategyRecordStoreError(
+            "target catalog path is not an exact v2/v3 generation binding"
+        )
+    if not isinstance(target_catalog_sha256, str) or _SHA256.fullmatch(
+        target_catalog_sha256
+    ) is None:
+        raise StrategyRecordStoreError("target catalog SHA-256 is invalid")
+    catalog_raw, _ = _read_regular(
+        root / catalog_relative,
+        max_bytes=CATALOG_MAX_BYTES,
+        label="target strategy-record catalog",
+    )
+    observed_catalog_sha = _sha256(catalog_raw)
+    if observed_catalog_sha != target_catalog_sha256:
+        raise StrategyRecordStoreError("target catalog byte SHA-256 mismatch")
+    catalog = _parse_canonical(catalog_raw, label="target strategy-record catalog")
+    _validate_catalog(catalog, generation_id=generation)
+    if catalog.get("schema_id") not in {CATALOG_SCHEMA_V2, CATALOG_SCHEMA_V3}:
+        raise StrategyRecordStoreError("target catalog schema is not reselectable")
+    _validate_external_catalog_bindings(root, catalog)
+    active_record_id = catalog.get("active_record_id")
+    previous_record_id = catalog.get("previous_record_id")
+    pointer = _seal(
+        {
+            "schema_id": POINTER_SCHEMA,
+            "generation_id": generation,
+            "catalog_path": catalog_relative,
+            "catalog_sha256": target_catalog_sha256,
+            "active_record_id": active_record_id,
+            "previous_record_id": previous_record_id,
+            "active_closure": _active_closure(
+                catalog["records"], active_record_id
+            ),
+            "previous_pointer_sha256": expected_current_pointer_sha256,
+            "published_at": _published_at(published_at),
+            "v17_mainline_authority": False,
+            "broker_order_trade_authority": False,
+        }
+    )
+    _validate_pointer(pointer)
+    _validate_pointer_catalog_closure(pointer, catalog)
+    pointer_raw = canonical_json_bytes(pointer)
+    if len(pointer_raw) > POINTER_MAX_BYTES:
+        raise StrategyRecordStoreError("pointer exceeds byte budget")
+    pointer_sha = _cas_pointer(
+        root,
+        pointer_raw,
+        expected_pointer_sha256=expected_current_pointer_sha256,
+    )
+    readback = load_registered_catalog(root)
+    if readback is None or readback != (pointer, catalog):
+        raise StrategyRecordStoreError("reselected catalog readback mismatch")
+    return {
+        "pointer": pointer,
+        "catalog": catalog,
+        "pointer_sha256": pointer_sha,
+        "catalog_reselected": True,
+        "catalog_created": False,
+    }
+
+
 def publish_catalog(
     record_root: str | os.PathLike[str],
     *,
@@ -950,6 +1162,8 @@ def publish_catalog(
     history_registry: Mapping[str, Any] | None = None,
     history_registry_ref: Mapping[str, Any] | None = None,
     inherit_history_registry: bool = True,
+    lineage_index: Sequence[Mapping[str, Any]] | None = None,
+    performance_history_ref: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     root = Path(record_root)
     _lstat_directory(root, label="record root")
@@ -973,12 +1187,17 @@ def publish_catalog(
         previous_record_id = old_pointer.get("previous_record_id") if old_pointer else None
     generation = _generation_id(generation_id)
     timestamp = _published_at(published_at)
+    old_schema = old_catalog.get("schema_id")
     schema = catalog_schema or (
-        CATALOG_SCHEMA_V2
-        if any(record.get("archive_locator") is not None for record in record_rows)
-        else CATALOG_SCHEMA_V1
+        old_schema
+        if old_schema in {CATALOG_SCHEMA_V1, CATALOG_SCHEMA_V2, CATALOG_SCHEMA_V3}
+        else (
+            CATALOG_SCHEMA_V2
+            if any(record.get("archive_locator") is not None for record in record_rows)
+            else CATALOG_SCHEMA_V1
+        )
     )
-    if schema not in {CATALOG_SCHEMA_V1, CATALOG_SCHEMA_V2}:
+    if schema not in {CATALOG_SCHEMA_V1, CATALOG_SCHEMA_V2, CATALOG_SCHEMA_V3}:
         raise StrategyRecordStoreError("catalog publication schema is unsupported")
     catalog_body: dict[str, Any] = {
         "schema_id": schema,
@@ -989,28 +1208,50 @@ def publish_catalog(
         "receipts": [dict(value) for value in old_catalog.get("receipts", [])]
         + [dict(value) for value in receipts],
     }
-    if schema == CATALOG_SCHEMA_V2:
+    if schema in {CATALOG_SCHEMA_V2, CATALOG_SCHEMA_V3}:
         catalog_body["active_record_id"] = active_record_id
         catalog_body["previous_record_id"] = previous_record_id
-    if dashboard_projection is not None:
-        catalog_body["dashboard_projection"] = dashboard_projection
-    elif "dashboard_projection" in old_catalog:
-        catalog_body["dashboard_projection"] = old_catalog["dashboard_projection"]
-    if history_registry is not None:
-        catalog_body["history_registry"] = dict(history_registry)
-    elif inherit_history_registry and "history_registry" in old_catalog:
-        catalog_body["history_registry"] = old_catalog["history_registry"]
-    if history_registry_ref is not None:
-        catalog_body["history_registry_ref"] = dict(history_registry_ref)
-    elif inherit_history_registry and "history_registry_ref" in old_catalog:
-        catalog_body["history_registry_ref"] = old_catalog["history_registry_ref"]
+    if schema == CATALOG_SCHEMA_V3:
+        selected_lineage = (
+            [dict(row) for row in lineage_index]
+            if lineage_index is not None
+            else [dict(row) for row in old_catalog.get("lineage_index", [])]
+        )
+        selected_performance_ref = (
+            dict(performance_history_ref)
+            if performance_history_ref is not None
+            else dict(old_catalog.get("performance_history_ref", {}))
+        )
+        catalog_body["lineage_index"] = selected_lineage
+        catalog_body["lineage_index_sha256"] = _sha256(
+            canonical_json_bytes(selected_lineage)
+        )
+        catalog_body["performance_history_ref"] = selected_performance_ref
+        catalog_body["performance_contract_ready"] = True
+    else:
+        if dashboard_projection is not None:
+            catalog_body["dashboard_projection"] = dashboard_projection
+        elif "dashboard_projection" in old_catalog:
+            catalog_body["dashboard_projection"] = old_catalog["dashboard_projection"]
+        if history_registry is not None:
+            catalog_body["history_registry"] = dict(history_registry)
+        elif inherit_history_registry and "history_registry" in old_catalog:
+            catalog_body["history_registry"] = old_catalog["history_registry"]
+        if history_registry_ref is not None:
+            catalog_body["history_registry_ref"] = dict(history_registry_ref)
+        elif inherit_history_registry and "history_registry_ref" in old_catalog:
+            catalog_body["history_registry_ref"] = old_catalog["history_registry_ref"]
     catalog = _seal(catalog_body)
     _validate_catalog(catalog, generation_id=generation)
     _validate_external_catalog_bindings(root, catalog)
     catalog_raw = canonical_json_bytes(catalog)
     if len(catalog_raw) > CATALOG_MAX_BYTES:
         raise StrategyRecordStoreError("catalog exceeds byte budget")
-    suffix = "v2" if schema == CATALOG_SCHEMA_V2 else "v1"
+    suffix = {
+        CATALOG_SCHEMA_V1: "v1",
+        CATALOG_SCHEMA_V2: "v2",
+        CATALOG_SCHEMA_V3: "v3",
+    }[schema]
     catalog_relative = f"_record_store/catalogs/{generation}/catalog.{suffix}.json"
     _write_exact_once(root / catalog_relative, catalog_raw)
     pointer = _seal(

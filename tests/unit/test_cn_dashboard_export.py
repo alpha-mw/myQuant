@@ -20,6 +20,7 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 import cn_dashboard_common as dashboard_common  # noqa: E402
+import export_cn_aggressive_dashboard_data as dashboard_exporter  # noqa: E402
 from cn_dashboard_common import (  # noqa: E402
     DashboardInputError,
     build_bundle,
@@ -40,6 +41,40 @@ from build_cn_dashboard_public_site import (  # noqa: E402
 
 def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_catalog_v3_disables_history_integrity_runtime_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_root = tmp_path / "project"
+    record_root = project_root / (
+        "results/strategy_records/CN/aggressive_tech_manufacturing"
+    )
+    requested = project_root / (
+        "portfolio_dashboard/private/generated/"
+        "cn_aggressive_history_integrity.v1.json"
+    )
+    monkeypatch.setattr(
+        dashboard_exporter,
+        "load_registered_catalog",
+        lambda _root: (
+            {"generation_id": "g3"},
+            {"schema_id": "myquant.strategy_record_catalog.v3"},
+        ),
+    )
+    assert dashboard_exporter._catalog_history_integrity_path(
+        project_root=project_root,
+        record_root=record_root,
+        requested=requested,
+    ) is None
+    with pytest.raises(
+        DashboardInputError, match="catalog_v3_history_integrity_path_forbidden"
+    ):
+        dashboard_exporter._catalog_history_integrity_path(
+            project_root=project_root,
+            record_root=record_root,
+            requested=project_root / "explicit-legacy-registry.json",
+        )
 
 
 def _write_store_document(path: Path, body: dict) -> dict:
@@ -418,6 +453,7 @@ def _registered_projection_stub(
     store_root = record_root / "_record_store"
     catalog_path = store_root / "catalogs" / "fixture" / "catalog.v1.json"
     catalog = {
+        "fixture_only_legacy_dashboard": True,
         "records": [
             {
                 "record_id": path.name,
@@ -817,6 +853,44 @@ def test_build_bundle_excludes_external_funding_and_is_read_only(
     assert (
         hashlib.sha256(canonical_json_bytes(without_hash)).hexdigest()
         == content_hash
+    )
+
+
+def test_bundle_shape_accepts_flow_neutral_unitization_with_raw_holdings_nav(
+    tmp_path: Path,
+) -> None:
+    project_root, record_root, benchmark = _fixture(tmp_path)
+    bundle = build_bundle(
+        project_root=project_root,
+        record_root=record_root,
+        benchmark_path=benchmark,
+        generated_at="2099-01-03T12:00:00+08:00",
+        today=date(2099, 1, 3),
+    )
+    portfolio = bundle["portfolio"]
+    portfolio["return_method"] = "flow_neutral_unitization_v1"
+    portfolio["cash"] = 22000
+    portfolio["total_value"] = 23100
+    portfolio["cash_weight"] = 22000 / 23100
+    portfolio["gross_exposure"] = 1100 / 23100
+    bundle["positions"][0]["nav_weight"] = 1100 / 23100
+    without_hash = dict(bundle)
+    without_hash.pop("content_sha256")
+    bundle["content_sha256"] = hashlib.sha256(
+        canonical_json_bytes(without_hash)
+    ).hexdigest()
+
+    assert validate_bundle_shape(bundle) == []
+
+    portfolio["adjusted_total_value"] += 100
+    portfolio["portfolio_pnl"] += 100
+    without_hash = dict(bundle)
+    without_hash.pop("content_sha256")
+    bundle["content_sha256"] = hashlib.sha256(
+        canonical_json_bytes(without_hash)
+    ).hexdigest()
+    assert "economic_portfolio_performance_total_mismatch" in (
+        validate_bundle_shape(bundle)
     )
 
 

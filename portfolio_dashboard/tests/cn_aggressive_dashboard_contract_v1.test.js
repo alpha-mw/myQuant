@@ -159,6 +159,25 @@ const usable = Contract.deriveSnapshot(sample);
 assert.strictEqual(usable.status, "PARTIAL");
 assert.strictEqual(usable.bundle, sample);
 
+const canonicalUnitized = structuredClone(sample);
+canonicalUnitized.portfolio.return_method = "flow_neutral_unitization_v1";
+canonicalUnitized.portfolio.cash = 13900;
+canonicalUnitized.portfolio.total_value = 15000;
+canonicalUnitized.portfolio.cash_weight = 13900 / 15000;
+canonicalUnitized.portfolio.gross_exposure = 1100 / 15000;
+canonicalUnitized.positions[0].nav_weight = 1100 / 15000;
+assert.deepStrictEqual(
+  Contract.validateBundle(canonicalUnitized),
+  { valid: true, errors: [] }
+);
+const canonicalUnitizedDrift = structuredClone(canonicalUnitized);
+canonicalUnitizedDrift.portfolio.adjusted_total_value += 100;
+canonicalUnitizedDrift.portfolio.portfolio_pnl += 100;
+assert.strictEqual(
+  Contract.deriveSnapshot(canonicalUnitizedDrift).status,
+  "BLOCKED"
+);
+
 const incompleteCurrentValuation = structuredClone(sample);
 incompleteCurrentValuation.latest_valid_record = "20990104_1200";
 incompleteCurrentValuation.latest_data_date = "2099-01-04";

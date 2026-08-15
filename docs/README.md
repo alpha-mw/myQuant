@@ -10,6 +10,7 @@ runtime. Numeric runtime names and split command surfaces are retired.
 - [Cutover command mapping](migrations/unified-cutover/cli-mapping.md)
 - [Cutover safety and recovery](migrations/unified-cutover/README.md)
 - [Replacement-test map](migrations/unified-cutover/replacement-test-map.md)
+- [CN Fundamental safe-successor operations](runbooks/cn_fundamental_safe_successor.md)
 
 ## Independent domains
 
@@ -17,6 +18,11 @@ runtime. Numeric runtime names and split command surfaces are retired.
   non-authoritative helper.
 - [Trading discipline](trading_discipline.md) remains Strategy Record Store
   policy and does not acquire System-pointer authority.
+- [CN weekly portfolio review automation](cn_weekly_review_automation.md) —
+  Store-v3 evidence, weekly narrative inputs, formal-advisory gate, and
+  decision-log boundary
+- [CN aggressive Dashboard contract](../portfolio_dashboard/README.md) —
+  registered current/previous holdings and canonical performance closure
 
 Public result commands resolve exactly one generation through
 `results/system/_active.json`. They never scan for a latest run, substitute a

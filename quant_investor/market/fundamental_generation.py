@@ -69,6 +69,9 @@ FUNDAMENTAL_RAW_TABLES = (
     "forecast",
 )
 PRIMARY_PROVENANCE_SCHEMA_VERSION = "cn-fundamental-primary-provenance.v2"
+PRIMARY_PROVENANCE_SUCCESSOR_SCHEMA_VERSION = (
+    "cn-fundamental-primary-provenance.v3"
+)
 FUNDAMENTAL_PROMOTION_LOCK_FILENAME = ".fundamental-promotion.lock"
 FUNDAMENTAL_HISTORY_MIN_MONTHLY_COVERAGE = 0.90
 FUNDAMENTAL_HISTORY_MAX_CONSECUTIVE_MISSING_MONTHS = 2
@@ -343,6 +346,8 @@ def _primary_provenance_envelope(
 def _verify_primary_provenance(
     pointer: Mapping[str, Any],
     manifest: Mapping[str, Any],
+    *,
+    generation_root: str | Path | None = None,
 ) -> bool:
     pointer_metadata = dict(pointer.get("metadata", {}) or {})
     manifest_metadata = dict(manifest.get("metadata", {}) or {})
@@ -371,6 +376,41 @@ def _verify_primary_provenance(
     if dict(pointer_envelope) != envelope:
         raise FundamentalGenerationError(
             "fundamental primary provenance pointer/manifest mismatch"
+        )
+    provenance_schema = str(envelope.get("schema_version") or "").strip()
+    if provenance_schema == PRIMARY_PROVENANCE_SUCCESSOR_SCHEMA_VERSION:
+        if generation_root is None:
+            raise FundamentalGenerationError(
+                "safe-successor provenance requires a generation root"
+            )
+        try:
+            from .fundamental_incremental import validate_successor_provenance
+
+            validated = validate_successor_provenance(
+                pointer,
+                manifest,
+                generation_root=generation_root,
+                historical_only=True,
+            )
+        except Exception as exc:
+            raise FundamentalGenerationError(
+                "fundamental safe-successor provenance validation failed: "
+                f"{type(exc).__name__}"
+            ) from exc
+        if (
+            not isinstance(validated, Mapping)
+            or validated.get("schema_version")
+            != PRIMARY_PROVENANCE_SUCCESSOR_SCHEMA_VERSION
+            or validated.get("status") != "verified_safe_successor_mixed"
+        ):
+            raise FundamentalGenerationError(
+                "fundamental safe-successor provenance contract mismatch"
+            )
+        return True
+    if provenance_schema != PRIMARY_PROVENANCE_SCHEMA_VERSION:
+        raise FundamentalGenerationError(
+            "fundamental primary provenance contract mismatch: "
+            "schema is unsupported"
         )
     envelope_hash = str(envelope.pop("envelope_sha256", "")).strip().lower()
     if not _valid_sha256(envelope_hash) or _metadata_sha256(envelope) != envelope_hash:
@@ -1599,7 +1639,11 @@ def _validate_fundamental_pointer_cached(
         or set(manifest_tables) != set(FUNDAMENTAL_TABLES)
     ):
         raise FundamentalGenerationError("fundamental pointer table set mismatch")
-    primary_provenance_verified = _verify_primary_provenance(payload, manifest)
+    primary_provenance_verified = _verify_primary_provenance(
+        payload,
+        manifest,
+        generation_root=base,
+    )
     signatures_by_name = {
         str(item[0]): tuple(int(value) for value in item[1:])
         for item in table_signatures
@@ -1707,7 +1751,142 @@ def load_fundamental_pointer(root: str | Path) -> dict[str, Any] | None:
             raise FundamentalGenerationError(
                 f"fundamental table changed during validation: {table_name}"
             )
+    if validated.get("primary_provenance_verified") is True:
+        validated["derivation_binding"] = _fundamental_derivation_binding(
+            validated,
+            pointer_sha256=hashlib.sha256(pointer_bytes).hexdigest(),
+            manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),
+        )
     return deepcopy(validated)
+
+
+def _fundamental_derivation_binding(
+    pointer: Mapping[str, Any],
+    *,
+    pointer_sha256: str,
+    manifest_sha256: str,
+) -> dict[str, Any]:
+    """Project the verified derivation boundary without reading table values."""
+
+    manifest = dict(pointer.get("manifest", {}) or {})
+    metadata = dict(pointer.get("metadata", {}) or {})
+    manifest_metadata = dict(manifest.get("metadata", {}) or {})
+    provenance = dict(pointer.get("primary_provenance", {}) or {})
+    provenance_schema = str(provenance.get("schema_version") or "")
+    if provenance_schema == PRIMARY_PROVENANCE_SUCCESSOR_SCHEMA_VERSION:
+        chain = dict(provenance.get("successor_chain", {}) or {})
+        seam = dict(chain.get("original_seam", {}) or {})
+        boundary = dict(chain.get("append_boundary", {}) or {})
+        machine_states = dict(provenance.get("machine_states", {}) or {})
+        derivation = dict(metadata.get("derivation", {}) or {})
+        readiness = dict(metadata.get("readiness", {}) or {})
+        binding = {
+            "schema_version": "cn-fundamental-derivation-binding.v1",
+            "generation_id": str(pointer.get("generation_id") or ""),
+            "pointer_sha256": pointer_sha256,
+            "manifest_sha256": manifest_sha256,
+            "provenance_schema": provenance_schema,
+            "provenance_sha256": str(
+                provenance.get("envelope_sha256") or ""
+            ),
+            "mixed": machine_states.get("mixed") is True,
+            "original_seam": str(seam.get("cutoff") or ""),
+            "append_parent_cutoff": str(
+                boundary.get("parent_cutoff") or ""
+            ),
+            "target_cutoff": str(boundary.get("target_cutoff") or ""),
+            "prefix_contract": str(
+                dict(chain.get("root_reference", {}) or {}).get(
+                    "reference_sha256", ""
+                )
+            ),
+            "suffix_contract": str(
+                derivation.get("contract_version") or ""
+            ),
+            "gate2_contract": str(readiness.get("schema_version") or ""),
+            "gate2_receipt_sha256": str(
+                readiness.get("binding_sha256") or ""
+            ),
+            "legacy_direct_reader_provenance": str(
+                machine_states.get("legacy_direct_reader_provenance") or ""
+            ),
+            "binding_aware_research_ready": (
+                machine_states.get("binding_aware_research_ready") is True
+            ),
+            "homogeneous_history_ready": (
+                machine_states.get("homogeneous_history_ready") is True
+            ),
+        }
+    elif provenance_schema == PRIMARY_PROVENANCE_SCHEMA_VERSION:
+        provider = dict(manifest_metadata.get("provider_manifest", {}) or {})
+        cutoff = str(provider.get("strict_pit_as_of") or "")
+        legacy_readiness_value = manifest_metadata.get(
+            "readiness", metadata.get("readiness", {})
+        )
+        legacy_readiness = (
+            dict(legacy_readiness_value)
+            if isinstance(legacy_readiness_value, Mapping)
+            else {}
+        )
+        binding = {
+            "schema_version": "cn-fundamental-derivation-binding.v1",
+            "generation_id": str(pointer.get("generation_id") or ""),
+            "pointer_sha256": pointer_sha256,
+            "manifest_sha256": manifest_sha256,
+            "provenance_schema": provenance_schema,
+            "provenance_sha256": str(
+                provenance.get("envelope_sha256") or ""
+            ),
+            "mixed": False,
+            "original_seam": "",
+            "append_parent_cutoff": "",
+            "target_cutoff": cutoff,
+            "prefix_contract": provenance_schema,
+            "suffix_contract": str(
+                dict(provider.get("derivation", {}) or {}).get(
+                    "contract_version", ""
+                )
+            ),
+            "gate2_contract": str(
+                legacy_readiness.get(
+                    "schema_version", "cn-fundamental-readiness.v1"
+                )
+            ),
+            "gate2_receipt_sha256": "",
+            "legacy_direct_reader_provenance": "verified_homogeneous",
+            "binding_aware_research_ready": bool(
+                pointer.get("primary_provenance_verified") is True
+                and metadata.get("gate2_passed") is True
+            ),
+            "homogeneous_history_ready": True,
+        }
+    else:
+        raise FundamentalGenerationError(
+            "fundamental derivation binding provenance is unsupported"
+        )
+    if (
+        not _valid_sha256(pointer_sha256)
+        or not _valid_sha256(manifest_sha256)
+        or not str(binding.get("generation_id") or "")
+        or manifest.get("generation_id") != binding["generation_id"]
+    ):
+        raise FundamentalGenerationError(
+            "fundamental derivation binding identity mismatch"
+        )
+    binding["binding_sha256"] = canonical_json_sha256(binding)
+    return binding
+
+
+def load_fundamental_binding(root: str | Path) -> dict[str, Any]:
+    """Return the verified provenance binding for a canonical generation."""
+
+    pointer = load_fundamental_pointer(root)
+    if pointer is None:
+        raise FundamentalGenerationError("fundamental pointer missing")
+    binding = pointer.get("derivation_binding")
+    if not isinstance(binding, Mapping):
+        raise FundamentalGenerationError("fundamental derivation binding missing")
+    return deepcopy(dict(binding))
 
 
 def pointer_sha256(root: str | Path) -> str:
@@ -4790,6 +4969,7 @@ __all__ = [
     "FundamentalGenerationError",
     "fundamental_data_root",
     "legacy_fundamental_table_path",
+    "load_fundamental_binding",
     "load_latest_fundamental_rows",
     "load_fundamental_pointer",
     "load_fundamental_table",
