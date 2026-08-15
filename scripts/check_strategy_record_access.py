@@ -133,6 +133,15 @@ ALLOW_RULES: tuple[AllowRule, ...] = (
         reason="Resolves the active closure through the store API and reads Parquet only.",
     ),
     AllowRule(
+        path="scripts/close_cn_dashboard_official_valuation.py",
+        operations=(),
+        reason=(
+            "Binds a Dashboard-only no-trade valuation to the registered active "
+            "closure and expected pointer SHA through the store API; the manager "
+            "alone owns record publication and pointer CAS."
+        ),
+    ),
+    AllowRule(
         path="scripts/cn_dashboard_common.py",
         operations=("iterdir",),
         reason=(

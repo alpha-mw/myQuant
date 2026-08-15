@@ -32,7 +32,10 @@ from cn_dashboard_common import (  # noqa: E402
     verify_source_refs,
 )
 from export_cn_aggressive_dashboard_data import publish_bundle  # noqa: E402
-from build_cn_dashboard_public_site import sanitize_bundle  # noqa: E402
+from build_cn_dashboard_public_site import (  # noqa: E402
+    sanitize_bundle,
+    validate_public_template,
+)
 
 
 def _sha(path: Path) -> str:
@@ -1190,6 +1193,38 @@ def test_public_bundle_keeps_performance_and_removes_holdings_detail(
         {"PUBLIC_REDACTED", "0" * 64, False, None}
     )
     assert validate_bundle_shape(public) == []
+
+
+def test_public_template_contains_only_approved_sections_and_copy() -> None:
+    public_html = (ROOT / "portfolio_dashboard" / "public.html").read_text(
+        encoding="utf-8"
+    )
+
+    approved_markers = (
+        "public-section-brand",
+        "public-section-performance",
+        "public-section-monthly",
+        "public-section-readout",
+    )
+    assert all(public_html.count(marker) == 1 for marker in approved_markers)
+    assert 'id="method"' not in public_html
+    assert 'href="#method"' not in public_html
+    assert not any(
+        phrase in public_html
+        for phrase in ("外部资金流", "入金", "出金", "资金事件")
+    )
+    validate_public_template(public_html)
+
+    with pytest.raises(
+        ValueError, match="public_template_unapproved_method_section"
+    ):
+        validate_public_template(
+            public_html + '<section id="method"></section>'
+        )
+    with pytest.raises(
+        ValueError, match="public_template_forbidden_funding_copy"
+    ):
+        validate_public_template(public_html + "资金事件")
 
 
 def test_history_integrity_registry_upgrades_legacy_exact_bytes(
