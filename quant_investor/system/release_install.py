@@ -468,15 +468,20 @@ def _owner_directory(path: Path, *, create: bool, label: str) -> Path:
     return path.resolve(strict=True)
 
 
-def _publish_exact(root: Path, raw: bytes, *, suffix: str) -> Path:
+def _publish_exact(root: Path, raw: bytes, *, filename: str) -> Path:
     digest = _sha256(raw)
-    target = root / f"{digest}{suffix}"
+    if Path(filename).name != filename or not filename or filename in {".", ".."}:
+        raise SystemContractError("release artifact filename is invalid")
+    digest_root = _owner_directory(
+        root / digest, create=True, label="content-addressed release directory"
+    )
+    target = digest_root / filename
     if target.exists():
         observed, _metadata = _regular_file(target, label="published release artifact")
         if observed != raw:
             raise SystemPreconditionError("published release artifact conflicts")
         return target
-    temporary = root / f".{digest}.tmp-{os.getpid()}"
+    temporary = digest_root / f".{filename}.tmp-{os.getpid()}"
     descriptor: int | None = None
     try:
         descriptor = os.open(
@@ -601,8 +606,8 @@ def prepare_operational_release(  # noqa: C901
             raise SystemPreconditionError("release build outputs are not exact")
         source_raw = source_candidates[0].read_bytes()
         wheel_raw = wheel_candidates[0].read_bytes()
-        source_path = _publish_exact(artifact_root, source_raw, suffix=".tar.gz")
-        wheel_path = _publish_exact(artifact_root, wheel_raw, suffix=".whl")
+        source_path = _publish_exact(artifact_root, source_raw, filename=source_candidates[0].name)
+        wheel_path = _publish_exact(artifact_root, wheel_raw, filename=wheel_candidates[0].name)
 
     tree_sha = code_tree_sha256(root, commit)
     git_manifest_sha = git_code_manifest_sha256(root, commit)
