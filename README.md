@@ -8,7 +8,7 @@
 deterministic risk assessment into one reproducible research workflow.*
 
 [![Python](https://img.shields.io/badge/Python-3.13%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org)
-[![Version](https://img.shields.io/badge/Version-17.0.0-FF6B35?style=flat-square)](pyproject.toml)
+[![Runtime](https://img.shields.io/badge/Runtime-Stable-FF6B35?style=flat-square)](docs/migrations/unified-cutover/README.md)
 [![License](https://img.shields.io/badge/License-MIT-22C55E?style=flat-square)](LICENSE)
 
 **English** · [简体中文](README.zh-CN.md)
@@ -124,16 +124,16 @@ of proof instead of increasing the chance that a lucky winner is accepted.
 
 Forward research starts from an explicit request whose bytes and SHA-256 are
 sealed before the outcome exists. Later evaluation binds the realised outcome
-to that request and produces immutable receipts. Shadow and Forward sessions can
-accumulate evidence without changing the public mainline or granting production
-authority.
+to that request and produces immutable evaluation records. Forward research
+sessions can accumulate evidence without changing the public mainline or
+granting production authority.
 
 This separation lets a historical backtest support a hypothesis while reserving
 maturity for evidence that did not exist when the hypothesis was declared.
 
 ### Deterministic decision intelligence
 
-The I1 decision library replays an exact research closure, assesses risk across
+The stable decision library replays an exact research closure, assesses risk across
 `BUSINESS`, `FINANCIAL`, `MARKET` and `THESIS`, and returns one of five states:
 
 | State | Research meaning |
@@ -151,9 +151,10 @@ decision readable without weakening the evidence chain behind it.
 ### Read-only public and readiness surfaces
 
 The public `QuantInvestor` Python API and the `research run`, `market analyze`
-and `market run` commands resolve one exact V17 active pointer. They never scan
-for the newest result or build a replacement. `portfolio cycle-status` checks
-explicit strategy, holdings and policy inputs without writing a portfolio.
+and `market run` commands resolve one exact `results/system/_active.json` and
+its bound immutable generation. They never scan for the newest result or build a
+replacement. `portfolio cycle-status` checks explicit strategy, holdings and
+policy inputs without writing a portfolio.
 
 These surfaces let operators consume a governed result and diagnose missing
 inputs while keeping publication, activation and portfolio mutation separate.
@@ -197,14 +198,20 @@ myQuant currently supports CN A-shares and research-only decision workflows.
 
 **Available in the repository:** canonical market and fundamental maintenance,
 strict storage validation, factor research and governance, trial-aware
-statistics, forward-evidence and Shadow tooling, the deterministic I1 decision
-library, read-only public V17 readers, portfolio-readiness diagnostics and a
-read-only dashboard surface.
+statistics, forward-research evidence, the deterministic decision library,
+stable read-only public readers, portfolio-readiness diagnostics and a read-only
+dashboard surface. Canonical contracts, system state, factor governance,
+research intelligence, mainline resolution and CLI routing live behind stable,
+responsibility-named packages with no runtime version selector.
 
-**Outside the current public authority:** a governed production publisher,
-active-pointer activation CLI, automatic live portfolio construction, paper
-ledger, broker connection, order creation, execution and trading. A research
-state such as `PAPER_CANDIDATE` never implies a market action.
+**Write boundary:** `quant-investor system activate` is the only normal writer
+for `results/system/_active.json`; it requires an exact validated immutable
+generation and filesystem write permission. Verification, status, factor,
+research-read, and public-result commands cannot activate it.
+
+**Outside the current public authority:** automatic live portfolio construction,
+paper ledger, broker connection, order creation, execution and trading. A
+research state such as `PAPER_CANDIDATE` never implies a market action.
 
 ## Running it
 
@@ -212,53 +219,54 @@ state such as `PAPER_CANDIDATE` never implies a market action.
 uv sync
 cp .env.example .env
 quant-investor --help
-quant-investor-v17-v4 --help
 ```
 
 Local work is offline by default. Inspect the exact command contract before a
 run:
 
 ```bash
+quant-investor system verify --help
+quant-investor system status --help
+quant-investor system activate --help
+quant-investor factor status --help
 quant-investor market maintain --help
 quant-investor market storage-validate --help
 quant-investor research run --help
+quant-investor research compile-evidence --help
+quant-investor research readiness --help
+quant-investor research inspect --help
+quant-investor research forward --help
+quant-investor research evaluate --help
 quant-investor portfolio cycle-status --help
-quant-investor-v17-v4 run-forward --help
-quant-investor-v17-v4 research-evaluate --help
 ```
+
+The hard cutover removes the secondary executable and commands. Use only the
+stable forms above; the exact old-to-new relationships live in the
+[CLI migration mapping](docs/migrations/unified-cutover/cli-mapping.md). The
+documented `market download` maintenance alias remains available.
 
 Python 3.13+. The local equivalent of CI:
 
 ```bash
 uv run pytest tests/unit -q
 uv run flake8 quant_investor --count --select=E9,F63,F7,F82 --show-source --statistics
-uv run mypy quant_investor/factors --ignore-missing-imports
+uv run mypy quant_investor/contracts quant_investor/system \
+  quant_investor/factors/governance quant_investor/intelligence \
+  quant_investor/mainline quant_investor/cli --ignore-missing-imports
 ```
 
 ## Documentation
 
-Start with [Factor mining mechanism](docs/factor_mining_mechanism.md) for the
-research diagnosis behind the statistical and set-level design.
-
-- [Documentation index](docs/README.md)
-- [Factor Governance v4](docs/factor_governance_v4.md)
-- [Research pipeline and protocols](docs/architecture/research_pipeline_and_protocols.md)
-- [V17 v4 mainline contract](docs/architecture/v17_v4_production_research_contract.md)
-- [I0 Investment Intelligence](docs/architecture/v17_i0_investment_intelligence.md)
-- [R2.2 Forward Research Evaluator](docs/architecture/v17_r22_forward_research_evaluator.md)
-- [I1 Investment Decision Intelligence](docs/architecture/v17_i1_investment_decision_intelligence.md)
-- [Tushare 10,000 investment-intelligence flow](docs/architecture/tushare_10000_investment_intelligence.md)
-- [Portfolio-cycle foundation](docs/architecture/v17_portfolio_cycle_foundation.md)
+- [Unified runtime cutover](docs/migrations/unified-cutover/README.md)
+- [Stable factor governance](docs/factor_governance.md)
 - [Tushare data cleaning](docs/tushare_data_cleaning.md)
-- [Trading discipline](docs/trading_discipline.md)
-- [V17 v4 operations](docs/runbooks/v17_v4_operations.md)
+- [Codex deployment copies](operations/codex/README.md)
 - [Agent guide](AGENTS.md)
 
 The statistical design follows Harvey, Liu and Zhu on significance hurdles;
 Bailey and López de Prado on selection bias and backtest overfitting; purged
 combinatorial cross-validation for overlapping labels; and AlphaGen and
-AlphaForge on set-level objectives. Full citations are in the factor-mining
-note.
+AlphaForge on set-level objectives.
 
 ## License
 

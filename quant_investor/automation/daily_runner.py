@@ -246,12 +246,8 @@ def _dedupe_text(values: list[str], limit: int = 8) -> list[str]:
 
 from quant_investor.automation.analysis_runner import (
     AnalysisRunner,
-    _maintenance_categories,
-    _run_automation_data_update_preflight,
 )
-from quant_investor.automation.history_loader import HistoryLoader
-from quant_investor.automation.persistence import PersistenceManager
-from quant_investor.automation.report_builder import ReportBuilder
+from quant_investor.strategy_records.history import HistoryLoader
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -281,18 +277,13 @@ def run_once(
     config: dict[str, Any],
     skip_download: bool = False,
     skip_stage1: bool = False,
-) -> str:
-    """执行一次完整分析，返回报告路径。"""
+) -> dict[str, Any]:
+    """只读活动 generation；不生成、持久化或激活任何结果。"""
     config = _normalize_runtime_config(config)
-    if skip_stage1:
-        config = {**config, "skip_stage1": True}
-    if skip_download:
-        config = {**config, "skip_download": True}
+    del skip_download, skip_stage1
 
     history_loader = HistoryLoader()
     runner = AnalysisRunner()
-    builder = ReportBuilder()
-    persist = PersistenceManager()
 
     history = history_loader.load_recent(
         market=config["market"],
@@ -307,19 +298,14 @@ def run_once(
     )
 
     pipeline_result = runner.run(config, recall_context=recall_context)
+    from quant_investor.contracts import canonical_json_bytes
 
-    log.info("生成决策报告...")
-    report_md = builder.build(pipeline_result, config, history)
-
-    report_path = persist.save(report_md, pipeline_result, config)
-
-    # 打印报告到控制台
-    print("\n" + "=" * 80)
-    print(report_md)
-    print("=" * 80)
-
-    log.info("分析完成，report_path=%s", report_path)
-    return report_path
+    print(canonical_json_bytes(pipeline_result).decode("utf-8"))
+    log.info(
+        "活动主线读取完成，active_generation_id=%s",
+        pipeline_result.get("active_generation_id"),
+    )
+    return pipeline_result
 
 
 def run_daemon(config: dict[str, Any]) -> None:
@@ -406,22 +392,16 @@ def dry_run(config: dict[str, Any]) -> None:
     except Exception as exc:
         print(f"✗ 策略记录解析失败: {exc}")
 
-    print("\n检查 Python 环境...")
+    print("\n检查统一 System 环境...")
     try:
-        from quant_investor.market.run_pipeline import run_unified_pipeline  # noqa: F401
-        print("✓ quant_investor 包可导入")
-    except ImportError as exc:
-        print(f"✗ quant_investor 导入失败: {exc}")
+        from quant_investor.system import SystemStore
 
-    print("\n决策主线: unified_dag")
-    print(f"Review 模型优先级: {' -> '.join(config.get('review_model_priority', []))}")
-    try:
-        from quant_investor.bayesian import BayesianPosteriorEngine, HierarchicalPriorBuilder  # noqa: F401
-        from quant_investor.funnel import DeterministicFunnel  # noqa: F401
-        from quant_investor.global_context import GlobalContextBuilder  # noqa: F401
-        print("✓ Bayesian pipeline 模块可导入")
-    except ImportError as exc:
-        print(f"✗ Bayesian pipeline 导入失败: {exc}")
+        status = SystemStore(ROOT).status()
+        print(f"✓ system_state: {status.get('state')}")
+        print(f"  active_generation_id: {status.get('generation_id')}")
+        print(f"  blockers: {status.get('blockers', [])}")
+    except Exception as exc:
+        print(f"✗ 统一 System 验证失败: {exc}")
 
     print("\nDRY RUN 完成。")
 

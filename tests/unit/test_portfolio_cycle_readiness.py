@@ -17,6 +17,8 @@ from quant_investor.portfolio_cycle.readiness import (
     PRE_RUN_STATES,
     PUBLIC_CYCLE_STATUS_SCHEMA_ID,
     GateEvidence,
+    MainlineBlocker,
+    MainlineResolution,
     ReadinessBlocker,
     build_decision_input_readiness,
     build_public_cycle_status,
@@ -32,22 +34,17 @@ from quant_investor.portfolio_cycle.contracts import (
     HOLDINGS_PRICE_SOURCE_SCHEMA_ID,
     IDENTITY_DECLARATION_SCHEMA_ID,
     MoneyTotals,
+    PROTOCOL,
     VerifiedHoldingsBaseline,
     VerifiedStrategyIdentity,
 )
-from quant_investor.v17_mainline import (
-    MainlineBlocker,
-    derive_mainline_state,
-)
-from quant_investor.v17_mainline.runtime import MainlineResolution
-from quant_investor.v17_mainline.testing import write_synthetic_fixture_for_tests
 
 STRATEGY = "cn-mainline"
 
 
 def _ref(name: str, *, schema_id: str | None = None) -> dict[str, str]:
     return {
-        "schema_id": schema_id or f"myquant.test.{name}.v1",
+        "schema_id": schema_id or f"myquant.test.{name}",
         "relative_path": f"data/private/tests/{name}.json",
         "byte_sha256": (name.encode("ascii").hex() + "0" * 64)[:64],
     }
@@ -141,12 +138,14 @@ def _active_resolution(public_run: dict[str, object] | None = None) -> MainlineR
     }
     if public_run is not None:
         dto = public_run
-    return MainlineResolution("ACTIVE", None, dto)
+    return MainlineResolution("ACTIVE", dto)
 
 
 def test_frozen_schema_states_and_blocker_vocabulary() -> None:
-    assert DECISION_INPUT_READINESS_SCHEMA_ID == ("myquant.v17.v4.decision-input-readiness.v1")
-    assert PUBLIC_CYCLE_STATUS_SCHEMA_ID == "myquant.v17.v4.public-cycle-status.v1"
+    assert DECISION_INPUT_READINESS_SCHEMA_ID == (
+        "myquant.portfolio-cycle.decision-input-readiness"
+    )
+    assert PUBLIC_CYCLE_STATUS_SCHEMA_ID == "myquant.portfolio-cycle.public-cycle-status"
     assert PRE_RUN_STATES == {"BLOCKED", "FOUNDATION_VALIDATED"}
     assert POST_RUN_STATES == {
         "BLOCKED",
@@ -155,7 +154,7 @@ def test_frozen_schema_states_and_blocker_vocabulary() -> None:
     assert "FULL_CYCLE_CLOSED" not in PRE_RUN_STATES | POST_RUN_STATES
     assert {blocker.value for blocker in ReadinessBlocker} <= ALL_BLOCKER_CODES
     assert {
-        f"V17_MAINLINE_BLOCKED:{blocker.value}" for blocker in MainlineBlocker
+        f"MAINLINE_BLOCKED:{blocker.value}" for blocker in MainlineBlocker
     } <= ALL_BLOCKER_CODES
 
 
@@ -166,7 +165,7 @@ def test_missing_and_invalid_foundation_inputs_are_distinct() -> None:
         synthetic_only=False,
     )
     assert missing["state"] == "BLOCKED"
-    assert "V17_STRATEGY_ID_UNCONFIRMED" in missing["blockers"]
+    assert "STRATEGY_ID_UNCONFIRMED" in missing["blockers"]
     assert "HOLDINGS_BASELINE_UNAVAILABLE" in missing["blockers"]
     assert missing["canonical_strategy_id"] is None
     assert missing["decision_cutoff"] is None
@@ -180,7 +179,7 @@ def test_missing_and_invalid_foundation_inputs_are_distinct() -> None:
     )
     assert "IDENTITY_DECLARATION_INVALID" in invalid["blockers"]
     assert "HOLDINGS_BASELINE_INVALID" in invalid["blockers"]
-    assert "V17_STRATEGY_ID_UNCONFIRMED" not in invalid["blockers"]
+    assert "STRATEGY_ID_UNCONFIRMED" not in invalid["blockers"]
     assert "HOLDINGS_BASELINE_UNAVAILABLE" not in invalid["blockers"]
 
 
@@ -195,7 +194,7 @@ def test_verified_identity_and_holdings_only_validate_foundation() -> None:
     assert result["decision_cutoff"] == "2026-08-05T07:00:00Z"
     assert result["blockers"] == sorted(set(result["blockers"]))
     assert "STRICT_CN_DATA_UNVERIFIED" in result["blockers"]
-    assert "CAPABILITY_BLOCKED_V17_MAINLINE_PUBLISHER" in result["blockers"]
+    assert "CAPABILITY_BLOCKED_MAINLINE_PUBLISHER" in result["blockers"]
     assert "PAPER_SIMULATION_UNAVAILABLE" in result["blockers"]
     assert "LEARNING_RUNTIME_UNAVAILABLE" in result["blockers"]
 
@@ -213,7 +212,7 @@ def test_verified_identity_and_holdings_only_validate_foundation() -> None:
         ("portfolio_policy", "PORTFOLIO_POLICY_UNAVAILABLE"),
         (
             "mainline_publisher",
-            "CAPABILITY_BLOCKED_V17_MAINLINE_PUBLISHER",
+            "CAPABILITY_BLOCKED_MAINLINE_PUBLISHER",
         ),
         ("paper_simulation", "PAPER_SIMULATION_UNAVAILABLE"),
         ("learning_runtime", "LEARNING_RUNTIME_UNAVAILABLE"),
@@ -303,7 +302,7 @@ def test_read_only_orchestration_keeps_unbound_cutoff_as_context_only(
     assert result["decision_cutoff"] == "2026-08-05T08:00:00Z"
     assert result["decision_cutoff_verified"] is False
     assert result["canonical_strategy_id"] is None
-    assert "V17_STRATEGY_ID_UNCONFIRMED" in result["blockers"]
+    assert "STRATEGY_ID_UNCONFIRMED" in result["blockers"]
     assert "HOLDINGS_BASELINE_UNAVAILABLE" in result["blockers"]
 
 
@@ -434,7 +433,7 @@ def test_active_mainline_cannot_override_blocked_foundation() -> None:
     assert post["state"] == "BLOCKED"
     assert post["public_closure_active"] is True
     assert post["business_cycle_closed"] is False
-    assert "V17_STRATEGY_ID_UNCONFIRMED" in post["blockers"]
+    assert "STRATEGY_ID_UNCONFIRMED" in post["blockers"]
     assert "HOLDINGS_BASELINE_UNAVAILABLE" in post["blockers"]
 
 
@@ -442,24 +441,16 @@ def test_uninitialized_and_exact_blocked_mainline_states_are_preserved() -> None
     pre = _pre(gates=_gates(verified=True))
     uninitialized = build_public_cycle_status(
         decision_input_readiness=pre,
-        mainline_resolution=MainlineResolution(
-            "V17_MAINLINE_UNINITIALIZED",
-            MainlineBlocker.ACTIVE_POINTER_ABSENT,
-            None,
-        ),
+        mainline_resolution=MainlineResolution("MAINLINE_UNINITIALIZED", None),
         synthetic_only=True,
     )
     assert uninitialized["state"] == "BLOCKED"
-    assert "V17_MAINLINE_UNINITIALIZED" in uninitialized["blockers"]
+    assert "MAINLINE_UNINITIALIZED" in uninitialized["blockers"]
 
-    blocked_code = "V17_MAINLINE_BLOCKED:SOURCE_CLOSURE_INVALID"
+    blocked_code = "MAINLINE_BLOCKED:SOURCE_CLOSURE_INVALID"
     blocked = build_public_cycle_status(
         decision_input_readiness=pre,
-        mainline_resolution=MainlineResolution(
-            blocked_code,
-            MainlineBlocker.SOURCE_CLOSURE_INVALID,
-            None,
-        ),
+        mainline_resolution=MainlineResolution(blocked_code, None),
         synthetic_only=True,
     )
     assert blocked["state"] == "BLOCKED"
@@ -467,24 +458,17 @@ def test_uninitialized_and_exact_blocked_mainline_states_are_preserved() -> None
     assert blocked["mainline_derived_state"] == blocked_code
 
 
-def test_actual_derive_mainline_state_active_is_read_only_and_still_insufficient(
+def test_active_mainline_projection_is_read_only_and_still_insufficient(
     tmp_path: Path,
 ) -> None:
-    fixture = write_synthetic_fixture_for_tests(
-        tmp_path,
-        strategy_id=STRATEGY,
-        synthetic_only=True,
-    )
+    marker = tmp_path / "input-marker"
+    marker.write_bytes(b"immutable")
     before = {
         path.relative_to(tmp_path).as_posix(): path.read_bytes()
         for path in tmp_path.rglob("*")
         if path.is_file()
     }
-    resolution = derive_mainline_state(
-        tmp_path,
-        canonical_strategy_id=STRATEGY,
-        expected_pointer_sha256=fixture.pointer_sha256,
-    )
+    resolution = _active_resolution()
     assert resolution.is_active
 
     post = build_public_cycle_status(
@@ -527,7 +511,7 @@ def test_post_run_rejects_noncanonical_pre_status_or_synthetic_mismatch() -> Non
 def test_post_run_rejects_forged_foundation_without_exact_bindings() -> None:
     forged = {
         "schema_id": DECISION_INPUT_READINESS_SCHEMA_ID,
-        "protocol": "myquant.v17.v4",
+        "protocol": PROTOCOL,
         "state": "FOUNDATION_VALIDATED",
         "phase_capability": PHASE_CAPABILITY,
         "synthetic_only": True,
@@ -579,7 +563,7 @@ def test_pre_run_rejects_duck_typed_or_malformed_verified_results() -> None:
     object.__setattr__(
         bad_ref,
         "declaration_ref",
-        _artifact_ref("identity", schema_id="myquant.test.wrong.v1"),
+        _artifact_ref("identity", schema_id="myquant.test.wrong"),
     )
     ref_result = build_decision_input_readiness(
         identity=bad_ref,

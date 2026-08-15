@@ -58,6 +58,10 @@ from quant_investor.market.fundamental_provider_contract import (
     strict_nonnegative_int,
     validate_outcome_accounting_v3,
 )
+from quant_investor.market.fundamental_provider_evidence import (
+    capture_provider_evidence_directory,
+    is_fundamental_provider_evidence_manifest,
+)
 
 DEFAULT_FUNDAMENTAL_ROOT = Path("data/parquet/cn")
 DEFAULT_RAW_SNAPSHOT_ROOT = Path("data/cn_market_full/_snapshots/fundamental")
@@ -253,20 +257,19 @@ def _issue_live_tushare_v4_attestation(
     provider_manifest: Mapping[str, Any],
     raw_tables: Mapping[str, pd.DataFrame],
 ) -> _LiveTushareAttestation:
-    """Issue the internal capability only after the sealed v4 replay passed."""
+    """Issue the internal capability after full provider replay passes."""
 
     manifest = dict(provider_manifest)
     if (
         source != "live_tushare_vip"
-        or manifest.get("schema_version")
-        != "cn-fundamental-provider-manifest.v4"
+        or not is_fundamental_provider_evidence_manifest(manifest)
         or manifest.get("authoritative_full_rebuild") is not True
         or manifest.get("performance_gate_passed") is not True
         or set(dict(manifest.get("raw_table_fingerprints", {}) or {}))
         != set(SOURCE_TABLES)
         or set(raw_tables) != set(SOURCE_TABLES)
     ):
-        raise ValueError("live Tushare v4 provenance attestation failed")
+        raise ValueError("live Tushare full-rebuild provenance attestation failed")
     return _LiveTushareAttestation(
         capability=_LIVE_TUSHARE_CAPABILITY,
         source=source,
@@ -306,7 +309,7 @@ def _provider_source_priority(
     manifest = dict(provider_manifest or {})
     explicit = str(manifest.get("source_priority") or "").strip()
     source_is_tushare = "tushare" in str(source or "").lower()
-    if manifest.get("schema_version") == "cn-fundamental-provider-manifest.v4":
+    if is_fundamental_provider_evidence_manifest(manifest):
         if _live_tushare_attestation_matches(
             live_tushare_attestation,
             source=source,
@@ -315,7 +318,7 @@ def _provider_source_priority(
         ):
             return "tushare_primary"
         raise ValueError(
-            "Fundamental v4 requires an internal live Tushare attestation"
+            "Fundamental full rebuild requires an internal live Tushare attestation"
         )
     if explicit == "tushare_primary":
         if _live_tushare_attestation_matches(
@@ -1965,13 +1968,12 @@ def write_fundamental_mart(
         expected_pointer_sha256=predecessor_pointer_sha256,
     )
     if _provider_evidence_bytes is not None:
-        if dict(provider_manifest or {}).get("schema_version") != (
-            "cn-fundamental-provider-manifest.v4"
+        if not is_fundamental_provider_evidence_manifest(
+            dict(provider_manifest or {})
         ):
-            raise ValueError("provider evidence bytes require a v4 manifest")
-        from ..intelligence_v2.sources.tushare.fundamental_v4.storage import (
-            capture_provider_evidence_directory,
-        )
+            raise ValueError(
+                "provider evidence bytes require a full-rebuild manifest"
+            )
         from .fundamental_generation import (
             _write_captured_provider_evidence,
         )
@@ -1987,7 +1989,7 @@ def write_fundamental_mart(
             generation_root / "provider_evidence"
         ) != dict(_provider_evidence_bytes):
             raise ValueError(
-                "Fundamental v4 provider evidence readback failed"
+                "Fundamental provider evidence readback failed"
             )
     if _published_pointer_out is not None:
         _published_pointer_out.clear()

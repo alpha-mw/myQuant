@@ -1,27 +1,28 @@
-"""Frozen contracts shared by the read-only V17 portfolio-cycle foundation."""
+"""Stable contracts for the independent read-only Portfolio Cycle."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
+import hashlib
+import json
 import re
 from typing import Any, Final, Literal, Mapping
 
-from quant_investor.v17_mainline.contracts import (
-    MainlineContractError,
-    canonical_bytes as _mainline_canonical_bytes,
-    parse_canonical as _mainline_parse_canonical,
-    seal_document as _mainline_seal_document,
+PROTOCOL: Final = "myquant.portfolio-cycle"
+IDENTITY_DECLARATION_SCHEMA_ID: Final = (
+    "myquant.portfolio-cycle.strategy-identity-declaration"
 )
-
-PROTOCOL: Final = "myquant.v17.v4"
-IDENTITY_DECLARATION_SCHEMA_ID: Final = "myquant.v17.v4.strategy-identity-declaration.v1"
-HOLDINGS_POINTER_SCHEMA_ID: Final = "myquant.v17.v4.holdings-pointer.v1"
-HOLDINGS_MANIFEST_SCHEMA_ID: Final = "myquant.v17.v4.holdings-manifest.v1"
-HOLDINGS_LEDGER_SCHEMA_ID: Final = "myquant.v17.v4.current-holdings-ledger.v1"
-HOLDINGS_ACCOUNTING_POLICY_SCHEMA_ID: Final = "myquant.v17.v4.holdings-accounting-policy.v1"
-HOLDINGS_PRICE_SOURCE_SCHEMA_ID: Final = "myquant.v17.v4.holdings-price-source.v1"
+HOLDINGS_POINTER_SCHEMA_ID: Final = "myquant.portfolio-cycle.holdings-pointer"
+HOLDINGS_MANIFEST_SCHEMA_ID: Final = "myquant.portfolio-cycle.holdings-manifest"
+HOLDINGS_LEDGER_SCHEMA_ID: Final = "myquant.portfolio-cycle.current-holdings-ledger"
+HOLDINGS_ACCOUNTING_POLICY_SCHEMA_ID: Final = (
+    "myquant.portfolio-cycle.holdings-accounting-policy"
+)
+HOLDINGS_PRICE_SOURCE_SCHEMA_ID: Final = (
+    "myquant.portfolio-cycle.holdings-price-source"
+)
 
 _SHA256: Final = re.compile(r"^[0-9a-f]{64}$")
 _IDENTIFIER: Final = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
@@ -32,11 +33,14 @@ _REF_FIELDS: Final = frozenset({"schema_id", "relative_path", "byte_sha256"})
 class PortfolioCycleError(RuntimeError):
     """Stable fail-closed error for the portfolio-cycle foundation."""
 
+    exit_code = 2
+
     def __init__(self, code: str, detail: str) -> None:
         if type(code) is not str or not code.startswith("PORTFOLIO_CYCLE_"):
             raise ValueError("portfolio-cycle error code is invalid")
         self.code = code
         self.detail = detail
+        self.public_fields: dict[str, Any] = {}
         super().__init__(f"{code}:{detail}")
 
 
@@ -112,8 +116,17 @@ class VerifiedHoldingsBaseline:
 
 def canonical_json_bytes(document: Mapping[str, Any]) -> bytes:
     try:
-        return _mainline_canonical_bytes(document)
-    except MainlineContractError as exc:
+        return (
+            json.dumps(
+                dict(document),
+                allow_nan=False,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+            + b"\n"
+        )
+    except (TypeError, ValueError, UnicodeError) as exc:
         raise PortfolioCycleError(
             "PORTFOLIO_CYCLE_JSON_INVALID",
             "document is not canonical JSON data",
@@ -121,26 +134,38 @@ def canonical_json_bytes(document: Mapping[str, Any]) -> bytes:
 
 
 def seal_document(document: Mapping[str, Any]) -> dict[str, Any]:
+    payload = dict(document)
+    payload.pop("semantic_sha256", None)
     try:
-        return _mainline_seal_document(document)
-    except MainlineContractError as exc:
-        raise PortfolioCycleError(
-            "PORTFOLIO_CYCLE_JSON_INVALID",
-            "document cannot be semantically sealed",
-        ) from exc
+        preimage = canonical_json_bytes(payload)[:-1]
+    except PortfolioCycleError:
+        raise
+    payload["semantic_sha256"] = hashlib.sha256(preimage).hexdigest()
+    canonical_json_bytes(payload)
+    return payload
 
 
 def parse_canonical_json(raw: bytes) -> dict[str, Any]:
     try:
-        return _mainline_parse_canonical(raw)
-    except MainlineContractError as exc:
-        message = str(exc)
-        code = (
-            "PORTFOLIO_CYCLE_SEMANTIC_SHA_MISMATCH"
-            if "semantic SHA-256 mismatch" in message
-            else "PORTFOLIO_CYCLE_JSON_INVALID"
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise PortfolioCycleError(
+            "PORTFOLIO_CYCLE_JSON_INVALID", "artifact is not canonical JSON"
+        ) from exc
+    if type(value) is not dict or canonical_json_bytes(value) != raw:
+        raise PortfolioCycleError(
+            "PORTFOLIO_CYCLE_JSON_INVALID", "artifact bytes are not canonical"
         )
-        raise PortfolioCycleError(code, message) from exc
+    observed = value.get("semantic_sha256")
+    body = dict(value)
+    body.pop("semantic_sha256", None)
+    expected = hashlib.sha256(canonical_json_bytes(body)[:-1]).hexdigest()
+    if type(observed) is not str or observed != expected:
+        raise PortfolioCycleError(
+            "PORTFOLIO_CYCLE_SEMANTIC_SHA_MISMATCH",
+            "semantic SHA-256 mismatch",
+        )
+    return value
 
 
 def require_exact_fields(

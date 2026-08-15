@@ -2790,7 +2790,7 @@ def validate_production_observation_chain(
 ) -> dict[str, list[str]]:
     """Validate the complete production bootstrap/update evidence chain.
 
-    ``macro_mart`` callers pass rows from :func:`load_observations`, that
+    Macro maintenance readers pass rows from :func:`load_observations`, that
     pointer's ``generation_manifest`` and its pointer-level ``metadata``.  A
     normalized observation-to-evidence mapping is returned only after the
     metadata, lineage, target, row-source policy and evidence roles all pass.

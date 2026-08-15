@@ -1,0 +1,1139 @@
+"""Compiled stable contract allowlist for the unified runtime."""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Iterable, Mapping
+import re
+from typing import Any, Final
+
+from .core import (
+    LEGACY_CONTRACT_FIELDS,
+    ArtifactValidationError,
+    ContractDefinition,
+    _freeze_contract_registry,
+    register_contract,
+)
+
+_SHA256_RE: Final = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _exact_contract(
+    kind: str,
+    identity_field: str,
+    fields: Iterable[str],
+    *,
+    validator: Callable[[Mapping[str, Any]], None] | None = None,
+) -> ContractDefinition:
+    return register_contract(
+        ContractDefinition(
+            kind=kind,
+            identity_field=identity_field,
+            required_payload_fields=frozenset(fields),
+            forbidden_payload_fields=LEGACY_CONTRACT_FIELDS,
+            validator=validator,
+        )
+    )
+
+
+def _exact_nested_object(value: Any, fields: set[str], *, label: str) -> Mapping[str, Any]:
+    if type(value) is not dict or set(value) != fields:
+        raise ArtifactValidationError(f"{label} fields are not exact")
+    return value
+
+
+def _exact_rows(value: Any, fields: set[str], *, label: str) -> list[Mapping[str, Any]]:
+    if type(value) is not list:
+        raise ArtifactValidationError(f"{label} must be a list")
+    return [
+        _exact_nested_object(row, fields, label=f"{label}[{index}]")
+        for index, row in enumerate(value)
+    ]
+
+
+_OBJECT_REF_FIELDS: Final = {
+    "kind",
+    "contract_sha256",
+    "artifact_id",
+    "semantic_sha256",
+    "byte_sha256",
+}
+
+
+def _exact_ref(value: Any, *, label: str, nullable: bool = False) -> None:
+    if value is None and nullable:
+        return
+    row = _exact_nested_object(value, _OBJECT_REF_FIELDS, label=label)
+    for field in ("contract_sha256", "semantic_sha256", "byte_sha256"):
+        if type(row.get(field)) is not str or _SHA256_RE.fullmatch(row[field]) is None:
+            raise ArtifactValidationError(f"{label}.{field} must be lowercase SHA-256")
+    for field in ("kind", "artifact_id"):
+        text = row.get(field)
+        if type(text) is not str or not text or text != text.strip():
+            raise ArtifactValidationError(f"{label}.{field} must be canonical text")
+
+
+def _validate_ref_rows(value: Any, *, label: str) -> list[Mapping[str, Any]]:
+    if type(value) is not list:
+        raise ArtifactValidationError(f"{label} must be a list")
+    for index, ref in enumerate(value):
+        _exact_ref(ref, label=f"{label}[{index}]")
+    return value
+
+
+def _validate_factor_validator_manifest(payload: Mapping[str, Any]) -> None:
+    for field in (
+        "release_manifest_ref",
+        "contextual_validator_component_ref",
+        "source_decoder_component_ref",
+    ):
+        _exact_ref(payload.get(field), label=f"factor.validator_manifest.{field}")
+    implementation_rows = _exact_rows(
+        payload.get("implementation_rows"),
+        {
+            "factor_id",
+            "implementation_id",
+            "implementation_component_ref",
+            "module_name",
+            "qualified_name",
+            "code_sha256",
+            "family",
+            "primitive",
+            "direction",
+            "formula",
+            "normalized_expression",
+            "parameters_json",
+            "input_fields",
+        },
+        label="factor.validator_manifest.implementation_rows",
+    )
+    for index, row in enumerate(implementation_rows):
+        _exact_ref(
+            row.get("implementation_component_ref"),
+            label=f"factor.validator_manifest.implementation_rows[{index}].component_ref",
+        )
+    _exact_rows(
+        payload.get("validated_contracts"),
+        {"kind", "contract_sha256", "json_schema_sha256", "validator_code_sha256"},
+        label="factor.validator_manifest.validated_contracts",
+    )
+
+
+def _validate_factor_source_decode_attestation(payload: Mapping[str, Any]) -> None:
+    decoder = _exact_nested_object(
+        payload.get("decoder_contract"),
+        {
+            "decoder_id",
+            "factor_validator_manifest_ref",
+            "contextual_validator_component_ref",
+            "source_decoder_component_ref",
+            "decoder_code_sha256",
+            "implementation_component_refs",
+            "allowed_source_formats",
+            "fallback_allowed",
+        },
+        label="factor.source_decode_attestation.decoder_contract",
+    )
+    _exact_ref(
+        decoder.get("factor_validator_manifest_ref"),
+        label="factor.source_decode_attestation.decoder_contract.factor_validator_manifest_ref",
+    )
+    for field in ("contextual_validator_component_ref", "source_decoder_component_ref"):
+        _exact_ref(
+            decoder.get(field),
+            label=f"factor.source_decode_attestation.decoder_contract.{field}",
+        )
+    _validate_ref_rows(
+        decoder.get("implementation_component_refs"),
+        label="factor.source_decode_attestation.decoder_contract.implementation_component_refs",
+    )
+    _exact_rows(
+        payload.get("source_bindings"),
+        {
+            "role",
+            "source_object_ref",
+            "source_root_id",
+            "source_object_created_at",
+            "media_type",
+            "source_format",
+            "source_byte_sha256",
+            "source_byte_count",
+            "decoded_schema_sha256",
+            "normalized_sha256",
+            "row_count",
+            "column_count",
+            "decoded_cell_count",
+            "minimum_session",
+            "maximum_session",
+        },
+        label="factor.source_decode_attestation.source_bindings",
+    )
+    for index, row in enumerate(payload["source_bindings"]):
+        _exact_ref(
+            row.get("source_object_ref"),
+            label=f"factor.source_decode_attestation.source_bindings[{index}].source_object_ref",
+        )
+
+
+def _validate_factor_contextual_result(payload: Mapping[str, Any]) -> None:
+    for field in (
+        "intrinsic_receipt_ref",
+        "policy_ref",
+        "active_set_ref",
+        "factor_validator_manifest_ref",
+        "contextual_validator_component_ref",
+        "source_decoder_component_ref",
+    ):
+        _exact_ref(payload.get(field), label=f"factor.contextual_validation_result.{field}")
+    _exact_ref(
+        payload.get("composite_state_ref"),
+        label="factor.contextual_validation_result.composite_state_ref",
+        nullable=True,
+    )
+    _exact_ref(
+        payload.get("custody_head_ref"),
+        label="factor.contextual_validation_result.custody_head_ref",
+        nullable=True,
+    )
+    for field in (
+        "evidence_refs",
+        "implementation_component_refs",
+        "source_attestation_refs",
+        "source_object_refs",
+        "custody_record_refs",
+    ):
+        _validate_ref_rows(payload.get(field), label=f"factor.contextual_validation_result.{field}")
+
+
+def _validate_factor_status(payload: Mapping[str, Any]) -> None:
+    active = _exact_nested_object(
+        payload.get("active"),
+        {
+            "state",
+            "lane",
+            "admission_route",
+            "producer_identity",
+            "factor_set_ref",
+            "factor_ids",
+            "validation_receipt_ref",
+            "contextual_result_ref",
+            "validation_attestation_ref",
+        },
+        label="factor.status.active",
+    )
+    for field in (
+        "factor_set_ref",
+        "validation_receipt_ref",
+        "contextual_result_ref",
+        "validation_attestation_ref",
+    ):
+        _exact_ref(
+            active.get(field),
+            label=f"factor.status.active.{field}",
+            nullable=True,
+        )
+
+
+def _validate_installed_component(payload: Mapping[str, Any]) -> None:
+    _exact_ref(
+        payload.get("release_manifest_ref"),
+        label="system.installed_component_manifest.release_manifest_ref",
+    )
+    _exact_rows(
+        payload.get("entrypoints"),
+        {"module_name", "qualified_name", "code_sha256"},
+        label="system.installed_component_manifest.entrypoints",
+    )
+    _exact_rows(
+        payload.get("files"),
+        {"path", "byte_sha256", "size"},
+        label="system.installed_component_manifest.files",
+    )
+    if payload.get("outcome") != "VALIDATED" or payload.get("authority") != "NON_AUTHORIZING":
+        raise ArtifactValidationError("installed component must be validated and non-authorizing")
+
+
+def _validate_validation_attestation(payload: Mapping[str, Any]) -> None:
+    for field in (
+        "validation_request_ref",
+        "contextual_result_ref",
+        "intrinsic_receipt_ref",
+        "policy_ref",
+        "active_set_ref",
+        "release_manifest_ref",
+        "factor_validator_manifest_ref",
+        "contextual_validator_component_ref",
+        "source_decoder_component_ref",
+    ):
+        _exact_ref(payload.get(field), label=f"system.validation_attestation.{field}")
+    _exact_ref(
+        payload.get("candidate_state_ref"),
+        label="system.validation_attestation.candidate_state_ref",
+        nullable=True,
+    )
+    for field in (
+        "evidence_refs",
+        "source_object_refs",
+        "implementation_component_refs",
+        "source_attestation_refs",
+        "custody_record_refs",
+    ):
+        _validate_ref_rows(payload.get(field), label=f"system.validation_attestation.{field}")
+    _exact_ref(
+        payload.get("custody_head_ref"),
+        label="system.validation_attestation.custody_head_ref",
+        nullable=True,
+    )
+    _exact_nested_object(
+        payload.get("release_identity"),
+        {"release_id", "code_sha256", "wheel_sha256", "code_manifest_sha256"},
+        label="system.validation_attestation.release_identity",
+    )
+    _exact_rows(
+        payload.get("compiled_contracts"),
+        {"kind", "contract_sha256", "json_schema_sha256", "validator_code_sha256"},
+        label="system.validation_attestation.compiled_contracts",
+    )
+    if payload.get("outcome") != "VALIDATED" or payload.get("authority") != "NON_AUTHORIZING":
+        raise ArtifactValidationError(
+            "validation attestation must be validated and non-authorizing"
+        )
+
+
+def _validate_system_release_payload(payload: Mapping[str, Any]) -> None:
+    state = payload.get("state")
+    if type(state) is not str or not state or state != state.strip():
+        raise ArtifactValidationError("system.release state must be canonical text")
+    for field in ("code_sha256", "wheel_sha256", "code_manifest_sha256"):
+        value = payload.get(field)
+        if type(value) is not str or _SHA256_RE.fullmatch(value) is None:
+            raise ArtifactValidationError(f"system.release {field} must be lowercase SHA-256")
+
+
+_FACTOR_FIELD_SETS: Final = {
+    "factor.bootstrap_set": (
+        "bootstrap_set_id",
+        "admission_route",
+        "producer_identity",
+        "input_contract",
+        "factor_definitions",
+        "factor_rows",
+        "control_rows",
+        "bootstrap_exception_evidence_ref",
+        "factor_set_sha256",
+        "weighting_method",
+        "weight_total",
+        "prospective_evidence_claimed",
+        "activation_authorized",
+    ),
+    "factor.preregistration": (
+        "preregistration_id",
+        "lane",
+        "stamp_source",
+        "open_sessions",
+        "signal_sessions",
+        "maturity_sessions",
+        "session_windows",
+        "candidates",
+        "exchange_calendar_ref",
+        "implementation_manifest_ref",
+        "source_decode_attestation_ref",
+        "factor_validator_manifest_ref",
+        "coverage_contract",
+        "label_contract",
+        "neutralization_contract",
+        "maturity_contract",
+        "validation_contract",
+        "alternate_policy",
+        "observation_policy",
+        "authority",
+    ),
+    "factor.configuration_selection": (
+        "selection_id",
+        "preregistration_id",
+        "first_signal_session",
+        "source_decode_attestation_ref",
+        "configuration_summary_rows",
+        "selected_configurations",
+        "selected_before_label",
+        "label_inputs_used",
+        "substitution_allowed",
+        "selection_policy",
+    ),
+    "factor.prospective_observation": (
+        "observation_id",
+        "observation_lineage_id",
+        "previous_observation_ref",
+        "preregistration_id",
+        "selection_id",
+        "signal_capture_ref",
+        "source_decode_attestation_ref",
+        "ordinal",
+        "signal_session",
+        "label_start_session",
+        "label_end_session",
+        "label_formula",
+        "neutralization_method",
+        "coverage_minimum",
+        "pit_universe_count",
+        "pit_universe_sha256",
+        "label_values_sha256",
+        "label_finite_pair_count",
+        "configuration_rows",
+        "backfill",
+        "substitution",
+    ),
+    "factor.prospective_evaluation": (
+        "evaluation_id",
+        "preregistration_id",
+        "selection_id",
+        "lane",
+        "observation_ids",
+        "observation_count",
+        "execution_turnover_evidence_ref",
+        "candidate_rows",
+        "trial_statistics",
+        "redundancy_clusters",
+        "admission_eligible",
+        "blockers",
+        "cost_bps",
+    ),
+    "factor.admitted_set": (
+        "admitted_set_id",
+        "lane",
+        "preregistration_id",
+        "selection_id",
+        "evaluation_id",
+        "factor_rows",
+        "weight_total",
+        "weighting_method",
+        "activation_authorized",
+    ),
+    "factor.status": (
+        "status_id",
+        "active",
+        "observed",
+        "readiness",
+        "blockers",
+        "activation_mutation_authorized",
+    ),
+    "factor.canonical_replay_evidence": (
+        "replay_evidence_id",
+        "full_control_chain_evaluated",
+        "arm_sha256s",
+        "evidence_sha256",
+    ),
+    "factor.bootstrap_exception_evidence": (
+        "bootstrap_evidence_id",
+        "admission_route",
+        "producer_identity",
+        "decision_source_id",
+        "decision_source_sha256",
+        "factor_rows",
+        "reader_contract",
+        "source_refs",
+        "factor_set_sha256",
+        "weight_total",
+        "authorizes_readiness",
+        "authorizes_selectability",
+    ),
+    "factor.validation_receipt": (
+        "validation_receipt_id",
+        "policy_ref",
+        "evidence_refs",
+        "active_set_ref",
+        "validated",
+        "authority",
+    ),
+    "factor.observation_head": (
+        "observation_head_id",
+        "observation_lineage_id",
+        "preregistration_id",
+        "selection_id",
+        "observation_count",
+        "previous_head_ref",
+        "head_observation_ref",
+        "authority",
+    ),
+    "factor.execution_turnover_evidence": (
+        "execution_evidence_id",
+        "preregistration_id",
+        "selection_id",
+        "lane",
+        "signal_sessions_sha256",
+        "signal_session_count",
+        "signal_capture_refs",
+        "observation_refs",
+        "configuration_rows",
+        "cost_contract",
+        "execution_state",
+        "blockers",
+        "authority",
+    ),
+    "factor.validator_manifest": (
+        "validator_manifest_id",
+        "release_manifest_ref",
+        "contextual_validator_component_ref",
+        "source_decoder_component_ref",
+        "implementation_rows",
+        "validated_contracts",
+        "authority",
+    ),
+    "factor.source_decode_attestation": (
+        "source_decode_attestation_id",
+        "purpose",
+        "preregistration_id",
+        "selection_id",
+        "ordinal",
+        "signal_session",
+        "maturity_session",
+        "decoder_contract",
+        "source_bindings",
+        "normalized_inputs_sha256",
+        "authority",
+    ),
+    "factor.signal_capture": (
+        "signal_capture_id",
+        "observation_lineage_id",
+        "previous_signal_capture_ref",
+        "preregistration_id",
+        "selection_id",
+        "ordinal",
+        "signal_session",
+        "source_decode_attestation_ref",
+        "pit_universe_count",
+        "pit_universe_sha256",
+        "configuration_rows",
+        "coverage_minimum",
+        "label_inputs_used",
+        "unlisted_universe_weight",
+        "backfill",
+        "authority",
+    ),
+    "factor.custody_record": (
+        "custody_record_id",
+        "custody_namespace_id",
+        "preregistration_id",
+        "sequence",
+        "previous_custody_ref",
+        "previous_composite_state_ref",
+        "transaction_id",
+        "transaction_sequence",
+        "transaction_record_index",
+        "transaction_record_count",
+        "operation_request_sha256",
+        "operation",
+        "subject_refs",
+        "source_attestation_refs",
+        "stage_slot",
+        "blockers",
+        "stored_at",
+        "clock_source",
+        "authority",
+    ),
+    "factor.composite_state": (
+        "composite_state_id",
+        "custody_namespace_id",
+        "preregistration_ref",
+        "cycle_state",
+        "transaction_sequence",
+        "previous_composite_state_ref",
+        "transaction_id",
+        "custody_record_count",
+        "custody_head_ref",
+        "selection_ref",
+        "signal_capture_count",
+        "signal_capture_head_ref",
+        "observation_count",
+        "observation_head_ref",
+        "execution_evidence_ref",
+        "evaluation_ref",
+        "admitted_set_ref",
+        "intrinsic_receipt_ref",
+        "resolved_signal_slot_count",
+        "resolved_label_slot_count",
+        "slot_tree_sha256",
+        "terminal",
+        "blockers",
+        "last_stored_at",
+        "authority",
+    ),
+    "factor.contextual_validation_result": (
+        "contextual_result_id",
+        "validation_namespace_id",
+        "lane",
+        "intrinsic_receipt_ref",
+        "policy_ref",
+        "evidence_refs",
+        "active_set_ref",
+        "composite_state_ref",
+        "factor_validator_manifest_ref",
+        "contextual_validator_component_ref",
+        "source_decoder_component_ref",
+        "implementation_component_refs",
+        "source_attestation_refs",
+        "source_object_refs",
+        "custody_record_refs",
+        "custody_tree_sha256",
+        "custody_head_ref",
+        "validated",
+        "blockers",
+        "authority",
+    ),
+}
+_FACTOR_IDENTITIES: Final = {
+    "factor.bootstrap_set": "bootstrap_set_id",
+    "factor.preregistration": "preregistration_id",
+    "factor.configuration_selection": "selection_id",
+    "factor.prospective_observation": "observation_id",
+    "factor.prospective_evaluation": "evaluation_id",
+    "factor.admitted_set": "admitted_set_id",
+    "factor.status": "status_id",
+    "factor.canonical_replay_evidence": "replay_evidence_id",
+    "factor.bootstrap_exception_evidence": "bootstrap_evidence_id",
+    "factor.validation_receipt": "validation_receipt_id",
+    "factor.observation_head": "observation_head_id",
+    "factor.execution_turnover_evidence": "execution_evidence_id",
+    "factor.validator_manifest": "validator_manifest_id",
+    "factor.source_decode_attestation": "source_decode_attestation_id",
+    "factor.signal_capture": "signal_capture_id",
+    "factor.custody_record": "custody_record_id",
+    "factor.composite_state": "composite_state_id",
+    "factor.contextual_validation_result": "contextual_result_id",
+}
+
+FACTOR_CONTRACTS: Final = tuple(
+    _exact_contract(
+        kind,
+        _FACTOR_IDENTITIES[kind],
+        fields,
+        validator={
+            "factor.status": _validate_factor_status,
+            "factor.validator_manifest": _validate_factor_validator_manifest,
+            "factor.source_decode_attestation": _validate_factor_source_decode_attestation,
+            "factor.contextual_validation_result": _validate_factor_contextual_result,
+        }.get(kind),
+    )
+    for kind, fields in _FACTOR_FIELD_SETS.items()
+)
+FACTOR_CANONICAL_REPLAY_EVIDENCE_CONTRACT: Final = next(
+    definition
+    for definition in FACTOR_CONTRACTS
+    if definition.kind == "factor.canonical_replay_evidence"
+)
+
+
+_RESEARCH_COMMON_FIELDS: Final = frozenset(
+    {"authority", "production", "research_only", "run_state"}
+)
+_INTELLIGENCE_SPECS: Final = {
+    "research_request": (
+        "request_id",
+        _RESEARCH_COMMON_FIELDS | {"as_of", "input_refs", "stages", "status", "strategy_id"},
+    ),
+    "research_evaluation": (
+        "evaluation_id",
+        _RESEARCH_COMMON_FIELDS
+        | {
+            "blocker_codes",
+            "evaluated_at",
+            "request_ref",
+            "stage_rows",
+            "status",
+            "strategy_id",
+        },
+    ),
+    "evidence_bundle": (
+        "bundle_id",
+        _RESEARCH_COMMON_FIELDS
+        | {
+            "blocker_codes",
+            "compiled_at",
+            "evaluation_ref",
+            "evidence_refs",
+            "status",
+            "strategy_id",
+        },
+    ),
+    "intelligence_inspection": (
+        "inspection_id",
+        _RESEARCH_COMMON_FIELDS
+        | {"blocker_codes", "inspected_at", "status", "target_kind", "target_ref"},
+    ),
+    "decision_context": (
+        "context_id",
+        _RESEARCH_COMMON_FIELDS
+        | {
+            "as_of",
+            "blocker_codes",
+            "company_code",
+            "component_refs",
+            "evidence_refs",
+            "hard_risk_codes",
+            "hypothesis_status",
+            "risk_status",
+            "status",
+        },
+    ),
+    "investment_decision": (
+        "decision_id",
+        _RESEARCH_COMMON_FIELDS
+        | {
+            "as_of",
+            "blocker_codes",
+            "company_code",
+            "context_ref",
+            "deterministic_percentile",
+            "reason_codes",
+            "state",
+            "thresholds",
+        },
+    ),
+    "industry_assessment": (
+        "assessment_id",
+        _RESEARCH_COMMON_FIELDS
+        | {
+            "as_of",
+            "company_code",
+            "component_score",
+            "component_status",
+            "exposures",
+            "metric_rows",
+            "primary_industry_id",
+            "provider",
+            "reason_codes",
+            "status",
+        },
+    ),
+    "theme_assessment": (
+        "assessment_id",
+        _RESEARCH_COMMON_FIELDS
+        | {
+            "as_of",
+            "company_code",
+            "component_score",
+            "component_status",
+            "exposures",
+            "hard_veto_codes",
+            "overall_severity",
+            "provider",
+            "reason_codes",
+            "risk_rows",
+            "status",
+        },
+    ),
+    "fundamental_assessment": (
+        "assessment_id",
+        _RESEARCH_COMMON_FIELDS
+        | {
+            "as_of",
+            "blocker_codes",
+            "company_code",
+            "component_rows",
+            "coverage",
+            "effective_score",
+            "industry_assessment_ref",
+            "minimum_coverage",
+            "raw_score",
+            "score_present",
+            "source_refs",
+            "status",
+            "theme_assessment_ref",
+        },
+    ),
+    "advisory_review": (
+        "review_id",
+        _RESEARCH_COMMON_FIELDS
+        | {
+            "absolute_delta",
+            "advisory_percentile",
+            "as_of",
+            "company_code",
+            "decision_ref",
+            "deterministic_decision_state",
+            "deterministic_percentile",
+            "reason_codes",
+            "status",
+            "validated_facts",
+        },
+    ),
+    "research_portfolio": (
+        "portfolio_id",
+        _RESEARCH_COMMON_FIELDS
+        | {
+            "as_of",
+            "blocker_codes",
+            "cash_weight",
+            "decision_refs",
+            "gross_weight",
+            "hard_veto_codes",
+            "status",
+            "strategy_id",
+            "targets",
+        },
+    ),
+    "paper_observation": (
+        "observation_id",
+        _RESEARCH_COMMON_FIELDS
+        | {
+            "as_of",
+            "benchmark_return",
+            "drawdown",
+            "estimated_cost",
+            "excess_return",
+            "gross_return",
+            "net_return",
+            "portfolio_ref",
+            "status",
+            "strategy_id",
+        },
+    ),
+    "graduation_assessment": (
+        "assessment_id",
+        _RESEARCH_COMMON_FIELDS
+        | {
+            "assessed_at",
+            "blocker_codes",
+            "cumulative_excess_return",
+            "observation_refs",
+            "observation_count",
+            "status",
+            "strategy_id",
+            "worst_drawdown",
+        },
+    ),
+    "mainline_candidate": (
+        "candidate_id",
+        _RESEARCH_COMMON_FIELDS
+        | {
+            "as_of",
+            "decision_ref",
+            "evidence_bundle_ref",
+            "investment_state",
+            "portfolio_ref",
+            "result",
+            "status",
+            "strategy_id",
+        },
+    ),
+    "public_run": (
+        "run_id",
+        {
+            "candidate_ref",
+            "active_generation_id",
+            "investment_state",
+            "readiness_ref",
+            "result",
+            "status",
+            "strategy_id",
+        },
+    ),
+}
+
+INTELLIGENCE_CONTRACTS: Final = tuple(
+    _exact_contract(kind, identity_field, set(fields) | {identity_field})
+    for kind, (identity_field, fields) in _INTELLIGENCE_SPECS.items()
+)
+
+
+READINESS_FIELDS: Final = frozenset(
+    {
+        "readiness_id",
+        "factor_state",
+        "factor_status_ref",
+        "admission_route",
+        "producer_identity",
+        "mainline_state",
+        "mainline_candidate_ref",
+        "investment_state",
+        "blockers",
+    }
+)
+INTELLIGENCE_READINESS_CONTRACT: Final = _exact_contract(
+    "intelligence_readiness", "readiness_id", READINESS_FIELDS
+)
+
+
+_MIGRATION_SPECS: Final = {
+    "system.migration.inventory": (
+        "inventory_id",
+        {
+            "inventory_id",
+            "status",
+            "rules_ref",
+            "dynamic_import_allowlist_ref",
+            "legacy_seed_manifest_ref",
+            "legacy_custody_scope_ref",
+            "bootstrap_decision_ref",
+            "replacement_test_map_ref",
+            "tracked_roots",
+            "runtime_roots",
+            "files",
+            "edges",
+            "summary",
+        },
+    ),
+    "system.migration.archive_plan": (
+        "archive_plan_id",
+        {
+            "archive_plan_id",
+            "archive_root",
+            "blocker_codes",
+            "cutover_id",
+            "entries",
+            "inventory_ref",
+            "status",
+            "summary",
+        },
+    ),
+    "system.migration.receipt": (
+        "migration_receipt_id",
+        {
+            "migration_receipt_id",
+            "status",
+            "cutover_id",
+            "inventory_ref",
+            "archive_plan_ref",
+            "rules_ref",
+            "source_to_target_rules_ref",
+            "source_to_target",
+            "target_generation_id",
+            "target_generation_manifest_path",
+            "target_generation_manifest_ref",
+            "target_active_pointer_path",
+            "target_active_pointer_ref",
+            "expected_active_pointer_sha256",
+            "permanent_marker_path",
+            "write_performed",
+            "cas_performed",
+            "blocker_codes",
+            "summary",
+        },
+    ),
+    "system.migration.complete": (
+        "marker_id",
+        {
+            "marker_id",
+            "status",
+            "cutover_id",
+            "migration_receipt_ref",
+            "inventory_ref",
+            "archive_plan_ref",
+            "active_pointer_ref",
+            "generation_manifest_ref",
+            "generation_id",
+            "permanent_marker_path",
+            "migration_replay_refused",
+            "legacy_replay_refused",
+            "blocker_codes",
+        },
+    ),
+}
+MIGRATION_CONTRACTS: Final = tuple(
+    _exact_contract(kind, identity_field, fields)
+    for kind, (identity_field, fields) in _MIGRATION_SPECS.items()
+)
+
+
+SYSTEM_RELEASE_CONTRACT: Final = register_contract(
+    ContractDefinition(
+        kind="system.release",
+        identity_field="release_id",
+        required_payload_fields=frozenset(
+            {
+                "release_id",
+                "state",
+                "code_sha256",
+                "wheel_sha256",
+                "code_manifest_sha256",
+            }
+        ),
+        forbidden_payload_fields=LEGACY_CONTRACT_FIELDS,
+        validator=_validate_system_release_payload,
+    )
+)
+SYSTEM_SOURCE_BUNDLE_CONTRACT: Final = _exact_contract(
+    "system.source_bundle",
+    "source_bundle_id",
+    {"source_bundle_id", "state", "sources"},
+)
+SYSTEM_SOURCE_OBJECT_CONTRACT: Final = _exact_contract(
+    "system.source_object",
+    "source_object_id",
+    {
+        "source_object_id",
+        "source_root_id",
+        "relative_path",
+        "media_type",
+        "source_format",
+        "byte_sha256",
+    },
+)
+SYSTEM_INSTALLED_COMPONENT_MANIFEST_FIELDS: Final = frozenset(
+    {
+        "component_manifest_id",
+        "component_id",
+        "component_registry_sha256",
+        "component_role",
+        "package_name",
+        "module_names",
+        "entrypoints",
+        "files",
+        "release_manifest_ref",
+        "installed_code_manifest_sha256",
+        "allowed_source_formats",
+        "fallback_allowed",
+        "component_sha256",
+        "outcome",
+        "authority",
+    }
+)
+SYSTEM_INSTALLED_COMPONENT_MANIFEST_CONTRACT: Final = _exact_contract(
+    "system.installed_component_manifest",
+    "component_manifest_id",
+    SYSTEM_INSTALLED_COMPONENT_MANIFEST_FIELDS,
+    validator=_validate_installed_component,
+)
+SYSTEM_VALIDATION_RUN_REQUEST_FIELDS: Final = frozenset(
+    {
+        "validation_request_id",
+        "validation_profile_id",
+        "component_registry_sha256",
+        "validation_namespace_id",
+        "release_manifest_ref",
+        "factor_validator_manifest_ref",
+        "intrinsic_receipt_ref",
+        "candidate_state_ref",
+    }
+)
+SYSTEM_VALIDATION_RUN_REQUEST_CONTRACT: Final = _exact_contract(
+    "system.validation_run_request",
+    "validation_request_id",
+    SYSTEM_VALIDATION_RUN_REQUEST_FIELDS,
+)
+SYSTEM_VALIDATION_ATTESTATION_FIELDS: Final = frozenset(
+    {
+        "attestation_id",
+        "validation_request_ref",
+        "validation_profile_id",
+        "component_registry_sha256",
+        "validation_namespace_id",
+        "validation_lane",
+        "validation_intent_sha256",
+        "validation_plan_sha256",
+        "candidate_state_ref",
+        "candidate_state_pointer_sha256",
+        "contextual_result_ref",
+        "intrinsic_receipt_ref",
+        "policy_ref",
+        "evidence_refs",
+        "active_set_ref",
+        "source_object_refs",
+        "release_manifest_ref",
+        "release_identity",
+        "installed_code_manifest_sha256",
+        "compiled_contracts",
+        "factor_validator_manifest_ref",
+        "contextual_validator_component_ref",
+        "source_decoder_component_ref",
+        "implementation_component_refs",
+        "source_attestation_refs",
+        "custody_record_refs",
+        "custody_head_ref",
+        "custody_tree_sha256",
+        "factor_source_stat_tree_sha256",
+        "factor_source_total_bytes",
+        "maximum_total_factor_source_bytes",
+        "validated_at",
+        "clock_source",
+        "outcome",
+        "authority",
+    }
+)
+SYSTEM_VALIDATION_ATTESTATION_CONTRACT: Final = _exact_contract(
+    "system.validation_attestation",
+    "attestation_id",
+    SYSTEM_VALIDATION_ATTESTATION_FIELDS,
+    validator=_validate_validation_attestation,
+)
+SYSTEM_ASSEMBLY_REQUEST_FIELDS: Final = frozenset(
+    {
+        "assembly_request_id",
+        "generation_state",
+        "release_manifest_ref",
+        "source_refs",
+        "factor_source_object_refs",
+        "factor_policy_ref",
+        "factor_evidence_refs",
+        "factor_active_set_ref",
+        "factor_validation_attestation_ref",
+        "mainline_ref",
+        "research_refs",
+        "migration_receipt_ref",
+        "migration_marker_ref",
+        "skill_tree_sha256",
+        "automation_semantic_sha256",
+        "readiness_matrix_ref",
+        "emergency_controller_sha256",
+    }
+)
+SYSTEM_ASSEMBLY_REQUEST_CONTRACT: Final = _exact_contract(
+    "system.assembly_request",
+    "assembly_request_id",
+    SYSTEM_ASSEMBLY_REQUEST_FIELDS,
+)
+SYSTEM_READINESS_CONTRACT: Final = _exact_contract(
+    "system.readiness", "readiness_id", READINESS_FIELDS
+)
+SYSTEM_GENERATION_MANIFEST_FIELDS: Final = frozenset(
+    {
+        "assembly_id",
+        "generation_state",
+        "contract_catalog_sha256",
+        "release_manifest_ref",
+        "source_refs",
+        "factor_source_object_refs",
+        "factor_policy_ref",
+        "factor_evidence_refs",
+        "factor_active_set_ref",
+        "factor_validation_attestation_ref",
+        "mainline_ref",
+        "research_refs",
+        "migration_receipt_ref",
+        "migration_marker_ref",
+        "skill_tree_sha256",
+        "automation_semantic_sha256",
+        "readiness_matrix_ref",
+        "emergency_controller_sha256",
+    }
+)
+SYSTEM_GENERATION_MANIFEST_CONTRACT: Final = _exact_contract(
+    "system.generation_manifest",
+    "assembly_id",
+    SYSTEM_GENERATION_MANIFEST_FIELDS,
+)
+
+_freeze_contract_registry()
+
+
+__all__ = [
+    "FACTOR_CANONICAL_REPLAY_EVIDENCE_CONTRACT",
+    "FACTOR_CONTRACTS",
+    "INTELLIGENCE_CONTRACTS",
+    "INTELLIGENCE_READINESS_CONTRACT",
+    "MIGRATION_CONTRACTS",
+    "READINESS_FIELDS",
+    "SYSTEM_ASSEMBLY_REQUEST_CONTRACT",
+    "SYSTEM_ASSEMBLY_REQUEST_FIELDS",
+    "SYSTEM_GENERATION_MANIFEST_CONTRACT",
+    "SYSTEM_GENERATION_MANIFEST_FIELDS",
+    "SYSTEM_INSTALLED_COMPONENT_MANIFEST_CONTRACT",
+    "SYSTEM_INSTALLED_COMPONENT_MANIFEST_FIELDS",
+    "SYSTEM_READINESS_CONTRACT",
+    "SYSTEM_RELEASE_CONTRACT",
+    "SYSTEM_SOURCE_BUNDLE_CONTRACT",
+    "SYSTEM_SOURCE_OBJECT_CONTRACT",
+    "SYSTEM_VALIDATION_ATTESTATION_CONTRACT",
+    "SYSTEM_VALIDATION_ATTESTATION_FIELDS",
+    "SYSTEM_VALIDATION_RUN_REQUEST_CONTRACT",
+    "SYSTEM_VALIDATION_RUN_REQUEST_FIELDS",
+]

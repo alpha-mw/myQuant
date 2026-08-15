@@ -1,14 +1,10 @@
 from __future__ import annotations
 
-import logging
 from datetime import datetime
 from typing import Any
 
-from quant_investor.automation.history_loader import HistoryLoader
+from quant_investor.strategy_records.history import HistoryLoader
 from quant_investor.config import config as runtime_config
-
-
-log = logging.getLogger("daily_runner")
 
 _BRANCH_LABEL_MAP = {
     "quant": "量化因子",
@@ -44,6 +40,15 @@ def _confidence_label(c: float) -> str:
     if c >= 0.45:
         return "中"
     return "低"
+
+
+def _shape_description(value: Any) -> str:
+    if type(value) is dict:
+        keys = ", ".join(sorted(str(key) for key in value))
+        return f"mapping keys: {keys}" if keys else "empty mapping"
+    if type(value) in {list, tuple}:
+        return f"{type(value).__name__} items: {len(value)}"
+    return type(value).__name__
 
 
 class ReportBuilder:
@@ -95,12 +100,16 @@ class ReportBuilder:
             self._header(config, now_str, total_stocks, selected_count),
             self._history_context(history),
             self._section_data_overview(market_summary, download, categories, config),
-            self._section_market_overview(branch_summary, executive_summary, market_view, portfolio_plan),
+            self._section_market_overview(
+                branch_summary, executive_summary, market_view, portfolio_plan
+            ),
             self._section_analysis_process(timing, config),
             self._section_bayesian_decision(analysis_meta, config),
             self._section_run_context(analysis_meta, report_bundle),
             self._section_subagent_decisions(branch_summary),
-            self._section_master_decisions(executive_summary, market_view, portfolio_plan, narrator_md),
+            self._section_master_decisions(
+                executive_summary, market_view, portfolio_plan, narrator_md
+            ),
             self._section_investment_recommendations(recommendations, config["market"]),
             self._section_positions_orders(recommendations, portfolio_plan, config),
             self._section_next_steps(history, config, recommendations, timing),
@@ -112,35 +121,65 @@ class ReportBuilder:
     def _aggregate_branches(
         self, all_results: dict[str, list[dict[str, Any]]]
     ) -> dict[str, dict[str, Any]]:
-        """跨批次聚合各分支得分与结论。"""
-        try:
-            from quant_investor.market.analyze import _aggregate_branch_summary
-            return _aggregate_branch_summary(all_results)
-        except Exception as exc:
-            log.debug("branch 聚合回退: %s", exc)
-            return {}
+        """Aggregate already-sealed branch rows without producing new decisions."""
+
+        summary: dict[str, dict[str, Any]] = {}
+        for branch, rows in sorted(all_results.items()):
+            valid_rows = [row for row in rows if type(row) is dict]
+            if not valid_rows:
+                continue
+            scores = [row.get("score") for row in valid_rows if row.get("score") is not None]
+            confidences = [
+                row.get("confidence") for row in valid_rows if row.get("confidence") is not None
+            ]
+            conclusions = [
+                str(row.get("conclusion") or "").strip()
+                for row in valid_rows
+                if str(row.get("conclusion") or "").strip()
+            ]
+            summary[branch] = {
+                "score": _safe_average(scores),
+                "confidence": _safe_average(confidences),
+                "conclusion": conclusions[-1] if conclusions else "",
+                "observation_count": len(valid_rows),
+            }
+        return summary
 
     def _build_plan(
         self, all_results: dict[str, list[dict[str, Any]]], config: dict[str, Any]
     ) -> dict[str, Any]:
-        """构建全市场交易计划。"""
-        try:
-            from quant_investor.market.analyze import build_full_market_trade_plan
-            return build_full_market_trade_plan(
-                all_results,
-                market=config["market"],
-                total_capital=config["total_capital"],
-                top_k=config["top_k"],
-            )
-        except Exception as exc:
-            log.debug("trade plan 构建回退: %s", exc)
-            return {"portfolio_plan": {}, "recommendations": [], "market_summary": {}}
+        """Project precomputed recommendations; never create a trade plan."""
+
+        del config
+        recommendations: list[dict[str, Any]] = []
+        symbols: set[str] = set()
+        batch_count = 0
+        for rows in all_results.values():
+            for row in rows:
+                if type(row) is not dict:
+                    continue
+                batch_count += 1
+                symbol = str(row.get("symbol") or "").strip()
+                if symbol:
+                    symbols.add(symbol)
+                sealed = row.get("recommendations")
+                if type(sealed) is list:
+                    recommendations.extend(item for item in sealed if type(item) is dict)
+        return {
+            "portfolio_plan": {
+                "selected_count": len(recommendations),
+                "source": "SEALED_INPUT_ONLY",
+            },
+            "recommendations": recommendations,
+            "market_summary": {
+                "total_stocks": len(symbols),
+                "total_batches": batch_count,
+            },
+        }
 
     # ── 各章节 ───────────────────────────────────────────────────────────────
 
-    def _header(
-        self, config: dict, now_str: str, total_stocks: int, selected_count: int
-    ) -> str:
+    def _header(self, config: dict, now_str: str, total_stocks: int, selected_count: int) -> str:
         capital_str = f"{config['total_capital']:,.0f}"
         review_chain = " -> ".join(config.get("review_model_priority", []) or ["(系统默认)"])
         return (
@@ -180,23 +219,22 @@ class ReportBuilder:
             count = cat_data.get("stock_count", 0)
             candidate = cat_data.get("candidate_count", 0)
             avg_exp = _safe_float(cat_data.get("avg_target_exposure", 0))
-            cat_lines.append(
-                f"| {label} | {count} | {candidate} | {avg_exp:.1%} |"
-            )
+            cat_lines.append(f"| {label} | {count} | {candidate} | {avg_exp:.1%} |")
 
         cat_table = ""
         if cat_lines:
             cat_table = (
                 "\n| 板块 | 分析股票数 | 候选标的数 | 平均目标仓位 |\n"
-                "|------|-----------|-----------|------------|\n"
-                + "\n".join(cat_lines)
+                "|------|-----------|-----------|------------|\n" + "\n".join(cat_lines)
             )
 
         completeness_note = ""
         if isinstance(download.get("completeness_after"), dict):
             blocking = download["completeness_after"].get("blocking_incomplete_count", 0)
             if blocking:
-                completeness_note = f"\n\n> ⚠️ 数据完整性：{blocking} 只股票存在阻塞性缺口，已跳过。"
+                completeness_note = (
+                    f"\n\n> ⚠️ 数据完整性：{blocking} 只股票存在阻塞性缺口，已跳过。"
+                )
 
         return (
             f"## § 1 数据概览\n\n"
@@ -248,8 +286,7 @@ class ReportBuilder:
             branch_table = (
                 "\n**各分支得分概览：**\n\n"
                 "| 分支 | 得分 | 方向 | 可信度 |\n"
-                "|------|------|------|-------|\n"
-                + "\n".join(branch_scores_lines)
+                "|------|------|------|-------|\n" + "\n".join(branch_scores_lines)
             )
 
         return (
@@ -292,23 +329,29 @@ class ReportBuilder:
         model_role_metadata = analysis_meta.get("model_role_metadata")
         execution_trace = analysis_meta.get("execution_trace")
         what_if_plan = analysis_meta.get("what_if_plan")
-        if not any([model_role_metadata, execution_trace, what_if_plan]) and report_bundle is not None:
+        if (
+            not any([model_role_metadata, execution_trace, what_if_plan])
+            and report_bundle is not None
+        ):
             model_role_metadata = getattr(report_bundle, "model_role_metadata", None)
             execution_trace = getattr(report_bundle, "execution_trace", None)
             what_if_plan = getattr(report_bundle, "what_if_plan", None)
         if not any([model_role_metadata, execution_trace, what_if_plan]):
             return "## § 4 模型角色与执行轨迹\n\n_本次运行未记录结构化角色元数据或执行轨迹。_"
 
-        from quant_investor.reporting.conclusion_renderer import ConclusionRenderer
+        rendered = []
+        for label, value in (
+            ("model_role_metadata", model_role_metadata),
+            ("execution_trace", execution_trace),
+            ("what_if_plan", what_if_plan),
+        ):
+            if value is not None:
+                rendered.append(f"- **{label}**: {_shape_description(value)}")
+        return "## § 4 模型角色与执行轨迹\n\n" + "\n".join(rendered)
 
-        rendered = ConclusionRenderer.render_run_context(
-            model_role_metadata,
-            execution_trace,
-            what_if_plan,
-        )
-        return "## § 4 模型角色与执行轨迹\n\n" + "\n".join(rendered).strip()
-
-    def _section_bayesian_decision(self, analysis_meta: dict[str, Any], config: dict[str, Any]) -> str:
+    def _section_bayesian_decision(
+        self, analysis_meta: dict[str, Any], config: dict[str, Any]
+    ) -> str:
         """§ 4.5 Bayesian 决策层摘要。"""
         record_count = int(analysis_meta.get("bayesian_record_count", 0))
         funnel_candidates = int(analysis_meta.get("funnel_candidates_count", 0))
@@ -327,7 +370,11 @@ class ReportBuilder:
         if shortlist_symbols:
             display_limit = max(1, int(config.get("bayesian_shortlist_size", 50) or 50))
             visible_symbols = shortlist_symbols[:display_limit]
-            suffix = "" if len(shortlist_symbols) <= display_limit else f"（仅展示前 {display_limit} 只）"
+            suffix = (
+                ""
+                if len(shortlist_symbols) <= display_limit
+                else f"（仅展示前 {display_limit} 只）"
+            )
             lines.append(f"- **精选标的**{suffix}: {', '.join(visible_symbols)}")
         lines.append("")
         lines.append(
@@ -392,9 +439,7 @@ class ReportBuilder:
         plan_notes = portfolio_plan.get("execution_notes", [])
         notes_block = ""
         if plan_notes:
-            notes_block = "\n\n**组合执行备注：**\n" + "\n".join(
-                f"- {note}" for note in plan_notes
-            )
+            notes_block = "\n\n**组合执行备注：**\n" + "\n".join(f"- {note}" for note in plan_notes)
 
         target_exp = _safe_float(portfolio_plan.get("target_exposure", 0))
         style = portfolio_plan.get("style_bias", "均衡")
@@ -419,7 +464,9 @@ class ReportBuilder:
             relevant = []
             capture = False
             for line in lines:
-                if any(kw in line for kw in ["## 市场", "## 执行", "## 组合", "## 宏观", "## 决策"]):
+                if any(
+                    kw in line for kw in ["## 市场", "## 执行", "## 组合", "## 宏观", "## 决策"]
+                ):
                     capture = True
                 if capture:
                     relevant.append(line)
@@ -432,15 +479,11 @@ class ReportBuilder:
                     + "\n\n</details>"
                 )
 
-        body = (
-            f"{exec_block}{mv_block}{summary_block}{notes_block}{narrator_section}"
-        ).strip()
+        body = (f"{exec_block}{mv_block}{summary_block}{notes_block}{narrator_section}").strip()
 
         return f"## § 6 Master Agent 决策过程、逻辑和依据\n\n{body}"
 
-    def _section_investment_recommendations(
-        self, recommendations: list[dict], market: str
-    ) -> str:
+    def _section_investment_recommendations(self, recommendations: list[dict], market: str) -> str:
         if not recommendations:
             return (
                 "## § 7 最终投资建议\n\n"
@@ -502,10 +545,7 @@ class ReportBuilder:
         )
 
         if not recommendations:
-            return (
-                f"## § 8 仓位和买卖指令\n\n{header}\n"
-                "_当前无买入指令，建议全仓现金等待机会。_"
-            )
+            return f"## § 8 仓位和买卖指令\n\n{header}\n" "_当前无买入指令，建议全仓现金等待机会。_"
 
         order_rows = []
         buy_orders = [r for r in recommendations if r.get("action") in ("买入", "轻仓试错")]
@@ -520,7 +560,9 @@ class ReportBuilder:
             for item in buy_orders:
                 display_name = self._display_name(item)
                 action = item.get("action", "观察")
-                entry = _safe_float(item.get("recommended_entry_price") or item.get("current_price", 0))
+                entry = _safe_float(
+                    item.get("recommended_entry_price") or item.get("current_price", 0)
+                )
                 shares = int(item.get("portfolio_shares", 0))
                 amount = _safe_float(item.get("portfolio_amount", 0))
                 weight = _safe_float(item.get("portfolio_weight", 0))
@@ -532,9 +574,7 @@ class ReportBuilder:
                 )
 
         if watch_orders:
-            order_rows.append(
-                "\n**👁️ 观察/持续跟踪（暂不执行）：**\n\n"
-            )
+            order_rows.append("\n**👁️ 观察/持续跟踪（暂不执行）：**\n\n")
             for item in watch_orders:
                 display_name = self._display_name(item)
                 cur_price = _safe_float(item.get("current_price", 0))

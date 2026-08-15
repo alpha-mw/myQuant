@@ -1,4 +1,6 @@
-"""Registered, versioned strategy-record catalog storage."""
+"""Registered Strategy Record Store APIs."""
+
+from .history import HistoryLoader
 
 from .store import (
     CATALOG_MAX_BYTES,
@@ -22,6 +24,7 @@ __all__ = [
     "StrategyRecordCASMismatch",
     "StrategyRecordConflict",
     "StrategyRecordStoreError",
+    "HistoryLoader",
     "bootstrap_catalog",
     "catalog_history_entries",
     "catalog_online_record_dirs",

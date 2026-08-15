@@ -6,11 +6,31 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime
-import json
 from pathlib import Path, PurePosixPath
 import re
 
-from quant_investor.pipeline import QuantInvestor
+from quant_investor.cli.output import (
+    MachineArgumentParser,
+    command_boundary,
+    emit_json,
+)
+from quant_investor.cli.unified import (
+    factor_evaluate,
+    factor_history,
+    factor_mine,
+    factor_observe,
+    factor_status,
+    research_compile_evidence,
+    research_evaluate,
+    research_forward,
+    research_inspect,
+    research_readiness,
+    system_activate,
+    system_assemble,
+    system_status,
+    system_suspend,
+    system_verify,
+)
 
 
 def run_portfolio_cycle_status(**kwargs):
@@ -44,40 +64,52 @@ def run_market_maintenance(**kwargs):
 
 
 def run_market_analysis(**kwargs):
-    return _read_v17_public_run(kwargs, surface="market analyze")
+    return _read_public_run(kwargs, surface="market analyze")
 
 
 def run_market_pipeline(**kwargs):
-    return _read_v17_public_run(kwargs, surface="market run")
+    return _read_public_run(kwargs, surface="market run")
 
 
 def run_market_backtest(**kwargs):
     del kwargs
-    from quant_investor.v17_mainline import V17MainlineError
+    from quant_investor.mainline import BACKTEST_UNAVAILABLE, MainlineError
 
-    raise V17MainlineError("V17_BACKTEST_UNAVAILABLE")
+    raise MainlineError(BACKTEST_UNAVAILABLE, blockers=[BACKTEST_UNAVAILABLE])
 
 
-def _read_v17_public_run(kwargs: dict, *, surface: str):
-    from quant_investor.v17_mainline import V17MainlineError, read_public_run
+def _read_public_run(kwargs: dict, *, surface: str):
+    from quant_investor.mainline import MAINLINE_ARGUMENTS_INVALID, MainlineError, read_public_run
 
     values = dict(kwargs)
     if "market" in values and str(values["market"]).upper() != "CN":
-        raise V17MainlineError("V17_MARKET_UNSUPPORTED")
-    retired = sorted(
-        key
-        for key in values
-        if key not in {"workspace_root", "strategy_id"}
-    )
+        raise MainlineError(
+            MAINLINE_ARGUMENTS_INVALID,
+            blockers=["MARKET_UNSUPPORTED"],
+        )
+    retired = sorted(key for key in values if key not in {"workspace_root", "strategy_id"})
     if retired:
-        raise V17MainlineError(
-            "V17_PUBLIC_ARGUMENTS_UNSUPPORTED",
-            detail=f"{surface}: {', '.join(retired)}",
+        raise MainlineError(
+            MAINLINE_ARGUMENTS_INVALID,
+            blockers=["PUBLIC_ARGUMENTS_UNSUPPORTED"],
         )
     return read_public_run(
         Path(values.pop("workspace_root", ".")),
         strategy_id=values.pop("strategy_id", ""),
     )
+
+
+def _read_cli_public_run(*, workspace_root: str, strategy_id: str) -> dict:
+    """Emit the exact six-field unavailable state before exiting with code 2."""
+
+    from quant_investor.mainline import MainlineStore
+
+    store = MainlineStore(Path(workspace_root))
+    state = store.status(strategy_id=strategy_id)
+    if state.get("status") != "ACTIVE":
+        _print_json(state)
+        raise SystemExit(2)
+    return store.read_public_run(strategy_id=strategy_id)
 
 
 def run_fundamental_maintenance(**kwargs):
@@ -151,7 +183,11 @@ def run_storage_diff(**kwargs):
 
 
 def _print_json(payload) -> None:
-    print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+    if hasattr(payload, "to_dict"):
+        payload = payload.to_dict()
+    if type(payload) is not dict:
+        raise TypeError("public CLI responses must be JSON objects")
+    emit_json(payload)
 
 
 def _parse_boolish(value: str | bool | None) -> bool:
@@ -179,25 +215,26 @@ def _workspace_relative_canonical_path(value: str) -> str:
         or text != candidate.as_posix()
         or any(part in {"", ".", ".."} for part in candidate.parts)
     ):
-        raise argparse.ArgumentTypeError(
-            "expected a canonical workspace-relative POSIX path"
-        )
+        raise argparse.ArgumentTypeError("expected a canonical workspace-relative POSIX path")
     try:
         text.encode("ascii")
     except UnicodeEncodeError as exc:
-        raise argparse.ArgumentTypeError(
-            "expected an ASCII workspace-relative POSIX path"
-        ) from exc
+        raise argparse.ArgumentTypeError("expected an ASCII workspace-relative POSIX path") from exc
     return text
 
 
 def _sha256_argument(value: str) -> str:
     text = str(value)
     if re.fullmatch(r"[0-9a-f]{64}", text) is None:
-        raise argparse.ArgumentTypeError(
-            "expected a lowercase 64-character SHA-256"
-        )
+        raise argparse.ArgumentTypeError("expected a lowercase 64-character SHA-256")
     return text
+
+
+def _pointer_sha_argument(value: str) -> str:
+    text = str(value)
+    if text == "EMPTY":
+        return text
+    return _sha256_argument(text)
 
 
 def _decision_cutoff_argument(value: str) -> str:
@@ -218,39 +255,151 @@ def _decision_cutoff_argument(value: str) -> str:
 def _historical_label_argument(value: str) -> str:
     text = str(value)
     if not text or text != text.strip() or len(text) > 160 or "\x00" in text:
-        raise argparse.ArgumentTypeError(
-            "historical label must be canonical text"
-        )
+        raise argparse.ArgumentTypeError("historical label must be canonical text")
     return text
 
 
-def _add_v17_public_read_arguments(parser: argparse.ArgumentParser) -> None:
+def _add_public_read_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--workspace-root",
         default=".",
-        help="V17 mainline workspace root",
+        help="unified runtime workspace root",
     )
     parser.add_argument(
         "--strategy-id",
         required=True,
-        help="canonical V17 strategy id",
+        help="canonical strategy id",
+    )
+
+
+def _add_workspace_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--workspace-root",
+        default=".",
+        help="unified runtime workspace root",
+    )
+
+
+def _add_exact_request_arguments(parser: argparse.ArgumentParser) -> None:
+    _add_workspace_argument(parser)
+    parser.add_argument(
+        "--request",
+        required=True,
+        type=_workspace_relative_canonical_path,
+        help="canonical workspace-relative request path",
+    )
+    parser.add_argument(
+        "--expected-request-sha256",
+        required=True,
+        type=_sha256_argument,
+        help="exact canonical request byte SHA-256",
+    )
+
+
+def _add_deployed_release_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--deployed-release-ref",
+        type=_workspace_relative_canonical_path,
+        default=None,
+        help="optional exact object-ref JSON for the installed release",
+    )
+    parser.add_argument(
+        "--expected-deployed-release-ref-sha256",
+        type=_sha256_argument,
+        default=None,
+        help="exact byte SHA-256 paired with --deployed-release-ref",
     )
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = MachineArgumentParser(
         prog="quant-investor",
         description="Quant-Investor 单一主线 CLI。",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    research_parser = subparsers.add_parser("research", help="只读 V17 主线研究结果")
+    system_parser = subparsers.add_parser("system", help="统一系统状态与激活")
+    system_subparsers = system_parser.add_subparsers(dest="system_command", required=True)
+    system_status_parser = system_subparsers.add_parser(
+        "status", help="读取活动统一 generation 状态"
+    )
+    _add_workspace_argument(system_status_parser)
+    _add_deployed_release_arguments(system_status_parser)
+    system_status_parser.add_argument(
+        "--external-routing",
+        type=_workspace_relative_canonical_path,
+        default=None,
+        help="optional exact external-routing observation JSON",
+    )
+    system_status_parser.add_argument(
+        "--expected-external-routing-sha256",
+        type=_sha256_argument,
+        default=None,
+    )
+
+    system_verify_parser = system_subparsers.add_parser("verify", help="验证活动或显式 generation")
+    _add_workspace_argument(system_verify_parser)
+    system_verify_parser.add_argument("--generation", type=_sha256_argument, default=None)
+    _add_deployed_release_arguments(system_verify_parser)
+
+    system_assemble_parser = system_subparsers.add_parser(
+        "assemble", help="从 sealed request 组装非活动 generation"
+    )
+    _add_exact_request_arguments(system_assemble_parser)
+
+    system_activate_parser = system_subparsers.add_parser(
+        "activate", help="以 CAS 激活已验证 generation"
+    )
+    _add_workspace_argument(system_activate_parser)
+    system_activate_parser.add_argument("--generation", required=True, type=_sha256_argument)
+    system_activate_parser.add_argument(
+        "--expect-pointer-sha", required=True, type=_pointer_sha_argument
+    )
+    _add_deployed_release_arguments(system_activate_parser)
+
+    system_suspend_parser = system_subparsers.add_parser(
+        "suspend", help="紧急 CAS 到预构建的最小挂起 generation"
+    )
+    _add_workspace_argument(system_suspend_parser)
+    system_suspend_parser.add_argument("--generation", required=True, type=_sha256_argument)
+    system_suspend_parser.add_argument(
+        "--expect-pointer-sha", required=True, type=_pointer_sha_argument
+    )
+
+    factor_parser = subparsers.add_parser("factor", help="统一 Factor governance")
+    factor_subparsers = factor_parser.add_subparsers(dest="factor_command", required=True)
+    factor_status_parser = factor_subparsers.add_parser(
+        "status", help="从已存储验证闭包构建非授权 Factor 状态"
+    )
+    _add_exact_request_arguments(factor_status_parser)
+    for name, help_text in (
+        ("mine", "seal prospective preregistration"),
+        ("observe", "seal initial selection or prospective observation"),
+        ("evaluate", "evaluate or build an inactive admitted set"),
+    ):
+        candidate_parser = factor_subparsers.add_parser(name, help=help_text)
+        _add_exact_request_arguments(candidate_parser)
+    factor_history_parser = factor_subparsers.add_parser(
+        "history", help="读取统一 generation 绑定的 Factor lineage"
+    )
+    _add_workspace_argument(factor_history_parser)
+
+    research_parser = subparsers.add_parser("research", help="统一主线研究能力")
     research_subparsers = research_parser.add_subparsers(
         dest="research_command",
         required=True,
     )
-    research_run = research_subparsers.add_parser("run", help="读取 V17 活动主线")
-    _add_v17_public_read_arguments(research_run)
+    research_run = research_subparsers.add_parser("run", help="读取活动统一主线")
+    _add_public_read_arguments(research_run)
+    for name, help_text in (
+        ("forward", "seal inactive forward-research request"),
+        ("evaluate", "evaluate precomputed research stages"),
+        ("compile-evidence", "compile exact inactive evidence closure"),
+        ("readiness", "assess generation-compatible readiness"),
+        ("inspect", "inspect one stable artifact without mutation"),
+    ):
+        research_candidate = research_subparsers.add_parser(name, help=help_text)
+        _add_exact_request_arguments(research_candidate)
 
     market_parser = subparsers.add_parser("market", help="全市场工作流")
     market_subparsers = market_parser.add_subparsers(
@@ -275,7 +424,13 @@ def _build_parser() -> argparse.ArgumentParser:
     market_maintain.add_argument("--workers", type=int, default=4)
     market_maintain.add_argument("--batch-size", type=int, default=None)
     market_maintain.add_argument("--max-rounds", type=int, default=1)
-    market_maintain.add_argument("--fail-on-incomplete", nargs="?", const=True, default=False, type=_parse_boolish)
+    market_maintain.add_argument(
+        "--fail-on-incomplete",
+        nargs="?",
+        const=True,
+        default=False,
+        type=_parse_boolish,
+    )
     market_maintain.add_argument("--allowed-stale-symbols", nargs="*")
     market_maintain.add_argument("--staged", action="store_true")
     market_maintain.add_argument("--resume", action="store_true")
@@ -426,13 +581,9 @@ def _build_parser() -> argparse.ArgumentParser:
     market_macro.add_argument("--expected-coverage-manifest-sha256", required=True)
     market_macro.add_argument("--scope-artifact-path", required=True)
     market_macro.add_argument("--expected-scope-artifact-sha256", required=True)
-    market_macro.add_argument(
-        "--release-root", default="data/parquet/cn/macro_release_calendar"
-    )
+    market_macro.add_argument("--release-root", default="data/parquet/cn/macro_release_calendar")
     market_macro.add_argument("--expected-release-pointer-sha256", required=True)
-    market_macro.add_argument(
-        "--observations-root", default="data/parquet/cn/macro_observations"
-    )
+    market_macro.add_argument("--observations-root", default="data/parquet/cn/macro_observations")
     market_macro.add_argument("--expected-observations-pointer-sha256", required=True)
     market_macro.add_argument("--release-run-id", required=True)
     market_macro.add_argument("--observations-run-id", required=True)
@@ -449,9 +600,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "storage-reactivate-snapshot",
         help="以 SHA/CAS 绑定恢复已存在的 immutable CN snapshot；默认只做 dry-run",
     )
-    market_storage_reactivate_snapshot.add_argument(
-        "--market", required=True, choices=["CN"]
-    )
+    market_storage_reactivate_snapshot.add_argument("--market", required=True, choices=["CN"])
     market_storage_reactivate_snapshot.add_argument("--snapshot-id", required=True)
     market_storage_reactivate_snapshot.add_argument(
         "--expected-snapshot-manifest-sha256", required=True
@@ -459,9 +608,7 @@ def _build_parser() -> argparse.ArgumentParser:
     market_storage_reactivate_snapshot.add_argument(
         "--expected-market-pointer-sha256", required=True
     )
-    market_storage_reactivate_snapshot.add_argument(
-        "--acknowledge-trade-date", required=True
-    )
+    market_storage_reactivate_snapshot.add_argument("--acknowledge-trade-date", required=True)
     market_storage_reactivate_snapshot.add_argument("--reason", required=True)
     market_storage_reactivate_snapshot.add_argument(
         "--commit",
@@ -499,15 +646,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     market_storage_diff.add_argument("--market", required=True, choices=["CN"])
 
-    market_analyze = market_subparsers.add_parser("analyze", help="读取 V17 活动主线")
-    _add_v17_public_read_arguments(market_analyze)
+    market_analyze = market_subparsers.add_parser("analyze", help="读取活动统一主线")
+    _add_public_read_arguments(market_analyze)
 
-    market_run = market_subparsers.add_parser("run", help="读取 V17 活动主线")
-    _add_v17_public_read_arguments(market_run)
+    market_run = market_subparsers.add_parser("run", help="读取活动统一主线")
+    _add_public_read_arguments(market_run)
 
-    market_backtest = market_subparsers.add_parser(
+    market_subparsers.add_parser(
         "backtest",
-        help="V17 回测不可用（固定 fail closed）",
+        help="正式回测不可用（固定 fail closed）",
     )
 
     portfolio_parser = subparsers.add_parser(
@@ -530,7 +677,7 @@ def _build_parser() -> argparse.ArgumentParser:
     portfolio_cycle_status.add_argument(
         "--strategy-id",
         default=None,
-        help="canonical V17 strategy id；缺失时报告 blocker，不推断历史标签映射",
+        help="canonical strategy id；缺失时报告 blocker，不推断历史标签映射",
     )
     portfolio_cycle_status.add_argument(
         "--historical-label",
@@ -572,20 +719,140 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> None:
+def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
+    """Route the explicit public command tree without dynamic dispatch."""
     parser = _build_parser()
     args = parser.parse_args(argv)
 
-    if args.command == "research" and args.research_command == "run":
-        investor = QuantInvestor(
-            workspace_root=args.workspace_root,
-            strategy_id=args.strategy_id,
+    if args.command == "system" and args.system_command == "status":
+        _print_json(
+            system_status(
+                workspace_root=args.workspace_root,
+                deployed_release_ref_path=args.deployed_release_ref,
+                expected_deployed_release_ref_sha256=(args.expected_deployed_release_ref_sha256),
+                external_routing_path=args.external_routing,
+                expected_external_routing_sha256=(args.expected_external_routing_sha256),
+            )
         )
-        _print_json(investor.run())
+        return
+
+    if args.command == "system" and args.system_command == "verify":
+        _print_json(
+            system_verify(
+                workspace_root=args.workspace_root,
+                generation_id=args.generation,
+                deployed_release_ref_path=args.deployed_release_ref,
+                expected_deployed_release_ref_sha256=(args.expected_deployed_release_ref_sha256),
+            )
+        )
+        return
+
+    if args.command == "system" and args.system_command == "assemble":
+        _print_json(
+            system_assemble(
+                workspace_root=args.workspace_root,
+                request_path=args.request,
+                expected_request_sha256=args.expected_request_sha256,
+            )
+        )
+        return
+
+    if args.command == "system" and args.system_command == "activate":
+        _print_json(
+            system_activate(
+                workspace_root=args.workspace_root,
+                generation_id=args.generation,
+                expected_pointer_sha256=args.expect_pointer_sha,
+                deployed_release_ref_path=args.deployed_release_ref,
+                expected_deployed_release_ref_sha256=(args.expected_deployed_release_ref_sha256),
+            )
+        )
+        return
+
+    if args.command == "system" and args.system_command == "suspend":
+        _print_json(
+            system_suspend(
+                workspace_root=args.workspace_root,
+                generation_id=args.generation,
+                expected_pointer_sha256=args.expect_pointer_sha,
+            )
+        )
+        return
+
+    if args.command == "factor" and args.factor_command == "status":
+        _print_json(
+            factor_status(
+                workspace_root=args.workspace_root,
+                request_path=args.request,
+                expected_request_sha256=args.expected_request_sha256,
+            )
+        )
+        return
+
+    if args.command == "factor" and args.factor_command == "mine":
+        _print_json(
+            factor_mine(
+                workspace_root=args.workspace_root,
+                request_path=args.request,
+                expected_request_sha256=args.expected_request_sha256,
+            )
+        )
+        return
+
+    if args.command == "factor" and args.factor_command == "observe":
+        _print_json(
+            factor_observe(
+                workspace_root=args.workspace_root,
+                request_path=args.request,
+                expected_request_sha256=args.expected_request_sha256,
+            )
+        )
+        return
+
+    if args.command == "factor" and args.factor_command == "evaluate":
+        _print_json(
+            factor_evaluate(
+                workspace_root=args.workspace_root,
+                request_path=args.request,
+                expected_request_sha256=args.expected_request_sha256,
+            )
+        )
+        return
+
+    if args.command == "factor" and args.factor_command == "history":
+        _print_json(factor_history(workspace_root=args.workspace_root))
+        return
+
+    if args.command == "research" and args.research_command == "run":
+        _print_json(
+            _read_cli_public_run(
+                workspace_root=args.workspace_root,
+                strategy_id=args.strategy_id,
+            )
+        )
+        return
+
+    research_handlers = {
+        "forward": research_forward,
+        "evaluate": research_evaluate,
+        "compile-evidence": research_compile_evidence,
+        "readiness": research_readiness,
+        "inspect": research_inspect,
+    }
+    if args.command == "research" and args.research_command in research_handlers:
+        _print_json(
+            research_handlers[args.research_command](
+                workspace_root=args.workspace_root,
+                request_path=args.request,
+                expected_request_sha256=args.expected_request_sha256,
+            )
+        )
         return
 
     if args.command == "market" and args.market_command == "maintain":
-        maintenance_batch_size = args.batch_size if args.batch_size is not None else (200 if args.staged else 50)
+        maintenance_batch_size = (
+            args.batch_size if args.batch_size is not None else (200 if args.staged else 50)
+        )
         run_market_maintenance(
             market=args.market,
             categories=args.categories,
@@ -603,12 +870,8 @@ def main(argv: list[str] | None = None) -> None:
             target_date=args.target_date,
             daily_window=args.daily_window,
             pit_generation_manifest=args.pit_generation_manifest,
-            expected_pit_generation_manifest_sha256=(
-                args.expected_pit_generation_manifest_sha256
-            ),
-            expected_market_pointer_sha256=(
-                args.expected_market_pointer_sha256
-            ),
+            expected_pit_generation_manifest_sha256=(args.expected_pit_generation_manifest_sha256),
+            expected_market_pointer_sha256=(args.expected_market_pointer_sha256),
             secondary_daily_source=args.secondary_daily_source,
             official_suspension_evidence=args.official_suspension_evidence,
         )
@@ -627,12 +890,8 @@ def main(argv: list[str] | None = None) -> None:
             fail_on_incomplete=args.fail_on_incomplete,
             allowed_stale_symbols=args.allowed_stale_symbols,
             pit_generation_manifest=args.pit_generation_manifest,
-            expected_pit_generation_manifest_sha256=(
-                args.expected_pit_generation_manifest_sha256
-            ),
-            expected_market_pointer_sha256=(
-                args.expected_market_pointer_sha256
-            ),
+            expected_pit_generation_manifest_sha256=(args.expected_pit_generation_manifest_sha256),
+            expected_market_pointer_sha256=(args.expected_market_pointer_sha256),
         )
         return
 
@@ -663,9 +922,7 @@ def main(argv: list[str] | None = None) -> None:
             run_id=args.run_id,
             authoritative_full_rebuild=args.authoritative_full_rebuild,
             canonical_scope_path=args.canonical_scope_path or None,
-            canonical_market_pointer_path=(
-                args.canonical_market_pointer_path or None
-            ),
+            canonical_market_pointer_path=(args.canonical_market_pointer_path or None),
             canonical_membership_path=args.canonical_membership_path or None,
             checkpoint_root=args.checkpoint_root or None,
             checkpoint_batch_size=args.checkpoint_batch_size,
@@ -721,9 +978,7 @@ def main(argv: list[str] | None = None) -> None:
             run_storage_reactivate_snapshot(
                 market=args.market,
                 snapshot_id=args.snapshot_id,
-                expected_snapshot_manifest_sha256=(
-                    args.expected_snapshot_manifest_sha256
-                ),
+                expected_snapshot_manifest_sha256=(args.expected_snapshot_manifest_sha256),
                 expected_market_pointer_sha256=args.expected_market_pointer_sha256,
                 acknowledge_trade_date=args.acknowledge_trade_date,
                 reason=args.reason,
@@ -750,17 +1005,15 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     if args.command == "market" and args.market_command == "analyze":
-        result = run_market_analysis(
-            workspace_root=args.workspace_root,
-            strategy_id=args.strategy_id,
+        result = _read_cli_public_run(
+            workspace_root=args.workspace_root, strategy_id=args.strategy_id
         )
         _print_json(result)
         return
 
     if args.command == "market" and args.market_command == "run":
-        result = run_market_pipeline(
-            workspace_root=args.workspace_root,
-            strategy_id=args.strategy_id,
+        result = _read_cli_public_run(
+            workspace_root=args.workspace_root, strategy_id=args.strategy_id
         )
         _print_json(result)
         return
@@ -770,49 +1023,29 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "portfolio" and args.portfolio_command == "cycle-status":
         if (args.identity_path is None) != (args.identity_sha256 is None):
+            parser.error("--identity-path and --identity-sha256 must be provided together")
+        if (args.holdings_pointer_path is None) != (args.holdings_pointer_sha256 is None):
             parser.error(
-                "--identity-path and --identity-sha256 must be provided together"
+                "--holdings-pointer-path and --holdings-pointer-sha256 " "must be provided together"
             )
-        if (args.holdings_pointer_path is None) != (
-            args.holdings_pointer_sha256 is None
-        ):
-            parser.error(
-                "--holdings-pointer-path and --holdings-pointer-sha256 "
-                "must be provided together"
-            )
-        try:
-            result = run_portfolio_cycle_status(
-                workspace_root=Path(args.workspace_root),
-                strategy_id=args.strategy_id,
-                historical_label=args.historical_label,
-                identity_path=args.identity_path,
-                identity_sha256=args.identity_sha256,
-                holdings_pointer_path=args.holdings_pointer_path,
-                holdings_pointer_sha256=args.holdings_pointer_sha256,
-                decision_cutoff=args.decision_cutoff,
-            )
-        except Exception as exc:  # command boundary: never expose a traceback
-            error_code = getattr(
-                exc, "code", "PORTFOLIO_CYCLE_INTERNAL_ERROR"
-            )
-            error_detail = getattr(exc, "detail", None)
-            if error_detail is None:
-                error_detail = "internal portfolio-cycle diagnostic failure"
-            _print_json(
-                {
-                    "schema_id": "myquant.v17.v4.portfolio-cycle-cli-error.v1",
-                    "status": "ERROR",
-                    "error": {
-                        "code": error_code,
-                        "detail": error_detail,
-                    },
-                    "operational_authority": False,
-                    "write_performed": False,
-                }
-            )
-            raise SystemExit(1) from None
+        result = run_portfolio_cycle_status(
+            workspace_root=Path(args.workspace_root),
+            strategy_id=args.strategy_id,
+            historical_label=args.historical_label,
+            identity_path=args.identity_path,
+            identity_sha256=args.identity_sha256,
+            holdings_pointer_path=args.holdings_pointer_path,
+            holdings_pointer_sha256=args.holdings_pointer_sha256,
+            decision_cutoff=args.decision_cutoff,
+        )
         payload = result.to_dict() if hasattr(result, "to_dict") else result
         _print_json(payload)
         if str(payload.get("state")) == "BLOCKED":
             raise SystemExit(2)
         return
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Execute the single public CLI under the stable error boundary."""
+
+    command_boundary(lambda: _dispatch(argv))

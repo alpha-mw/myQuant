@@ -56,14 +56,12 @@ strategy=aggressive_tech_manufacturing
 
 Registration is the single `_record_store/current.v1.json` pointer to an
 immutable catalog, not a caller-controlled allowlist. No pointer means an
-unbootstrapped legacy store; once `_record_store` exists, a missing or invalid
-pointer fails closed rather than falling back. The catalog enumerates identity
-exhaustively: an unregistered `(market, strategy)` pair fails closed. The one
-compatibility exception is the existing
-`US/simulated_portfolio_10000` HistoryLoader path: it may read immediate legacy
-run directories only, may not write, archive, publish a catalog, or inherit CN
-registration, and must remain covered by a named test. No other strategy gains
-access merely because a matching directory exists.
+unbootstrapped store; once `_record_store` exists, a missing or invalid pointer
+fails closed rather than falling back. The catalog enumerates identity
+exhaustively: an unregistered `(market, strategy)` pair fails closed. History
+reads use `quant_investor.strategy_records.history.HistoryLoader` and never scan
+an unregistered strategy directory. No strategy gains access merely because a
+matching directory exists.
 
 ## Live inventory and cutoff
 
@@ -111,12 +109,12 @@ runtime may not fall back to that scan.
 | `scripts/check_cn_dashboard_export.py` | Dashboard verifier | Indirect bundle/source read; no record writes | bundle verifier backed by typed registered refs | none | SHA/path drift rejects bundle |
 | `scripts/build_cn_dashboard_history_integrity.py` | Dashboard integrity operator | Direct historical bootstrap scan; writes registry outside live records | `load_dashboard_catalog_projection` with registered catalog validation | raw bootstrap only when unregistered; normal Dashboard never scans archive members | exact record set, catalog SHA, and projection SHA |
 | `scripts/build_holdings_fundamental_sheet.py` | Holdings diligence | Direct latest-directory/manual-ledger read; spreadsheet write outside store | `resolve_active_record_dirs`, active closure, declared contained Parquet ref | no CSV fallback; no direct latest-by-name/mtime fallback | Parquet SHA, containment, regular-file, symlink, and active-pointer tests |
-| `quant_investor.automation.history_loader.HistoryLoader` | Daily automation runtime | Recursive market-root read | `load_registered_catalog`, `catalog_history_entries` | read-only immediate-run compatibility solely for registered exception `US/simulated_portfolio_10000` | CN registered history identity and named US compatibility test |
-| `quant_investor.automation.daily_runner` and top-level runner | Daily automation runtime | Supplies market-root/config and consumes history; no strategy-record writer | passes explicit `history_strategy`; consumes HistoryLoader DTOs | no implicit CN strategy or direct root construction | dry-run/report-only/full path use identical explicit strategy |
-| `quant_investor.automation.report_builder` | Daily report owner | Reads loader DTO; writes report outside store | DTO fields `record_id`, `storage_state`, `evidence_status` | prose may name the store; no filesystem access | report provenance contains DTO identity, not reconstructed path |
+| `quant_investor.strategy_records.history.HistoryLoader` | Strategy Record Store read model | Catalog-only registered history read | `load_registered_catalog`, `catalog_history_entries` | none; unregistered identities fail closed | registered CN identity and unregistered-directory rejection |
+| `quant_investor.automation.daily_runner` and top-level runner | Read-only automation adapter | Reads the active unified generation and registered history | stable Mainline reader plus explicit `history_strategy` | no generation, pointer, report, or store write | unavailable Mainline fails closed; active generation identity is retained |
+| `quant_investor.automation.report_builder` | Inactive report formatter | Formats registered history DTOs outside the active runtime route | DTO fields `record_id`, `storage_state`, `evidence_status` | no Strategy Record Store filesystem access | formatter import boundary contains no store writer |
 | `daily_config.py` | Daily automation configuration owner | Configuration only | explicit `history_strategy=aggressive_tech_manufacturing` | missing/unknown registration blocks | config validation rejects missing or unknown strategy |
 | `scripts/manage_cn_strategy_records.py` | Record-store operator | New bootstrap/stage/publish/verify/rehearsal CLI | privileged `command_*`/`build_inventory` operations; catalog mutation only through `bootstrap_catalog`/`publish_catalog` | bootstrap reads legacy; stage/archive temp I/O is explicit; no source-record mutation | explicit subcommand, CAS, budgets, malicious member/path rejection, zero source-payload mutation |
-| `scripts/validate_cn_aggressive_factor_universe.py` | Factor research | Currently writes a nonstandard directory under the production root | writes under `results/research/CN/aggressive_tech_manufacturing/...` | existing legacy directory is classified only; never adopted as a run | default output is outside strategy-record root |
+| `quant_investor.factors.governance` | Factor research | Stable bootstrap, prospective evidence, admission, and status only | sealed factor artifacts through the unified System closure | no Strategy Record Store filesystem access or research-directory bypass | focused unified Factor tests and store-boundary scan |
 | `scripts/log_decision.py` metadata | Decision audit | Append-only decision log may contain absolute legacy `run_dir` metadata | new events store `record_id` plus typed `artifact_ref`; resolver handles location | never rewrite old JSONL; old absolute path is provenance only | new event has no authoritative absolute run path; old event remains byte-identical |
 | automation `automation` | External automation owner | Legacy prompt/config may directly create record directories and files | only registered receipt transaction/write API | old config retained by SHA for rollback; direct writes forbidden after cutover | captured old/new config SHA; transaction and no-action budget tests |
 | automation `cn-dashboard` | External automation owner | Reads live records and may run Dashboard builders | registered Dashboard/catalog API | bootstrap scanner only in explicit integrity build | registered projection parity and source-ref verification |

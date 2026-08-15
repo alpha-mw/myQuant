@@ -5,13 +5,15 @@ qualified candidates for the fourth consecutive week. The run was not unlucky.
 This document records why the current mechanism cannot produce a new production
 factor, and what to replace it with.
 
-## 1. What the current mechanism does
+## 1. What the pre-cutover mechanism did
 
-`scripts/mine_quant_branch_factors.py` enumerates a fixed catalogue of
-candidates — roughly 230 of them, formed as `family x window` over a
-hand-written list of price/volume, fundamental and formulaic families — scores
-each one standalone on a single full-sample path, and admits the ones that pass
-all eight gates in `quant_investor/factors/governance.py`.
+The retired miner enumerated a fixed catalogue of candidates — roughly 230 of
+them, formed as `family x window` over a hand-written list of price/volume,
+fundamental and formulaic families — scored each one standalone on a single
+full-sample path, and routed passing results through a now-retired governance
+module. Those executable identities are preserved only in unified-cutover
+custody. The active authority is the stable
+`quant_investor.factors.governance` package and its prospective contracts.
 
 Three properties of that design matter more than any parameter inside it.
 
@@ -282,11 +284,12 @@ falls short.
 
 ### Stage 3 — Search over an expression space, with a set-level objective
 
-This repository already has `quant_investor/factors/aquant_expression.py`, an
-expression evaluator. The search space therefore exists; only the search is
-missing. Replace the fixed 230-candidate list with generation over
-operator x field x window expression trees, in the Alpha158/Alpha360 idiom —
-a curated operator set expanded across multiple rolling horizons.
+The stable runtime deliberately exposes no active expression-search evaluator.
+Any future search over operator x field x window expression trees must first
+produce an exact preregistration through `quant_investor.factors.governance`,
+then follow its prospective observation, evaluation, and admission contracts.
+The existence of a proposed Alpha158/Alpha360-style search space is not runtime
+authority and cannot revive a retired evaluator or a fixed candidate list.
 
 For the search itself, genetic programming is the established baseline; the
 current literature reports better results from RL (AlphaGen, AlphaQCM), from a

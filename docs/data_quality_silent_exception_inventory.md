@@ -27,7 +27,9 @@ Out-of-scope silent catch sites left unchanged in Phase 8:
 - `quant_investor/market/market_data_reader.py`: 256
 - `quant_investor/market/download.py`: 482, 484
 - `quant_investor/market/name_map.py`: 53
-- `scripts/factor_health_automation.py`: 467, 739
+- Retired Factor health automation findings are preserved only in the unified
+  cutover custody records; no active automation script is included in this
+  exception inventory.
 
 Notes:
 

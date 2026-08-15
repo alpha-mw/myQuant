@@ -7,7 +7,7 @@
 *myQuant 把时点数据、因子验证、前瞻证据和确定性风险评估放进同一条可复现的研究流程。*
 
 [![Python](https://img.shields.io/badge/Python-3.13%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org)
-[![Version](https://img.shields.io/badge/Version-17.0.0-FF6B35?style=flat-square)](pyproject.toml)
+[![Runtime](https://img.shields.io/badge/Runtime-Stable-FF6B35?style=flat-square)](docs/migrations/unified-cutover/README.md)
 [![License](https://img.shields.io/badge/License-MIT-22C55E?style=flat-square)](LICENSE)
 
 [English](README.md) · **简体中文**
@@ -110,14 +110,13 @@ myQuant 在统一的全市场面板上评估价量、流动性、基本面与公
 ### 预注册与前瞻证据
 
 前瞻研究从一份显式请求开始，请求内容和 SHA-256 在结果出现前密封。后续评估把真实结果绑定回
-原始请求，并生成不可变回执。Shadow 与 Forward 会积累研究证据，但不会修改公开主线，也不会
-获得生产权限。
+原始请求，并生成不可变评估记录。前瞻研究会积累证据，但不会修改公开主线，也不会获得生产权限。
 
 历史回测可以支持一个假设；成熟度则需要依靠假设声明之后才产生的证据。两者在系统里有明确边界。
 
 ### 确定性的投资决策智能
 
-I1 决策库重放一份精确的研究闭包，分别评估 `BUSINESS`、`FINANCIAL`、`MARKET` 和 `THESIS`
+稳定决策库重放一份精确的研究闭包，分别评估 `BUSINESS`、`FINANCIAL`、`MARKET` 和 `THESIS`
 四类风险，并返回五类状态之一：
 
 | 状态 | 研究含义 |
@@ -134,8 +133,9 @@ memo 只能引用已经验证的假设、证据、风险和允许进入的研究
 ### 只读公开入口与准备度诊断
 
 公开 `QuantInvestor` Python API，以及 `research run`、`market analyze` 和 `market run` 命令，
-都会读取同一个精确的 V17 active pointer。它们不会扫描最新结果，也不会临时生成替代结果。
-`portfolio cycle-status` 使用显式的策略、持仓和策略文件检查准备度，不会写入组合。
+都会读取同一个精确的 `results/system/_active.json` 及其绑定的不可变 generation。它们不会扫描最新结果，
+也不会临时生成替代结果。`portfolio cycle-status` 使用显式的策略、持仓和策略文件检查准备度，
+不会写入组合。
 
 这些入口让使用者读取受治理的结果、定位缺失输入，同时把发布、激活和组合修改保持为不同权限。
 
@@ -171,11 +171,16 @@ memo 只能引用已经验证的假设、证据、风险和允许进入的研究
 myQuant 当前支持 CN A 股与研究型决策工作流。
 
 **仓库内已经提供：** 规范行情与基本面维护、严格存储验证、因子研究与治理、考虑搜索代价的统计
-检验、前瞻证据与 Shadow 工具、确定性 I1 决策库、只读 V17 公开读取、组合准备度诊断，以及
-只读 dashboard 展示。
+检验、前瞻研究证据、确定性决策库、稳定的只读公开读取、组合准备度诊断，以及只读 dashboard
+展示。规范契约、系统状态、因子治理、研究智能、主线解析与 CLI 路由分别由按职责命名的稳定
+package 提供，不再使用 runtime 版本选择器。
 
-**当前公开权限之外：** 受治理的生产发布器、active pointer 激活 CLI、自动实盘组合构建、模拟盘
-账本、券商连接、报单、执行与交易。`PAPER_CANDIDATE` 等研究状态不代表任何市场操作。
+**写入边界：** `quant-investor system activate` 是 `results/system/_active.json` 的唯一常规 writer；它要求
+精确、已经验证的不可变 generation 与文件系统写权限。verify、status、factor、research read 与
+公开结果命令都不能激活它。
+
+**当前公开权限之外：** 自动实盘组合构建、模拟盘账本、券商连接、报单、执行与交易。
+`PAPER_CANDIDATE` 等研究状态不代表任何市场操作。
 
 ## 运行
 
@@ -183,49 +188,50 @@ myQuant 当前支持 CN A 股与研究型决策工作流。
 uv sync
 cp .env.example .env
 quant-investor --help
-quant-investor-v17-v4 --help
 ```
 
 本地工作默认离线。运行前先查看精确命令契约：
 
 ```bash
+quant-investor system verify --help
+quant-investor system status --help
+quant-investor system activate --help
+quant-investor factor status --help
 quant-investor market maintain --help
 quant-investor market storage-validate --help
 quant-investor research run --help
+quant-investor research compile-evidence --help
+quant-investor research readiness --help
+quant-investor research inspect --help
+quant-investor research forward --help
+quant-investor research evaluate --help
 quant-investor portfolio cycle-status --help
-quant-investor-v17-v4 run-forward --help
-quant-investor-v17-v4 research-evaluate --help
 ```
+
+硬切换已经移除 secondary executable 与旧命令。当前只使用上面的稳定写法；精确的新旧关系见
+[CLI 迁移映射](docs/migrations/unified-cutover/cli-mapping.md)。仓库明确保留的 `market download`
+维护兼容 alias 不受这次切换影响。
 
 需要 Python 3.13+。CI 的本地等价检查：
 
 ```bash
 uv run pytest tests/unit -q
 uv run flake8 quant_investor --count --select=E9,F63,F7,F82 --show-source --statistics
-uv run mypy quant_investor/factors --ignore-missing-imports
+uv run mypy quant_investor/contracts quant_investor/system \
+  quant_investor/factors/governance quant_investor/intelligence \
+  quant_investor/mainline quant_investor/cli --ignore-missing-imports
 ```
 
 ## 文档
 
-建议先读[因子挖掘机制](docs/factor_mining_mechanism.md)，了解统计检验和集合级目标背后的研究诊断。
-
-- [文档索引](docs/README.md)
-- [Factor Governance v4](docs/factor_governance_v4.md)
-- [研究管线与协议](docs/architecture/research_pipeline_and_protocols.md)
-- [V17 v4 主线契约](docs/architecture/v17_v4_production_research_contract.md)
-- [I0 投资智能](docs/architecture/v17_i0_investment_intelligence.md)
-- [R2.2 前瞻研究评估器](docs/architecture/v17_r22_forward_research_evaluator.md)
-- [I1 投资决策智能](docs/architecture/v17_i1_investment_decision_intelligence.md)
-- [Tushare 10,000 投资智能数据链路](docs/architecture/tushare_10000_investment_intelligence.md)
-- [组合周期基础](docs/architecture/v17_portfolio_cycle_foundation.md)
+- [统一 runtime 硬切换](docs/migrations/unified-cutover/README.md)
+- [稳定因子治理](docs/factor_governance.md)
 - [Tushare 数据清洗](docs/tushare_data_cleaning.md)
-- [交易纪律](docs/trading_discipline.md)
-- [V17 v4 运维](docs/runbooks/v17_v4_operations.md)
+- [Codex 部署副本](operations/codex/README.md)
 - [Agent 指南](AGENTS.md)
 
 统计设计参考 Harvey、Liu 与 Zhu 的显著性门槛；Bailey 与 López de Prado 关于选择偏差和回测
 过拟合的研究；针对重叠标签的组合式净化交叉验证；以及 AlphaGen 和 AlphaForge 的集合级目标。
-完整引用见因子挖掘机制文档。
 
 ## 许可证
 

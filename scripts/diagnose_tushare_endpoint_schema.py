@@ -8,19 +8,32 @@ from dataclasses import asdict
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, Sequence
 
-from quant_investor.intelligence_v2.sources.tushare import (
+from quant_investor.market.tushare import (
     build_tushare_request_receipt,
     build_tushare_schema_diagnostic_receipt,
 )
-from quant_investor.v17_v4_runtime.tushare_https import OfficialTushareHttpsClient
+from quant_investor.market.tushare_transport import (
+    OfficialTushareHttpsClient,
+    TushareSchemaDiagnostic,
+)
 from scripts.probe_tushare_10000_capabilities import (
     ProbeSafetyError,
     _load_policy,
     _validate_new_output_root,
     _write_exact,
 )
+
+
+class SchemaDiagnosticClient(Protocol):
+    def diagnose_schema(
+        self,
+        *,
+        api_name: str,
+        params: dict[str, Any],
+        expected_fields: Sequence[str],
+    ) -> TushareSchemaDiagnostic: ...
 
 
 def _single_plan(policy: dict[str, Any]) -> dict[str, Any]:
@@ -38,7 +51,11 @@ def _single_plan(policy: dict[str, Any]) -> dict[str, Any]:
     return plans[0]
 
 
-def run(args: argparse.Namespace) -> dict[str, Any]:
+def run(
+    args: argparse.Namespace,
+    *,
+    client: SchemaDiagnosticClient | None = None,
+) -> dict[str, Any]:
     policy = _load_policy(Path(args.policy_path), args.policy_sha256)
     plan = _single_plan(policy)
     output_root = Path(args.output_root)
@@ -62,8 +79,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         sanitized_params=plan["fixed_params"],
         requested_at=args.diagnosed_at,
     )
+    transport = OfficialTushareHttpsClient(strict_decimal_decode=True) if client is None else client
     diagnostic = asdict(
-        OfficialTushareHttpsClient(strict_decimal_decode=True).diagnose_schema(
+        transport.diagnose_schema(
             api_name=plan["api_name"],
             params=plan["fixed_params"],
             expected_fields=plan["expected_fields"],

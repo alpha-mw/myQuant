@@ -1,4 +1,4 @@
-"""V17-only public pipeline facade."""
+"""Stable public pipeline facade."""
 
 from quant_investor.pipeline.mainline import QuantInvestor
 

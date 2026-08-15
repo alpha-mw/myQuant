@@ -81,7 +81,7 @@ def _reject_retired_env_keys() -> None:
         raise RuntimeError(
             "retired myQuant environment keys are unsupported: "
             + ", ".join(configured)
-            + "; see docs/runbooks/v17_legacy_configuration_cleanup.md"
+            + "; see docs/migrations/unified-cutover/cli-mapping.md"
         )
 
 

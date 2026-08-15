@@ -17,6 +17,7 @@ from quant_investor.portfolio_cycle import (
     HOLDINGS_POINTER_SCHEMA_ID,
     HOLDINGS_PRICE_SOURCE_SCHEMA_ID,
     IDENTITY_DECLARATION_SCHEMA_ID,
+    PROTOCOL,
     PortfolioCycleError,
     canonical_json_bytes,
     resolve_holdings_baseline,
@@ -24,7 +25,7 @@ from quant_investor.portfolio_cycle import (
     seal_document,
 )
 
-STRATEGY = "aggressive-tech-owner-v17"
+STRATEGY = "aggressive-tech-owner"
 HISTORICAL_LABEL = "aggressive_tech_manufacturing"
 
 
@@ -47,7 +48,7 @@ def _write_json(root: Path, relative_path: str, body: dict[str, Any]) -> tuple[s
 def _identity_body(**overrides: Any) -> dict[str, Any]:
     body = {
         "schema_id": IDENTITY_DECLARATION_SCHEMA_ID,
-        "protocol": "myquant.v17.v4",
+        "protocol": PROTOCOL,
         "historical_label": HISTORICAL_LABEL,
         "canonical_strategy_id": STRATEGY,
         "declared_by": "maxwell",
@@ -123,7 +124,7 @@ def _build_holdings(
 ) -> tuple[str, str, dict[str, str]]:
     policy = {
         "schema_id": HOLDINGS_ACCOUNTING_POLICY_SCHEMA_ID,
-        "protocol": "myquant.v17.v4",
+        "protocol": PROTOCOL,
         "currency": "CNY",
         "money_scale": 4,
         "rounding_mode": "ROUND_HALF_EVEN",
@@ -137,7 +138,7 @@ def _build_holdings(
     )
     price_source = {
         "schema_id": HOLDINGS_PRICE_SOURCE_SCHEMA_ID,
-        "protocol": "myquant.v17.v4",
+        "protocol": PROTOCOL,
         "currency": "CNY",
         "source_id": "exact-close-evidence-v1",
         "as_of": "2026-08-05T07:00:00Z",
@@ -153,7 +154,7 @@ def _build_holdings(
     ledger_path, ledger_sha = _write_exact(root, "holdings/ledger.parquet", ledger)
     manifest = {
         "schema_id": HOLDINGS_MANIFEST_SCHEMA_ID,
-        "protocol": "myquant.v17.v4",
+        "protocol": PROTOCOL,
         "canonical_strategy_id": manifest_strategy,
         "account_id": "maxwell-paper-cn",
         "currency": "CNY",
@@ -188,7 +189,7 @@ def _build_holdings(
     manifest_path, manifest_sha = _write_json(root, "holdings/manifest.json", manifest)
     pointer = {
         "schema_id": HOLDINGS_POINTER_SCHEMA_ID,
-        "protocol": "myquant.v17.v4",
+        "protocol": PROTOCOL,
         "canonical_strategy_id": pointer_strategy,
         "updated_at": "2026-08-05T08:01:00Z",
         "manifest_ref": {

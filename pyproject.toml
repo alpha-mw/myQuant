@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "quant-investor"
 version = "17.0.0"
-description = "V17 v4 single-mainline research runtime with fail-closed active-pointer routing"
+description = "Versionless unified Factor, Intelligence, and Mainline runtime"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
@@ -19,9 +19,8 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Office/Business :: Financial :: Investment",
 ]
-# The factor-governance AST identity protocol pins ast.parse(optimize=...) and
-# ast.dump(show_empty=True) as hashed contract terms, and both are 3.13+ only.
-# Earlier interpreters raise TypeError, so 3.13 is the true floor.
+# Canonical contract validation uses Python 3.13 AST behavior as its supported
+# interpreter floor.
 requires-python = ">=3.13"
 dependencies = [
     "Brotli>=1.1.0",
@@ -68,7 +67,6 @@ Repository = "https://github.com/alpha-mw/myQuant"
 
 [project.scripts]
 quant-investor = "quant_investor.cli.main:main"
-quant-investor-v17-v4 = "quant_investor.intelligence.evaluator.cli:main"
 
 [tool.black]
 line-length = 100
@@ -97,25 +95,11 @@ exclude = [
 module = ["quant_investor.factors.*"]
 strict_optional = true
 
-# quant_investor/factors/governance*.py is the evidence archive layer: sealed,
-# unreachable from any runtime entry point, and byte-pinned by
-# FIXED_EXISTING_PROJECT_SHA256 in
-# quant_investor/factors/governance_prior_diagnostic_nomination_v4_3.py, whose
-# keys are repository-relative paths. Editing, renaming or moving a pinned file
-# breaks the seal. The one remaining annotation defect is therefore suppressed
-# here rather than fixed in the file, and the 800-line file cap does not apply
-# to that layer. See docs/architecture/evidence_archive_boundary.md.
-[[tool.mypy.overrides]]
-module = ["quant_investor.factors.governance_aquant_no_label_eval_v4_1"]
-disable_error_code = ["type-var"]
-
 [[tool.mypy.overrides]]
 module = [
     "quant_investor.factors",
-    "quant_investor.factors.aquant_expression",
     "quant_investor.factors.correlation",
     "quant_investor.factors.expression",
-    "quant_investor.factors.health",
     "quant_investor.factors.library",
     "quant_investor.factors.operators",
     "quant_investor.factors.pit_fundamentals",

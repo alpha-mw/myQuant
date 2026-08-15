@@ -1,7 +1,7 @@
 # Dependency Profiles
 
-This page records the dependency surface that exists in the current V17/I0/R2.2/I1-I6
-repository. It is not a proposal for retired Phase 8 modules.
+This page records the dependency surface of the unified runtime. It does not
+define additional install profiles or separate versioned mainlines.
 
 ## Current declared profiles
 
@@ -22,15 +22,15 @@ must not imply that these proposed profiles exist.
 
 ## Intelligence boundaries
 
-- V4 Forward, I0, R2.2 and I1-I6 are offline/research-only under normal local
-  verification.
-- I5 exposes explicitly injected Responses call seams and a local safe HTML
-  collector. It does not construct an SDK client, discover credentials or make
-  a live request during import, replay or CI.
-- I6 uses `cryptography` only to verify Ed25519 signatures; it never signs,
-  reads a private key or performs pointer CAS by itself.
+- `quant_investor.intelligence` is offline and deterministic under normal local
+  verification; it cannot activate a generation.
+- Advisory review accepts only explicitly injected call seams and never
+  discovers credentials or performs a live request during import, replay, or
+  CI.
+- Signature verification never signs, reads a private key, or performs pointer
+  CAS.
 - No OpenAI SDK is a project dependency. A separately authorized live caller
-  must inject its exact `responses.create` callable and capability identity.
+  must inject its exact callable and capability identity.
 
 ## Verification truth
 

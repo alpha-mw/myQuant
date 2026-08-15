@@ -60,6 +60,8 @@ assert.match(html, /移动鼠标或使用左右方向键查看具体日期与净
 assert.doesNotMatch(html, /7 月 9 日外部入金/);
 assert.doesNotMatch(publicHtml, /7 月 9 日外部入金/);
 assert.doesNotMatch(publicHtml, /剔除入金后净值/);
+assert.doesNotMatch(publicHtml, /外部资金流|入金|出金|资金事件/);
+assert.doesNotMatch(publicHtml, /id="method"|口径、证据与边界|href="#method"/);
 assert.doesNotMatch(app, /从此前剔除入金后净值高点计算/);
 assert.doesNotMatch(app, /chart-funding-(?:line|label)/);
 assert.strictEqual((publicHtml.match(/public-section-brand/g) || []).length, 1);

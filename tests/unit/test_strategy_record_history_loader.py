@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from quant_investor.automation import history_loader as history_module
+from quant_investor.strategy_records import history as history_module
 from quant_investor.strategy_records.store import bootstrap_catalog
 
 
@@ -86,11 +86,7 @@ def test_registered_history_uses_catalog_and_exposes_storage_evidence(
         ],
     )
     loader = history_module.HistoryLoader(store_root)
-    monkeypatch.setattr(
-        loader,
-        "_legacy_run_dirs",
-        lambda *args, **kwargs: pytest.fail("registered history scanned legacy dirs"),
-    )
+    assert not hasattr(loader, "_legacy_run_dirs")
 
     runs = loader.load_recent(
         market="CN",
@@ -132,7 +128,7 @@ def test_registered_history_missing_catalog_fails_closed(
         )
 
 
-def test_only_explicit_legacy_strategy_can_use_direct_directory_read(
+def test_unregistered_strategy_never_uses_direct_directory_read(
     tmp_path: Path,
 ) -> None:
     store_root = tmp_path / "strategy_records"
@@ -144,13 +140,5 @@ def test_only_explicit_legacy_strategy_can_use_direct_directory_read(
     )
     loader = history_module.HistoryLoader(store_root)
 
-    runs = loader.load_recent(
-        market="US",
-        strategy="simulated_portfolio_10000",
-    )
-
-    assert runs[0]["storage_state"] == "LEGACY_ONLINE"
-    assert runs[0]["evidence_status"] == "LEGACY_ALLOWLIST_UNHASHED"
-    assert runs[0]["symbols"] == ["RKLB"]
-    with pytest.raises(history_module.RecordStoreError, match="not registered"):
-        loader.load_recent(market="US", strategy="unregistered_strategy")
+    with pytest.raises(history_module.RecordStoreError, match="catalog missing"):
+        loader.load_recent(market="US", strategy="simulated_portfolio_10000")

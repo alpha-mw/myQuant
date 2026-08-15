@@ -10,13 +10,13 @@ import os
 from pathlib import Path
 from typing import Any
 
-from quant_investor.intelligence_v2._core import canonical_bytes
-from quant_investor.intelligence_v2.sources.tushare import (
+from quant_investor.market.tushare import (
     TushareContractError,
     capture_tushare_industry_taxonomy,
     validate_industry_taxonomy_execution_plan,
 )
-from quant_investor.v17_v4_runtime.tushare_https import OfficialTushareHttpsClient
+from quant_investor.market.tushare._core import canonical_bytes
+from quant_investor.market.tushare_transport import OfficialTushareHttpsClient
 from scripts.probe_tushare_10000_capabilities import (
     ProbeSafetyError,
     _unique_object,

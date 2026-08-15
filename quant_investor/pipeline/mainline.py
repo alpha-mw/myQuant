@@ -1,8 +1,8 @@
-"""Public V17-only research facade.
+"""Public, generation-bound research facade.
 
-The public package is deliberately a read-only view over the governed V17
-mainline.  It never builds a run, selects another protocol, or falls back to
-legacy artifacts.
+The public package is deliberately a read-only view over the active unified
+generation.  It never builds a candidate, changes the active pointer, or falls
+back to a retired runtime.
 """
 
 from __future__ import annotations
@@ -10,8 +10,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+
 class QuantInvestor:
-    """Read the active V17 run for one canonical strategy."""
+    """Read the active unified Mainline result for one canonical strategy."""
 
     def __init__(
         self,
@@ -23,9 +24,9 @@ class QuantInvestor:
         self.strategy_id = str(strategy_id)
 
     def run(self) -> dict[str, Any]:
-        """Return the exact governed ``mainline-public-run.v1`` DTO."""
+        """Return the exact generation-bound public-run artifact."""
 
-        from quant_investor.v17_mainline import read_public_run
+        from quant_investor.mainline import read_public_run
 
         return read_public_run(
             self.workspace_root,

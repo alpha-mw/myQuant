@@ -1,282 +1,452 @@
-"""Pure I0 runtime receipt connecting Observation, evidence, and intelligence."""
+"""Stable inactive research lifecycle for Intelligence.
+
+These callables replace the secondary versioned CLI surface.  They consume
+caller-supplied, already available data and never call a Provider, model,
+broker, order, trade, or activation path.
+"""
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
-from ._core import (
-    NO_AUTHORITY,
-    IntelligenceContractError,
-    assert_no_authority,
-    content_ref,
-    seal_content_addressed,
-    sha256,
+from quant_investor.contracts import seal_artifact
+
+from ._common import (
+    IntelligenceError,
+    artifact_payload,
+    artifact_ref,
+    artifact_identity,
+    build_artifact,
+    business_identity,
+    canonical_value,
+    identifier,
+    require_no_future,
     timestamp,
-    validate_content_addressed,
+    validate_artifact_ref,
+    validate_stable_artifact,
 )
-from .bayesian.engine import BAYESIAN_RECEIPT_VERSION, validate_bayesian_receipt
-from .evidence.forward_adapter import (
-    BUNDLE_VERSION,
-    build_observation_evidence_bundle,
-    validate_observation_evidence_bundle,
-)
-from .evidence.models import EVIDENCE_VERSION, validate_evidence_set
-from .fusion.branches import BRANCH_VERSION, validate_branch
-from .fusion.engine import FUSION_RECEIPT_VERSION, validate_fusion_receipt
-from .hypothesis.models import HYPOTHESIS_VERSION, validate_hypothesis
-from .memory.chain import memory_tip, validate_memory_chain
-from .regime.engine import REGIME_RECEIPT_VERSION, validate_regime_receipt
-from .regime.input import REGIME_INPUT_VERSION, validate_regime_input
 
-INTELLIGENCE_RUNTIME_RECEIPT_VERSION: Final = "myquant.v17.research-intelligence.runtime-receipt.v1"
+RESEARCH_STAGE_STATUSES: Final = frozenset({"COMPLETE", "BLOCKED", "NOT_RUN"})
+_ACTIVE_ADMISSION_ROUTES: Final = frozenset({"BOOTSTRAP_EXCEPTION", "PROSPECTIVE_ADMISSION"})
 
 
-def _validated(
-    document: Mapping[str, Any],
+def _stages(values: Sequence[Any]) -> list[str]:
+    if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
+        raise IntelligenceError("stages must be a sequence")
+    stages = [identifier(value, label=f"stages[{index}]") for index, value in enumerate(values)]
+    if not stages or len(stages) != len(set(stages)):
+        raise IntelligenceError("stages must be nonempty and unique")
+    return stages
+
+
+def _refs(values: Sequence[Mapping[str, Any]], *, label: str) -> list[dict[str, str]]:
+    if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
+        raise IntelligenceError(f"{label} must be a sequence")
+    rows = [
+        validate_artifact_ref(value, label=f"{label}[{index}]")
+        for index, value in enumerate(values)
+    ]
+    identities = [(row["kind"], row["artifact_id"]) for row in rows]
+    if len(identities) != len(set(identities)):
+        raise IntelligenceError(f"{label} is duplicated")
+    return sorted(
+        rows,
+        key=lambda row: (row["kind"].encode("ascii"), row["artifact_id"].encode("ascii")),
+    )
+
+
+def forward(
+    request: Mapping[str, Any],
     *,
-    identity_field: str,
-    expected_version: str,
-    as_of: str,
+    created_at: str | None = None,
+    request_id: str | None = None,
 ) -> dict[str, Any]:
-    row = validate_content_addressed(document, identity_field=identity_field)
-    document_timestamp = timestamp(row.get("timestamp"), label=f"{expected_version}.timestamp")
-    cutoff = timestamp(as_of, label="as_of")
-    if row.get("version") != expected_version:
-        raise IntelligenceContractError(f"{expected_version} version mismatch")
-    if document_timestamp > cutoff:
-        raise IntelligenceContractError(f"{expected_version} is from the future")
-    assert_no_authority(row)
-    return row
+    """Validate and seal one inactive forward-research request."""
 
-
-def _validate_hypotheses_and_bayesian(
-    *,
-    hypotheses: Sequence[Mapping[str, Any]],
-    receipts: Sequence[Mapping[str, Any]],
-    evidence: Sequence[Mapping[str, Any]],
-    as_of: str,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    hypothesis_rows = [
-        validate_hypothesis(value, evidence=evidence, as_of=as_of) for value in hypotheses
-    ]
-    hypothesis_ids = {str(row["hypothesis_id"]) for row in hypothesis_rows}
-    bayesian_rows = [
-        validate_bayesian_receipt(value, evidence=evidence, as_of=as_of) for value in receipts
-    ]
-    if any(row.get("hypothesis_id") not in hypothesis_ids for row in bayesian_rows):
-        raise IntelligenceContractError("Bayesian hypothesis closure mismatch")
-    return hypothesis_rows, bayesian_rows
-
-
-def _exact_ref_key(value: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
-    return tuple(sorted((str(key), str(item)) for key, item in value.items()))
-
-
-def _assert_sources_authorized(
-    *,
-    bundle: Mapping[str, Any],
-    evidence: Sequence[Mapping[str, Any]],
-    regime_input: Mapping[str, Any],
-) -> None:
-    authorized = bundle.get("authorized_evidence_refs")
-    if type(authorized) is not list or not authorized:
-        raise IntelligenceContractError("Observation bundle has no authorized evidence refs")
-    authorized_keys = {_exact_ref_key(ref) for ref in authorized}
-    evidence_source_keys = {_exact_ref_key(row.get("source_ref", {})) for row in evidence}
-    regime_source_keys = {_exact_ref_key(ref) for ref in regime_input.get("source_refs", [])}
-    if not evidence_source_keys.issubset(authorized_keys):
-        raise IntelligenceContractError("evidence source is outside Observation closure")
-    if not regime_source_keys.issubset(authorized_keys):
-        raise IntelligenceContractError("regime source is outside Observation closure")
-
-
-def build_intelligence_runtime_receipt(
-    *,
-    observation_bundle: Mapping[str, Any],
-    workspace_root: str,
-    session_relative_path: str,
-    session_byte_sha256: str,
-    observation_refs: Sequence[Mapping[str, Any]],
-    closure_refs: Sequence[Mapping[str, Any]],
-    evidence: Sequence[Mapping[str, Any]],
-    bayesian_receipts: Sequence[Mapping[str, Any]],
-    regime_input: Mapping[str, Any],
-    regime_receipt: Mapping[str, Any],
-    branches: Sequence[Mapping[str, Any]],
-    fusion_receipt: Mapping[str, Any],
-    hypotheses: Sequence[Mapping[str, Any]],
-    memory_entries: Sequence[Mapping[str, Any]],
-    expected_memory_tip: str,
-    as_of: str,
-    label_refs: Sequence[Mapping[str, Any]] = (),
-    evaluation_refs: Sequence[Mapping[str, Any]] = (),
-) -> dict[str, Any]:
-    """Verify the complete research closure and return one no-authority receipt."""
-
-    cutoff = timestamp(as_of, label="as_of")
-    rebuilt_bundle = build_observation_evidence_bundle(
-        workspace_root=workspace_root,
-        session_relative_path=session_relative_path,
-        session_byte_sha256=session_byte_sha256,
-        observation_refs=observation_refs,
-        closure_refs=closure_refs,
-        label_refs=label_refs,
-        evaluation_refs=evaluation_refs,
-        as_of=cutoff,
-    )
-    if rebuilt_bundle != observation_bundle:
-        raise IntelligenceContractError("Observation bundle does not match exact adapter replay")
-    bundle = validate_observation_evidence_bundle(rebuilt_bundle, as_of=cutoff)
-    evidence_rows = validate_evidence_set(evidence, as_of=cutoff)
-    if not bayesian_receipts or not branches or not hypotheses or not memory_entries:
-        raise IntelligenceContractError("runtime closure is incomplete")
-    regime_input_row = validate_regime_input(regime_input, as_of=cutoff)
-    _assert_sources_authorized(
-        bundle=bundle,
-        evidence=evidence_rows,
-        regime_input=regime_input_row,
-    )
-
-    hypothesis_rows, bayesian_rows = _validate_hypotheses_and_bayesian(
-        hypotheses=hypotheses,
-        receipts=bayesian_receipts,
-        evidence=evidence_rows,
-        as_of=cutoff,
-    )
-
-    regime = validate_regime_receipt(
-        regime_receipt,
-        regime_input=regime_input_row,
-        evidence=evidence_rows,
-        as_of=cutoff,
-    )
-
-    branch_rows = [
-        validate_branch(value, evidence=evidence_rows, as_of=cutoff) for value in branches
-    ]
-
-    fusion = validate_fusion_receipt(
-        fusion_receipt,
-        branches=branch_rows,
-        as_of=cutoff,
-    )
-
-    memory_rows = validate_memory_chain(memory_entries, expected_tip=expected_memory_tip)
-    for entry in memory_rows:
-        if entry.get("timestamp") > cutoff:
-            raise IntelligenceContractError("memory entry is from the future")
-        assert_no_authority(entry)
-    return seal_content_addressed(
-        {
-            "authority": dict(NO_AUTHORITY),
-            "component_refs": {
-                "bayesian": [
-                    content_ref(row, identity_field="receipt_id") for row in bayesian_rows
-                ],
-                "branches": [content_ref(row, identity_field="branch_id") for row in branch_rows],
-                "evidence": [
-                    content_ref(row, identity_field="evidence_id") for row in evidence_rows
-                ],
-                "fusion": content_ref(fusion, identity_field="receipt_id"),
-                "hypotheses": [
-                    content_ref(row, identity_field="hypothesis_id") for row in hypothesis_rows
-                ],
-                "observation_bundle": content_ref(bundle, identity_field="bundle_id"),
-                "regime": content_ref(regime, identity_field="receipt_id"),
-                "regime_input": content_ref(regime_input_row, identity_field="input_id"),
-            },
-            "memory_entry_count": len(memory_rows),
-            "memory_tip_sha256": memory_tip(memory_rows),
-            "production": False,
-            "research_only": True,
-            "timestamp": cutoff,
-            "version": INTELLIGENCE_RUNTIME_RECEIPT_VERSION,
+    required = {"as_of", "input_refs", "stages", "strategy_id"}
+    if type(request) is not dict or set(request) != required:
+        raise IntelligenceError("forward request shape is invalid")
+    cutoff = timestamp(request["as_of"], label="request.as_of")
+    instant = timestamp(created_at or cutoff, label="created_at")
+    if instant < cutoff:
+        raise IntelligenceError("forward request cannot predate its research cutoff")
+    strategy = identifier(request["strategy_id"], label="strategy_id")
+    stages = _stages(request["stages"])
+    input_refs = _refs(request["input_refs"], label="input_refs")
+    return build_artifact(
+        kind="research_request",
+        identity_field="request_id",
+        identity=request_id
+        or business_identity(
+            kind="research_request",
+            identity_inputs={"as_of": cutoff, "strategy_id": strategy},
+        ),
+        created_at=instant,
+        fields={
+            "as_of": cutoff,
+            "input_refs": input_refs,
+            "stages": stages,
+            "status": "ACCEPTED_INACTIVE",
+            "strategy_id": strategy,
         },
-        identity_field="runtime_receipt_id",
     )
 
 
-def verify_runtime_receipt(document: Mapping[str, Any]) -> dict[str, Any]:
-    """Verify the sealed summary shape; full closure replay occurs in the builder."""
+def evaluate(
+    request: Mapping[str, Any] | bytes,
+    *,
+    stage_results: Mapping[str, Mapping[str, Any]],
+    evaluated_at: str,
+    evaluation_id: str | None = None,
+) -> dict[str, Any]:
+    """Evaluate precomputed stage results; callbacks and external calls are forbidden."""
 
-    row = _validated(
-        document,
-        identity_field="runtime_receipt_id",
-        expected_version=INTELLIGENCE_RUNTIME_RECEIPT_VERSION,
-        as_of=str(document.get("timestamp")),
+    request_artifact, request_payload = artifact_payload(request, expected_kind="research_request")
+    instant = timestamp(evaluated_at, label="evaluated_at")
+    require_no_future(request_artifact, as_of=instant, label="research_request")
+    stages = request_payload.get("stages")
+    if type(stage_results) is not dict or set(stage_results) != set(stages):
+        raise IntelligenceError("stage_results must exactly close the requested stages")
+    rows: list[dict[str, Any]] = []
+    blockers: list[str] = []
+    for stage in stages:
+        value = stage_results[stage]
+        if type(value) is not dict or set(value) != {
+            "blocker_codes",
+            "output_refs",
+            "status",
+        }:
+            raise IntelligenceError(f"stage_results.{stage} shape is invalid")
+        status = value["status"]
+        if status not in RESEARCH_STAGE_STATUSES:
+            raise IntelligenceError(f"stage_results.{stage}.status is invalid")
+        codes = value["blocker_codes"]
+        if isinstance(codes, (str, bytes)) or not isinstance(codes, Sequence):
+            raise IntelligenceError(f"stage_results.{stage}.blocker_codes must be a sequence")
+        blocker_codes = sorted(
+            {identifier(code, label=f"stage_results.{stage}.blocker_codes") for code in codes},
+            key=lambda item: item.encode("ascii"),
+        )
+        if len(blocker_codes) != len(value["blocker_codes"]):
+            raise IntelligenceError(f"stage_results.{stage}.blocker_codes is duplicated")
+        output_refs = _refs(value["output_refs"], label=f"stage_results.{stage}.output_refs")
+        if status == "COMPLETE" and blocker_codes:
+            raise IntelligenceError("complete research stage cannot retain blockers")
+        if status != "COMPLETE" and not blocker_codes:
+            blocker_codes = [f"{stage.upper()}_{status}"]
+        blockers.extend(blocker_codes)
+        rows.append(
+            {
+                "blocker_codes": blocker_codes,
+                "output_refs": output_refs,
+                "stage": stage,
+                "status": status,
+            }
+        )
+    status = "COMPLETE" if not blockers else "BLOCKED"
+    return build_artifact(
+        kind="research_evaluation",
+        identity_field="evaluation_id",
+        identity=evaluation_id
+        or business_identity(
+            kind="research_evaluation",
+            identity_inputs={"request_id": request_artifact["artifact_id"]},
+        ),
+        created_at=instant,
+        fields={
+            "blocker_codes": sorted(set(blockers), key=lambda item: item.encode("ascii")),
+            "evaluated_at": instant,
+            "request_ref": artifact_ref(request_artifact),
+            "stage_rows": rows,
+            "status": status,
+            "strategy_id": request_payload["strategy_id"],
+        },
     )
-    if set(row) != {
-        "authority",
-        "component_refs",
-        "memory_entry_count",
-        "memory_tip_sha256",
-        "production",
-        "research_only",
-        "runtime_receipt_id",
-        "semantic_sha256",
-        "timestamp",
-        "version",
-    }:
-        raise IntelligenceContractError("runtime receipt shape is not closed")
-    components = row.get("component_refs")
-    if type(components) is not dict or set(components) != {
-        "bayesian",
-        "branches",
-        "evidence",
-        "fusion",
-        "hypotheses",
-        "observation_bundle",
-        "regime",
-        "regime_input",
-    }:
-        raise IntelligenceContractError("runtime receipt is incomplete")
-    required_lists = ("bayesian", "branches", "evidence", "hypotheses")
-    if any(
-        type(components.get(name)) is not list or not components[name] for name in required_lists
+
+
+def compile_evidence(
+    evaluation: Mapping[str, Any] | bytes,
+    *,
+    evidence: Sequence[Mapping[str, Any] | bytes],
+    compiled_at: str,
+    bundle_id: str | None = None,
+) -> dict[str, Any]:
+    """Compile exact prepositioned evidence artifacts into one inactive bundle."""
+
+    evaluation_artifact, evaluation_payload = artifact_payload(
+        evaluation, expected_kind="research_evaluation"
+    )
+    instant = timestamp(compiled_at, label="compiled_at")
+    require_no_future(evaluation_artifact, as_of=instant, label="research_evaluation")
+    if isinstance(evidence, (str, bytes)) or not isinstance(evidence, Sequence):
+        raise IntelligenceError("evidence must be a sequence")
+    references: list[dict[str, str]] = []
+    for index, value in enumerate(evidence):
+        artifact = validate_stable_artifact(value)
+        require_no_future(artifact, as_of=instant, label=f"evidence[{index}]")
+        reference = artifact_ref(artifact)
+        if reference["kind"] in {
+            "intelligence_readiness",
+            "mainline_candidate",
+            "public_run",
+            "system.generation_manifest",
+            "system.migration.complete",
+            "system.migration.receipt",
+            "system.readiness",
+        }:
+            raise IntelligenceError("evidence bundle cannot depend on activation state")
+        references.append(reference)
+    identities = [(row["kind"], row["artifact_id"]) for row in references]
+    if len(identities) != len(set(identities)):
+        raise IntelligenceError("evidence artifact closure is duplicated")
+    references.sort(
+        key=lambda row: (row["kind"].encode("ascii"), row["artifact_id"].encode("ascii"))
+    )
+    evaluation_blockers = evaluation_payload.get("blocker_codes")
+    if (
+        type(evaluation_blockers) is not list
+        or any(
+            identifier(code, label="evaluation.blocker_codes") != code
+            for code in evaluation_blockers
+        )
+        or len(evaluation_blockers) != len(set(evaluation_blockers))
     ):
-        raise IntelligenceContractError("runtime receipt list closure is incomplete")
-    if type(row.get("memory_entry_count")) is not int or row["memory_entry_count"] < 1:
-        raise IntelligenceContractError("runtime memory count is invalid")
-    sha256(row.get("memory_tip_sha256"), label="memory_tip_sha256")
-    content_ref_fields = {"artifact_id", "artifact_version", "byte_sha256", "semantic_sha256"}
-    component_versions = {
-        "bayesian": BAYESIAN_RECEIPT_VERSION,
-        "branches": BRANCH_VERSION,
-        "evidence": EVIDENCE_VERSION,
-        "fusion": FUSION_RECEIPT_VERSION,
-        "hypotheses": HYPOTHESIS_VERSION,
-        "observation_bundle": BUNDLE_VERSION,
-        "regime": REGIME_RECEIPT_VERSION,
-        "regime_input": REGIME_INPUT_VERSION,
+        raise IntelligenceError("research evaluation blockers are invalid")
+    blockers = list(evaluation_blockers)
+    if not references:
+        blockers.append("EVIDENCE_CLOSURE_EMPTY")
+    status = "READY" if not blockers else "BLOCKED"
+    return build_artifact(
+        kind="evidence_bundle",
+        identity_field="bundle_id",
+        identity=bundle_id
+        or business_identity(
+            kind="evidence_bundle",
+            identity_inputs={"evaluation_id": evaluation_artifact["artifact_id"]},
+        ),
+        created_at=instant,
+        fields={
+            "blocker_codes": sorted(set(blockers), key=lambda item: item.encode("ascii")),
+            "compiled_at": instant,
+            "evaluation_ref": artifact_ref(evaluation_artifact),
+            "evidence_refs": references,
+            "status": status,
+            "strategy_id": evaluation_payload["strategy_id"],
+        },
+    )
+
+
+def _factor_payload(
+    artifact: Mapping[str, Any] | bytes | None,
+) -> tuple[str, str, str | None, list[str], dict[str, str] | None]:
+    if artifact is None:
+        return "BLOCKED", "NONE", None, ["FACTOR_STATUS_UNAVAILABLE"], None
+    try:
+        from quant_investor.factors.governance import validate_factor_status
+
+        normalized = validate_factor_status(artifact)
+    except Exception as exc:
+        raise IntelligenceError("factor status contract is invalid") from exc
+    payload = normalized.get("payload")
+    if type(payload) is not dict:
+        raise IntelligenceError("factor status payload is invalid")
+    readiness = payload.get("readiness")
+    blockers = payload.get("blockers")
+    if (
+        readiness not in {"READY", "BLOCKED"}
+        or type(blockers) is not list
+        or any(type(code) is not str or not code for code in blockers)
+        or len(blockers) != len(set(blockers))
+    ):
+        raise IntelligenceError("factor status readiness is invalid")
+    active = payload.get("active")
+    route = "NONE"
+    factor_producer = None
+    if readiness == "READY":
+        if type(active) is not dict:
+            raise IntelligenceError("ready Factor status has no active set")
+        route = active.get("admission_route")
+        if route not in {"BOOTSTRAP_EXCEPTION", "PROSPECTIVE_ADMISSION"}:
+            raise IntelligenceError("active Factor admission route is invalid")
+        factor_producer = identifier(
+            active.get("producer_identity"), label="factor producer_identity"
+        )
+    return (
+        str(readiness),
+        str(route),
+        factor_producer,
+        list(blockers),
+        artifact_ref(normalized),
+    )
+
+
+def _validate_readiness_factor_projection(payload: Mapping[str, Any]) -> tuple[str, str]:
+    producer = identifier(payload.get("producer_identity"), label="producer_identity")
+    factor_state = payload.get("factor_state")
+    route = payload.get("admission_route")
+    factor_status_ref = payload.get("factor_status_ref")
+    if factor_state not in {"READY", "BLOCKED"}:
+        raise IntelligenceError("readiness Factor state is invalid")
+    if factor_status_ref is not None:
+        factor_status_ref = validate_artifact_ref(
+            factor_status_ref,
+            label="factor_status_ref",
+        )
+        if factor_status_ref["kind"] != "factor.status":
+            raise IntelligenceError("readiness Factor status kind is invalid")
+    if factor_state == "READY":
+        if route not in _ACTIVE_ADMISSION_ROUTES or factor_status_ref is None:
+            raise IntelligenceError("ready readiness Factor binding is invalid")
+    elif route != "NONE":
+        raise IntelligenceError("blocked readiness admission route is invalid")
+    return factor_state, producer
+
+
+def _validate_readiness_blockers(payload: Mapping[str, Any]) -> list[str]:
+    blockers = payload.get("blockers")
+    if type(blockers) is not list:
+        raise IntelligenceError("readiness blockers must be a list")
+    normalized_blockers = [
+        identifier(code, label=f"blockers[{index}]") for index, code in enumerate(blockers)
+    ]
+    if normalized_blockers != sorted(
+        set(normalized_blockers), key=lambda item: item.encode("ascii")
+    ):
+        raise IntelligenceError("readiness blockers must be sorted and unique")
+    return normalized_blockers
+
+
+def validate_readiness(
+    artifact: Mapping[str, Any] | bytes,
+) -> dict[str, Any]:
+    """Validate one Intelligence-owned, Mainline-absent readiness artifact."""
+
+    normalized, payload = artifact_payload(
+        artifact,
+        expected_kind="intelligence_readiness",
+    )
+    artifact_identity(payload.get("readiness_id"), label="readiness_id")
+    factor_state, producer = _validate_readiness_factor_projection(payload)
+    normalized_blockers = _validate_readiness_blockers(payload)
+    if "MAINLINE_CANDIDATE_ABSENT" not in normalized_blockers:
+        raise IntelligenceError("Intelligence readiness must retain Mainline absence")
+    if (
+        payload.get("mainline_candidate_ref") is not None
+        or payload.get("mainline_state") != "UNINITIALIZED"
+        or payload.get("investment_state") != "BLOCKED"
+    ):
+        raise IntelligenceError("Intelligence readiness contains Mainline state")
+    if factor_state == "READY" and producer not in {
+        "NOT_CLAIMED",
+        "PROSPECTIVE_GOVERNANCE",
+    }:
+        raise IntelligenceError("ready readiness producer is invalid")
+    return normalized
+
+
+def assess_readiness(
+    *,
+    producer_identity: str,
+    assessed_at: str,
+    factor_status: Mapping[str, Any] | bytes | None,
+    source_blockers: Sequence[str] = (),
+    readiness_id: str | None = None,
+) -> dict[str, Any]:
+    """Build Mainline-absent Intelligence readiness from Factor/source state."""
+
+    producer = identifier(producer_identity, label="producer_identity")
+    instant = timestamp(assessed_at, label="assessed_at")
+    factor_state, route, factor_producer, blockers, factor_status_ref = _factor_payload(
+        factor_status
+    )
+    if factor_state == "READY" and producer != factor_producer:
+        raise IntelligenceError("readiness producer does not match active Factor status")
+    if isinstance(source_blockers, (str, bytes)) or not isinstance(source_blockers, Sequence):
+        raise IntelligenceError("source_blockers must be a sequence")
+    preserved_source_blockers = [
+        identifier(code, label=f"source_blockers[{index}]")
+        for index, code in enumerate(source_blockers)
+    ]
+    if len(preserved_source_blockers) != len(set(preserved_source_blockers)):
+        raise IntelligenceError("source_blockers must be nonempty and unique")
+    blockers.extend(preserved_source_blockers)
+    blockers.append("MAINLINE_CANDIDATE_ABSENT")
+    blockers = sorted(set(blockers), key=lambda item: item.encode("ascii"))
+    identity = readiness_id or business_identity(
+        kind="intelligence_readiness",
+        identity_inputs={"assessed_at": instant, "producer_identity": producer},
+    )
+    payload = {
+        "admission_route": route,
+        "blockers": blockers,
+        "factor_state": factor_state,
+        "factor_status_ref": factor_status_ref,
+        "investment_state": "BLOCKED",
+        "mainline_candidate_ref": None,
+        "mainline_state": "UNINITIALIZED",
+        "producer_identity": producer,
+        "readiness_id": artifact_identity(identity, label="readiness_id"),
     }
-    flattened: list[tuple[str, Mapping[str, Any]]] = []
-    for name, expected_version in component_versions.items():
-        value = components[name]
-        refs = value if name in required_lists else [value]
-        artifact_ids: list[str] = []
-        byte_hashes: list[str] = []
-        for ref in refs:
-            flattened.append((expected_version, ref))
-            if type(ref) is dict:
-                artifact_ids.append(str(ref.get("artifact_id")))
-                byte_hashes.append(str(ref.get("byte_sha256")))
-        if len(artifact_ids) != len(set(artifact_ids)) or len(byte_hashes) != len(set(byte_hashes)):
-            raise IntelligenceContractError(f"runtime {name} refs contain duplicates")
-    for expected_version, ref in flattened:
-        if type(ref) is not dict or set(ref) != content_ref_fields:
-            raise IntelligenceContractError("runtime component ref is malformed")
-        if not all(type(ref[field]) is str and ref[field] for field in content_ref_fields):
-            raise IntelligenceContractError("runtime component ref is incomplete")
-        sha256(ref["byte_sha256"], label="component_ref.byte_sha256")
-        sha256(ref["semantic_sha256"], label="component_ref.semantic_sha256")
-        if ref["artifact_version"] != expected_version:
-            raise IntelligenceContractError("runtime component ref version mismatch")
-    return row
+    canonical_value(payload)
+    return validate_readiness(seal_artifact("intelligence_readiness", payload, created_at=instant))
+
+
+def inspect(
+    artifact: Mapping[str, Any] | bytes | None = None,
+    *,
+    inspected_at: str,
+    inspection_id: str | None = None,
+) -> dict[str, Any]:
+    """Return a no-write inspection artifact for one stable artifact or empty state."""
+
+    instant = timestamp(inspected_at, label="inspected_at")
+    target_ref = None
+    status = "UNINITIALIZED"
+    blockers = ["ARTIFACT_UNAVAILABLE"]
+    target_kind = None
+    if artifact is not None:
+        target = validate_stable_artifact(artifact)
+        require_no_future(target, as_of=instant, label="inspected_artifact")
+        target_ref = artifact_ref(target)
+        target_kind = target["kind"]
+        status = "VALID"
+        blockers = []
+        payload = target.get("payload", {})
+        if type(payload) is dict and (
+            payload.get("run_state") not in {None, "INACTIVE"}
+            or payload.get("production") not in {None, False}
+        ):
+            status = "BLOCKED"
+            blockers = ["ARTIFACT_AUTHORITY_INVALID"]
+    return build_artifact(
+        kind="intelligence_inspection",
+        identity_field="inspection_id",
+        identity=inspection_id
+        or business_identity(
+            kind="intelligence_inspection",
+            identity_inputs={
+                "inspected_at": instant,
+                "target_artifact_id": None if target_ref is None else target_ref["artifact_id"],
+            },
+        ),
+        created_at=instant,
+        fields={
+            "blocker_codes": blockers,
+            "inspected_at": instant,
+            "status": status,
+            "target_kind": target_kind,
+            "target_ref": target_ref,
+        },
+    )
 
 
 __all__ = [
-    "INTELLIGENCE_RUNTIME_RECEIPT_VERSION",
-    "build_intelligence_runtime_receipt",
-    "verify_runtime_receipt",
+    "IntelligenceError",
+    "assess_readiness",
+    "compile_evidence",
+    "evaluate",
+    "forward",
+    "inspect",
+    "validate_readiness",
 ]

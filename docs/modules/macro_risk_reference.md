@@ -1,9 +1,9 @@
 # Macro Risk Reference
 
 > **边界说明：** 本页是 `macro_terminal_tushare.py` 的独立旧版/手工参考，
-> 不是当前 V17 mainline 的 Macro contract，也不会被公开主线读取、I0 或
-> R2.2 自动调用。下列阈值与手工输入没有主线权限，不能作为缺失正式证据时的
-> fallback；其中 CN/US 辅助能力也不扩大 V17 公开结果的 CN-only 边界。
+> 不属于统一 Mainline 的 Macro contract，也不会被公共结果读取器或稳定
+> Intelligence 自动调用。下列阈值与手工输入没有主线权限，不能作为缺失正式
+> 证据时的 fallback；其中 CN/US 辅助能力也不扩大公共结果的 CN-only 边界。
 
 本文件描述 [`quant_investor/macro_terminal_tushare.py`](../../quant_investor/macro_terminal_tushare.py) 的宏观分支指标体系、状态判断规则和历史对标参考。
 

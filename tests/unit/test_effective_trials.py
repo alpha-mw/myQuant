@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from quant_investor.factors.trial_correction import (
+from quant_investor.factors.governance.statistics import (
     DEFAULT_TRIAL_CLUSTER_FLOOR,
     effective_trial_count,
 )

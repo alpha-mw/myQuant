@@ -11,11 +11,12 @@ from pathlib import Path
 import stat
 from typing import Any
 
-from quant_investor.intelligence_v2._core import canonical_bytes
-from quant_investor.intelligence_v2.sources.tushare import (
+from quant_investor.market.tushare import (
+    TushareRequestClient,
     probe_tushare_capabilities,
     validate_tushare_endpoint_policy,
 )
+from quant_investor.market.tushare._core import canonical_bytes
 
 
 class ProbeSafetyError(RuntimeError):
@@ -120,7 +121,11 @@ def _summary(policy: dict[str, Any], *, live: bool) -> dict[str, Any]:
     }
 
 
-def run(args: argparse.Namespace) -> dict[str, Any]:
+def run(
+    args: argparse.Namespace,
+    *,
+    client: TushareRequestClient | None = None,
+) -> dict[str, Any]:
     policy = _load_policy(Path(args.policy_path), args.policy_sha256)
     output_root = Path(args.output_root)
     _validate_new_output_root(output_root, create=False)
@@ -131,6 +136,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     result = probe_tushare_capabilities(
         policy=policy,
         probed_at=args.probed_at,
+        client=client,
     )
     _write_exact(output_root / "policy.json", policy)
     _write_exact(

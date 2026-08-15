@@ -5,7 +5,7 @@ RUNTIME_FILES = [
     "daily_runner.py",
     "quant_investor/automation/daily_runner.py",
     "quant_investor/automation/analysis_runner.py",
-    "quant_investor/automation/history_loader.py",
+    "quant_investor/strategy_records/history.py",
     "quant_investor/automation/persistence.py",
     "quant_investor/automation/report_builder.py",
     "quant_investor/pipeline/mainline.py",

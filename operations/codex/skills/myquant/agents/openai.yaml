@@ -1,0 +1,22 @@
+interface:
+  display_name: "myQuant Investment"
+  short_description: "Stable A-share research, portfolio review, and learning"
+  default_prompt: >-
+    Use $myquant for the requested work in /Users/maxwell/mySpace/myQuant. Put
+    investment research first: current opportunities, company thesis, governed
+    factors, fundamentals, Industry and Theme context, valuation, catalysts,
+    downside, portfolio fit, sizing, cash, concentration, turnover, paper
+    evidence, and outcome learning. Verify the stable runtime with
+    `quant-investor system verify` and exact source checks before relying on a
+    capability. Keep active mainline results separate from research diagnosis,
+    forward evidence, historical holdings, and paper scenarios.
+    Treat source-bound Industry and Theme as evidence and risk, deterministic
+    Decision and portfolio controls as authoritative, and skeptical model review
+    as advisory. Never treat RESEARCH_APPROVED, PAPER_CANDIDATE, an advisory
+    rerank, a research portfolio, or a paper fill as a buy, sell, hold, live
+    position, broker order, trade, publication, or activation. Use exact
+    holdings and current evidence, format stocks as 代码 公司名, do not reuse old
+    candidate lists, and label unavailable evidence clearly. Never call live
+    providers or models, connect a broker, create an order, execute, trade,
+    publish, activate, or mutate production state without separate exact
+    authority.

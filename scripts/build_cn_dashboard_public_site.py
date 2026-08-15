@@ -23,6 +23,13 @@ MARKER = ".cn-dashboard-public-site"
 PUBLIC_MODE = "window.CNPublicDashboard = true;\n"
 REDACTED = "PUBLIC_REDACTED"
 ZERO_SHA = "0" * 64
+APPROVED_PUBLIC_MARKERS = (
+    "public-section-brand",
+    "public-section-performance",
+    "public-section-monthly",
+    "public-section-readout",
+)
+FORBIDDEN_PUBLIC_COPY = ("外部资金流", "入金", "出金", "资金事件")
 
 
 def _canonical_json(value: Any) -> bytes:
@@ -147,12 +154,29 @@ def _prepare_destination(destination: Path) -> None:
     (destination / MARKER).write_text("generated\n", encoding="utf-8")
 
 
+def validate_public_template(public_html: str) -> None:
+    """Fail closed before writing a public site outside the approved view."""
+
+    if any(
+        public_html.count(marker) != 1
+        for marker in APPROVED_PUBLIC_MARKERS
+    ):
+        raise ValueError("public_template_section_contract_failed")
+    if 'id="method"' in public_html or 'href="#method"' in public_html:
+        raise ValueError("public_template_unapproved_method_section")
+    if any(phrase in public_html for phrase in FORBIDDEN_PUBLIC_COPY):
+        raise ValueError("public_template_forbidden_funding_copy")
+
+
 def build_site(
     *, source_root: Path, bundle_path: Path, destination: Path
 ) -> dict[str, Any]:
     dashboard = source_root / "portfolio_dashboard"
     if destination == source_root or source_root in destination.parents:
         raise ValueError("destination_must_not_be_inside_source_root")
+    validate_public_template(
+        (dashboard / "public.html").read_text(encoding="utf-8")
+    )
     bundle = sanitize_bundle(
         json.loads(bundle_path.read_text(encoding="utf-8"))
     )
@@ -220,7 +244,7 @@ def main() -> int:
                 "built": True,
                 "destination": str(args.destination.resolve()),
                 "content_sha256": bundle["content_sha256"],
-                "public_sections": 4,
+                "public_sections": len(APPROVED_PUBLIC_MARKERS),
             },
             ensure_ascii=False,
         )

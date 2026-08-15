@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from quant_investor.factors.trial_correction import (
+from quant_investor.factors.governance.statistics import (
     HARVEY_LIU_ZHU_T_HURDLE,
     deflated_sharpe_ratio,
     expected_max_sharpe_under_null,
@@ -119,7 +119,7 @@ class TestProbabilityOfBacktestOverfitting:
 
     def test_an_inverted_leader_is_maximally_overfit(self) -> None:
         # Whichever config wins in one half is built to lose in the other.
-        blocks, configs = 8, 10
+        blocks, configs = 10, 10
         values = np.zeros((blocks, configs))
         for config in range(configs):
             values[: blocks // 2, config] = config

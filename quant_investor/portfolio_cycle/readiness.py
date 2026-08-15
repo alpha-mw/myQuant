@@ -17,22 +17,6 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Final, Mapping
 
-from quant_investor.v17_mainline.constants import (
-    ACTIVE_STATE,
-    BLOCKED_PREFIX,
-    PROTOCOL,
-    UNINITIALIZED_STATE,
-    MainlineBlocker,
-)
-from quant_investor.v17_mainline.contracts import (
-    MainlineContractError,
-    require_identifier,
-    require_timestamp,
-    validate_ref,
-)
-from quant_investor.v17_mainline.runtime import MainlineResolution
-
-from .contracts import PortfolioCycleError
 from .contracts import (
     HOLDINGS_ACCOUNTING_POLICY_SCHEMA_ID,
     HOLDINGS_LEDGER_SCHEMA_ID,
@@ -40,16 +24,95 @@ from .contracts import (
     HOLDINGS_POINTER_SCHEMA_ID,
     HOLDINGS_PRICE_SOURCE_SCHEMA_ID,
     IDENTITY_DECLARATION_SCHEMA_ID,
+    PROTOCOL,
+    PortfolioCycleError,
     VerifiedHoldingsBaseline,
     VerifiedStrategyIdentity,
+    require_identifier as _require_identifier,
+    require_timestamp as _require_timestamp,
+    validate_artifact_ref,
 )
 from .holdings import resolve_holdings_baseline
 from .identity import resolve_strategy_identity
 
-DECISION_INPUT_READINESS_SCHEMA_ID: Final = "myquant.v17.v4.decision-input-readiness.v1"
-PUBLIC_CYCLE_STATUS_SCHEMA_ID: Final = "myquant.v17.v4.public-cycle-status.v1"
+DECISION_INPUT_READINESS_SCHEMA_ID: Final = (
+    "myquant.portfolio-cycle.decision-input-readiness"
+)
+PUBLIC_CYCLE_STATUS_SCHEMA_ID: Final = "myquant.portfolio-cycle.public-cycle-status"
 PHASE_CAPABILITY: Final = "FOUNDATION_ONLY"
 HISTORICAL_HOLDINGS_LABEL: Final = "aggressive_tech_manufacturing"
+
+ACTIVE_STATE: Final = "ACTIVE"
+UNINITIALIZED_STATE: Final = "MAINLINE_UNINITIALIZED"
+BLOCKED_PREFIX: Final = "MAINLINE_BLOCKED:"
+
+
+class MainlineContractError(ValueError):
+    """Local compatibility error for stable Portfolio Cycle validation."""
+
+
+class MainlineBlocker(str, Enum):
+    ACTIVE_POINTER_ABSENT = "ACTIVE_POINTER_ABSENT"
+    ACTIVE_POINTER_INVALID = "ACTIVE_POINTER_INVALID"
+    ACTIVE_POINTER_SHA_MISMATCH = "ACTIVE_POINTER_SHA_MISMATCH"
+    ACTIVE_RUN_MISSING = "ACTIVE_RUN_MISSING"
+    ACTIVE_RUN_INVALID = "ACTIVE_RUN_INVALID"
+    ACTIVE_RUN_SHA_MISMATCH = "ACTIVE_RUN_SHA_MISMATCH"
+    FORMAL_OUTPUT_INVALID = "FORMAL_OUTPUT_INVALID"
+    INTELLIGENCE_PUBLICATION_INVALID = "INTELLIGENCE_PUBLICATION_INVALID"
+    ACTIVE_RUN_QUARANTINED = "ACTIVE_RUN_QUARANTINED"
+    PORTFOLIO_OUTPUT_INVALID = "PORTFOLIO_OUTPUT_INVALID"
+    SOURCE_CLOSURE_INVALID = "SOURCE_CLOSURE_INVALID"
+    SHADOW_AUTHORITY_FORBIDDEN = "SHADOW_AUTHORITY_FORBIDDEN"
+    UNSUPPORTED_MARKET = "UNSUPPORTED_MARKET"
+    UNSUPPORTED_CAPABILITY = "UNSUPPORTED_CAPABILITY"
+    STORAGE_SECURITY_VIOLATION = "STORAGE_SECURITY_VIOLATION"
+
+
+@dataclass(frozen=True)
+class MainlineResolution:
+    """Stable read-only closure projection consumed by Portfolio Cycle."""
+
+    derived_state: str
+    public_run: Mapping[str, Any] | None = None
+
+    @property
+    def is_active(self) -> bool:
+        return self.derived_state == ACTIVE_STATE and self.public_run is not None
+
+
+def require_identifier(value: Any, *, label: str) -> str:
+    try:
+        return _require_identifier(
+            value,
+            label=label,
+            code="PORTFOLIO_CYCLE_CONTRACT_INVALID",
+        )
+    except PortfolioCycleError as exc:
+        raise MainlineContractError(str(exc)) from exc
+
+
+def require_timestamp(value: Any, *, label: str) -> str:
+    try:
+        _require_timestamp(
+            value,
+            label=label,
+            code="PORTFOLIO_CYCLE_CONTRACT_INVALID",
+        )
+    except PortfolioCycleError as exc:
+        raise MainlineContractError(str(exc)) from exc
+    return str(value)
+
+
+def validate_ref(value: Any, *, label: str) -> dict[str, str]:
+    try:
+        return validate_artifact_ref(
+            value,
+            label=label,
+            code="PORTFOLIO_CYCLE_CONTRACT_INVALID",
+        ).as_dict()
+    except PortfolioCycleError as exc:
+        raise MainlineContractError(str(exc)) from exc
 
 PRE_RUN_STATES: Final = frozenset({"BLOCKED", "FOUNDATION_VALIDATED"})
 POST_RUN_STATES: Final = frozenset({"BLOCKED", "PUBLIC_CLOSURE_ACTIVE_FOUNDATION_ONLY"})
@@ -58,7 +121,7 @@ POST_RUN_STATES: Final = frozenset({"BLOCKED", "PUBLIC_CLOSURE_ACTIVE_FOUNDATION
 class ReadinessBlocker(str, Enum):
     """Closed Phase 1 blocker vocabulary outside mainline closure details."""
 
-    V17_STRATEGY_ID_UNCONFIRMED = "V17_STRATEGY_ID_UNCONFIRMED"
+    STRATEGY_ID_UNCONFIRMED = "STRATEGY_ID_UNCONFIRMED"
     HOLDINGS_BASELINE_UNAVAILABLE = "HOLDINGS_BASELINE_UNAVAILABLE"
     IDENTITY_DECLARATION_INVALID = "IDENTITY_DECLARATION_INVALID"
     HOLDINGS_BASELINE_INVALID = "HOLDINGS_BASELINE_INVALID"
@@ -70,8 +133,8 @@ class ReadinessBlocker(str, Enum):
     FACTOR_ACTIVE_SET_UNAVAILABLE = "FACTOR_ACTIVE_SET_UNAVAILABLE"
     RISK_POLICY_UNAVAILABLE = "RISK_POLICY_UNAVAILABLE"
     PORTFOLIO_POLICY_UNAVAILABLE = "PORTFOLIO_POLICY_UNAVAILABLE"
-    V17_MAINLINE_UNINITIALIZED = "V17_MAINLINE_UNINITIALIZED"
-    CAPABILITY_BLOCKED_V17_MAINLINE_PUBLISHER = "CAPABILITY_BLOCKED_V17_MAINLINE_PUBLISHER"
+    MAINLINE_UNINITIALIZED = "MAINLINE_UNINITIALIZED"
+    CAPABILITY_BLOCKED_MAINLINE_PUBLISHER = "CAPABILITY_BLOCKED_MAINLINE_PUBLISHER"
     PAPER_SIMULATION_UNAVAILABLE = "PAPER_SIMULATION_UNAVAILABLE"
     LEARNING_RUNTIME_UNAVAILABLE = "LEARNING_RUNTIME_UNAVAILABLE"
 
@@ -127,7 +190,7 @@ _GATE_BLOCKERS: Final = {
     "factor_active_set": ReadinessBlocker.FACTOR_ACTIVE_SET_UNAVAILABLE.value,
     "risk_policy": ReadinessBlocker.RISK_POLICY_UNAVAILABLE.value,
     "portfolio_policy": ReadinessBlocker.PORTFOLIO_POLICY_UNAVAILABLE.value,
-    "mainline_publisher": (ReadinessBlocker.CAPABILITY_BLOCKED_V17_MAINLINE_PUBLISHER.value),
+    "mainline_publisher": (ReadinessBlocker.CAPABILITY_BLOCKED_MAINLINE_PUBLISHER.value),
     "paper_simulation": ReadinessBlocker.PAPER_SIMULATION_UNAVAILABLE.value,
     "learning_runtime": ReadinessBlocker.LEARNING_RUNTIME_UNAVAILABLE.value,
 }
@@ -388,7 +451,7 @@ def _identity_status(
         blocker = (
             ReadinessBlocker.IDENTITY_DECLARATION_INVALID.value
             if invalid
-            else ReadinessBlocker.V17_STRATEGY_ID_UNCONFIRMED.value
+            else ReadinessBlocker.STRATEGY_ID_UNCONFIRMED.value
         )
         return None, blocker
     try:
@@ -606,7 +669,7 @@ def derive_decision_input_readiness(
 
     This is the read-only CLI orchestration boundary.  It does not accept
     caller-asserted data/Factor/policy booleans: those gates stay blocked until
-    versioned exact-ref validators exist.  The supplied decision cutoff is a
+    stable exact-ref validators exist.  The supplied decision cutoff is a
     diagnostic constraint and never substitutes for the holdings manifest's
     cutoff.
     """
@@ -733,7 +796,7 @@ def _validate_pre_run_status(value: Mapping[str, Any], *, synthetic_only: bool) 
     expected_blockers = {_GATE_BLOCKERS[name] for name in GATE_NAMES if not gates[name]["verified"]}
     if identity is None:
         identity_blockers = {
-            ReadinessBlocker.V17_STRATEGY_ID_UNCONFIRMED.value,
+            ReadinessBlocker.STRATEGY_ID_UNCONFIRMED.value,
             ReadinessBlocker.IDENTITY_DECLARATION_INVALID.value,
         }
         present = identity_blockers.intersection(blockers)
@@ -801,7 +864,7 @@ def build_public_cycle_status(
                 active = False
                 blockers.append(f"{BLOCKED_PREFIX}{MainlineBlocker.ACTIVE_RUN_INVALID.value}")
     elif mainline_resolution.derived_state == UNINITIALIZED_STATE:
-        blockers.append(ReadinessBlocker.V17_MAINLINE_UNINITIALIZED.value)
+        blockers.append(ReadinessBlocker.MAINLINE_UNINITIALIZED.value)
     elif mainline_resolution.derived_state in MAINLINE_BLOCKED_CODES:
         blockers.append(mainline_resolution.derived_state)
     else:

@@ -26,9 +26,6 @@ ALLOWLIST = {
     "scripts/close_cn_dashboard_official_valuation.py",
     "scripts/cn_dashboard_common.py",
     "scripts/merge_cn_dashboard_benchmark_fills.py",
-    # Factor package integrity verification reads installed wheel RECORD
-    # metadata, not production market bars.
-    "scripts/build_factor_v4_3_prior_diagnostic_nomination.py",
 }
 
 FORBIDDEN_SNIPPETS = [

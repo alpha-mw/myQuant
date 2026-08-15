@@ -45,9 +45,7 @@ def _iter_scan_files():
 def test_removed_public_route_strings_do_not_exist_in_current_tree():
     removed_tokens = _removed_public_tokens()
     offenders: list[str] = []
-    allowed_negative_assertions = {
-        (Path("tests/unit/test_v17_public_python.py"), "QuantInvestor" + "PipelineResult"),
-    }
+    allowed_negative_assertions: set[tuple[Path, str]] = set()
 
     for path in _iter_scan_files():
         text = path.read_text(encoding="utf-8")

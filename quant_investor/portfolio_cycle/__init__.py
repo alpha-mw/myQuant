@@ -1,4 +1,4 @@
-"""Read-only, fail-closed portfolio-cycle foundation for V17 v4."""
+"""Independent, read-only, fail-closed Portfolio Cycle foundation."""
 
 from .contracts import (
     ArtifactRef,
@@ -10,6 +10,7 @@ from .contracts import (
     HoldingPosition,
     IDENTITY_DECLARATION_SCHEMA_ID,
     MoneyTotals,
+    PROTOCOL,
     PortfolioCycleError,
     VerifiedHoldingsBaseline,
     VerifiedStrategyIdentity,
@@ -42,6 +43,7 @@ __all__ = [
     "HoldingPosition",
     "IDENTITY_DECLARATION_SCHEMA_ID",
     "MoneyTotals",
+    "PROTOCOL",
     "PUBLIC_CYCLE_STATUS_SCHEMA_ID",
     "PortfolioCycleError",
     "ReadinessBlocker",

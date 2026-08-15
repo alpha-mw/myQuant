@@ -5,7 +5,10 @@ import json
 import pytest
 
 from quant_investor.cli import main as cli_main
-from quant_investor.portfolio_cycle import PortfolioCycleError
+from quant_investor.portfolio_cycle import (
+    DECISION_INPUT_READINESS_SCHEMA_ID,
+    PortfolioCycleError,
+)
 
 SHA = "a" * 64
 CUTOFF = "2026-08-05T07:00:00Z"
@@ -68,8 +71,11 @@ def test_portfolio_cycle_status_requires_historical_label(tmp_path, capsys) -> N
 
     assert exc_info.value.code == 2
     captured = capsys.readouterr()
-    assert captured.out == ""
-    assert "--historical-label" in captured.err
+    assert json.loads(captured.out) == {
+        "blocker_code": "ARGUMENTS_INVALID",
+        "status": "BLOCKED",
+    }
+    assert captured.err == ""
 
 
 @pytest.mark.parametrize(
@@ -87,8 +93,11 @@ def test_portfolio_cycle_status_requires_path_sha_pairs(tmp_path, extra, capsys)
 
     assert exc_info.value.code == 2
     captured = capsys.readouterr()
-    assert captured.out == ""
-    assert "must be provided together" in captured.err
+    assert json.loads(captured.out) == {
+        "blocker_code": "ARGUMENTS_INVALID",
+        "status": "BLOCKED",
+    }
+    assert captured.err == ""
 
 
 @pytest.mark.parametrize(
@@ -108,8 +117,11 @@ def test_portfolio_cycle_status_rejects_noncanonical_paths(tmp_path, option, val
 
     assert exc_info.value.code == 2
     captured = capsys.readouterr()
-    assert captured.out == ""
-    assert "canonical workspace-relative POSIX path" in captured.err
+    assert json.loads(captured.out) == {
+        "blocker_code": "ARGUMENTS_INVALID",
+        "status": "BLOCKED",
+    }
+    assert captured.err == ""
 
 
 def test_portfolio_cycle_status_rejects_non_ascii_path(tmp_path, capsys) -> None:
@@ -126,8 +138,11 @@ def test_portfolio_cycle_status_rejects_non_ascii_path(tmp_path, capsys) -> None
 
     assert exc_info.value.code == 2
     captured = capsys.readouterr()
-    assert captured.out == ""
-    assert "ASCII workspace-relative POSIX path" in captured.err
+    assert json.loads(captured.out) == {
+        "blocker_code": "ARGUMENTS_INVALID",
+        "status": "BLOCKED",
+    }
+    assert captured.err == ""
 
 
 @pytest.mark.parametrize(
@@ -151,8 +166,11 @@ def test_portfolio_cycle_status_rejects_invalid_sha(tmp_path, option, value, cap
 
     assert exc_info.value.code == 2
     captured = capsys.readouterr()
-    assert captured.out == ""
-    assert "lowercase 64-character SHA-256" in captured.err
+    assert json.loads(captured.out) == {
+        "blocker_code": "ARGUMENTS_INVALID",
+        "status": "BLOCKED",
+    }
+    assert captured.err == ""
 
 
 @pytest.mark.parametrize(
@@ -172,15 +190,18 @@ def test_portfolio_cycle_status_rejects_invalid_decision_cutoff(tmp_path, cutoff
 
     assert exc_info.value.code == 2
     captured = capsys.readouterr()
-    assert captured.out == ""
-    assert "decision cutoff" in captured.err
+    assert json.loads(captured.out) == {
+        "blocker_code": "ARGUMENTS_INVALID",
+        "status": "BLOCKED",
+    }
+    assert captured.err == ""
 
 
 def test_portfolio_cycle_status_blocked_is_json_and_exit_two(monkeypatch, tmp_path, capsys) -> None:
     expected = {
-        "schema_id": "myquant.v17.v4.decision-input-readiness.v1",
+        "schema_id": DECISION_INPUT_READINESS_SCHEMA_ID,
         "state": "BLOCKED",
-        "blockers": ["V17_STRATEGY_ID_UNCONFIRMED"],
+        "blockers": ["STRATEGY_ID_UNCONFIRMED"],
         "synthetic_only": False,
         "operational_authority": False,
         "write_performed": False,
@@ -205,7 +226,7 @@ def test_portfolio_cycle_status_dispatches_exact_foundation_arguments(
 ) -> None:
     captured_kwargs = {}
     expected = {
-        "schema_id": "myquant.v17.v4.decision-input-readiness.v1",
+        "schema_id": DECISION_INPUT_READINESS_SCHEMA_ID,
         "state": "FOUNDATION_VALIDATED",
         "blockers": [],
         "synthetic_only": True,
@@ -261,14 +282,12 @@ def test_portfolio_cycle_status_internal_error_is_redacted_json(
     with pytest.raises(SystemExit) as exc_info:
         cli_main.main(_base_argv(str(tmp_path)))
 
-    assert exc_info.value.code == 1
+    assert exc_info.value.code == 3
     captured = capsys.readouterr()
-    assert captured.err == ""
-    payload = json.loads(captured.out)
-    assert payload["status"] == "ERROR"
-    assert payload["error"] == {
-        "code": "PORTFOLIO_CYCLE_INTERNAL_ERROR",
-        "detail": "internal portfolio-cycle diagnostic failure",
+    assert captured.err == "quant-investor encountered an internal error\n"
+    assert json.loads(captured.out) == {
+        "blocker_code": "INTERNAL_ERROR",
+        "status": "ERROR",
     }
     assert "sensitive" not in captured.out
 
@@ -286,14 +305,12 @@ def test_portfolio_cycle_status_security_error_is_stable_json(
     with pytest.raises(SystemExit) as exc_info:
         cli_main.main(_base_argv(str(tmp_path)))
 
-    assert exc_info.value.code == 1
+    assert exc_info.value.code == 2
     captured = capsys.readouterr()
     assert captured.err == ""
-    payload = json.loads(captured.out)
-    assert payload["status"] == "ERROR"
-    assert payload["error"] == {
-        "code": "PORTFOLIO_CYCLE_STORAGE_SECURITY",
-        "detail": "artifact symlink rejected",
+    assert json.loads(captured.out) == {
+        "blocker_code": "PORTFOLIO_CYCLE_STORAGE_SECURITY",
+        "status": "BLOCKED",
     }
 
 

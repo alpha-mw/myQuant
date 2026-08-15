@@ -15,7 +15,7 @@
    答复只能基于该只读结果、正式策略记录、审计报告和已登记决策日志。
 
    该命令解析唯一一个指针，不扫描目录、不回退、不自举，因此它的**失败也是状态**：
-   返回 `V17_MAINLINE_UNINITIALIZED` 或 `V17_MAINLINE_BLOCKED:<blocker>` 时，不存在
+   返回 `mainline_state=UNINITIALIZED` 或 `investment_state=BLOCKED` 时，不存在
    可翻译的正式管线状态，本条即未满足，不得给出任何买卖建议 —— 只能如实说明主线
    未初始化或被哪个 blocker 挡住。缺失的快照不是「用别的材料凑」的理由。
 

@@ -99,20 +99,20 @@ ALLOW_RULES: tuple[AllowRule, ...] = (
     AllowRule(
         path="quant_investor/automation/daily_runner.py",
         operations=(),
-        reason="Names the registered store in CLI/help and passes an explicit strategy.",
+        reason="Reads the active unified generation and passes an explicit history strategy.",
     ),
     AllowRule(
-        path="quant_investor/automation/history_loader.py",
-        operations=("iterdir",),
+        path="quant_investor/strategy_records/history.py",
+        operations=(),
         reason=(
-            "Uses the catalog API for registered CN history; immediate traversal is "
-            "limited to the named US/simulated_portfolio_10000 compatibility strategy."
+            "Reads only catalog-resolved registered history and an explicitly resolved "
+            "report file; it never scans strategy directories or writes the store."
         ),
     ),
     AllowRule(
         path="quant_investor/automation/report_builder.py",
         operations=(),
-        reason="Emits registered history provenance text from loader DTOs only.",
+        reason="Formats registered history DTOs and has no Strategy Record Store I/O.",
     ),
     AllowRule(
         path="quant_investor/strategy_records/store.py",
@@ -131,6 +131,15 @@ ALLOW_RULES: tuple[AllowRule, ...] = (
         path="scripts/build_holdings_fundamental_sheet.py",
         operations=(),
         reason="Resolves the active closure through the store API and reads Parquet only.",
+    ),
+    AllowRule(
+        path="scripts/close_cn_dashboard_official_valuation.py",
+        operations=(),
+        reason=(
+            "Binds a Dashboard-only no-trade valuation to the registered active "
+            "closure and expected pointer SHA through the store API; the manager "
+            "alone owns record publication and pointer CAS."
+        ),
     ),
     AllowRule(
         path="scripts/cn_dashboard_common.py",
@@ -174,13 +183,21 @@ def _tracked_sources(repo_root: Path) -> list[Path]:
         relative_text = relative.as_posix()
         if relative.suffix.lower() not in SOURCE_SUFFIXES:
             continue
+        candidate = repo_root / relative
+        if candidate.is_symlink():
+            raise RuntimeError(f"tracked strategy-record caller must not be a symlink: {relative}")
+        if not candidate.is_file():
+            # A hard-cutover worktree may contain intentional tracked deletions
+            # before the final integration commit.  Git-baseline custody is
+            # validated separately by the migration resolver.
+            continue
         if relative_text in EXCLUDED_FILES:
             continue
         if relative_text.startswith(EXCLUDED_PREFIXES):
             continue
         if any(part in EXCLUDED_PARTS for part in relative.parts):
             continue
-        paths.append(repo_root / relative)
+        paths.append(candidate)
     by_path = {path.resolve(): path for path in paths}
     for rule in ALLOW_RULES:
         candidate = repo_root / rule.path

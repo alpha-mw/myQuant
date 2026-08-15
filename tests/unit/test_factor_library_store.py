@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
-import sys
-from pathlib import Path
 
 import pytest
 
@@ -13,11 +10,7 @@ from quant_investor.factors.report import (
     render_factor_library_audit_markdown,
 )
 from quant_investor.factors.store import FactorLibraryAuditStore
-from quant_investor.factors.store import FactorGovernanceStore
 from tests.unit.test_factor_library import _decision, _definition, _library, _validation_report
-
-
-ROOT = Path(__file__).resolve().parents[2]
 
 
 def _audit_report():
@@ -94,42 +87,3 @@ def test_store_creates_directories_on_demand(tmp_path) -> None:
 
     assert root.exists()
     assert store.audit_reports_path.exists()
-
-
-def test_cli_smoke_builds_factor_library_audit_outputs(tmp_path) -> None:
-    root = tmp_path / "factor_library"
-    output = tmp_path / "audit"
-    definition = _definition()
-    report = _validation_report(definition)
-    decision = _decision(definition, report)
-    governance_store = FactorGovernanceStore(root)
-    governance_store.append_factor_definition(definition)
-    governance_store.append_validation_report(report)
-    governance_store.append_admission_decision(decision)
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "scripts" / "build_factor_library_audit.py"),
-            "--root-dir",
-            str(root),
-            "--output-dir",
-            str(output),
-            "--as-of",
-            "2026-04-28",
-            "--generated-at",
-            "2026-04-28T00:00:00",
-            "--no-require-incremental-review",
-        ],
-        cwd=ROOT,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert "verdict:" in result.stdout
-    assert (root / "production_factors.json").exists()
-    assert (output / "factor_library_audit_reports.jsonl").exists()
-    assert (output / "factor_library_audit_report.md").exists()
-    assert (output / "factor_governance_dashboard.json").exists()

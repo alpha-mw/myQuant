@@ -25,16 +25,15 @@ import pandas as pd
 import pyarrow.parquet as pq
 import pyarrow.types as patypes
 
-from ..intelligence_v2.sources.tushare.fundamental_v4 import (
+from .fundamental_provider_evidence import (
+    canonical_provider_json_bytes,
     capture_provider_evidence_directory,
+    is_fundamental_provider_evidence_manifest,
     validate_fundamental_comparison_policy,
-    validate_fundamental_execution_closure_v4,
-    validate_fundamental_provider_manifest_v4,
+    validate_fundamental_execution_closure,
+    validate_fundamental_provider_manifest,
     validate_fundamental_reconciliation_receipt,
     validate_provider_evidence_fileset_manifest,
-)
-from ..intelligence_v2.sources.tushare.fundamental_v4.models import (
-    PROVIDER_MANIFEST_V4,
 )
 from .fundamental_provider_contract import (
     FUNDAMENTAL_DERIVATION_CONTRACT,
@@ -2231,14 +2230,14 @@ def _capture_staged_fundamental_generation(
         or {}
     )
     provider_evidence_bytes = None
-    if provider.get("schema_version") == PROVIDER_MANIFEST_V4:
+    if is_fundamental_provider_evidence_manifest(provider):
         try:
             provider_evidence_bytes = capture_provider_evidence_directory(
                 manifest_path.parent / "provider_evidence"
             )
         except Exception as exc:
             raise FundamentalGenerationError(
-                "staged Fundamental v4 provider evidence is invalid: "
+                "staged Fundamental provider evidence is invalid: "
                 f"{exc}"
             ) from exc
     if manifest != dict(validated.get("manifest", {}) or {}):
@@ -3203,7 +3202,7 @@ def _provider_evidence_json(
     payloads = captured.provider_evidence_bytes
     if payloads is None or relative_path not in payloads:
         raise FundamentalGenerationError(
-            f"Fundamental v4 provider evidence is missing: {relative_path}"
+            f"Fundamental provider evidence is missing: {relative_path}"
         )
     payload = payloads[relative_path]
     document = _json_object_from_bytes(
@@ -3211,17 +3210,15 @@ def _provider_evidence_json(
         label=f"provider evidence {relative_path}",
     )
     try:
-        from ..intelligence_v2._core import canonical_bytes
-
-        expected = canonical_bytes(document)
+        expected = canonical_provider_json_bytes(document)
     except Exception as exc:
         raise FundamentalGenerationError(
-            "Fundamental v4 provider evidence is not canonical: "
+            "Fundamental provider evidence is not canonical: "
             f"{relative_path}"
         ) from exc
     if payload != expected:
         raise FundamentalGenerationError(
-            "Fundamental v4 provider evidence bytes are not canonical: "
+            "Fundamental provider evidence bytes are not canonical: "
             f"{relative_path}"
         )
     return document
@@ -3234,12 +3231,10 @@ def _provider_evidence_jsonl(
     payloads = captured.provider_evidence_bytes
     if payloads is None or relative_path not in payloads:
         raise FundamentalGenerationError(
-            f"Fundamental v4 provider evidence is missing: {relative_path}"
+            f"Fundamental provider evidence is missing: {relative_path}"
         )
     payload = payloads[relative_path]
     try:
-        from ..intelligence_v2._core import canonical_bytes
-
         rows = [
             _json_object_from_bytes(
                 line,
@@ -3249,16 +3244,16 @@ def _provider_evidence_jsonl(
             if line
         ]
         expected = b"".join(
-            canonical_bytes(row) + b"\n" for row in rows
+            canonical_provider_json_bytes(row) + b"\n" for row in rows
         )
     except Exception as exc:
         raise FundamentalGenerationError(
-            "Fundamental v4 provider evidence JSONL is invalid: "
+            "Fundamental provider evidence JSONL is invalid: "
             f"{relative_path}"
         ) from exc
     if not rows or payload != expected:
         raise FundamentalGenerationError(
-            "Fundamental v4 provider evidence JSONL is not canonical: "
+            "Fundamental provider evidence JSONL is not canonical: "
             f"{relative_path}"
         )
     return rows
@@ -3271,11 +3266,9 @@ def _provider_evidence_document_parquet(
     payloads = captured.provider_evidence_bytes
     if payloads is None or relative_path not in payloads:
         raise FundamentalGenerationError(
-            f"Fundamental v4 provider evidence is missing: {relative_path}"
+            f"Fundamental provider evidence is missing: {relative_path}"
         )
     try:
-        from ..intelligence_v2._core import canonical_bytes
-
         frame = pd.read_parquet(io.BytesIO(payloads[relative_path]))
         if list(frame.columns) != ["document_json"] or frame.empty:
             raise ValueError("document parquet shape mismatch")
@@ -3287,12 +3280,12 @@ def _provider_evidence_document_parquet(
                 text.encode("utf-8"),
                 label=f"provider evidence {relative_path}",
             )
-            if canonical_bytes(document).decode("utf-8") != text:
+            if canonical_provider_json_bytes(document).decode("utf-8") != text:
                 raise ValueError("document parquet value is not canonical")
             rows.append(document)
     except Exception as exc:
         raise FundamentalGenerationError(
-            "Fundamental v4 provider document parquet is invalid: "
+            "Fundamental provider document parquet is invalid: "
             f"{relative_path}"
         ) from exc
     return rows
@@ -3305,7 +3298,7 @@ def _provider_evidence_raw_tables(
     payloads = captured.provider_evidence_bytes
     if payloads is None:
         raise FundamentalGenerationError(
-            "Fundamental v4 provider evidence is missing"
+            "Fundamental provider evidence is missing"
         )
     result: dict[str, pd.DataFrame] = {}
     for table_name in FUNDAMENTAL_RAW_TABLES:
@@ -3316,23 +3309,23 @@ def _provider_evidence_raw_tables(
             )
         except Exception as exc:
             raise FundamentalGenerationError(
-                f"Fundamental v4 raw table is invalid: {relative_path}"
+                f"Fundamental provider raw table is invalid: {relative_path}"
             ) from exc
     return result
 
 
-def _validate_primary_rebuild_capture_v4(
+def _validate_primary_rebuild_provider_evidence(
     captured: _CapturedFundamentalGeneration,
     *,
     provider: Mapping[str, Any],
 ) -> str:
     if captured.provider_evidence_bytes is None:
         raise FundamentalGenerationError(
-            "Fundamental v4 provider evidence is missing"
+            "Fundamental provider evidence is missing"
         )
     execution = _provider_evidence_json(captured, "execution_plan.json")
     try:
-        execution = validate_fundamental_execution_closure_v4(execution)
+        execution = validate_fundamental_execution_closure(execution)
         fileset = validate_provider_evidence_fileset_manifest(
             _provider_evidence_json(captured, "fileset_manifest.json")
         )
@@ -3381,7 +3374,7 @@ def _validate_primary_rebuild_capture_v4(
             reconciliation,
             **reconciliation_closure,
         )
-        validate_fundamental_provider_manifest_v4(
+        validate_fundamental_provider_manifest(
             provider,
             execution_closure=execution,
             reconciliation=reconciliation,
@@ -3392,7 +3385,7 @@ def _validate_primary_rebuild_capture_v4(
         )
     except Exception as exc:
         raise FundamentalGenerationError(
-            f"Fundamental v4 provider closure replay failed: {exc}"
+            f"Fundamental provider closure replay failed: {exc}"
         ) from exc
     projection_map = {
         "fundamental_daily": "fundamental_daily",
@@ -3405,7 +3398,7 @@ def _validate_primary_rebuild_capture_v4(
             != derived_fingerprints[fingerprint_name]["vip_sha256"]
         ):
             raise FundamentalGenerationError(
-                f"Fundamental v4 derived output mismatch: {table_name}"
+                f"Fundamental provider derived output mismatch: {table_name}"
             )
     return _metadata_sha256(
         {
@@ -3919,8 +3912,8 @@ def _validate_primary_rebuild_capture(
         )
         or {}
     )
-    if provider.get("schema_version") == PROVIDER_MANIFEST_V4:
-        return _validate_primary_rebuild_capture_v4(
+    if is_fundamental_provider_evidence_manifest(provider):
+        return _validate_primary_rebuild_provider_evidence(
             captured,
             provider=provider,
         )
@@ -3939,18 +3932,18 @@ def _revalidate_captured_primary_scope(
     provider = dict(
         dict(manifest.get("metadata", {}) or {}).get("provider_manifest", {}) or {}
     )
-    if provider.get("schema_version") == PROVIDER_MANIFEST_V4:
+    if is_fundamental_provider_evidence_manifest(provider):
         execution = _provider_evidence_json(
             captured,
             "execution_plan.json",
         )
         try:
-            validated = validate_fundamental_execution_closure_v4(
+            validated = validate_fundamental_execution_closure(
                 execution
             )
         except Exception as exc:
             raise FundamentalGenerationError(
-                f"Fundamental v4 scope closure replay failed: {exc}"
+                f"Fundamental provider scope closure replay failed: {exc}"
             ) from exc
         plan = validated["request_plan"]
         return _metadata_sha256(
@@ -4070,12 +4063,12 @@ def _validate_installed_provider_evidence(
         )
     except Exception as exc:
         raise FundamentalGenerationError(
-            "promoted Fundamental v4 provider evidence is invalid: "
+            "promoted Fundamental provider evidence is invalid: "
             f"{exc}"
         ) from exc
     if installed != captured.provider_evidence_bytes:
         raise FundamentalGenerationError(
-            "promoted Fundamental v4 provider evidence identity mismatch"
+            "promoted Fundamental provider evidence identity mismatch"
         )
 
 
