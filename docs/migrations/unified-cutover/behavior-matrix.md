@@ -21,7 +21,8 @@ two paths look equivalent.
 | Dynamic import is not explicitly allowlisted | Import blocked | 0 |
 | A legacy executable or subcommand is invoked | Explicit unsupported-command failure | 0 |
 | Active generation is missing or invalid | Stable read unavailable or blocked | 0 |
-| Exact valid generation is activated with the expected pointer prevalue | `system activate` CAS-writes `results/system/_active.json`, retains pointer history, and reads back the exact closure | One governed pointer transaction |
+| Exact initial generation, final authority, receipt, authorization, pointer and release all replay from `EMPTY` | Storage-owned `system activate` writes the authorized pointer bytes, publishes the permanent marker, and reads back the exact closure | One governed pointer transaction |
+| Exact verified suspended generation and presealed pointer bind a non-empty current SHA | Storage-owned `system suspend` writes only those pointer bytes and retains the prior pointer; the verification-only controller writes nothing | One governed pointer transaction |
 | System closure is incomplete but safely diagnosable | `PARTIAL` with explicit blockers | 0 from status |
 | System is intentionally suspended | `SUSPENDED`; external routing must not infer active authority | 0 from status |
 | Automation routing is missing, disabled, or drifted | `UNCONFIRMED`, `SYSTEM_ACTIVE_AUTOMATION_DISABLED`, or `SYSTEM_EXTERNAL_ROUTING_DRIFT` | 0 |

@@ -193,6 +193,8 @@ def system_activate(
     expected_pointer_sha256: str,
     migration_receipt_path: str,
     expected_migration_receipt_sha256: str,
+    final_cutover_authorization_path: str,
+    expected_final_cutover_authorization_sha256: str,
     activation_authorization_path: str,
     expected_activation_authorization_sha256: str,
     target_active_pointer_path: str,
@@ -206,6 +208,11 @@ def system_activate(
         workspace_root=workspace_root,
         request_path=migration_receipt_path,
         expected_request_sha256=expected_migration_receipt_sha256,
+    )
+    final_authorization_raw, _ = _request(
+        workspace_root=workspace_root,
+        request_path=final_cutover_authorization_path,
+        expected_request_sha256=expected_final_cutover_authorization_sha256,
     )
     authorization_raw, _ = _request(
         workspace_root=workspace_root,
@@ -237,6 +244,7 @@ def system_activate(
     active = SystemStore(workspace_root).activate_initial_generation(
         target_active_pointer_raw=pointer_raw,
         migration_receipt_raw=receipt_raw,
+        final_cutover_authorization_raw=final_authorization_raw,
         activation_authorization_raw=authorization_raw,
         deployed_release_ref=deployed_ref,
     )
@@ -249,6 +257,7 @@ def system_activate(
         "pointer_semantic_sha256": active["pointer_byte_sha256"],
         "migration_receipt_ref": activation["migration_receipt_ref"],
         "authorization_ref": activation["authorization_ref"],
+        "final_cutover_authorization_ref": activation["final_cutover_authorization_ref"],
         "marker_byte_sha256": activation["marker_byte_sha256"],
         "marker_semantic_sha256": activation["marker_semantic_sha256"],
         "cas_performed": activation["cas_performed"],
@@ -261,6 +270,8 @@ def system_suspend(
     workspace_root: str,
     generation_id: str,
     expected_pointer_sha256: str,
+    target_active_pointer_path: str,
+    expected_target_active_pointer_sha256: str,
 ) -> dict[str, Any]:
     """Emergency-only CAS to an already-built minimal suspended generation."""
 
@@ -269,17 +280,23 @@ def system_suspend(
     store = SystemStore(workspace_root)
     if expected_pointer_sha256 == "EMPTY":
         raise CommandError("SUSPEND_EXPECTED_NONEMPTY_REQUIRED")
-    candidate = store.verify_generation(generation_id)
-    if candidate.get("generation_state") != "SYSTEM_SUSPENDED":
-        raise CommandError("SUSPENDED_GENERATION_REQUIRED")
-    active = store.activate_generation(
-        generation_id, expected_pointer_sha256=expected_pointer_sha256
+    pointer_raw, pointer = _request(
+        workspace_root=workspace_root,
+        request_path=target_active_pointer_path,
+        expected_request_sha256=expected_target_active_pointer_sha256,
+    )
+    if type(pointer) is not dict or pointer.get("generation_id") != generation_id:
+        raise CommandError("SUSPEND_POINTER_ARGUMENT_MISMATCH")
+    active = store.activate_suspended_generation(
+        target_active_pointer_raw=pointer_raw,
+        expected_pointer_sha256=expected_pointer_sha256,
     )
     return {
         "status": "SUSPENDED",
         "active_generation_id": active["generation_id"],
         "generation_state": active["generation_state"],
         "pointer_sha256": active["pointer_byte_sha256"],
+        "cas_performed": True,
     }
 
 

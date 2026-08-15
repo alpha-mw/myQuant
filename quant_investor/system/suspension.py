@@ -132,40 +132,18 @@ def build_suspended_generation(
 def suspend_system(
     store_or_workspace_root: SystemStore | str | os.PathLike[str],
     *,
-    blockers: Iterable[str],
-    created_at: str,
+    target_active_pointer_raw: bytes,
     expected_pointer_sha256: str,
-    os_actor: str | None = None,
-    code_sha256: str | None = None,
-    wheel_sha256: str | None = None,
-    code_manifest_sha256: str | None = None,
-    skill_tree_sha256: str | None = None,
-    automation_semantic_sha256: str | None = None,
-    producer_identity: str = "SYSTEM",
 ) -> dict[str, Any]:
-    """Build and CAS-activate a minimal suspended generation."""
+    """CAS exact prebuilt bytes to an already-verified suspended generation."""
 
     if expected_pointer_sha256 == EMPTY_POINTER_SHA256:
         raise SystemContractError("suspension cannot perform initial activation")
 
     store = _store(store_or_workspace_root)
-    generation = build_suspended_generation(
-        store,
-        blockers=blockers,
-        created_at=created_at,
-        code_sha256=code_sha256,
-        wheel_sha256=wheel_sha256,
-        code_manifest_sha256=code_manifest_sha256,
-        skill_tree_sha256=skill_tree_sha256,
-        automation_semantic_sha256=automation_semantic_sha256,
-        producer_identity=producer_identity,
-    )
-    return store.activate_generation(
-        generation["generation_id"],
+    return store.activate_suspended_generation(
+        target_active_pointer_raw=target_active_pointer_raw,
         expected_pointer_sha256=expected_pointer_sha256,
-        activated_at=created_at,
-        os_actor=os_actor,
-        deployed_release_ref=generation["manifest"]["payload"]["release_manifest_ref"],
     )
 
 

@@ -18,6 +18,8 @@ from quant_investor.factors.governance import (
     LOW_DOLLAR_VOLUME,
 )
 from quant_investor.factors.governance.production import (
+    _OFFICIAL_CALENDAR_DECODER_SHA256,
+    _OFFICIAL_CALENDAR_DECODERS,
     assemble_production_bootstrap,
 )
 from quant_investor.system import SystemContractError, SystemPreconditionError
@@ -30,7 +32,8 @@ from tests.unit.test_unified_system_bootstrap import (
     _write_parquet,
 )
 from quant_investor.factors.governance.source import role_schema
-
+from quant_investor.market.fundamental_incremental import stage_successor_generation
+from tests.unit.test_fundamental_incremental_successor import _path_backed_case
 
 SYMBOLS = ["000001.SZ", "000002.SZ", "600000.SH", "600001.SH"]
 
@@ -43,9 +46,7 @@ def _raw_market_rows(sessions: list[date]) -> list[dict[str, Any]]:
                 {
                     "ts_code": symbol,
                     "trade_date": trade_date.strftime("%Y%m%d"),
-                    "adj_close": 10.0
-                    + symbol_index
-                    + ordinal * (0.01 + symbol_index * 0.001),
+                    "adj_close": 10.0 + symbol_index + ordinal * (0.01 + symbol_index * 0.001),
                     "amount": 1000.0 + symbol_index * 100.0 + ordinal,
                     "vol": 100.0 + symbol_index * 10.0 + ordinal / 7.0,
                     "total_mv": 1_000_000.0 + symbol_index * 100_000.0,
@@ -113,7 +114,7 @@ def _seed_workspace(tmp_path: Path) -> tuple[Path, dict[str, str]]:
 def _inputs(root: Path) -> dict[str, dict[str, str] | list[dict[str, str]]]:
     root.mkdir(mode=0o700)
     first = date(2024, 1, 2)
-    cutoff = date(2026, 7, 9)
+    cutoff = date(2026, 8, 7)
     calendar_rows: list[dict[str, Any]] = []
     cursor = first
     while cursor <= cutoff:
@@ -185,9 +186,17 @@ def _inputs(root: Path) -> dict[str, dict[str, str] | list[dict[str, str]]]:
         "closure/pit_generation_manifest.json",
         canonical_json_bytes(pit_manifest_body),
     )
-    pit_manifest_sha = _byte_ref(
-        root, "closure/pit_generation_manifest.json"
-    )["byte_sha256"]
+    _write(
+        root,
+        "closure/pit_pointer.json",
+        canonical_json_bytes(
+            {
+                "generation_id": "pit-test",
+                "membership_path": "closure/pit_membership.parquet",
+            }
+        ),
+    )
+    pit_manifest_sha = _byte_ref(root, "closure/pit_generation_manifest.json")["byte_sha256"]
     coverage = {
         "coverage_schema_version": "cn-full-a-coverage.v4",
         "complete": True,
@@ -238,78 +247,60 @@ def _inputs(root: Path) -> dict[str, dict[str, str] | list[dict[str, str]]]:
             }
         ),
     )
-    _write(
-        root,
-        "closure/calendar-raw-sse.json",
-        canonical_json_bytes({"issuer": "SSE_OFFICIAL", "raw": "sealed"}),
-    )
-    _write(
-        root,
-        "closure/calendar-raw-szse.json",
-        canonical_json_bytes({"issuer": "SZSE_OFFICIAL", "raw": "sealed"}),
-    )
-    for name in (
-        "fundamental_daily",
-        "fundamental_period",
-        "fundamental_quarantine",
-    ):
-        _write(root, f"closure/{name}.parquet", f"PAR1-{name}".encode("ascii"))
-    fundamental_shas = {
-        name: _byte_ref(root, f"closure/{name}.parquet")["byte_sha256"]
-        for name in (
-            "fundamental_daily",
-            "fundamental_period",
-            "fundamental_quarantine",
-        )
+    fundamental_fixture = root.parent / f"{root.name}-fundamental-fixture"
+    fundamental_fixture.mkdir(mode=0o700)
+    bundle, _, support_files, provider = _path_backed_case(fundamental_fixture)
+    target_bindings = {
+        "market_pointer": {
+            "path": str((root / "closure/market_pointer.json").resolve()),
+            "sha256": _byte_ref(root, "closure/market_pointer.json")["byte_sha256"],
+            "as_of": cutoff.strftime("%Y%m%d"),
+            "immutable_refs": [
+                {
+                    "path": str((root / "closure/market_snapshot_manifest.json").resolve()),
+                    "sha256": _byte_ref(root, "closure/market_snapshot_manifest.json")[
+                        "byte_sha256"
+                    ],
+                }
+            ],
+        },
+        "pit_pointer": {
+            "path": str((root / "closure/pit_pointer.json").resolve()),
+            "sha256": _byte_ref(root, "closure/pit_pointer.json")["byte_sha256"],
+            "as_of": cutoff.strftime("%Y%m%d"),
+            "immutable_refs": [
+                {
+                    "path": str((root / "closure/pit_generation_manifest.json").resolve()),
+                    "sha256": _byte_ref(root, "closure/pit_generation_manifest.json")[
+                        "byte_sha256"
+                    ],
+                }
+            ],
+        },
+        "pit_membership": {
+            "path": str((root / "closure/pit_membership.parquet").resolve()),
+            "sha256": _byte_ref(root, "closure/pit_membership.parquet")["byte_sha256"],
+            "as_of": cutoff.strftime("%Y%m%d"),
+        },
+        "expected_scope": {
+            "path": str((root / "closure/market_scope.json").resolve()),
+            "sha256": _byte_ref(root, "closure/market_scope.json")["byte_sha256"],
+            "as_of": cutoff.strftime("%Y%m%d"),
+        },
     }
-    fundamental_provenance = {
-        "status": "verified_live_tushare",
-        "source_provenance": "live_tushare_explicit",
-        "output_parquet_sha256": fundamental_shas,
-    }
-    fundamental_tables = {
-        name: f"_fundamental_generations/fundamental-test/{name}.parquet"
-        for name in fundamental_shas
-    }
-    _write(
-        root,
-        "closure/fundamental_pointer.json",
-        canonical_json_bytes(
-            {
-                "schema_version": "cn-fundamental-pointer.v1",
-                "generation_id": "fundamental-test",
-                "status": "OK",
-                "manifest_path": (
-                    "_fundamental_generations/fundamental-test/manifest.json"
-                ),
-                "tables": fundamental_tables,
-                "primary_provenance": fundamental_provenance,
-            }
-        ),
+    capture = stage_successor_generation(
+        bundle,
+        staging_root=root.parent / f"{root.name}-fundamental-capture",
+        generation_id="staged_successor",
+        provider_manifest=provider,
+        target_bindings=target_bindings,
+        provider_evidence_files=support_files,
     )
-    _write(
-        root,
-        "closure/fundamental_generation_manifest.json",
-        canonical_json_bytes(
-            {
-                "schema_version": "cn-fundamental-generation.v1",
-                "generation_id": "fundamental-test",
-                "status": "OK",
-                "tables": {
-                    name: {"rows": 1, "sha256": sha}
-                    for name, sha in fundamental_shas.items()
-                },
-                "metadata": {"gate2_passed": True},
-                "primary_provenance": fundamental_provenance,
-            }
-        ),
-    )
+    for source in sorted(capture.staging_root.rglob("*")):
+        if source.is_file():
+            _write(root, source.relative_to(capture.staging_root).as_posix(), source.read_bytes())
     _write(root, "decision/bootstrap-decision.json", _decision_bytes())
     calendar_file_ref = _byte_ref(root, "strict/exchange_calendar.parquet")
-    raw_calendar_refs = [
-        _byte_ref(root, "closure/calendar-raw-sse.json"),
-        _byte_ref(root, "closure/calendar-raw-szse.json"),
-    ]
     session_set = {row["open_session"].isoformat() for row in calendar_rows}
     daily_status_rows: list[dict[str, str]] = []
     status_cursor = date(2024, 1, 1)
@@ -329,6 +320,26 @@ def _inputs(root: Path) -> dict[str, dict[str, str] | list[dict[str, str]]]:
         {"opens_local": "09:30:00", "closes_local": "11:30:00"},
         {"opens_local": "13:00:00", "closes_local": "15:00:00"},
     ]
+    raw_calendar_refs: list[dict[str, str]] = []
+    for exchange, issuer in (("SSE", "SSE_OFFICIAL"), ("SZSE", "SZSE_OFFICIAL")):
+        relative = f"closure/calendar-raw-{exchange.lower()}.json"
+        _write(
+            root,
+            relative,
+            canonical_json_bytes(
+                {
+                    "schema_version": "official-exchange-calendar-response.v1",
+                    "exchange_id": exchange,
+                    "issuer": issuer,
+                    "timezone": "Asia/Shanghai",
+                    "session_intervals": intervals,
+                    "coverage_start_date": "2024-01-01",
+                    "cutoff_date": cutoff.isoformat(),
+                    "daily_status_rows": daily_status_rows,
+                }
+            ),
+        )
+        raw_calendar_refs.append(_byte_ref(root, relative))
     capture_refs: list[dict[str, str]] = []
     for exchange, issuer, source_url, raw_ref in (
         (
@@ -353,8 +364,19 @@ def _inputs(root: Path) -> dict[str, dict[str, str] | list[dict[str, str]]]:
                 "exchange_id": exchange,
                 "issuer": issuer,
                 "source_url": source_url,
+                "request_url": source_url,
+                "effective_url": source_url,
+                "redirect_chain": [],
+                "http_status": 200,
+                "issuer_host": source_url.split("/")[2],
+                "tls_verified": True,
                 "captured_at": BASE,
                 "raw_file_ref": raw_ref,
+                "raw_sha256": raw_ref["byte_sha256"],
+                "raw_byte_length": (root / raw_ref["relative_path"]).stat().st_size,
+                "raw_media_type": "application/json",
+                "decoder_id": _OFFICIAL_CALENDAR_DECODERS[exchange],
+                "decoder_sha256": _OFFICIAL_CALENDAR_DECODER_SHA256,
                 "timezone": "Asia/Shanghai",
                 "session_intervals": intervals,
                 "coverage_start_date": "2024-01-01",
@@ -418,12 +440,13 @@ def _inputs(root: Path) -> dict[str, dict[str, str] | list[dict[str, str]]]:
         "market_scope_file_ref": "closure/market_scope.json",
         "market_pointer_file_ref": "closure/market_pointer.json",
         "market_snapshot_manifest_file_ref": "closure/market_snapshot_manifest.json",
+        "pit_pointer_file_ref": "closure/pit_pointer.json",
         "pit_generation_manifest_file_ref": "closure/pit_generation_manifest.json",
         "pit_membership_file_ref": "closure/pit_membership.parquet",
         "calendar_manifest_file_ref": "closure/calendar_manifest.json",
-        "fundamental_pointer_file_ref": "closure/fundamental_pointer.json",
+        "fundamental_pointer_file_ref": "_fundamental_latest.json",
         "fundamental_generation_manifest_file_ref": (
-            "closure/fundamental_generation_manifest.json"
+            "_fundamental_generations/staged_successor/manifest.json"
         ),
         "bootstrap_decision_file_ref": "decision/bootstrap-decision.json",
     }
@@ -432,16 +455,20 @@ def _inputs(root: Path) -> dict[str, dict[str, str] | list[dict[str, str]]]:
     }
     result["calendar_raw_file_refs"] = raw_calendar_refs
     result["calendar_capture_file_refs"] = capture_refs
-    result["market_table_file_refs"] = [
-        _byte_ref(root, "closure/market-2026.parquet")
-    ]
+    result["market_table_file_refs"] = [_byte_ref(root, "closure/market-2026.parquet")]
     result["fundamental_table_file_refs"] = [
-        _byte_ref(root, f"closure/{name}.parquet")
+        _byte_ref(root, f"_fundamental_generations/staged_successor/{name}.parquet")
         for name in (
             "fundamental_daily",
             "fundamental_period",
             "fundamental_quarantine",
         )
+    ]
+    evidence_root = root / "_fundamental_generations/staged_successor/provider_evidence"
+    result["fundamental_evidence_file_refs"] = [
+        _byte_ref(root, path.relative_to(root).as_posix())
+        for path in sorted(evidence_root.rglob("*"))
+        if path.is_file()
     ]
     return result
 
@@ -488,9 +515,7 @@ def test_production_bootstrap_materializes_and_offline_verifies(tmp_path: Path) 
     active = result["generation"]["factor_active_set"]["payload"]
     assert active["producer_identity"] == "NOT_CLAIMED"
     assert active["admission_route"] == "BOOTSTRAP_EXCEPTION"
-    assert {
-        row["factor_id"]: row["weight"] for row in active["factor_rows"]
-    } == {
+    assert {row["factor_id"]: row["weight"] for row in active["factor_rows"]} == {
         LOW_DOLLAR_VOLUME: "0.500000000000",
         BLEND_W80: "0.500000000000",
     }
@@ -501,9 +526,7 @@ def test_production_bootstrap_materializes_and_offline_verifies(tmp_path: Path) 
     assert control["selectable"] is False
     assert control["weight"] == "0.000000000000"
     assert all(row["finite_count"] > 0 for row in result["signal_statistics"])
-    assert all(
-        row["distinct_finite_count"] > 1 for row in result["signal_statistics"]
-    )
+    assert all(row["distinct_finite_count"] > 1 for row in result["signal_statistics"])
     assert result["active_pointer_write_count"] == 0
     assert result["marker_write_count"] == 0
     assert not (workspace / "results/system/_active.json").exists()
@@ -537,9 +560,7 @@ def test_production_bootstrap_rejects_non_strict_market(tmp_path: Path) -> None:
     table = pq.read_table(bad_path).drop(["total_mv"])
     pq.write_table(table, bad_path)
     bad_path.chmod(0o600)
-    files["market_table_file_refs"] = [
-        _byte_ref(input_root, "closure/market-2026.parquet")
-    ]
+    files["market_table_file_refs"] = [_byte_ref(input_root, "closure/market-2026.parquet")]
     raw = _request(release_ref=release_ref, files=files)
 
     with pytest.raises((SystemContractError, ValueError), match="schema|column"):
@@ -556,8 +577,7 @@ def test_production_bootstrap_rejects_constant_active_signals(tmp_path: Path) ->
     files = _inputs(input_root)
     raw = pq.read_table(input_root / "closure/market-2026.parquet")
     constant_rows = [
-        {**row, "adj_close": 10.0, "amount": 1_000.0, "vol": 100.0}
-        for row in raw.to_pylist()
+        {**row, "adj_close": 10.0, "amount": 1_000.0, "vol": 100.0} for row in raw.to_pylist()
     ]
     _write_parquet(
         input_root,
@@ -565,9 +585,7 @@ def test_production_bootstrap_rejects_constant_active_signals(tmp_path: Path) ->
         constant_rows,
         RAW_MARKET_SCHEMA,
     )
-    files["market_table_file_refs"] = [
-        _byte_ref(input_root, "closure/market-2026.parquet")
-    ]
+    files["market_table_file_refs"] = [_byte_ref(input_root, "closure/market-2026.parquet")]
     raw = _request(release_ref=release_ref, files=files)
 
     with pytest.raises(FactorGovernanceError, match="constant"):
@@ -598,9 +616,7 @@ def test_production_bootstrap_rejects_unofficial_calendar_authority(
         "closure/calendar_manifest.json",
         canonical_json_bytes(tampered),
     )
-    files["calendar_manifest_file_ref"] = _byte_ref(
-        input_root, "closure/calendar_manifest.json"
-    )
+    files["calendar_manifest_file_ref"] = _byte_ref(input_root, "closure/calendar_manifest.json")
     raw = _request(release_ref=release_ref, files=files)
 
     with pytest.raises(SystemContractError, match="source authority"):
@@ -632,9 +648,7 @@ def test_production_bootstrap_requires_explicit_daily_open_closed_evidence(
             )
         ),
     )
-    new_capture_ref = _byte_ref(
-        input_root, "closure/calendar-capture-sse.json"
-    )
+    new_capture_ref = _byte_ref(input_root, "closure/calendar-capture-sse.json")
     capture_refs = list(files["calendar_capture_file_refs"])
     capture_refs[0] = new_capture_ref
     files["calendar_capture_file_refs"] = capture_refs
@@ -653,11 +667,65 @@ def test_production_bootstrap_requires_explicit_daily_open_closed_evidence(
             )
         ),
     )
-    files["calendar_manifest_file_ref"] = _byte_ref(
-        input_root, "closure/calendar_manifest.json"
-    )
+    files["calendar_manifest_file_ref"] = _byte_ref(input_root, "closure/calendar_manifest.json")
 
-    with pytest.raises(SystemContractError, match="daily status coverage"):
+    with pytest.raises(SystemContractError, match="calendar capture binding"):
+        assemble_production_bootstrap(
+            workspace_root=workspace,
+            input_root=input_root,
+            request_raw=_request(release_ref=release_ref, files=files),
+        )
+
+
+def test_production_bootstrap_rejects_placeholder_official_calendar_raw(
+    tmp_path: Path,
+) -> None:
+    workspace, release_ref = _seed_workspace(tmp_path)
+    input_root = tmp_path / "sealed-inputs"
+    files = _inputs(input_root)
+    raw_relative = "closure/calendar-raw-sse.json"
+    placeholder = canonical_json_bytes({"issuer": "SSE_OFFICIAL", "raw": "sealed"})
+    _write(input_root, raw_relative, placeholder)
+    raw_ref = _byte_ref(input_root, raw_relative)
+    raw_refs = list(files["calendar_raw_file_refs"])
+    raw_refs[0] = raw_ref
+    files["calendar_raw_file_refs"] = raw_refs
+
+    capture_path = input_root / "closure/calendar-capture-sse.json"
+    capture = json.loads(capture_path.read_bytes())
+    capture_payload = capture["payload"]
+    capture_payload["raw_file_ref"] = raw_ref
+    capture_payload["raw_sha256"] = raw_ref["byte_sha256"]
+    capture_payload["raw_byte_length"] = len(placeholder)
+    _write(
+        input_root,
+        "closure/calendar-capture-sse.json",
+        canonical_json_bytes(
+            seal_artifact("system.exchange_calendar_capture", capture_payload, created_at=BASE)
+        ),
+    )
+    capture_ref = _byte_ref(input_root, "closure/calendar-capture-sse.json")
+    capture_refs = list(files["calendar_capture_file_refs"])
+    capture_refs[0] = capture_ref
+    files["calendar_capture_file_refs"] = capture_refs
+    manifest_path = input_root / "closure/calendar_manifest.json"
+    manifest = json.loads(manifest_path.read_bytes())
+    manifest["payload"]["exchange_rows"][0]["raw_file_ref"] = raw_ref
+    manifest["payload"]["exchange_rows"][0]["capture_file_ref"] = capture_ref
+    _write(
+        input_root,
+        "closure/calendar_manifest.json",
+        canonical_json_bytes(
+            seal_artifact(
+                "system.exchange_calendar_manifest",
+                manifest["payload"],
+                created_at=BASE,
+            )
+        ),
+    )
+    files["calendar_manifest_file_ref"] = _byte_ref(input_root, "closure/calendar_manifest.json")
+
+    with pytest.raises(SystemContractError, match="raw response fields"):
         assemble_production_bootstrap(
             workspace_root=workspace,
             input_root=input_root,
@@ -671,13 +739,111 @@ def test_production_bootstrap_rejects_fundamental_table_manifest_drift(
     workspace, release_ref = _seed_workspace(tmp_path)
     input_root = tmp_path / "sealed-inputs"
     files = _inputs(input_root)
-    table_path = input_root / "closure/fundamental_daily.parquet"
-    _write(input_root, "closure/fundamental_daily.parquet", table_path.read_bytes() + b"x")
+    relative = "_fundamental_generations/staged_successor/fundamental_daily.parquet"
+    table_path = input_root / relative
+    _write(input_root, relative, table_path.read_bytes() + b"x")
     table_refs = list(files["fundamental_table_file_refs"])
-    table_refs[0] = _byte_ref(input_root, "closure/fundamental_daily.parquet")
+    table_refs[0] = _byte_ref(input_root, relative)
     files["fundamental_table_file_refs"] = table_refs
 
     with pytest.raises(SystemContractError, match="Fundamental table byte binding"):
+        assemble_production_bootstrap(
+            workspace_root=workspace,
+            input_root=input_root,
+            request_raw=_request(release_ref=release_ref, files=files),
+        )
+
+
+def test_production_bootstrap_rejects_fundamental_wrong_parquet_schema(
+    tmp_path: Path,
+) -> None:
+    workspace, release_ref = _seed_workspace(tmp_path)
+    input_root = tmp_path / "sealed-inputs"
+    files = _inputs(input_root)
+    relative = "_fundamental_generations/staged_successor/fundamental_daily.parquet"
+    _write_parquet(
+        input_root,
+        relative,
+        [{"wrong_column": "000001.SZ"}],
+        pa.schema([pa.field("wrong_column", pa.string(), nullable=False)]),
+    )
+    daily_ref = _byte_ref(input_root, relative)
+    table_refs = list(files["fundamental_table_file_refs"])
+    table_refs[0] = daily_ref
+    files["fundamental_table_file_refs"] = table_refs
+    with pytest.raises(SystemContractError, match="Fundamental table byte binding"):
+        assemble_production_bootstrap(
+            workspace_root=workspace,
+            input_root=input_root,
+            request_raw=_request(release_ref=release_ref, files=files),
+        )
+
+
+def test_production_bootstrap_rejects_homogeneous_v1_fundamental_claim(
+    tmp_path: Path,
+) -> None:
+    workspace, release_ref = _seed_workspace(tmp_path)
+    input_root = tmp_path / "sealed-inputs"
+    files = _inputs(input_root)
+    pointer_relative = "_fundamental_latest.json"
+    manifest_relative = "_fundamental_generations/staged_successor/manifest.json"
+    pointer = json.loads((input_root / pointer_relative).read_bytes())
+    manifest = json.loads((input_root / manifest_relative).read_bytes())
+    homogeneous = {
+        "schema_version": "cn-fundamental-primary-provenance.v1",
+        "status": "verified_live_tushare",
+        "source_provenance": "live_tushare_explicit",
+        "output_parquet_sha256": {name: row["sha256"] for name, row in manifest["tables"].items()},
+    }
+    pointer["primary_provenance"] = homogeneous
+    manifest["primary_provenance"] = homogeneous
+    _write(input_root, pointer_relative, canonical_json_bytes(pointer))
+    _write(input_root, manifest_relative, canonical_json_bytes(manifest))
+    files["fundamental_pointer_file_ref"] = _byte_ref(input_root, pointer_relative)
+    files["fundamental_generation_manifest_file_ref"] = _byte_ref(input_root, manifest_relative)
+
+    with pytest.raises(
+        SystemContractError,
+        match="Fundamental safe-successor provenance validation failed",
+    ):
+        assemble_production_bootstrap(
+            workspace_root=workspace,
+            input_root=input_root,
+            request_raw=_request(release_ref=release_ref, files=files),
+        )
+
+
+def test_production_bootstrap_requires_complete_fundamental_evidence_fileset(
+    tmp_path: Path,
+) -> None:
+    workspace, release_ref = _seed_workspace(tmp_path)
+    input_root = tmp_path / "sealed-inputs"
+    files = _inputs(input_root)
+    files["fundamental_evidence_file_refs"] = list(files["fundamental_evidence_file_refs"])[1:]
+
+    with pytest.raises(
+        SystemContractError,
+        match="Fundamental safe-successor provenance validation failed",
+    ):
+        assemble_production_bootstrap(
+            workspace_root=workspace,
+            input_root=input_root,
+            request_raw=_request(release_ref=release_ref, files=files),
+        )
+
+
+def test_production_bootstrap_rejects_fundamental_target_binding_drift(
+    tmp_path: Path,
+) -> None:
+    workspace, release_ref = _seed_workspace(tmp_path)
+    input_root = tmp_path / "sealed-inputs"
+    files = _inputs(input_root)
+    relative = "closure/market_pointer.json"
+    pointer = json.loads((input_root / relative).read_bytes())
+    _write(input_root, relative, canonical_json_bytes(pointer) + b"\n")
+    files["market_pointer_file_ref"] = _byte_ref(input_root, relative)
+
+    with pytest.raises(SystemContractError, match="target source binding differs"):
         assemble_production_bootstrap(
             workspace_root=workspace,
             input_root=input_root,

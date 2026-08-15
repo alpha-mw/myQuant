@@ -499,6 +499,38 @@ def test_bootstrap_signal_statistics_require_exact_pit_cohort() -> None:
         )
 
 
+def test_bootstrap_signal_statistics_seal_full_and_finite_arithmetic() -> None:
+    signals = _statistics_signals(
+        {
+            "000001.SZ": None,
+            "000002.SZ": "0x1.0000000000000p+1",
+            "000003.SZ": "0x1.8000000000000p+1",
+        },
+        {
+            "000001.SZ": "0x1.0000000000000p+0",
+            "000002.SZ": "0x1.0000000000000p+1",
+            "000003.SZ": "0x1.8000000000000p+1",
+        },
+    )
+    rows = _signal_statistics(
+        signals,
+        eligible_symbols=["000001.SZ", "000002.SZ", "000003.SZ"],
+        implementation_sha256s={LOW_DOLLAR_VOLUME: "a" * 64, BLEND_W80: "b" * 64},
+        source_bundle_sha256="c" * 64,
+    )
+
+    by_factor = {row["factor_id"]: row for row in rows}
+    low = by_factor[LOW_DOLLAR_VOLUME]
+    assert low["pit_eligible_symbol_count"] == 3
+    assert low["output_symbol_count"] == 3
+    assert low["finite_count"] == 2
+    assert low["nonfinite_count"] == 0
+    assert low["coverage_numerator"] == 2
+    assert low["coverage_denominator"] == 3
+    assert low["full_signal_sha256"] == low["signal_sha256"]
+    assert low["finite_signal_sha256"] != low["full_signal_sha256"]
+
+
 def test_bootstrap_store_context_runner_and_status_are_exact_and_nonactivating(
     tmp_path: Path,
 ) -> None:
@@ -607,9 +639,7 @@ def test_bootstrap_store_context_runner_and_status_are_exact_and_nonactivating(
     signal_statistics = _signal_statistics(
         canonical_signals,
         eligible_symbols=sorted(
-            row["symbol"]
-            for row in _pit_rows()
-            if row["tradable"] and row["total_mv"] > 0
+            row["symbol"] for row in _pit_rows() if row["tradable"] and row["total_mv"] > 0
         ),
         implementation_sha256s={
             LOW_DOLLAR_VOLUME: implementation_sha,

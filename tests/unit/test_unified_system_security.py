@@ -70,10 +70,16 @@ def test_public_active_cas_and_empty_nonempty_lane_are_closed(tmp_path: Path) ->
     storage = store._storage
     with pytest.raises(SystemSecurityError, match="System-owned"):
         storage.compare_and_swap_active(b"{}\n", expected_sha256=EMPTY)
-    with pytest.raises(SystemSecurityError, match="detached authorization"):
-        storage.compare_and_swap_active_authorized_nonempty(
-            b"{}\n", expected_sha256=EMPTY
-        )
+    assert not hasattr(storage, "compare_and_swap_active_authorized_nonempty")
+    assert not hasattr(storage, "commit_initial_activation")
+    public_methods = {
+        name
+        for name in dir(storage)
+        if callable(getattr(storage, name)) and not name.startswith("_")
+    }
+    assert "compare_and_swap_active" in public_methods
+    assert not any("authorized_nonempty" in name for name in public_methods)
+    assert not any("initial_activation" in name for name in public_methods)
 
 
 def _sha(value: str) -> str:

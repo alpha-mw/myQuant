@@ -175,9 +175,11 @@ myQuant 当前支持 CN A 股与研究型决策工作流。
 展示。规范契约、系统状态、因子治理、研究智能、主线解析与 CLI 路由分别由按职责命名的稳定
 package 提供，不再使用 runtime 版本选择器。
 
-**写入边界：** `quant-investor system activate` 是 `results/system/_active.json` 的唯一常规 writer；它要求
-精确、已经验证的不可变 generation 与文件系统写权限。verify、status、factor、research read 与
-公开结果命令都不能激活它。
+**写入边界：** 首次 `quant-investor system activate` 必须同时提供 exact detached receipt、final
+cutover authorization、activation authorization、prepared pointer 与 deployed-release identity。
+只有 storage-owned ceremony 可以首次写入 `results/system/_active.json` 和永久 migration marker。
+紧急挂起只接受 non-empty preimage 上预封存的 exact pointer bytes；安装的 controller 仅执行验证。
+verify、status、factor、research read 与公开结果命令都不能激活或挂起 System。
 
 **当前公开权限之外：** 自动实盘组合构建、模拟盘账本、券商连接、报单、执行与交易。
 `PAPER_CANDIDATE` 等研究状态不代表任何市场操作。

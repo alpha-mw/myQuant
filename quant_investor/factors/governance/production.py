@@ -31,6 +31,7 @@ from quant_investor.contracts import (
     ContractError,
     canonical_json_bytes,
     get_contract,
+    parse_canonical_json_bytes,
     seal_artifact,
     validate_artifact,
 )
@@ -53,6 +54,10 @@ from quant_investor.factors.governance.implementations import installed_semantic
 from quant_investor.factors.governance.source import decode_source_role
 from quant_investor.factors.governance.source import role_schema
 from quant_investor.intelligence import assess_readiness
+from quant_investor.market.fundamental_incremental import (
+    SafeSuccessorError,
+    validate_successor_provenance,
+)
 
 from quant_investor.system.controller import build_emergency_controller
 from quant_investor.system.errors import (
@@ -82,6 +87,7 @@ BOOTSTRAP_OPERATOR_REQUEST_FIELDS: Final = frozenset(
         "market_pointer_file_ref",
         "market_snapshot_manifest_file_ref",
         "market_table_file_refs",
+        "pit_pointer_file_ref",
         "pit_generation_manifest_file_ref",
         "pit_membership_file_ref",
         "calendar_manifest_file_ref",
@@ -90,6 +96,7 @@ BOOTSTRAP_OPERATOR_REQUEST_FIELDS: Final = frozenset(
         "fundamental_pointer_file_ref",
         "fundamental_generation_manifest_file_ref",
         "fundamental_table_file_refs",
+        "fundamental_evidence_file_refs",
         "bootstrap_decision_file_ref",
         "skill_tree_sha256",
         "automation_semantic_sha256",
@@ -142,8 +149,19 @@ _CALENDAR_CAPTURE_FIELDS: Final = frozenset(
         "exchange_id",
         "issuer",
         "source_url",
+        "request_url",
+        "effective_url",
+        "redirect_chain",
+        "http_status",
+        "issuer_host",
+        "tls_verified",
         "captured_at",
         "raw_file_ref",
+        "raw_sha256",
+        "raw_byte_length",
+        "raw_media_type",
+        "decoder_id",
+        "decoder_sha256",
         "timezone",
         "session_intervals",
         "coverage_start_date",
@@ -159,6 +177,33 @@ _OFFICIAL_CALENDAR_AUTHORITIES: Final = {
     "SZSE": ("SZSE_OFFICIAL", "www.szse.cn"),
     "BSE": ("BSE_OFFICIAL", "www.bse.cn"),
 }
+_OFFICIAL_CALENDAR_DECODERS: Final = {
+    "SSE": "myquant.exchange_calendar.sse_official_json_v1",
+    "SZSE": "myquant.exchange_calendar.szse_official_json_v1",
+    "BSE": "myquant.exchange_calendar.bse_official_json_v1",
+}
+_OFFICIAL_RAW_CALENDAR_FIELDS: Final = frozenset(
+    {
+        "schema_version",
+        "exchange_id",
+        "issuer",
+        "timezone",
+        "session_intervals",
+        "coverage_start_date",
+        "cutoff_date",
+        "daily_status_rows",
+    }
+)
+_OFFICIAL_CALENDAR_DECODER_SHA256: Final = hashlib.sha256(
+    canonical_json_bytes(
+        {
+            "domain": "myquant-official-exchange-calendar-decoder",
+            "decoder_ids": _OFFICIAL_CALENDAR_DECODERS,
+            "raw_fields": sorted(_OFFICIAL_RAW_CALENDAR_FIELDS),
+            "status_fields": sorted(_CALENDAR_STATUS_FIELDS),
+        }
+    )
+).hexdigest()
 _CN_CONTINUOUS_SESSION_INTERVALS: Final = [
     {"opens_local": "09:30:00", "closes_local": "11:30:00"},
     {"opens_local": "13:00:00", "closes_local": "15:00:00"},
@@ -266,6 +311,7 @@ def validate_bootstrap_operator_request(
             "market_scope_file_ref",
             "market_pointer_file_ref",
             "market_snapshot_manifest_file_ref",
+            "pit_pointer_file_ref",
             "pit_generation_manifest_file_ref",
             "pit_membership_file_ref",
             "calendar_manifest_file_ref",
@@ -286,6 +332,10 @@ def validate_bootstrap_operator_request(
         payload["fundamental_table_file_refs"],
         label="fundamental_table_file_refs",
     )
+    fundamental_evidence = _file_refs(
+        payload["fundamental_evidence_file_refs"],
+        label="fundamental_evidence_file_refs",
+    )
     all_paths = [
         row["relative_path"]
         for row in [
@@ -294,6 +344,7 @@ def validate_bootstrap_operator_request(
             *calendar_captures,
             *market_tables,
             *fundamental_tables,
+            *fundamental_evidence,
         ]
     ]
     if len(all_paths) != len(set(all_paths)):
@@ -315,6 +366,7 @@ def validate_bootstrap_operator_request(
         "calendar_capture_file_refs": calendar_captures,
         "market_table_file_refs": market_tables,
         "fundamental_table_file_refs": fundamental_tables,
+        "fundamental_evidence_file_refs": fundamental_evidence,
     }
 
 
@@ -800,13 +852,10 @@ def _copy_request_inputs(
         "market_scope_file_ref": "closure/market_scope.json",
         "market_pointer_file_ref": "closure/market_pointer.json",
         "market_snapshot_manifest_file_ref": "closure/market_snapshot_manifest.json",
+        "pit_pointer_file_ref": "closure/pit_pointer.json",
         "pit_generation_manifest_file_ref": "closure/pit_generation_manifest.json",
         "pit_membership_file_ref": "closure/pit_membership.parquet",
         "calendar_manifest_file_ref": "closure/calendar_manifest.json",
-        "fundamental_pointer_file_ref": "closure/fundamental_pointer.json",
-        "fundamental_generation_manifest_file_ref": (
-            "closure/fundamental_generation_manifest.json"
-        ),
         "bootstrap_decision_file_ref": ("operations/unified_cutover/bootstrap-decision.json"),
     }
     copied: dict[str, list[str] | str] = {}
@@ -816,16 +865,34 @@ def _copy_request_inputs(
         target = _destination(staging_root, relative)
         _copy_exact_once(source, target, reference["byte_sha256"])
         copied[field] = relative
+    for field in (
+        "fundamental_pointer_file_ref",
+        "fundamental_generation_manifest_file_ref",
+    ):
+        reference = normalized["files"][field]
+        relative = f"fundamental_replay/{reference['relative_path']}"
+        source, _ = _verify_input(input_root, reference)
+        target = _destination(staging_root, relative)
+        _copy_exact_once(source, target, reference["byte_sha256"])
+        copied[field] = relative
     for field, prefix in (
         ("calendar_raw_file_refs", "closure/calendar_raw"),
         ("calendar_capture_file_refs", "closure/calendar_captures"),
         ("market_table_file_refs", "closure/market_tables"),
-        ("fundamental_table_file_refs", "closure/fundamental_tables"),
     ):
         rows: list[str] = []
         for index, reference in enumerate(normalized[field]):
             suffix = PurePosixPath(reference["relative_path"]).suffix.lower()
             relative = f"{prefix}/{index:04d}{suffix}"
+            source, _ = _verify_input(input_root, reference)
+            target = _destination(staging_root, relative)
+            _copy_exact_once(source, target, reference["byte_sha256"])
+            rows.append(relative)
+        copied[field] = rows
+    for field in ("fundamental_table_file_refs", "fundamental_evidence_file_refs"):
+        rows = []
+        for reference in normalized[field]:
+            relative = f"fundamental_replay/{reference['relative_path']}"
             source, _ = _verify_input(input_root, reference)
             target = _destination(staging_root, relative)
             _copy_exact_once(source, target, reference["byte_sha256"])
@@ -1176,11 +1243,12 @@ def _materialize_market_and_pit(
     }
 
 
-def _validate_fundamental_closure(
+def _validate_fundamental_closure(  # noqa: C901
     *,
     normalized: Mapping[str, Any],
     staging_root: Path,
     copied: Mapping[str, list[str] | str],
+    expected_cutoff: str,
 ) -> dict[str, Any]:
     pointer = _read_copied_json(staging_root, copied, "fundamental_pointer_file_ref")
     manifest = _read_copied_json(staging_root, copied, "fundamental_generation_manifest_file_ref")
@@ -1198,8 +1266,12 @@ def _validate_fundamental_closure(
     manifest_path = pointer.get("manifest_path")
     if (
         type(manifest_path) is not str
-        or PurePosixPath(manifest_path).name != "manifest.json"
-        or generation_id not in PurePosixPath(manifest_path).parts
+        or manifest_path
+        != str(PurePosixPath("_fundamental_generations") / generation_id / "manifest.json")
+        or normalized["files"]["fundamental_pointer_file_ref"]["relative_path"]
+        != "_fundamental_latest.json"
+        or normalized["files"]["fundamental_generation_manifest_file_ref"]["relative_path"]
+        != manifest_path
     ):
         raise SystemContractError("Fundamental manifest path binding differs")
     pointer_tables = _mapping(pointer.get("tables"), label="Fundamental pointer tables")
@@ -1221,39 +1293,68 @@ def _validate_fundamental_closure(
         refs_by_name[matches[0]] = reference
     if sorted(refs_by_name) != expected_names:
         raise SystemContractError("Fundamental table inputs are incomplete")
-    provenance = _mapping(pointer.get("primary_provenance"), label="Fundamental primary provenance")
-    output_shas = _mapping(
-        provenance.get("output_parquet_sha256"),
-        label="Fundamental provenance output SHA",
-    )
-    manifest_provenance = _mapping(
-        manifest.get("primary_provenance"),
-        label="Fundamental manifest provenance",
-    )
-    metadata = _mapping(manifest.get("metadata"), label="Fundamental metadata")
-    if (
-        provenance != manifest_provenance
-        or provenance.get("status") != "verified_live_tushare"
-        or provenance.get("source_provenance") != "live_tushare_explicit"
-        or metadata.get("gate2_passed") is not True
-    ):
-        raise SystemContractError("Fundamental primary provenance is not closed")
     for name in expected_names:
         table_path = pointer_tables[name]
         table_manifest = _mapping(manifest_tables[name], label=f"Fundamental table {name}")
         expected_sha = refs_by_name[name]["byte_sha256"]
-        row_count = table_manifest.get("rows")
         if (
             type(table_path) is not str
-            or PurePosixPath(table_path).name != f"{name}.parquet"
-            or generation_id not in PurePosixPath(table_path).parts
+            or table_path
+            != str(PurePosixPath("_fundamental_generations") / generation_id / f"{name}.parquet")
+            or refs_by_name[name]["relative_path"] != table_path
             or table_manifest.get("sha256") != expected_sha
-            or output_shas.get(name) != expected_sha
-            or not isinstance(row_count, int)
-            or row_count < 0
         ):
             raise SystemContractError("Fundamental table byte binding differs")
-    return {"generation_id": generation_id, "table_sha256s": output_shas}
+
+    replay_root = staging_root / "fundamental_replay"
+    try:
+        validated = validate_successor_provenance(
+            pointer,
+            manifest,
+            generation_root=replay_root,
+            historical_only=True,
+        )
+    except (SafeSuccessorError, OSError, ValueError) as exc:
+        raise SystemContractError(
+            "Fundamental safe-successor provenance validation failed"
+        ) from exc
+
+    evidence_prefix = PurePosixPath("_fundamental_generations") / generation_id
+    expected_evidence: dict[str, str] = {}
+    for reference in normalized["fundamental_evidence_file_refs"]:
+        path = PurePosixPath(reference["relative_path"])
+        try:
+            relative = path.relative_to(evidence_prefix)
+        except ValueError as exc:
+            raise SystemContractError("Fundamental evidence path is noncanonical") from exc
+        if not relative.parts or relative.parts[0] != "provider_evidence":
+            raise SystemContractError("Fundamental evidence path is noncanonical")
+        expected_evidence[str(relative)] = reference["byte_sha256"]
+    if validated["provider_evidence_files"] != expected_evidence:
+        raise SystemContractError("Fundamental provider evidence fileset differs")
+
+    target_bindings = validated["target_bindings"]
+    expected_target_shas = {
+        "market_pointer": normalized["files"]["market_pointer_file_ref"]["byte_sha256"],
+        "pit_pointer": normalized["files"]["pit_pointer_file_ref"]["byte_sha256"],
+        "pit_membership": normalized["files"]["pit_membership_file_ref"]["byte_sha256"],
+        "expected_scope": normalized["files"]["market_scope_file_ref"]["byte_sha256"],
+    }
+    if validated["target_cutoff"] != expected_cutoff or any(
+        target_bindings.get(name, {}).get("sha256") != digest
+        for name, digest in expected_target_shas.items()
+    ):
+        raise SystemContractError("Fundamental target source binding differs")
+    if manifest_tables["fundamental_daily"]["rows"] <= 0 or (
+        manifest_tables["fundamental_period"]["rows"] <= 0
+    ):
+        raise SystemContractError("Fundamental production tables are empty")
+    return {
+        "generation_id": generation_id,
+        "table_sha256s": validated["table_sha256"],
+        "provenance_binding_sha256": validated["provenance_binding_sha256"],
+        "machine_states": validated["machine_states"],
+    }
 
 
 def _calendar_date(value: Any, *, label: str) -> str:
@@ -1308,11 +1409,55 @@ def _validate_calendar_capture(  # noqa: C901
     payload = capture["payload"]
     if set(payload) != _CALENDAR_CAPTURE_FIELDS:
         raise SystemContractError("official calendar capture fields are not exact")
+    request_url = payload["request_url"]
+    effective_url = payload["effective_url"]
+    redirect_chain = payload["redirect_chain"]
+    issuer_host = _OFFICIAL_CALENDAR_AUTHORITIES[exchange][1]
+    if (
+        type(request_url) is not str
+        or type(effective_url) is not str
+        or type(redirect_chain) is not list
+        or any(type(item) is not str for item in redirect_chain)
+    ):
+        raise SystemContractError("official calendar HTTP capture metadata is invalid")
+    url_chain = [request_url, *redirect_chain]
+    if not redirect_chain or redirect_chain[-1] != effective_url:
+        url_chain.append(effective_url)
+    if any(
+        (parsed := urlsplit(item)).scheme != "https"
+        or parsed.hostname != issuer_host
+        or parsed.username is not None
+        or parsed.password is not None
+        for item in url_chain
+    ):
+        raise SystemContractError("official calendar HTTP redirect authority differs")
+    raw_path, raw_stored_size = _verify_input(input_root, raw_ref)
+    raw = _read_stable_bytes(raw_path, maximum_bytes=_JSON_MAX_BYTES)
+    if (
+        raw_stored_size != len(raw)
+        or payload["raw_sha256"] != _sha256(raw)
+        or payload["raw_sha256"] != raw_ref["byte_sha256"]
+        or payload["raw_byte_length"] != len(raw)
+        or payload["raw_media_type"] != "application/json"
+        or payload["decoder_id"] != _OFFICIAL_CALENDAR_DECODERS[exchange]
+        or payload["decoder_sha256"] != _OFFICIAL_CALENDAR_DECODER_SHA256
+    ):
+        raise SystemContractError("official calendar raw/decoder identity differs")
+    try:
+        raw_document = parse_canonical_json_bytes(raw, label="official calendar raw response")
+    except ContractError as exc:
+        raise SystemContractError("official calendar raw response is not canonical JSON") from exc
+    if type(raw_document) is not dict or set(raw_document) != _OFFICIAL_RAW_CALENDAR_FIELDS:
+        raise SystemContractError("official calendar raw response fields are not exact")
     if (
         payload["state"] != "IMMUTABLE"
         or payload["exchange_id"] != exchange
         or payload["issuer"] != issuer
         or payload["source_url"] != source_url
+        or request_url != source_url
+        or payload["http_status"] != 200
+        or payload["issuer_host"] != issuer_host
+        or payload["tls_verified"] is not True
         or payload["captured_at"] != captured_at
         or payload["raw_file_ref"] != raw_ref
         or payload["timezone"] != "Asia/Shanghai"
@@ -1320,6 +1465,14 @@ def _validate_calendar_capture(  # noqa: C901
         or payload["coverage_start_date"] != coverage_start
         or payload["cutoff_date"] != cutoff
         or payload["transform_code_sha256"] != transform_code_sha256
+        or raw_document["schema_version"] != "official-exchange-calendar-response.v1"
+        or raw_document["exchange_id"] != exchange
+        or raw_document["issuer"] != issuer
+        or raw_document["timezone"] != payload["timezone"]
+        or raw_document["session_intervals"] != payload["session_intervals"]
+        or raw_document["coverage_start_date"] != coverage_start
+        or raw_document["cutoff_date"] != cutoff
+        or raw_document["daily_status_rows"] != payload["daily_status_rows"]
     ):
         raise SystemContractError("official calendar capture binding differs")
     _identifier(payload["calendar_capture_id"], label="calendar_capture_id")
@@ -1557,6 +1710,7 @@ def assemble_production_bootstrap(  # noqa: C901
         normalized=normalized,
         staging_root=staging,
         copied=copied,
+        expected_cutoff=materialized["cutoff"],
     )
     created_at = normalized["trusted_at"]
     factor_store = FactorValidationStore.for_sealed_operation(
@@ -1821,6 +1975,7 @@ def assemble_production_bootstrap(  # noqa: C901
         "market_scope_file_ref",
         "market_pointer_file_ref",
         "market_snapshot_manifest_file_ref",
+        "pit_pointer_file_ref",
         "pit_generation_manifest_file_ref",
         "calendar_manifest_file_ref",
         "fundamental_pointer_file_ref",
@@ -1881,6 +2036,26 @@ def assemble_production_bootstrap(  # noqa: C901
         )
         for relative in _copied_paths(copied, "fundamental_table_file_refs")
     ]
+    fundamental_evidence_refs: list[dict[str, str]] = []
+    for relative in _copied_paths(copied, "fundamental_evidence_file_refs"):
+        suffix = PurePosixPath(relative).suffix.lower()
+        if suffix == ".json":
+            source_format = "JSON"
+            media_type = "application/json"
+        elif suffix == ".parquet":
+            source_format = "PARQUET"
+            media_type = "application/vnd.apache.parquet"
+        else:
+            raise SystemContractError("Fundamental evidence media type is unsupported")
+        fundamental_evidence_refs.append(
+            _source(
+                store,
+                relative,
+                source_format=source_format,
+                media_type=media_type,
+                created_at=created_at,
+            )
+        )
     calendar_top = _bundle(
         store,
         normalized["operation_id"],
@@ -1917,6 +2092,10 @@ def assemble_production_bootstrap(  # noqa: C901
             ("manifest", raw_objects["fundamental_generation_manifest_file_ref"]),
             ("pointer", raw_objects["fundamental_pointer_file_ref"]),
             *[(f"table-{index:04d}", ref) for index, ref in enumerate(fundamental_table_refs)],
+            *[
+                (f"evidence-{index:04d}", ref)
+                for index, ref in enumerate(fundamental_evidence_refs)
+            ],
         ],
         created_at=created_at,
     )
@@ -1926,6 +2105,7 @@ def assemble_production_bootstrap(  # noqa: C901
         "pit-top",
         [
             ("manifest", raw_objects["pit_generation_manifest_file_ref"]),
+            ("pointer", raw_objects["pit_pointer_file_ref"]),
             ("membership", raw_objects["pit_membership_file_ref"]),
             ("strict-universe", pit_ref),
         ],

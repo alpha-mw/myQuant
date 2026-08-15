@@ -453,9 +453,7 @@ def _build_bootstrap_runtime(
             "implementation_rows": manifest["payload"]["implementation_rows"],
         }
     )
-    market_bundle_ref = _put_bootstrap_bundle(
-        store, "market", "market", market_ref
-    )
+    market_bundle_ref = _put_bootstrap_bundle(store, "market", "market", market_ref)
     implementation_sha = hashlib.sha256(implementation_raw).hexdigest()
     signal_statistics = _signal_statistics(
         canonical_signals,
@@ -1059,10 +1057,8 @@ def test_real_suspended_generation_activation_is_blocked_and_read_only(
     with pytest.raises(SystemContractError, match="initial activation"):
         suspend_system(
             store,
-            blockers=["SOURCE_CLOSURE_BLOCKED"],
-            created_at=NOW,
+            target_active_pointer_raw=b"{}",
             expected_pointer_sha256=EMPTY,
-            os_actor="test-suite",
         )
     before = sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*") if path.is_file())
 

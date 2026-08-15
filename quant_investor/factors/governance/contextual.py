@@ -460,7 +460,20 @@ def _signal_statistics(  # noqa: C901
                 "distinct_finite_count": distinct_finite_count,
                 "factor_id": factor_id,
                 "finite_count": finite_count,
+                "finite_signal_sha256": hashlib.sha256(
+                    canonical_json_bytes(
+                        [
+                            {"symbol": symbol, "signal": values[symbol]}
+                            for symbol in symbols
+                            if values[symbol] is not None
+                        ]
+                    )
+                ).hexdigest(),
+                "full_signal_sha256": signal_hashes[factor_id],
                 "implementation_sha256": implementation_sha,
+                "nonfinite_count": 0,
+                "output_symbol_count": len(symbols),
+                "pit_eligible_symbol_count": len(cohort),
                 "sealed_pit_eligible_cohort": cohort,
                 "signal_sha256": signal_hashes[factor_id],
                 "signal_symbol_set_sha256": cohort_sha,

@@ -21,6 +21,7 @@ executable:
 ```bash
 quant-investor system verify --help
 quant-investor system status --help
+quant-investor system bootstrap-assemble --help
 quant-investor system activate --help
 quant-investor market maintain --help
 quant-investor market storage-validate --help
@@ -30,15 +31,27 @@ quant-investor market run --help
 quant-investor portfolio cycle-status --help
 ```
 
-`system activate` is the only normal writer for the unified `_active.json`. It
-accepts only an exact validated immutable generation and requires filesystem
-write permission. Every read, verify, factor, research-status, and public-result
-route performs no activation.
+Initial `system activate` is the only first-pointer writer. It consumes exact
+bytes and expected SHAs for the detached migration receipt, final cutover
+authorization, activation authorization, target pointer, and deployed release.
+`system suspend` is a separate non-empty-to-suspended lane and likewise consumes
+an exact presealed target pointer. The installed emergency controller verifies
+those bytes but has no pointer write authority. Every read, verify, factor,
+research-status, and public-result route performs no activation.
 
 Use `--help` from the intended checkout before any operator run. Arguments are
 not inferred from the old command name. Missing required paths, identities,
 hashes, cutoffs, or authorization stay blocked; the CLI does not search for a
 substitute.
+
+`system bootstrap-assemble` is offline-only and requires a sealed request whose
+PIT pointer and complete Fundamental safe-successor v3 fileset are explicit
+path/SHA inputs. The fileset includes the canonical Fundamental pointer,
+manifest, all three Parquet tables, and every provider-evidence file. The
+assembler reconstructs the canonical layout under owner-only staging and
+replays predecessor, target-source, derivation, readiness, resource, provider,
+table and response-evidence bindings. A homogeneous v1 claim, partial fileset,
+or market/PIT/Fundamental cutoff drift fails before generation publication.
 
 ## Mapping template
 

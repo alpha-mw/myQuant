@@ -399,6 +399,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     for option, destination in (
         ("--migration-receipt", "migration_receipt"),
+        ("--final-cutover-authorization", "final_cutover_authorization"),
         ("--activation-authorization", "activation_authorization"),
         ("--target-active-pointer", "target_active_pointer"),
         ("--deployed-release-ref", "deployed_release_ref"),
@@ -411,6 +412,10 @@ def _build_parser() -> argparse.ArgumentParser:
         )
     for option, destination in (
         ("--expected-migration-receipt-sha256", "expected_migration_receipt_sha256"),
+        (
+            "--expected-final-cutover-authorization-sha256",
+            "expected_final_cutover_authorization_sha256",
+        ),
         (
             "--expected-activation-authorization-sha256",
             "expected_activation_authorization_sha256",
@@ -435,6 +440,16 @@ def _build_parser() -> argparse.ArgumentParser:
     system_suspend_parser.add_argument("--generation", required=True, type=_sha256_argument)
     system_suspend_parser.add_argument(
         "--expect-pointer-sha", required=True, type=_pointer_sha_argument
+    )
+    system_suspend_parser.add_argument(
+        "--target-active-pointer",
+        required=True,
+        type=_workspace_relative_canonical_path,
+    )
+    system_suspend_parser.add_argument(
+        "--expected-target-active-pointer-sha256",
+        required=True,
+        type=_sha256_argument,
     )
 
     factor_parser = subparsers.add_parser("factor", help="统一 Factor governance")
@@ -877,6 +892,10 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
                 expected_pointer_sha256=args.expect_pointer_sha,
                 migration_receipt_path=args.migration_receipt,
                 expected_migration_receipt_sha256=(args.expected_migration_receipt_sha256),
+                final_cutover_authorization_path=args.final_cutover_authorization,
+                expected_final_cutover_authorization_sha256=(
+                    args.expected_final_cutover_authorization_sha256
+                ),
                 activation_authorization_path=args.activation_authorization,
                 expected_activation_authorization_sha256=(
                     args.expected_activation_authorization_sha256
@@ -895,6 +914,8 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
                 workspace_root=args.workspace_root,
                 generation_id=args.generation,
                 expected_pointer_sha256=args.expect_pointer_sha,
+                target_active_pointer_path=args.target_active_pointer,
+                expected_target_active_pointer_sha256=(args.expected_target_active_pointer_sha256),
             )
         )
         return

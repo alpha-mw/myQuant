@@ -56,12 +56,14 @@ from .storage import (
     ACTIVATION_TRANSACTIONS_ROOT,
     CANDIDATE_STATE_ROOT,
     EMPTY_POINTER_SHA256,
+    FINAL_CUTOVER_AUTHORIZATIONS_ROOT,
     GENERATIONS_ROOT,
     MIGRATION_MARKER_PATH,
     OBJECTS_ROOT,
     POINTER_HISTORY_ROOT,
     VALIDATION_RUNS_ROOT,
     SecureSystemStorage,
+    _PreparedInitialActivationWrite,
     source_stat_identity,
 )
 
@@ -2046,6 +2048,10 @@ class SystemStore:
             )
         self.verify_migration_completion()
         verified = self.verify_generation(generation_id, deployed_release_ref=deployed_release_ref)
+        if verified["generation_state"] == "SYSTEM_SUSPENDED":
+            raise SystemActivationAuthorizationError(
+                "suspension requires an exact prebuilt pointer"
+            )
         if verified["generation_state"] == "OPERATIONAL" and deployed_release_ref is None:
             raise SystemPreconditionError(
                 "operational activation requires deployed release identity"
@@ -2066,7 +2072,7 @@ class SystemStore:
         current = self._storage.read_optional(ACTIVE_POINTER_PATH)
         if current is not None:
             self._validate_pointer(current.data)
-        stored = self._storage.compare_and_swap_active_authorized_nonempty(
+        stored = self._storage._compare_and_swap_active_authorized_nonempty(
             raw, expected_sha256=expected
         )
         replay = self._validate_pointer(stored.data)
@@ -2077,11 +2083,73 @@ class SystemStore:
             raise SystemStorageError("active pointer disappeared after CAS")
         return active
 
-    def activate_initial_generation(
+    def activate_suspended_generation(  # noqa: C901
+        self,
+        *,
+        target_active_pointer_raw: bytes,
+        expected_pointer_sha256: str,
+    ) -> dict[str, Any]:
+        """CAS exact presealed bytes to a verified suspended generation.
+
+        This emergency lane deliberately does not require the permanent marker,
+        so it can contain an exact initial-pointer-only crash.  It never grants
+        Factor authority and it never synthesizes actor or time fields.
+        """
+
+        expected = _require_pointer_sha256(expected_pointer_sha256, label="expected_pointer_sha256")
+        if expected == EMPTY_POINTER_SHA256:
+            raise SystemActivationAuthorizationError(
+                "emergency suspension requires a non-empty preimage"
+            )
+        if type(target_active_pointer_raw) is not bytes or not target_active_pointer_raw:
+            raise SystemActivationAuthorizationError(
+                "suspension pointer must preserve exact non-empty bytes"
+            )
+        pointer = self._validate_pointer(target_active_pointer_raw)
+        if pointer["previous_pointer_sha256"] != expected:
+            raise SystemActivationAuthorizationError("suspension pointer preimage binding mismatch")
+        current_uid = os.geteuid()
+        if pointer["os_actor"] != f"uid:{current_uid}:emergency-suspend":
+            raise SystemActivationAuthorizationError("suspension pointer EUID differs")
+        activated = datetime.strptime(
+            _require_timestamp(pointer["activated_at"], label="activated_at"),
+            "%Y-%m-%dT%H:%M:%SZ",
+        ).replace(tzinfo=timezone.utc)
+        if activated > datetime.now(timezone.utc):
+            raise SystemActivationAuthorizationError(
+                "suspension pointer activation time is in the future"
+            )
+        current = self._storage.read_optional(ACTIVE_POINTER_PATH)
+        if current is None:
+            raise SystemCASMismatch(expected, EMPTY_POINTER_SHA256)
+        self._validate_pointer(current.data)
+        if current.byte_sha256 != expected:
+            raise SystemCASMismatch(expected, current.byte_sha256)
+        verified = self.verify_generation(pointer["generation_id"])
+        if verified["generation_state"] != "SYSTEM_SUSPENDED":
+            raise SystemActivationAuthorizationError("emergency target must be SYSTEM_SUSPENDED")
+        if verified["manifest_sha256"] != pointer["manifest_sha256"]:
+            raise SystemActivationAuthorizationError("suspension pointer manifest binding mismatch")
+        stored = self._storage._compare_and_swap_active_authorized_nonempty(
+            target_active_pointer_raw, expected_sha256=expected
+        )
+        if stored.data != target_active_pointer_raw:
+            raise SystemStorageError("suspension pointer exact-byte readback mismatch")
+        return {
+            "generation_id": verified["generation_id"],
+            "generation_state": "SYSTEM_SUSPENDED",
+            "pointer": pointer,
+            "pointer_byte_sha256": stored.byte_sha256,
+            "factor_authority": "BLOCKED",
+            "migration_marker_required_for_factor_active": True,
+        }
+
+    def activate_initial_generation(  # noqa: C901
         self,
         *,
         target_active_pointer_raw: bytes,
         migration_receipt_raw: bytes,
+        final_cutover_authorization_raw: bytes,
         activation_authorization_raw: bytes,
         deployed_release_ref: Mapping[str, Any],
     ) -> dict[str, Any]:
@@ -2092,6 +2160,7 @@ class SystemStore:
             for raw in (
                 target_active_pointer_raw,
                 migration_receipt_raw,
+                final_cutover_authorization_raw,
                 activation_authorization_raw,
             )
         ):
@@ -2117,9 +2186,20 @@ class SystemStore:
                 build_prepared_activation_transaction,
                 validate_activation_authorization,
             )
+            from quant_investor.migration.authority import (
+                validate_final_cutover_authorization_closure,
+            )
+
+            final_authorization = validate_final_cutover_authorization_closure(
+                final_cutover_authorization_raw,
+                repository_root=self.workspace_root,
+                object_resolver=self.get_object,
+                deployed_release_ref=deployed_release_ref,
+            )
 
             authorization, marker = validate_activation_authorization(
                 activation_authorization_raw,
+                final_cutover_authorization=final_cutover_authorization_raw,
                 migration_receipt=migration_receipt_raw,
                 target_active_pointer=target_active_pointer_raw,
                 target_generation_manifest=verified["manifest"],
@@ -2138,21 +2218,28 @@ class SystemStore:
             raise SystemActivationAuthorizationError("detached receipt kind is invalid")
         receipt_ref = object_ref_for_artifact(receipt)
         authorization_ref = object_ref_for_artifact(authorization)
+        final_authorization_ref = object_ref_for_artifact(final_authorization)
         prepared_ref = object_ref_for_artifact(prepared)
         pointer_sha = hashlib.sha256(target_active_pointer_raw).hexdigest()
-        result = self._storage.commit_initial_activation(
-            pointer_raw=target_active_pointer_raw,
-            receipt_object_path=_object_path(receipt["kind"], receipt_ref["byte_sha256"]),
-            receipt_raw=migration_receipt_raw,
-            authorization_object_path=_object_path(
-                authorization["kind"], authorization_ref["byte_sha256"]
+
+        def validate_under_lock() -> None:
+            validate_final_cutover_authorization_closure(
+                final_cutover_authorization_raw,
+                repository_root=self.workspace_root,
+                object_resolver=self.get_object,
+                deployed_release_ref=deployed_release_ref,
+            )
+
+        result = self._storage._commit_initial_activation(
+            transaction=_PreparedInitialActivationWrite(
+                pointer_raw=target_active_pointer_raw,
+                receipt_raw=migration_receipt_raw,
+                final_authorization_raw=final_cutover_authorization_raw,
+                activation_authorization_raw=activation_authorization_raw,
+                prepared_raw=canonical_json_bytes(prepared),
+                marker_raw=canonical_json_bytes(marker),
             ),
-            authorization_index_path=(ACTIVATION_AUTHORIZATIONS_ROOT / f"{pointer_sha}.json"),
-            authorization_raw=activation_authorization_raw,
-            prepared_object_path=_object_path(prepared["kind"], prepared_ref["byte_sha256"]),
-            prepared_index_path=(ACTIVATION_TRANSACTIONS_ROOT / f"{pointer_sha}.json"),
-            prepared_raw=canonical_json_bytes(prepared),
-            marker_raw=canonical_json_bytes(marker),
+            lock_validator=validate_under_lock,
         )
         active = self.read_active(deployed_release_ref=deployed_release_ref)
         if active is None:
@@ -2162,6 +2249,7 @@ class SystemStore:
             **active,
             "activation": {
                 "authorization_ref": authorization_ref,
+                "final_cutover_authorization_ref": final_authorization_ref,
                 "cas_performed": bool(result["cas_performed"]),
                 "marker_byte_sha256": completion["marker_byte_sha256"],
                 "marker_semantic_sha256": completion["marker"]["semantic_sha256"],
@@ -2201,9 +2289,17 @@ class SystemStore:
         )
         if prepared_stored is None:
             raise SystemMigrationClosureError("prepared transaction index is absent")
+        final_authorization_stored = self._storage.read_optional(
+            FINAL_CUTOVER_AUTHORIZATIONS_ROOT / f"{initial_pointer_sha}.json"
+        )
+        if final_authorization_stored is None:
+            raise SystemMigrationClosureError("final cutover authorization index is absent")
         try:
             from quant_investor.migration.errors import UnifiedCutoverError
             from quant_investor.migration.migration import validate_permanent_marker
+            from quant_investor.migration.authority import (
+                validate_final_cutover_authorization_closure,
+            )
             from .activation import (
                 validate_activation_authorization,
                 validate_prepared_activation_transaction,
@@ -2227,8 +2323,15 @@ class SystemStore:
                 deployed_release_ref=deployed_ref,
                 validation_level="stat",
             )
+            final_authorization = validate_final_cutover_authorization_closure(
+                final_authorization_stored.data,
+                repository_root=self.workspace_root,
+                object_resolver=self.get_object,
+                deployed_release_ref=deployed_ref,
+            )
             validated_authorization, expected_marker = validate_activation_authorization(
                 authorization_stored.data,
+                final_cutover_authorization=final_authorization_stored.data,
                 migration_receipt=canonical_json_bytes(receipt),
                 target_active_pointer=canonical_json_bytes(initial_pointer),
                 target_generation_manifest=generation["manifest"],
@@ -2260,6 +2363,8 @@ class SystemStore:
             "migration_receipt_ref": receipt_ref,
             "prepared_transaction": prepared,
             "prepared_transaction_byte_sha256": prepared_stored.byte_sha256,
+            "final_cutover_authorization": final_authorization,
+            "final_cutover_authorization_byte_sha256": (final_authorization_stored.byte_sha256),
         }
 
     def read_active(

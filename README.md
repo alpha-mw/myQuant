@@ -204,10 +204,14 @@ dashboard surface. Canonical contracts, system state, factor governance,
 research intelligence, mainline resolution and CLI routing live behind stable,
 responsibility-named packages with no runtime version selector.
 
-**Write boundary:** `quant-investor system activate` is the only normal writer
-for `results/system/_active.json`; it requires an exact validated immutable
-generation and filesystem write permission. Verification, status, factor,
-research-read, and public-result commands cannot activate it.
+**Write boundary:** initial `quant-investor system activate` requires an exact
+detached receipt, final cutover authorization, activation authorization,
+prepared pointer and deployed-release identity. The storage-owned ceremony is
+the only initial writer for `results/system/_active.json` and the permanent
+migration marker. Emergency suspension accepts only exact presealed pointer
+bytes from a non-empty preimage; the installed controller is verification-only.
+Verification, status, factor, research-read, and public-result commands cannot
+activate or suspend the System.
 
 **Outside the current public authority:** automatic live portfolio construction,
 paper ledger, broker connection, order creation, execution and trading. A

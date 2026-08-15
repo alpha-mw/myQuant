@@ -51,6 +51,25 @@ def _suspended(
     )
 
 
+def _activate_suspended(
+    store: SystemStore,
+    generation: dict[str, Any],
+    previous_sha256: str,
+) -> dict[str, Any]:
+    return store.activate_suspended_generation(
+        target_active_pointer_raw=canonical_json_bytes(
+            {
+                "generation_id": generation["generation_id"],
+                "manifest_sha256": generation["manifest_sha256"],
+                "previous_pointer_sha256": previous_sha256,
+                "activated_at": "2026-08-14T00:01:01Z",
+                "os_actor": f"uid:{os.geteuid()}:emergency-suspend",
+            }
+        ),
+        expected_pointer_sha256=previous_sha256,
+    )
+
+
 def test_absent_status_and_verify_are_normal_reports(tmp_path: Path) -> None:
     store = _store(tmp_path)
 
@@ -139,15 +158,13 @@ def test_empty_activation_pointer_and_previous_bytes_are_retained(tmp_path: Path
         blocker="SECOND_SUSPENSION",
         created_at="2026-08-14T00:01:00Z",
     )
-    second = store.activate_generation(
-        second_generation["generation_id"],
-        expected_pointer_sha256=first["pointer_byte_sha256"],
-        activated_at="2026-08-14T00:01:01Z",
-        os_actor="test-actor",
-        deployed_release_ref=second_generation["manifest"]["payload"]["release_manifest_ref"],
-    )
+    second = _activate_suspended(store, second_generation, first["pointer_byte_sha256"])
 
-    history = closure["workspace"] / "results/system/pointer_history" / f"{first['pointer_byte_sha256']}.json"
+    history = (
+        closure["workspace"]
+        / "results/system/pointer_history"
+        / f"{first['pointer_byte_sha256']}.json"
+    )
     assert history.read_bytes() == first_bytes
     assert second["pointer"]["previous_pointer_sha256"] == first["pointer_byte_sha256"]
     newest = store.pointer_history()
@@ -169,13 +186,12 @@ def test_pointer_history_rejects_missing_retained_bytes(tmp_path: Path) -> None:
         blocker="SECOND",
         created_at="2026-08-14T00:01:00Z",
     )
-    store.activate_generation(
-        second_generation["generation_id"],
-        expected_pointer_sha256=first["pointer_byte_sha256"],
-        activated_at="2026-08-14T00:01:01Z",
-        os_actor="test",
+    _activate_suspended(store, second_generation, first["pointer_byte_sha256"])
+    retained = (
+        closure["workspace"]
+        / "results/system/pointer_history"
+        / f"{first['pointer_byte_sha256']}.json"
     )
-    retained = closure["workspace"] / "results/system/pointer_history" / f"{first['pointer_byte_sha256']}.json"
     retained.unlink()
 
     from quant_investor.system import SystemNotFound
@@ -194,13 +210,12 @@ def test_pointer_history_rejects_retained_byte_hash_mismatch(tmp_path: Path) -> 
         blocker="SECOND",
         created_at="2026-08-14T00:01:00Z",
     )
-    store.activate_generation(
-        second_generation["generation_id"],
-        expected_pointer_sha256=first["pointer_byte_sha256"],
-        activated_at="2026-08-14T00:01:01Z",
-        os_actor="test",
+    _activate_suspended(store, second_generation, first["pointer_byte_sha256"])
+    retained = (
+        closure["workspace"]
+        / "results/system/pointer_history"
+        / f"{first['pointer_byte_sha256']}.json"
     )
-    retained = closure["workspace"] / "results/system/pointer_history" / f"{first['pointer_byte_sha256']}.json"
     forged = {**first["pointer"], "os_actor": "forged"}
     retained.write_bytes(canonical_json_bytes(forged))
     retained.chmod(0o600)

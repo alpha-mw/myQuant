@@ -35,6 +35,7 @@ ACTIVATION_AUTHORIZATION_FIELDS: Final = frozenset(
     {
         "authorization_id",
         "state",
+        "final_cutover_authorization_ref",
         "migration_receipt_ref",
         "target_generation_id",
         "target_generation_manifest_ref",
@@ -58,6 +59,7 @@ ACTIVATION_PREPARED_FIELDS: Final = frozenset(
         "transaction_id",
         "state",
         "activation_authorization_ref",
+        "final_cutover_authorization_ref",
         "migration_receipt_ref",
         "target_active_pointer",
         "target_active_pointer_ref",
@@ -129,6 +131,7 @@ def _pointer_ref(pointer: Mapping[str, Any]) -> dict[str, str]:
 
 def build_activation_authorization(
     *,
+    final_cutover_authorization: Mapping[str, Any] | bytes,
     migration_receipt: Mapping[str, Any] | bytes,
     target_active_pointer: Mapping[str, Any] | bytes,
     target_generation_manifest: Mapping[str, Any] | bytes,
@@ -139,6 +142,11 @@ def build_activation_authorization(
     """Seal authorization for exact prebuilt pointer and deterministic marker bytes."""
 
     try:
+        from quant_investor.migration.authority import (
+            validate_final_cutover_authorization,
+        )
+
+        final_authorization = validate_final_cutover_authorization(final_cutover_authorization)
         receipt = validate_pre_cas_activation_target(
             migration_receipt, target_active_pointer, target_generation_manifest
         )
@@ -176,6 +184,7 @@ def build_activation_authorization(
     )
     body = {
         "state": "AUTHORIZED",
+        "final_cutover_authorization_ref": artifact_exact_ref(final_authorization),
         "migration_receipt_ref": artifact_exact_ref(receipt),
         "target_generation_id": manifest["semantic_sha256"],
         "target_generation_manifest_ref": artifact_exact_ref(manifest),
@@ -202,6 +211,7 @@ def build_activation_authorization(
 def validate_activation_authorization(  # noqa: C901
     authorization: Mapping[str, Any] | bytes,
     *,
+    final_cutover_authorization: Mapping[str, Any] | bytes,
     migration_receipt: Mapping[str, Any] | bytes,
     target_active_pointer: Mapping[str, Any] | bytes,
     target_generation_manifest: Mapping[str, Any] | bytes,
@@ -227,6 +237,11 @@ def validate_activation_authorization(  # noqa: C901
     if identity != _identity(body) or payload["state"] != "AUTHORIZED":
         raise SystemActivationAuthorizationError("authorization identity is invalid")
     try:
+        from quant_investor.migration.authority import (
+            validate_final_cutover_authorization,
+        )
+
+        final_authorization = validate_final_cutover_authorization(final_cutover_authorization)
         receipt = validate_pre_cas_activation_target(
             migration_receipt, target_active_pointer, target_generation_manifest
         )
@@ -261,6 +276,7 @@ def validate_activation_authorization(  # noqa: C901
         completed_at=payload["activated_at"],
     )
     expected = {
+        "final_cutover_authorization_ref": artifact_exact_ref(final_authorization),
         "migration_receipt_ref": artifact_exact_ref(receipt),
         "target_generation_id": manifest["semantic_sha256"],
         "target_generation_manifest_ref": artifact_exact_ref(manifest),
@@ -302,6 +318,7 @@ def build_prepared_activation_transaction(
     body = {
         "state": "PREPARED",
         "activation_authorization_ref": artifact_exact_ref(document),
+        "final_cutover_authorization_ref": payload["final_cutover_authorization_ref"],
         "migration_receipt_ref": payload["migration_receipt_ref"],
         "target_active_pointer": payload["target_active_pointer"],
         "target_active_pointer_ref": payload["target_active_pointer_ref"],
@@ -345,6 +362,7 @@ def validate_prepared_activation_transaction(
     expected = {
         "state": "PREPARED",
         "activation_authorization_ref": artifact_exact_ref(authorization_document),
+        "final_cutover_authorization_ref": authorization_payload["final_cutover_authorization_ref"],
         "migration_receipt_ref": authorization_payload["migration_receipt_ref"],
         "target_active_pointer": authorization_payload["target_active_pointer"],
         "target_active_pointer_ref": authorization_payload["target_active_pointer_ref"],

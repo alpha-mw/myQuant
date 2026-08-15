@@ -10,6 +10,7 @@ import pytest
 from quant_investor.contracts import (
     canonical_json_bytes,
     parse_canonical_json_bytes,
+    seal_artifact,
 )
 from quant_investor.system import (
     ACTIVE_POINTER_PATH,
@@ -18,8 +19,10 @@ from quant_investor.system import (
     SystemActivationAuthorizationError,
     SystemCASMismatch,
     SystemContractError,
+    SystemError,
     SystemImmutableConflict,
     SystemMigrationMarkerAbsent,
+    SystemPreconditionError,
     SystemStorageError,
     build_prepared_activation_transaction,
     validate_activation_authorization,
@@ -43,6 +46,7 @@ def _case(tmp_path: Path) -> tuple[dict, dict, dict]:
 def _marker_bytes(prepared: dict, generation: dict) -> bytes:
     authorization, marker = validate_activation_authorization(
         prepared["activation_authorization_raw"],
+        final_cutover_authorization=prepared["final_cutover_authorization_raw"],
         migration_receipt=prepared["migration_receipt_raw"],
         target_active_pointer=prepared["target_active_pointer_raw"],
         target_generation_manifest=generation["manifest"],
@@ -74,6 +78,52 @@ def test_no_transaction_and_authorization_only_leave_pointer_absent(
     assert store.read_active() is None
     assert not (closure["workspace"] / str(ACTIVE_POINTER_PATH)).exists()
     assert not (closure["workspace"] / str(MIGRATION_MARKER_PATH)).exists()
+
+
+def test_missing_fake_or_unresolved_final_cutover_authority_cannot_cas(
+    tmp_path: Path,
+) -> None:
+    closure, _generation, inputs = _case(tmp_path)
+    store = closure["store"]
+    active_path = closure["workspace"] / str(ACTIVE_POINTER_PATH)
+
+    missing = {**inputs, "final_cutover_authorization_raw": b""}
+    with pytest.raises(SystemActivationAuthorizationError, match="exact non-empty"):
+        store.activate_initial_generation(**missing)
+
+    original = parse_canonical_json_bytes(
+        inputs["final_cutover_authorization_raw"], label="final authorization"
+    )
+    fake_payload = dict(original["payload"])
+    fake_payload["final_integration_commit"] = "f" * 40
+    fake_payload["release_commit"] = "f" * 40
+    fake = seal_artifact(
+        "system.final_cutover_authorization",
+        fake_payload,
+        created_at=original["created_at"],
+    )
+    with pytest.raises(SystemPreconditionError, match="final|clean"):
+        store.activate_initial_generation(
+            **{**inputs, "final_cutover_authorization_raw": canonical_json_bytes(fake)}
+        )
+
+    unresolved_payload = dict(original["payload"])
+    unresolved_ref = dict(unresolved_payload["concurrent_task_handoff_ref"])
+    unresolved_ref["byte_sha256"] = "f" * 64
+    unresolved_payload["concurrent_task_handoff_ref"] = unresolved_ref
+    unresolved = seal_artifact(
+        "system.final_cutover_authorization",
+        unresolved_payload,
+        created_at=original["created_at"],
+    )
+    with pytest.raises(SystemError):
+        store.activate_initial_generation(
+            **{
+                **inputs,
+                "final_cutover_authorization_raw": canonical_json_bytes(unresolved),
+            }
+        )
+    assert not active_path.exists()
 
 
 def test_prepared_transaction_without_pointer_can_complete_once(tmp_path: Path) -> None:
@@ -118,9 +168,10 @@ def test_pointer_only_crash_blocks_active_then_recovers_marker_without_second_ca
 
     recovered = store.activate_initial_generation(**inputs)
     assert recovered["activation"]["cas_performed"] is False
-    assert recovered["pointer_byte_sha256"] == hashlib.sha256(
-        inputs["target_active_pointer_raw"]
-    ).hexdigest()
+    assert (
+        recovered["pointer_byte_sha256"]
+        == hashlib.sha256(inputs["target_active_pointer_raw"]).hexdigest()
+    )
 
 
 def test_completed_activation_replay_is_exact_and_never_repeats_cas(
@@ -133,9 +184,7 @@ def test_completed_activation_replay_is_exact_and_never_repeats_cas(
     assert first["activation"]["cas_performed"] is True
     assert second["activation"]["cas_performed"] is False
     assert first["pointer"] == second["pointer"]
-    assert first["migration_completion"]["marker"] == second[
-        "migration_completion"
-    ]["marker"]
+    assert first["migration_completion"]["marker"] == second["migration_completion"]["marker"]
 
 
 def test_marker_only_and_different_pointer_are_never_overwritten(tmp_path: Path) -> None:
@@ -148,18 +197,14 @@ def test_marker_only_and_different_pointer_are_never_overwritten(tmp_path: Path)
         store.activate_initial_generation(**inputs)
 
     (root / str(MIGRATION_MARKER_PATH)).unlink()
-    pointer = parse_canonical_json_bytes(
-        inputs["target_active_pointer_raw"], label="pointer"
-    )
-    different = canonical_json_bytes(
-        {**pointer, "activated_at": "2026-08-14T00:00:02Z"}
-    )
+    pointer = parse_canonical_json_bytes(inputs["target_active_pointer_raw"], label="pointer")
+    different = canonical_json_bytes({**pointer, "activated_at": "2026-08-14T00:00:02Z"})
     _direct_write(root, ACTIVE_POINTER_PATH, different)
     with pytest.raises(SystemCASMismatch) as exc:
         store.activate_initial_generation(**inputs)
-    assert exc.value.public_fields["observed_pointer_sha256"] == hashlib.sha256(
-        different
-    ).hexdigest()
+    assert (
+        exc.value.public_fields["observed_pointer_sha256"] == hashlib.sha256(different).hexdigest()
+    )
     assert (root / str(ACTIVE_POINTER_PATH)).read_bytes() == different
 
 
@@ -179,9 +224,7 @@ def test_marker_and_prepared_tamper_block_exact_recovery(tmp_path: Path) -> None
     marker_path.write_bytes(marker_raw)
     marker_path.chmod(0o600)
     prepared_index = (
-        root
-        / str(ACTIVATION_TRANSACTIONS_ROOT)
-        / f"{result['pointer_byte_sha256']}.json"
+        root / str(ACTIVATION_TRANSACTIONS_ROOT) / f"{result['pointer_byte_sha256']}.json"
     )
     prepared_index.write_bytes(b"{}\n")
     prepared_index.chmod(0o600)
@@ -212,17 +255,11 @@ def test_uid_release_and_preimage_drift_fail_before_empty_cas(
 
     missing_release = {**inputs["deployed_release_ref"], "byte_sha256": "f" * 64}
     with pytest.raises(SystemContractError, match="deployed release identity"):
-        store.activate_initial_generation(
-            **{**inputs, "deployed_release_ref": missing_release}
-        )
+        store.activate_initial_generation(**{**inputs, "deployed_release_ref": missing_release})
     assert not (root / str(ACTIVE_POINTER_PATH)).exists()
 
-    pointer = parse_canonical_json_bytes(
-        inputs["target_active_pointer_raw"], label="pointer"
-    )
-    drift = canonical_json_bytes(
-        {**pointer, "activated_at": "2026-08-14T00:00:03Z"}
-    )
+    pointer = parse_canonical_json_bytes(inputs["target_active_pointer_raw"], label="pointer")
+    drift = canonical_json_bytes({**pointer, "activated_at": "2026-08-14T00:00:03Z"})
     _direct_write(root, ACTIVE_POINTER_PATH, drift)
     with pytest.raises(SystemCASMismatch):
         store.activate_initial_generation(**inputs)

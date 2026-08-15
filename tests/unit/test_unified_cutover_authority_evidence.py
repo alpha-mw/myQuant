@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from quant_investor.migration import (
+    REQUIRED_FINAL_PREFLIGHT_GATES,
     build_concurrent_task_handoff,
     build_final_cutover_authorization,
     build_legacy_source_disposition,
@@ -14,7 +15,6 @@ from quant_investor.migration import (
 )
 from quant_investor.system import SystemPreconditionError
 from quant_investor.system.store import object_ref_for_artifact
-
 
 BASE = "2026-08-16T00:00:00Z"
 
@@ -140,18 +140,22 @@ def test_final_cutover_authorization_is_machine_derived_from_passed_gates() -> N
         historical_dirty_evidence_ref=handoff_ref,
         concurrent_task_handoff_ref=handoff_ref,
         legacy_disposition_ref=disposition_ref,
+        deployed_release_ref=handoff_ref,
+        release_commit="4" * 40,
+        release_tree="5" * 40,
         final_integration_commit="4" * 40,
         final_integration_tree="5" * 40,
         ancestry_rows=[
             {"ancestor": "a" * 40, "descendant": "4" * 40, "proved": True},
             {"ancestor": "b" * 40, "descendant": "4" * 40, "proved": True},
         ],
+        excluded_commit_rows=[],
         final_worktree_inventory_sha256="6" * 64,
         clean_checkout_readback_rows=_readbacks("4" * 40, "5" * 40),
         user_authorization_basis="explicit current-task production authorization",
         preflight_rows=[
-            {"gate_id": "calendar", "status": "PASS", "evidence_sha256": "7" * 64},
-            {"gate_id": "tests", "status": "PASS", "evidence_sha256": "8" * 64},
+            {"gate_id": gate_id, "evidence_ref": handoff_ref}
+            for gate_id in sorted(REQUIRED_FINAL_PREFLIGHT_GATES)
         ],
         created_at=BASE,
     )
@@ -168,16 +172,16 @@ def test_final_cutover_authorization_is_machine_derived_from_passed_gates() -> N
             historical_dirty_evidence_ref=handoff_ref,
             concurrent_task_handoff_ref=handoff_ref,
             legacy_disposition_ref=disposition_ref,
+            deployed_release_ref=handoff_ref,
+            release_commit="4" * 40,
+            release_tree="5" * 40,
             final_integration_commit="4" * 40,
             final_integration_tree="5" * 40,
-            ancestry_rows=[
-                {"ancestor": "a" * 40, "descendant": "4" * 40, "proved": True}
-            ],
+            ancestry_rows=[{"ancestor": "a" * 40, "descendant": "4" * 40, "proved": True}],
+            excluded_commit_rows=[],
             final_worktree_inventory_sha256="6" * 64,
             clean_checkout_readback_rows=_readbacks("4" * 40, "5" * 40),
             user_authorization_basis="explicit current-task production authorization",
-            preflight_rows=[
-                {"gate_id": "calendar", "status": "BLOCKED", "evidence_sha256": "7" * 64}
-            ],
+            preflight_rows=[],
             created_at=BASE,
         )

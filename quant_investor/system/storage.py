@@ -11,7 +11,7 @@ import os
 from pathlib import Path, PurePosixPath
 import secrets
 import stat
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from typing import Final
 
 from quant_investor.contracts import MAX_CANONICAL_JSON_BYTES
@@ -36,6 +36,7 @@ GENERATIONS_ROOT: Final = SYSTEM_ROOT / "generations"
 POINTER_HISTORY_ROOT: Final = SYSTEM_ROOT / "pointer_history"
 ACTIVATION_AUTHORIZATIONS_ROOT: Final = SYSTEM_ROOT / "activation_authorizations"
 ACTIVATION_TRANSACTIONS_ROOT: Final = SYSTEM_ROOT / "activation_transactions"
+FINAL_CUTOVER_AUTHORIZATIONS_ROOT: Final = SYSTEM_ROOT / "final_cutover_authorizations"
 CANDIDATE_STATE_ROOT: Final = SYSTEM_ROOT / "candidate_state"
 VALIDATION_RUNS_ROOT: Final = SYSTEM_ROOT / "validation_runs"
 VALIDATION_REQUESTS_ROOT: Final = SYSTEM_ROOT / "validation_requests"
@@ -76,6 +77,18 @@ class StoredSourceBytes:
     data: bytes
     byte_sha256: str
     stat_identity: Mapping[str, int]
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedInitialActivationWrite:
+    """Exact bytes already deep-validated by ``SystemStore``."""
+
+    pointer_raw: bytes
+    receipt_raw: bytes
+    final_authorization_raw: bytes
+    activation_authorization_raw: bytes
+    prepared_raw: bytes
+    marker_raw: bytes
 
 
 def _sha256(raw: bytes) -> str:
@@ -1112,7 +1125,7 @@ class SecureSystemStorage:
         del raw, expected_sha256
         raise SystemSecurityError("active pointer requires System-owned activation authorization")
 
-    def compare_and_swap_active_authorized_nonempty(
+    def _compare_and_swap_active_authorized_nonempty(
         self, raw: bytes, *, expected_sha256: str
     ) -> StoredBytes:
         if expected_sha256 == EMPTY_POINTER_SHA256:
@@ -1200,19 +1213,11 @@ class SecureSystemStorage:
                 pass
             os.close(parent)
 
-    def commit_initial_activation(  # noqa: C901
+    def _commit_initial_activation(  # noqa: C901
         self,
         *,
-        pointer_raw: bytes,
-        receipt_object_path: str | PurePosixPath,
-        receipt_raw: bytes,
-        authorization_object_path: str | PurePosixPath,
-        authorization_index_path: str | PurePosixPath,
-        authorization_raw: bytes,
-        prepared_object_path: str | PurePosixPath,
-        prepared_index_path: str | PurePosixPath,
-        prepared_raw: bytes,
-        marker_raw: bytes,
+        transaction: _PreparedInitialActivationWrite,
+        lock_validator: Callable[[], None],
     ) -> dict[str, object]:
         """Persist one authorized first pointer and marker under the active lock.
 
@@ -1220,27 +1225,43 @@ class SecureSystemStorage:
         No state is ever rolled back to ``EMPTY``.
         """
 
+        if type(transaction) is not _PreparedInitialActivationWrite:
+            raise SystemSecurityError("initial activation requires a prepared transaction")
+        pointer_raw = transaction.pointer_raw
+        receipt_raw = transaction.receipt_raw
+        final_authorization_raw = transaction.final_authorization_raw
+        authorization_raw = transaction.activation_authorization_raw
+        prepared_raw = transaction.prepared_raw
+        marker_raw = transaction.marker_raw
         for label, raw in (
             ("pointer", pointer_raw),
             ("receipt", receipt_raw),
-            ("authorization", authorization_raw),
+            ("final cutover authorization", final_authorization_raw),
+            ("activation authorization", authorization_raw),
             ("prepared transaction", prepared_raw),
             ("marker", marker_raw),
         ):
             if type(raw) is not bytes or not raw or len(raw) > self.max_read_bytes:
                 raise SystemSecurityError(f"initial activation {label} bytes are invalid")
-        receipt_path = canonical_system_path(receipt_object_path)
-        authorization_path = canonical_system_path(authorization_object_path)
-        authorization_index = canonical_system_path(authorization_index_path)
-        prepared_path = canonical_system_path(prepared_object_path)
-        prepared_index = canonical_system_path(prepared_index_path)
-        _reject_reserved_authority_path(receipt_path)
-        _reject_reserved_authority_path(authorization_path)
-        _reject_reserved_authority_path(authorization_index)
-        _reject_reserved_authority_path(prepared_path)
-        _reject_reserved_authority_path(prepared_index)
         expected_pointer_sha = _sha256(pointer_raw)
         expected_marker_sha = _sha256(marker_raw)
+        receipt_path = OBJECTS_ROOT / "system.migration.receipt" / f"{_sha256(receipt_raw)}.json"
+        final_authorization_path = (
+            OBJECTS_ROOT
+            / "system.final_cutover_authorization"
+            / f"{_sha256(final_authorization_raw)}.json"
+        )
+        authorization_path = (
+            OBJECTS_ROOT / "system.activation_authorization" / f"{_sha256(authorization_raw)}.json"
+        )
+        authorization_index = ACTIVATION_AUTHORIZATIONS_ROOT / f"{expected_pointer_sha}.json"
+        final_authorization_index = (
+            FINAL_CUTOVER_AUTHORIZATIONS_ROOT / f"{expected_pointer_sha}.json"
+        )
+        prepared_path = (
+            OBJECTS_ROOT / "system.activation_prepared" / f"{_sha256(prepared_raw)}.json"
+        )
+        prepared_index = ACTIVATION_TRANSACTIONS_ROOT / f"{expected_pointer_sha}.json"
         lock = SYSTEM_ROOT / ".active.lock"
         pointer_parent, pointer_leaf, pointer_path = self._parent_leaf(
             ACTIVE_POINTER_PATH, create=True
@@ -1249,6 +1270,7 @@ class SecureSystemStorage:
         temporary_fd: int | None = None
         try:
             with self.exclusive_lock(lock):
+                lock_validator()
                 current = self._read_leaf(
                     pointer_parent,
                     pointer_leaf,
@@ -1264,6 +1286,12 @@ class SecureSystemStorage:
                     raise SystemImmutableConflict("permanent migration marker conflicts")
 
                 receipt = self.write_exact_once(receipt_path, receipt_raw)
+                final_authorization = self.write_exact_once(
+                    final_authorization_path, final_authorization_raw
+                )
+                final_authorization_indexed = self.write_exact_once(
+                    final_authorization_index, final_authorization_raw
+                )
                 authorization = self.write_exact_once(authorization_path, authorization_raw)
                 authorization_indexed = self.write_exact_once(
                     authorization_index, authorization_raw
@@ -1304,6 +1332,8 @@ class SecureSystemStorage:
                     or current.byte_sha256 != expected_pointer_sha
                     or marker.byte_sha256 != expected_marker_sha
                     or receipt.data != receipt_raw
+                    or final_authorization.data != final_authorization_raw
+                    or final_authorization_indexed.data != final_authorization_raw
                     or authorization.data != authorization_raw
                     or authorization_indexed.data != authorization_raw
                     or prepared.data != prepared_raw
@@ -1314,6 +1344,8 @@ class SecureSystemStorage:
                     "authorization": authorization,
                     "authorization_index": authorization_indexed,
                     "cas_performed": cas_performed,
+                    "final_authorization": final_authorization,
+                    "final_authorization_index": final_authorization_indexed,
                     "marker": marker,
                     "pointer": current,
                     "prepared": prepared,
@@ -1336,6 +1368,7 @@ __all__ = [
     "ACTIVATION_TRANSACTIONS_ROOT",
     "CANDIDATE_STATE_ROOT",
     "EMPTY_POINTER_SHA256",
+    "FINAL_CUTOVER_AUTHORIZATIONS_ROOT",
     "GENERATIONS_ROOT",
     "MIGRATION_MARKER_PATH",
     "OBJECTS_ROOT",

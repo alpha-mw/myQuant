@@ -50,6 +50,26 @@ def _target(tmp_path: Path) -> tuple[SystemStore, dict[str, Any], dict[str, Any]
     return store, generation, controller, path
 
 
+def _prepared_pointer(
+    root: Path,
+    generation: dict[str, Any],
+    previous_sha256: str,
+) -> tuple[Path, bytes]:
+    raw = canonical_json_bytes(
+        {
+            "generation_id": generation["generation_id"],
+            "manifest_sha256": generation["manifest_sha256"],
+            "previous_pointer_sha256": previous_sha256,
+            "activated_at": "2026-08-14T00:01:00Z",
+            "os_actor": f"uid:{os.geteuid()}:emergency-suspend",
+        }
+    )
+    path = root / "prepared-suspended-pointer.json"
+    path.write_bytes(raw)
+    path.chmod(0o600)
+    return path, raw
+
+
 def test_emergency_controller_is_exact_stdlib_only_current_uid_mode_0500(
     tmp_path: Path,
 ) -> None:
@@ -80,19 +100,11 @@ def test_emergency_controller_is_exact_stdlib_only_current_uid_mode_0500(
         if isinstance(node, ast.Import)
         for alias in node.names
     }
-    assert imported == {
-        "datetime",
-        "fcntl",
-        "hashlib",
-        "json",
-        "os",
-        "secrets",
-        "stat",
-        "sys",
-    }
+    assert imported == {"hashlib", "json", "os", "stat", "sys"}
+    assert controller["write_authority"] == "NONE"
 
 
-def test_controller_only_cas_targets_embedded_suspended_generation_and_retains_history(
+def test_controller_verifies_exact_pointer_but_performs_no_write(
     tmp_path: Path,
 ) -> None:
     closure = _closure(tmp_path)
@@ -103,9 +115,17 @@ def test_controller_only_cas_targets_embedded_suspended_generation_and_retains_h
     target = store.verify_generation(controller["generation_id"])
     path = closure["workspace"] / str(EMERGENCY_CONTROLLER_PATH)
     first_raw = (closure["workspace"] / "results/system/_active.json").read_bytes()
+    prepared_path, prepared_raw = _prepared_pointer(
+        closure["workspace"], target, first["pointer_byte_sha256"]
+    )
 
     completed = subprocess.run(
-        [sys.executable, str(path), first["pointer_byte_sha256"]],
+        [
+            sys.executable,
+            str(path),
+            str(prepared_path),
+            hashlib.sha256(prepared_raw).hexdigest(),
+        ],
         cwd=closure["workspace"],
         check=False,
         capture_output=True,
@@ -113,29 +133,43 @@ def test_controller_only_cas_targets_embedded_suspended_generation_and_retains_h
 
     assert completed.returncode == 0, completed.stderr.decode("utf-8")
     report = json.loads(completed.stdout)
-    assert report["generation_id"] == target["generation_id"]
-    assert report["manifest_sha256"] == target["manifest_sha256"]
-    assert report["state"] == "SYSTEM_SUSPENDED"
-    active = store.read_active()
-    assert active is not None
-    assert active["generation_id"] == target["generation_id"]
-    history = closure["workspace"] / "results/system/pointer_history" / f"{first['pointer_byte_sha256']}.json"
-    assert history.read_bytes() == first_raw
+    assert report["code"] == "SYSTEM_EMERGENCY_PREPARED_POINTER_VERIFIED"
+    assert report["write_performed"] is False
+    assert report["pointer_sha256"] == hashlib.sha256(prepared_raw).hexdigest()
+    assert (closure["workspace"] / "results/system/_active.json").read_bytes() == first_raw
+    assert not (closure["workspace"] / "results/system/pointer_history").exists()
 
-    active_before = (closure["workspace"] / "results/system/_active.json").read_bytes()
-    conflict = subprocess.run(
-        [sys.executable, str(path), first["pointer_byte_sha256"]],
-        cwd=closure["workspace"],
-        check=False,
-        capture_output=True,
+
+def test_system_store_emergency_lane_writes_only_exact_presealed_pointer(
+    tmp_path: Path,
+) -> None:
+    closure = _closure(tmp_path)
+    store = closure["store"]
+    operational = store.assemble_generation(**closure["kwargs"])
+    first = activate_initial(store, operational, closure["release_ref"])
+    target = store.verify_generation(verify_emergency_controller(store)["generation_id"])
+    _prepared_path, raw = _prepared_pointer(
+        closure["workspace"], target, first["pointer_byte_sha256"]
     )
-    assert conflict.returncode == 2
-    assert json.loads(conflict.stderr) == {"code": "SYSTEM_EMERGENCY_CAS_FAILED"}
-    assert conflict.stdout == b""
-    assert (closure["workspace"] / "results/system/_active.json").read_bytes() == active_before
+
+    result = store.activate_suspended_generation(
+        target_active_pointer_raw=raw,
+        expected_pointer_sha256=first["pointer_byte_sha256"],
+    )
+
+    active_path = closure["workspace"] / "results/system/_active.json"
+    assert result["generation_state"] == "SYSTEM_SUSPENDED"
+    assert result["factor_authority"] == "BLOCKED"
+    assert active_path.read_bytes() == raw
+    history = (
+        closure["workspace"]
+        / "results/system/pointer_history"
+        / f"{first['pointer_byte_sha256']}.json"
+    )
+    assert hashlib.sha256(history.read_bytes()).hexdigest() == first["pointer_byte_sha256"]
 
 
-def test_controller_can_contain_exact_pointer_only_activation_crash(
+def test_controller_verifies_pointer_only_crash_without_claiming_containment(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -168,9 +202,16 @@ def test_controller_can_contain_exact_pointer_only_activation_crash(
         store.read_active()
 
     controller = verify_emergency_controller(store)
+    target = store.verify_generation(controller["generation_id"])
     controller_path = closure["workspace"] / str(EMERGENCY_CONTROLLER_PATH)
+    prepared_path, suspended_raw = _prepared_pointer(closure["workspace"], target, pointer_sha)
     completed = subprocess.run(
-        [sys.executable, str(controller_path), pointer_sha],
+        [
+            sys.executable,
+            str(controller_path),
+            str(prepared_path),
+            hashlib.sha256(suspended_raw).hexdigest(),
+        ],
         cwd=closure["workspace"],
         check=False,
         capture_output=True,
@@ -178,11 +219,8 @@ def test_controller_can_contain_exact_pointer_only_activation_crash(
 
     assert completed.returncode == 0, completed.stderr.decode("utf-8")
     report = json.loads(completed.stdout)
-    assert report["generation_id"] == controller["generation_id"]
-    assert report["state"] == "SYSTEM_SUSPENDED"
-    suspended_pointer = json.loads(pointer_path.read_bytes())
-    assert suspended_pointer["generation_id"] == controller["generation_id"]
-    assert suspended_pointer["previous_pointer_sha256"] == pointer_sha
+    assert report["write_performed"] is False
+    assert pointer_path.read_bytes() == pointer_raw
     assert not marker_path.exists()
     with pytest.raises(SystemMigrationMarkerAbsent):
         store.read_active()
@@ -192,34 +230,35 @@ def test_controller_rejects_empty_preimage_even_for_valid_suspended_target(
     tmp_path: Path,
 ) -> None:
     _, _, _, path = _target(tmp_path)
+    target = verify_emergency_controller(SystemStore(tmp_path))
+    generation = SystemStore(tmp_path).verify_generation(target["generation_id"])
+    prepared_path, raw = _prepared_pointer(tmp_path, generation, EMPTY)
     completed = subprocess.run(
-        [sys.executable, str(path), EMPTY],
+        [sys.executable, str(path), str(prepared_path), hashlib.sha256(raw).hexdigest()],
         cwd=tmp_path,
         check=False,
         capture_output=True,
     )
     assert completed.returncode == 2
-    assert json.loads(completed.stderr) == {"code": "SYSTEM_EMERGENCY_CAS_FAILED"}
+    assert json.loads(completed.stderr) == {"code": "SYSTEM_EMERGENCY_VERIFY_FAILED"}
     assert not (tmp_path / "results/system/_active.json").exists()
 
 
-def test_controller_retention_requires_exact_readback_before_active_replace(
+def test_controller_contains_no_reserved_pointer_writer(
     tmp_path: Path,
 ) -> None:
     _, _, _, path = _target(tmp_path)
-    namespace: dict[str, Any] = {
-        "__file__": str(path),
-        "__name__": "controller_readback_test",
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    names = {
+        f"{node.func.value.id}.{node.func.attr}"
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
     }
-    exec(compile(path.read_bytes(), str(path), "exec"), namespace)
-    namespace["_read"] = lambda path, optional=False: b"readback-mismatch"
-    controller_failure = namespace["ControllerFailure"]
-
-    with pytest.raises(controller_failure):
-        namespace["_retain_previous"](
-            b'{"pointer":"prior"}',
-            "a" * 64,
-        )
+    assert "os.replace" not in names
+    assert "os.rename" not in names
+    assert "os.link" not in names
     assert not (tmp_path / "results/system/_active.json").exists()
 
 
@@ -261,13 +300,13 @@ def test_controller_invalid_target_payload_fails_as_expected_validation_error(
     path.chmod(0o500)
 
     completed = subprocess.run(
-        [sys.executable, str(path), EMPTY],
+        [sys.executable, str(path), "missing-pointer.json", "0" * 64],
         cwd=tmp_path,
         check=False,
         capture_output=True,
     )
     assert completed.returncode == 2
-    assert json.loads(completed.stderr) == {"code": "SYSTEM_EMERGENCY_CAS_FAILED"}
+    assert json.loads(completed.stderr) == {"code": "SYSTEM_EMERGENCY_VERIFY_FAILED"}
     assert not (tmp_path / "results/system/_active.json").exists()
 
 
@@ -306,13 +345,13 @@ def test_controller_rejects_suspended_target_with_factor_attestation_closure(
     path.chmod(0o500)
 
     completed = subprocess.run(
-        [sys.executable, str(path), EMPTY],
+        [sys.executable, str(path), "missing-pointer.json", "0" * 64],
         cwd=tmp_path,
         check=False,
         capture_output=True,
     )
     assert completed.returncode == 2
-    assert json.loads(completed.stderr) == {"code": "SYSTEM_EMERGENCY_CAS_FAILED"}
+    assert json.loads(completed.stderr) == {"code": "SYSTEM_EMERGENCY_VERIFY_FAILED"}
     assert not (tmp_path / "results/system/_active.json").exists()
 
 
