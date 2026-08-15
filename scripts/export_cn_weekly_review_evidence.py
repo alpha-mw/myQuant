@@ -40,24 +40,12 @@ from quant_investor.strategy_records.store import (  # noqa: E402
     load_registered_catalog,
     regular_file_sha256,
 )
-from quant_investor.v17_mainline import derive_mainline_state  # noqa: E402
-from quant_investor.v17_mainline.contracts import (  # noqa: E402
-    parse_canonical as parse_v17_canonical,
-    validate_formal_output,
-    validate_ref as validate_v17_ref,
-    validate_semantic as validate_v17_semantic,
-)
-from quant_investor.v17_mainline.storage import MainlineStore  # noqa: E402
+from quant_investor.mainline import MainlineStore  # noqa: E402
 from scripts.cn_dashboard_common import (  # noqa: E402
     DashboardInputError,
     _read_benchmark_rows,
     build_bundle as build_dashboard_bundle,
     stable_read as read_dashboard_artifact,
-)
-from scripts.log_decision import (  # noqa: E402
-    DecisionLogError,
-    make_event as make_decision_event,
-    read_events as read_decision_events,
 )
 
 
@@ -76,17 +64,6 @@ RISK_FREE_PATH = Path("portfolio_dashboard/inputs/cn_govt_bond_yield.csv")
 MARKET_CALENDAR_ROOT = Path("data/parquet/cn/macro_release_calendar")
 MARKET_CALENDAR_POINTER = MARKET_CALENDAR_ROOT / "_latest.json"
 DECISION_LOG_PATH = Path("results/decision_log/decision_log.jsonl")
-FORMAL_WEEKLY_ADVISORY_SCHEMA = "myquant.v17.v4.weekly-advisory-input.v1"
-FORMAL_GATE_NAMES = (
-    "identity",
-    "holdings",
-    "factor",
-    "market_pit",
-    "fundamental",
-    "risk",
-    "portfolio_i6",
-    "action_freshness",
-)
 DOMAIN_NAMES = (
     "STORE_HOLDINGS",
     "WEEKLY_OPERATIONS",
@@ -498,320 +475,19 @@ def _bounded_text(value: Any, *, label: str, maximum: int = 4000) -> str:
     return value
 
 
-def _validate_formal_action(
-    raw: Any,
-    *,
-    holdings_by_symbol: dict[str, dict[str, Any]],
-    formal_ref_pairs: set[tuple[str, str]],
-) -> dict[str, Any]:
-    required = {
-        "symbol",
-        "company_name",
-        "action",
-        "shares_delta",
-        "validity",
-        "invalidation",
-        "evidence_refs",
-        "executable",
-    }
-    optional = {"target_weight", "risk_reduction_required"}
-    if (
-        not isinstance(raw, dict)
-        or not required.issubset(raw)
-        or not set(raw).issubset(required | optional)
-    ):
-        raise WeeklyEvidenceError("formal advisory action fields are invalid")
-    action = dict(raw)
-    symbol = action.get("symbol")
-    if not isinstance(symbol, str) or _SYMBOL.fullmatch(symbol) is None:
-        raise WeeklyEvidenceError("formal advisory symbol is invalid")
-    company_name = _bounded_text(
-        action.get("company_name"), label="formal advisory company name", maximum=200
-    )
-    direction = action.get("action")
-    if direction not in {"BUY", "ADD", "REDUCE", "EXIT", "HOLD", "WATCH"}:
-        raise WeeklyEvidenceError("formal advisory action is invalid")
-    shares = action.get("shares_delta")
-    if not isinstance(shares, int) or isinstance(shares, bool):
-        raise WeeklyEvidenceError("formal advisory shares_delta is not an integer")
-    if direction in {"BUY", "ADD"} and shares <= 0:
-        raise WeeklyEvidenceError("formal BUY/ADD shares_delta is not positive")
-    if direction in {"REDUCE", "EXIT"} and shares >= 0:
-        raise WeeklyEvidenceError("formal REDUCE/EXIT shares_delta is not negative")
-    if direction in {"HOLD", "WATCH"} and shares != 0:
-        raise WeeklyEvidenceError("formal HOLD/WATCH shares_delta is not zero")
-    current = holdings_by_symbol.get(symbol)
-    if direction == "BUY" and current is not None:
-        raise WeeklyEvidenceError("formal BUY conflicts with an existing holding")
-    if direction in {"ADD", "REDUCE", "EXIT", "HOLD"} and current is None:
-        raise WeeklyEvidenceError("formal holding action has no current holding")
-    if current is not None:
-        current_shares = int(float(current["shares"]))
-        if float(current_shares) != float(current["shares"]):
-            raise WeeklyEvidenceError("current holding shares are not integral")
-        if company_name != current.get("name"):
-            raise WeeklyEvidenceError("formal action company name mismatches holdings")
-        if direction == "EXIT" and -shares != current_shares:
-            raise WeeklyEvidenceError("formal EXIT does not close the position")
-        if direction == "REDUCE" and not 0 < -shares < current_shares:
-            raise WeeklyEvidenceError("formal REDUCE quantity is invalid")
-    if direction in {"REDUCE", "EXIT"} and action.get("risk_reduction_required") is not True:
-        raise WeeklyEvidenceError("formal REDUCE/EXIT lacks an exact risk requirement")
-    _bounded_text(action.get("validity"), label="formal advisory validity")
-    _bounded_text(action.get("invalidation"), label="formal advisory invalidation")
-    refs = action.get("evidence_refs")
-    if not isinstance(refs, list) or not refs:
-        raise WeeklyEvidenceError("formal advisory evidence refs are absent")
-    for ref in refs:
-        if (
-            not isinstance(ref, dict)
-            or set(ref) != {"path", "sha256"}
-            or not isinstance(ref.get("path"), str)
-            or not isinstance(ref.get("sha256"), str)
-            or _SHA256.fullmatch(ref["sha256"]) is None
-            or (ref["path"], ref["sha256"]) not in formal_ref_pairs
-        ):
-            raise WeeklyEvidenceError(
-                "formal advisory evidence is not in the active V17 closure"
-            )
-    if action.get("executable") is not False:
-        raise WeeklyEvidenceError("formal advisory action must be non-executable")
-    target_weight = action.get("target_weight")
-    if target_weight is not None:
-        try:
-            numeric_target = float(target_weight)
-        except (TypeError, ValueError) as exc:
-            raise WeeklyEvidenceError("formal target weight is invalid") from exc
-        if not 0 <= numeric_target <= 1:
-            raise WeeklyEvidenceError("formal target weight is outside [0,1]")
-    return action
+def _reject_legacy_formal_advisory() -> dict[str, Any]:
+    """Keep the retired advisory lane inert after the unified cutover.
 
+    Weekly review remains a read-only Store-v3 evidence export.  It must not
+    obtain authority from a legacy pointer, produce executable actions, or
+    prepare a decision-log mutation.
+    """
 
-def _validate_formal_advisory_sidecar(
-    value: dict[str, Any],
-    *,
-    public_run: dict[str, Any],
-    formal_evidence_refs: list[dict[str, str]],
-    store_evidence: dict[str, Any],
-    holdings: dict[str, Any],
-    window: dict[str, Any],
-) -> dict[str, Any]:
-    validate_v17_semantic(value)
-    required = {
-        "schema_id",
-        "protocol",
-        "report_week",
-        "scheduled_at",
-        "canonical_strategy_id",
-        "store_binding",
-        "portfolio_output_ref",
-        "source_closure_ref",
-        "gates",
-        "formal_outcome",
-        "actions",
-        "supersedes_event_id",
-        "executable",
-        "semantic_sha256",
-    }
-    if (
-        set(value) != required
-        or value.get("schema_id") != FORMAL_WEEKLY_ADVISORY_SCHEMA
-        or value.get("protocol") != "myquant.v17.v4"
-        or value.get("report_week") != window["report_week"]
-        or value.get("scheduled_at") != window["scheduled_at"]
-        or value.get("canonical_strategy_id") != CANONICAL_STRATEGY_ID
-        or value.get("executable") is not False
-    ):
-        raise WeeklyEvidenceError("formal weekly advisory contract mismatch")
-    if value.get("portfolio_output_ref") != public_run.get("portfolio_output_ref") or value.get(
-        "source_closure_ref"
-    ) != public_run.get("source_closure_ref"):
-        raise WeeklyEvidenceError("formal advisory V17 closure binding mismatch")
-    expected_store = {
-        "identity_sha256": store_evidence["identity_sha256"],
-        "store_pointer_sha256": store_evidence["pointer_sha256"],
-        "catalog_sha256": store_evidence["catalog_sha256"],
-        "performance_manifest_sha256": store_evidence["performance_history_ref"][
-            "manifest"
-        ]["sha256"],
-        "financial_state_sha256": store_evidence["active_closure"][
-            "financial_state_sha256"
-        ],
-    }
-    if value.get("store_binding") != expected_store:
-        raise WeeklyEvidenceError("formal advisory Store binding mismatch")
-    normalized_formal_refs = [
-        validate_v17_ref(ref, label="formal evidence ref")
-        for ref in formal_evidence_refs
-    ]
-    formal_keys = {_v17_ref_key(ref) for ref in normalized_formal_refs}
-    formal_pairs = {(ref["relative_path"], ref["byte_sha256"]) for ref in normalized_formal_refs}
-    gates = value.get("gates")
-    if not isinstance(gates, dict) or tuple(sorted(gates)) != tuple(sorted(FORMAL_GATE_NAMES)):
-        raise WeeklyEvidenceError("formal advisory gates are incomplete")
-    for name in FORMAL_GATE_NAMES:
-        gate = gates[name]
-        if not isinstance(gate, dict) or set(gate) != {"verified", "ref"}:
-            raise WeeklyEvidenceError(f"formal advisory gate {name} is invalid")
-        if gate.get("verified") is not True:
-            raise WeeklyEvidenceError(f"formal advisory gate {name} is not verified")
-        normalized_ref = validate_v17_ref(gate.get("ref"), label=f"formal gate {name}")
-        if _v17_ref_key(normalized_ref) not in formal_keys:
-            raise WeeklyEvidenceError(
-                f"formal advisory gate {name} is outside active V17 evidence"
-            )
-    positions = holdings.get("positions")
-    if not isinstance(positions, list):
-        raise WeeklyEvidenceError("formal advisory holdings are absent")
-    holdings_by_symbol = {
-        row["symbol"]: row
-        for row in positions
-        if isinstance(row, dict) and isinstance(row.get("symbol"), str)
-    }
-    actions_raw = value.get("actions")
-    if not isinstance(actions_raw, list) or len(actions_raw) > 50:
-        raise WeeklyEvidenceError("formal advisory actions exceed the bound")
-    actions = [
-        _validate_formal_action(
-            row,
-            holdings_by_symbol=holdings_by_symbol,
-            formal_ref_pairs=formal_pairs,
-        )
-        for row in actions_raw
-    ]
-    ordered = sorted(actions, key=lambda row: (row["symbol"], row["action"]))
-    if actions != ordered:
-        raise WeeklyEvidenceError("formal advisory actions are not deterministic")
-    outcome = value.get("formal_outcome")
-    if outcome == "NO_ACTION" and actions:
-        raise WeeklyEvidenceError("formal NO_ACTION carries actions")
-    if outcome == "ADVISORY" and not actions:
-        raise WeeklyEvidenceError("formal ADVISORY has no actions")
-    if outcome not in {"ADVISORY", "NO_ACTION"}:
-        raise WeeklyEvidenceError("formal advisory outcome is invalid")
-    supersedes = value.get("supersedes_event_id")
-    if supersedes is not None:
-        _bounded_text(supersedes, label="formal supersedes_event_id", maximum=200)
     return {
-        "status": outcome,
-        "actions": actions,
-        "supersedes_event_id": supersedes,
+        "status": "FORMAL_ADVISORY_BLOCKED",
+        "actions": [],
         "executable": False,
     }
-
-
-def _load_active_formal_sidecar(
-    public_run: dict[str, Any],
-) -> tuple[dict[str, Any], list[dict[str, str]], dict[str, str]]:
-    store = MainlineStore(PROJECT_ROOT)
-    formal_ref = validate_v17_ref(
-        public_run.get("formal_output_ref"), label="active formal output ref"
-    )
-    formal_stored = store.read(formal_ref["relative_path"], formal_ref["byte_sha256"])
-    formal = validate_formal_output(
-        parse_v17_canonical(formal_stored.data), strategy_id=CANONICAL_STRATEGY_ID
-    )
-    evidence = formal.get("evidence_refs")
-    if not isinstance(evidence, list):
-        raise WeeklyEvidenceError("active formal evidence refs are absent")
-    normalized = [validate_v17_ref(ref, label="active formal evidence ref") for ref in evidence]
-    for ref in normalized:
-        store.read(ref["relative_path"], ref["byte_sha256"])
-    sidecars = [ref for ref in normalized if ref["schema_id"] == FORMAL_WEEKLY_ADVISORY_SCHEMA]
-    if len(sidecars) != 1:
-        raise WeeklyEvidenceError("FORMAL_ACTION_GATES_INCOMPLETE")
-    sidecar_ref = sidecars[0]
-    sidecar_stored = store.read(
-        sidecar_ref["relative_path"], sidecar_ref["byte_sha256"]
-    )
-    sidecar = parse_v17_canonical(sidecar_stored.data)
-    return sidecar, normalized, sidecar_ref
-
-
-def _build_decision_envelope(
-    *,
-    formal: dict[str, Any],
-    public_run: dict[str, Any],
-    store_evidence: dict[str, Any],
-    window: dict[str, Any],
-    recorded_at: str,
-) -> dict[str, Any]:
-    run_sha = public_run["mainline_run_ref"]["byte_sha256"]
-    return make_decision_event(
-        {
-            "schema_version": "decision_log.v2",
-            "event_type": "advisory_envelope",
-            "report_group_id": f"myquant-cn:{window['report_week']}",
-            "idempotency_key": (
-                f"myquant-cn:{window['report_week']}:{CANONICAL_STRATEGY_ID}:{run_sha}"
-            ),
-            "report_week": window["report_week"],
-            "scheduled_at": window["scheduled_at"],
-            "canonical_strategy_id": CANONICAL_STRATEGY_ID,
-            "identity_sha256": store_evidence["identity_sha256"],
-            "v17_active_run_sha256": run_sha,
-            "v17_active_pointer_sha256": public_run["active_pointer_ref"][
-                "byte_sha256"
-            ],
-            "store_pointer_sha256": store_evidence["pointer_sha256"],
-            "catalog_sha256": store_evidence["catalog_sha256"],
-            "performance_manifest_sha256": store_evidence[
-                "performance_history_ref"
-            ]["manifest"]["sha256"],
-            "financial_state_sha256": store_evidence["active_closure"][
-                "financial_state_sha256"
-            ],
-            "executable": False,
-            "formal_outcome": formal["status"],
-            "actions": formal["actions"],
-            "supersedes_event_id": formal["supersedes_event_id"],
-            "recorded_at": recorded_at,
-        }
-    )
-
-
-def _decision_log_domain(
-    event: dict[str, Any], *, path: Path
-) -> tuple[dict[str, Any], bool]:
-    try:
-        events = read_decision_events(path)
-    except (DecisionLogError, OSError) as exc:
-        raise WeeklyEvidenceError(f"ADVISORY_LOG_BLOCKED:{exc}") from exc
-    same_key = [
-        row
-        for row in events
-        if row.get("schema_version") == "decision_log.v2"
-        and row.get("idempotency_key") == event["idempotency_key"]
-    ]
-    if same_key:
-        if same_key[0].get("semantic_sha256") != event["semantic_sha256"]:
-            raise WeeklyEvidenceError("DECISION_LOG_IDEMPOTENCY_CONFLICT")
-        return _domain(
-            "FRESH",
-            evidence={
-                "event_id": same_key[0]["event_id"],
-                "idempotency_key": event["idempotency_key"],
-                "already_recorded": True,
-            },
-        ), True
-    same_week = [
-        row
-        for row in events
-        if row.get("schema_version") == "decision_log.v2"
-        and row.get("report_week") == event["report_week"]
-        and row.get("canonical_strategy_id") == CANONICAL_STRATEGY_ID
-    ]
-    if same_week and event.get("supersedes_event_id") != same_week[-1].get("event_id"):
-        raise WeeklyEvidenceError("weekly V17 supersession is not explicit")
-    return _domain(
-        "PARTIAL",
-        blockers=["ADVISORY_LOG_PENDING"],
-        evidence={
-            "event_id": event["event_id"],
-            "idempotency_key": event["idempotency_key"],
-            "already_recorded": False,
-        },
-    ), False
 
 
 def _operations(
@@ -1164,17 +840,16 @@ def export(args: argparse.Namespace) -> dict[str, Any]:
             operations = []
             non_trade_events = []
 
-    v17 = derive_mainline_state(PROJECT_ROOT, canonical_strategy_id=CANONICAL_STRATEGY_ID)
+    mainline_status = MainlineStore(PROJECT_ROOT).status(
+        strategy_id=CANONICAL_STRATEGY_ID
+    )
     v17_evidence: dict[str, Any] = {
-        "derived_state": v17.derived_state,
-        "blocker": v17.blocker.value if v17.blocker is not None else None,
-        "public_run": v17.public_run,
+        "derived_state": "RETIRED",
+        "blocker": "LEGACY_MAINLINE_RETIRED",
+        "public_run": None,
+        "unified_mainline_state": mainline_status["mainline_state"],
     }
-    formal_payload: dict[str, Any] = {
-        "status": "FORMAL_ADVISORY_BLOCKED",
-        "actions": [],
-        "executable": False,
-    }
+    formal_payload = _reject_legacy_formal_advisory()
     decision_payload: dict[str, Any] = {
         "status": "DEPENDENCY_BLOCKED",
         "write_performed": False,
@@ -1183,105 +858,17 @@ def export(args: argparse.Namespace) -> dict[str, Any]:
         "envelope_sha256": None,
         "already_recorded": False,
     }
-    if v17.is_active:
-        if store_evidence is None or dashboard is None or v17.public_run is None:
-            domains["FORMAL_V17_ADVISORY"] = _domain(
-                "DEPENDENCY_BLOCKED", blockers=["STORE_HOLDINGS_BLOCKED"]
-            )
-            domains["DECISION_LOG"] = _domain(
-                "DEPENDENCY_BLOCKED", blockers=["STORE_HOLDINGS_BLOCKED"]
-            )
-        else:
-            try:
-                sidecar, formal_refs, sidecar_ref = _load_active_formal_sidecar(
-                    v17.public_run
-                )
-                validated_formal = _validate_formal_advisory_sidecar(
-                    sidecar,
-                    public_run=v17.public_run,
-                    formal_evidence_refs=formal_refs,
-                    store_evidence=store_evidence,
-                    holdings={"positions": dashboard["positions"]},
-                    window=window,
-                )
-                envelope = _build_decision_envelope(
-                    formal=validated_formal,
-                    public_run=v17.public_run,
-                    store_evidence=store_evidence,
-                    window=window,
-                    recorded_at=generated_at,
-                )
-                log_domain, already_recorded = _decision_log_domain(
-                    envelope, path=PROJECT_ROOT / DECISION_LOG_PATH
-                )
-                envelope_path = output_dir / "decision_log_envelope.v2.json"
-                envelope_raw = canonical_json_bytes(envelope)
-                envelope_sha = immutable_write(
-                    envelope_path, envelope_raw, max_bytes=128 * 1024
-                )
-                domains["FORMAL_V17_ADVISORY"] = _domain(
-                    "FRESH",
-                    evidence={
-                        "weekly_advisory_ref": sidecar_ref,
-                        "active_pointer_sha256": v17.public_run[
-                            "active_pointer_ref"
-                        ]["byte_sha256"],
-                        "active_run_sha256": v17.public_run["mainline_run_ref"][
-                            "byte_sha256"
-                        ],
-                    },
-                )
-                domains["DECISION_LOG"] = log_domain
-                formal_payload = {
-                    "status": "FORMAL_ADVISORY_READY",
-                    "formal_outcome": validated_formal["status"],
-                    "actions": validated_formal["actions"],
-                    "executable": False,
-                }
-                decision_payload = {
-                    "status": "RECORDED" if already_recorded else "PENDING_APPEND",
-                    "write_performed": False,
-                    "path": DECISION_LOG_PATH.as_posix(),
-                    "envelope_path": str(envelope_path),
-                    "envelope_sha256": envelope_sha,
-                    "event_id": envelope["event_id"],
-                    "idempotency_key": envelope["idempotency_key"],
-                    "already_recorded": already_recorded,
-                }
-                source_refs.extend(
-                    {
-                        "path": ref["relative_path"],
-                        "sha256": ref["byte_sha256"],
-                    }
-                    for ref in (
-                        [
-                            v17.public_run["active_pointer_ref"],
-                            v17.public_run["mainline_run_ref"],
-                            v17.public_run["formal_output_ref"],
-                            v17.public_run["portfolio_output_ref"],
-                            v17.public_run["source_closure_ref"],
-                        ]
-                        + formal_refs
-                    )
-                )
-                source_refs.append(
-                    {"path": str(envelope_path), "sha256": envelope_sha}
-                )
-            except (WeeklyEvidenceError, ValueError, RuntimeError, OSError, KeyError) as exc:
-                blocker = str(exc) or "FORMAL_ACTION_GATES_INCOMPLETE"
-                domains["FORMAL_V17_ADVISORY"] = _domain(
-                    "BLOCKED", blockers=[blocker]
-                )
-                domains["DECISION_LOG"] = _domain(
-                    "DEPENDENCY_BLOCKED", blockers=[blocker]
-                )
-    else:
-        domains["FORMAL_V17_ADVISORY"] = _domain(
-            "BLOCKED", blockers=["FORMAL_ADVISORY_BLOCKED", v17.derived_state]
-        )
-        domains["DECISION_LOG"] = _domain(
-            "DEPENDENCY_BLOCKED", blockers=["FORMAL_ADVISORY_BLOCKED"]
-        )
+    domains["FORMAL_V17_ADVISORY"] = _domain(
+        "BLOCKED",
+        blockers=[
+            "FORMAL_ADVISORY_BLOCKED",
+            "LEGACY_MAINLINE_RETIRED",
+            mainline_status["mainline_state"],
+        ],
+    )
+    domains["DECISION_LOG"] = _domain(
+        "DEPENDENCY_BLOCKED", blockers=["FORMAL_ADVISORY_BLOCKED"]
+    )
 
     bundle: dict[str, Any] = {
         "schema_id": SCHEMA_ID,

@@ -165,11 +165,10 @@ ALLOW_RULES: tuple[AllowRule, ...] = (
     ),
     AllowRule(
         path="scripts/export_cn_weekly_review_evidence.py",
-        operations=("open",),
+        operations=(),
         reason=(
-            "The scheduled weekly exporter uses registered Store and Dashboard APIs and "
-            "uses the V17 descriptor-safe exact reader for formal evidence; it writes "
-            "only an explicit /private/tmp evidence bundle and envelope candidate."
+            "The scheduled weekly exporter consumes generation-bound stable Mainline "
+            "projections and has no direct Strategy Record Store filesystem access."
         ),
     ),
     AllowRule(

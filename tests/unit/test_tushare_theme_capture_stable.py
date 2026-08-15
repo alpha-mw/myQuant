@@ -17,6 +17,7 @@ from quant_investor.market.tushare import (
 )
 from quant_investor.market.tushare._core import FORBIDDEN_VERSION_FIELDS
 from quant_investor.market.tushare_transport import TushareResponse
+from tests.unit.tushare_response_fixtures import make_tushare_response
 
 CREATED = "2026-08-11T08:00:00Z"
 TRADE_DATE = "20260810"
@@ -31,7 +32,7 @@ class FakeClient:
         self.calls.append((api_name, dict(params)))
         company = str(params.get("con_code", "ALL"))
         rows = self.rows_by_api_and_company[(api_name, company)]
-        return TushareResponse(
+        return make_tushare_response(
             api_name=api_name,
             request_id=f"request-{len(self.calls)}",
             reported_count=len(rows),

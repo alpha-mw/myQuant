@@ -771,7 +771,7 @@ def _build_configuration_selection(
     artifact = seal_artifact(
         SELECTION_KIND, payload, created_at=canonical_timestamp(trusted_at, label="trusted_at")
     )
-    validate_configuration_selection(artifact, preregistration=prereg)
+    _validate_configuration_selection_prevalidated(artifact, preregistration=prereg)
     _check_size(artifact, _MAX_SELECTION_BYTES, label="configuration selection")
     return artifact
 
@@ -781,10 +781,23 @@ def validate_configuration_selection(
     *,
     preregistration: Mapping[str, Any] | bytes,
 ) -> dict[str, Any]:
-    envelope, payload = exact_payload(document, kind=SELECTION_KIND, fields=_SELECTION_FIELDS)
     prereg = validate_preregistration(preregistration)
-    _validate_selection_payload(payload, prereg)
-    if envelope["created_at"] < prereg["created_at"]:
+    return _validate_configuration_selection_prevalidated(
+        document,
+        preregistration=prereg,
+    )
+
+
+def _validate_configuration_selection_prevalidated(
+    document: Mapping[str, Any] | bytes,
+    *,
+    preregistration: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate a selection after its immutable preregistration was replayed."""
+
+    envelope, payload = exact_payload(document, kind=SELECTION_KIND, fields=_SELECTION_FIELDS)
+    _validate_selection_payload(payload, preregistration)
+    if envelope["created_at"] < preregistration["created_at"]:
         raise _fail("selection predates preregistration")
     _check_size(envelope, _MAX_SELECTION_BYTES, label="configuration selection")
     return envelope
@@ -843,7 +856,10 @@ def _build_signal_capture(
     trusted_at: str,
 ) -> dict[str, Any]:
     prereg = validate_preregistration(preregistration)
-    selected = validate_configuration_selection(selection, preregistration=prereg)
+    selected = _validate_configuration_selection_prevalidated(
+        selection,
+        preregistration=prereg,
+    )
     previous = (
         None
         if previous_signal_capture is None
@@ -880,7 +896,7 @@ def _build_signal_capture(
     artifact = seal_artifact(
         SIGNAL_CAPTURE_KIND, payload, created_at=canonical_timestamp(trusted_at, label="trusted_at")
     )
-    validate_signal_capture(
+    _validate_signal_capture_prevalidated(
         artifact,
         preregistration=prereg,
         selection=selected,
@@ -1007,7 +1023,10 @@ def validate_signal_capture(
     previous_signal_capture: Mapping[str, Any] | bytes | None = None,
 ) -> dict[str, Any]:
     prereg = validate_preregistration(preregistration)
-    selected = validate_configuration_selection(selection, preregistration=prereg)
+    selected = _validate_configuration_selection_prevalidated(
+        selection,
+        preregistration=prereg,
+    )
     return _validate_signal_capture_prevalidated(
         document,
         preregistration=prereg,
@@ -1158,7 +1177,7 @@ def _build_observation(
     artifact = seal_artifact(
         OBSERVATION_KIND, payload, created_at=canonical_timestamp(trusted_at, label="trusted_at")
     )
-    validate_observation(
+    _validate_observation_prevalidated(
         artifact,
         preregistration=prereg,
         selection=selected,

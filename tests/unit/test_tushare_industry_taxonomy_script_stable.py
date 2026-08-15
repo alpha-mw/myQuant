@@ -19,6 +19,7 @@ from quant_investor.market.tushare.industry_taxonomy import (
     OFFICIAL_PARTITIONS,
 )
 from quant_investor.market.tushare_transport import TushareResponse
+from tests.unit.tushare_response_fixtures import make_tushare_response
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_PATH = ROOT / "scripts" / "capture_tushare_industry_taxonomy.py"
@@ -84,7 +85,7 @@ class FakeClient:
         self.calls.append(kwargs)
         level = kwargs["params"]["level"]
         rows = _rows(level, dict(OFFICIAL_PARTITIONS)[level])
-        return TushareResponse(
+        return make_tushare_response(
             api_name="index_classify",
             request_id=f"request-{level}",
             reported_count=len(rows),

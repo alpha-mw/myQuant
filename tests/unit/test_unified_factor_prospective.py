@@ -9,8 +9,17 @@ import pytest
 from quant_investor.contracts import get_contract, seal_artifact
 import quant_investor.factors.governance as governance
 from quant_investor.factors.governance import FactorGovernanceError
-from quant_investor.factors.governance.bootstrap import BLEND_W80, LOW_DOLLAR_VOLUME
-from quant_investor.factors.governance.common import business_identity, decimal_text
+from quant_investor.factors.governance.bootstrap import (
+    BLEND_W75_CONTROL,
+    BLEND_W80,
+    LOW_DOLLAR_VOLUME,
+)
+from quant_investor.factors.governance.common import (
+    business_identity,
+    canonical_a_share_symbol,
+    decimal_text,
+)
+from quant_investor.factors.governance.custody import build_composite_state
 from quant_investor.factors.governance.implementations import installed_semantic_row
 from quant_investor.factors.governance.prospective import (
     _build_configuration_selection,
@@ -356,3 +365,190 @@ def test_old_timestamp_and_pandas_builders_are_absent_from_stable_api() -> None:
         "record_observation",
     ):
         assert not hasattr(governance, name)
+
+
+def test_coverage_below_080_is_terminal_without_switch_or_stitch() -> None:
+    preregistration = _preregistration()
+    selection = _selection(preregistration)
+    failed = _build_signal_capture(
+        preregistration=preregistration,
+        selection=selection,
+        previous_signal_capture=None,
+        source_decode_attestation_ref=selection["payload"]["source_decode_attestation_ref"],
+        ordinal=0,
+        pit_universe_count=100,
+        pit_universe_sha256="7" * 64,
+        configuration_rows=_capture_rows(selection, numerator=79),
+        trusted_at="2026-08-17T07:00:00Z",
+    )
+    assert all(
+        row["coverage"] == "0.790000000000" and row["coverage_gate"] == "FAILED"
+        for row in failed["payload"]["configuration_rows"]
+    )
+    terminal = build_composite_state(
+        custody_namespace_id="factor-terminal-coverage-test",
+        preregistration_ref=_ref("factor.preregistration", "preregistration"),
+        cycle_state="TERMINAL_INCOMPLETE",
+        transaction_sequence=1,
+        previous_composite_state_ref=None,
+        transaction_id="factor-custody-transaction-" + "a" * 64,
+        custody_record_count=2,
+        custody_head_ref=_ref("factor.custody_record", "coverage-failure"),
+        selection_ref=_ref("factor.configuration_selection", "selection"),
+        signal_capture_count=1,
+        signal_capture_head_ref=_ref("factor.signal_capture", "failed-capture"),
+        observation_count=0,
+        observation_head_ref=None,
+        execution_evidence_ref=None,
+        evaluation_ref=None,
+        admitted_set_ref=None,
+        intrinsic_receipt_ref=None,
+        resolved_signal_slot_count=1,
+        resolved_label_slot_count=0,
+        slot_tree_sha256="b" * 64,
+        terminal=True,
+        blockers=["SIGNAL_COVERAGE_BELOW_MINIMUM"],
+        last_stored_at="2026-08-17T07:00:00Z",
+    )
+    assert terminal["payload"]["terminal"] is True
+    assert terminal["payload"]["blockers"] == ["SIGNAL_COVERAGE_BELOW_MINIMUM"]
+    assert selection["payload"]["substitution_allowed"] is False
+
+
+def test_low_dollar_and_w80_may_reenter_but_w75_is_permanent_control() -> None:
+    preregistration = _preregistration()
+    assert {row["factor_id"] for row in preregistration["payload"]["candidates"]} == {
+        LOW_DOLLAR_VOLUME,
+        BLEND_W80,
+    }
+    with pytest.raises(FactorGovernanceError, match="implementation is not installed"):
+        _candidate(BLEND_W75_CONTROL, "config-w75")
+
+
+@pytest.mark.parametrize("symbol", ["000001.sz", "000001", "SH.600000", "ABCDEF.SH"])
+def test_lowercase_or_noncanonical_symbols_fail_closed(symbol: str) -> None:
+    with pytest.raises(FactorGovernanceError, match="canonical A-share symbol"):
+        canonical_a_share_symbol(symbol, label="prospective.symbol")
+    assert canonical_a_share_symbol("000001.SZ", label="prospective.symbol") == "000001.SZ"
+
+
+def test_observation_uses_only_selected_ids_real_symbols_and_exact_coverage() -> None:
+    preregistration = _preregistration()
+    selection = _selection(preregistration)
+    capture = _capture(preregistration, selection)
+    observation = _build_observation(
+        preregistration=preregistration,
+        selection=selection,
+        signal_capture=capture,
+        previous_observation=None,
+        source_decode_attestation_ref=_ref(
+            "factor.source_decode_attestation", "label-zero-attestation"
+        ),
+        pit_universe_sha256="7" * 64,
+        label_values_sha256="8" * 64,
+        label_finite_pair_count=100,
+        configuration_rows=_observation_rows(selection),
+        trusted_at="2026-09-16T07:00:00Z",
+    )
+    assert canonical_a_share_symbol("600000.SH", label="observation.symbol") == "600000.SH"
+    forged = deepcopy(observation)
+    forged["payload"]["configuration_rows"][0]["configuration_id"] = "not-selected"
+    forged = seal_artifact(
+        "factor.prospective_observation", forged["payload"], created_at=forged["created_at"]
+    )
+    with pytest.raises(FactorGovernanceError, match="configuration rows are not canonical"):
+        validate_observation(
+            forged,
+            preregistration=preregistration,
+            selection=selection,
+            signal_capture=capture,
+        )
+    forged = deepcopy(observation)
+    forged["payload"]["configuration_rows"][0]["coverage"] = "0.810000000000"
+    forged = seal_artifact(
+        "factor.prospective_observation", forged["payload"], created_at=forged["created_at"]
+    )
+    with pytest.raises(FactorGovernanceError, match="coverage projection"):
+        validate_observation(
+            forged,
+            preregistration=preregistration,
+            selection=selection,
+            signal_capture=capture,
+        )
+
+
+def test_preregistration_has_exact_390_360_30_and_explicit_300_12_8_units() -> None:
+    payload = _preregistration()["payload"]
+    assert len(payload["open_sessions"]) == 390
+    assert len(payload["signal_sessions"]) == 360
+    assert len(payload["maturity_sessions"]) == 30
+    assert payload["label_contract"]["maturity_offset_open_sessions"] == 30
+    assert payload["maturity_contract"] == {
+        "conjunctive": True,
+        "minimum_valid_daily_rankic_sessions": 300,
+        "minimum_closed_calendar_month_end_observations": 12,
+        "minimum_disjoint_30_open_session_cohort_means": 8,
+        "cohort_open_sessions": 30,
+    }
+
+
+def test_selection_seals_only_first_signal_and_locks_single_alternate() -> None:
+    sessions, windows = _calendar()
+    low = _candidate(LOW_DOLLAR_VOLUME, "config-low")
+    alternate = _candidate(LOW_DOLLAR_VOLUME, "config-low-alt")
+    alternate_body = dict(alternate)
+    alternate_body["factor_id"] = "pv_low_dollar_volume_alternate"
+    alternate_body["role"] = "ALTERNATE_FOR:config-low"
+    identity_body = {
+        key: value for key, value in alternate_body.items() if key != "candidate_spec_id"
+    }
+    alternate_body["candidate_spec_id"] = business_identity(
+        "factor-candidate-spec", identity_body
+    )
+    w80 = _candidate(BLEND_W80, "config-w80")
+    preregistration = _build_preregistration(
+        open_sessions=sessions,
+        session_windows=windows,
+        candidates=[low, alternate_body, w80],
+        exchange_calendar_ref=_ref("system.source_object", "calendar"),
+        implementation_manifest_ref=_ref("system.source_object", "implementations"),
+        source_decode_attestation_ref=_ref(
+            "factor.source_decode_attestation", "prereg-attestation"
+        ),
+        factor_validator_manifest_ref=_ref("factor.validator_manifest", "factor-validator"),
+        trusted_at=STAMP,
+    )
+    candidates = preregistration["payload"]["candidates"]
+    summaries = [
+        _selection_summary(row, selection_complete=(79 if row["configuration_id"] == "config-low" else 80))
+        for row in candidates
+    ]
+    selection = _build_configuration_selection(
+        preregistration=preregistration,
+        source_decode_attestation_ref=_ref(
+            "factor.source_decode_attestation", "signal-zero-attestation"
+        ),
+        configuration_summary_rows=summaries,
+        selected_configurations=[
+            {
+                "primary_configuration_id": "config-low",
+                "selected_configuration_id": "config-low-alt",
+                "selected_factor_id": "pv_low_dollar_volume_alternate",
+                "used_alternate": True,
+            },
+            {
+                "primary_configuration_id": "config-w80",
+                "selected_configuration_id": "config-w80",
+                "selected_factor_id": BLEND_W80,
+                "used_alternate": False,
+            },
+        ],
+        trusted_at="2026-08-17T07:00:00Z",
+    )
+    assert selection["payload"]["first_signal_session"] == sessions[0]
+    assert selection["payload"]["substitution_allowed"] is False
+    assert preregistration["payload"]["alternate_policy"] == {
+        "maximum_per_primary": 1,
+        "selection_deadline": "FIRST_SIGNAL_CAPTURE",
+        "midstream_substitution_allowed": False,
+    }

@@ -15,6 +15,12 @@ from collections.abc import Iterator, Mapping
 from typing import Final
 
 from quant_investor.contracts import MAX_CANONICAL_JSON_BYTES
+from quant_investor.system_authority import (
+    ACTIVE_POINTER_PATH,
+    EMPTY_POINTER_SHA256,
+    MIGRATION_MARKER_PATH,
+    SYSTEM_ROOT,
+)
 
 from .errors import (
     SystemError,
@@ -25,17 +31,17 @@ from .errors import (
     SystemStorageError,
 )
 
-SYSTEM_ROOT: Final = PurePosixPath("results/system")
 OBJECTS_ROOT: Final = SYSTEM_ROOT / "objects"
 GENERATIONS_ROOT: Final = SYSTEM_ROOT / "generations"
 POINTER_HISTORY_ROOT: Final = SYSTEM_ROOT / "pointer_history"
-ACTIVE_POINTER_PATH: Final = SYSTEM_ROOT / "_active.json"
+ACTIVATION_AUTHORIZATIONS_ROOT: Final = SYSTEM_ROOT / "activation_authorizations"
+ACTIVATION_TRANSACTIONS_ROOT: Final = SYSTEM_ROOT / "activation_transactions"
 CANDIDATE_STATE_ROOT: Final = SYSTEM_ROOT / "candidate_state"
 VALIDATION_RUNS_ROOT: Final = SYSTEM_ROOT / "validation_runs"
 VALIDATION_REQUESTS_ROOT: Final = SYSTEM_ROOT / "validation_requests"
 VALIDATION_CUSTODY_ROOT: Final = SYSTEM_ROOT / "validation_custody"
 SOURCE_VERIFICATION_CACHE_ROOT: Final = SYSTEM_ROOT / "source_verification_cache"
-EMPTY_POINTER_SHA256: Final = "EMPTY"
+_RESERVED_AUTHORITY_PATHS: Final = frozenset({ACTIVE_POINTER_PATH, MIGRATION_MARKER_PATH})
 
 _DIRECTORY_FLAGS: Final = (
     os.O_RDONLY
@@ -198,6 +204,11 @@ def canonical_system_path(value: str | PurePosixPath) -> PurePosixPath:
     if path != SYSTEM_ROOT and SYSTEM_ROOT not in path.parents:
         raise SystemSecurityError("system path is outside the governed root")
     return path
+
+
+def _reject_reserved_authority_path(path: PurePosixPath) -> None:
+    if path in _RESERVED_AUTHORITY_PATHS:
+        raise SystemSecurityError("reserved System authority path requires a sealed operation")
 
 
 def _is_governed_directory(parts: tuple[str, ...]) -> bool:
@@ -827,6 +838,7 @@ class SecureSystemStorage:
         """Publish an exact immutable multi-file directory with no replacement."""
 
         path = canonical_system_path(value)
+        _reject_reserved_authority_path(path)
         normalized = dict(files)
         names = frozenset(normalized)
         if not names or any(type(raw) is not bytes or not raw for raw in normalized.values()):
@@ -901,9 +913,21 @@ class SecureSystemStorage:
             os.close(parent)
 
     def write_exact_once(self, value: str | PurePosixPath, raw: bytes) -> StoredBytes:
+        return self._write_exact_once(value, raw, allow_reserved_authority=False)
+
+    def _write_exact_once(
+        self,
+        value: str | PurePosixPath,
+        raw: bytes,
+        *,
+        allow_reserved_authority: bool,
+    ) -> StoredBytes:
         if type(raw) is not bytes or not raw or len(raw) > self.max_read_bytes:
             raise SystemSecurityError("immutable artifact bytes are invalid")
-        parent, leaf, path = self._parent_leaf(value, create=True)
+        path = canonical_system_path(value)
+        if not allow_reserved_authority:
+            _reject_reserved_authority_path(path)
+        parent, leaf, path = self._parent_leaf(path, create=True)
         temporary = f".{leaf}.tmp-{os.getpid()}-{secrets.token_hex(8)}"
         descriptor: int | None = None
         try:
@@ -955,7 +979,9 @@ class SecureSystemStorage:
 
         if type(raw) is not bytes or not raw or len(raw) > self.max_read_bytes:
             raise SystemSecurityError("immutable executable bytes are invalid")
-        parent, leaf, path = self._parent_leaf(value, create=True)
+        path = canonical_system_path(value)
+        _reject_reserved_authority_path(path)
+        parent, leaf, path = self._parent_leaf(path, create=True)
         temporary = f".{leaf}.tmp-{os.getpid()}-{secrets.token_hex(8)}"
         descriptor: int | None = None
         try:
@@ -1083,12 +1109,21 @@ class SecureSystemStorage:
     def compare_and_swap_active(  # noqa: C901
         self, raw: bytes, *, expected_sha256: str
     ) -> StoredBytes:
-        return self.compare_and_swap_pointer(
+        del raw, expected_sha256
+        raise SystemSecurityError("active pointer requires System-owned activation authorization")
+
+    def compare_and_swap_active_authorized_nonempty(
+        self, raw: bytes, *, expected_sha256: str
+    ) -> StoredBytes:
+        if expected_sha256 == EMPTY_POINTER_SHA256:
+            raise SystemSecurityError("initial activation requires detached authorization")
+        return self._compare_and_swap_pointer(
             raw,
             pointer_path=ACTIVE_POINTER_PATH,
             history_root=POINTER_HISTORY_ROOT,
             lock_path=SYSTEM_ROOT / ".active.lock",
             expected_sha256=expected_sha256,
+            allow_reserved_authority=True,
         )
 
     def compare_and_swap_pointer(  # noqa: C901
@@ -1100,11 +1135,34 @@ class SecureSystemStorage:
         lock_path: str | PurePosixPath,
         expected_sha256: str,
     ) -> StoredBytes:
-        """CAS one exact pointer while retaining its prior canonical bytes."""
+        """CAS a non-reserved pointer while retaining its prior canonical bytes."""
+
+        return self._compare_and_swap_pointer(
+            raw,
+            pointer_path=pointer_path,
+            history_root=history_root,
+            lock_path=lock_path,
+            expected_sha256=expected_sha256,
+            allow_reserved_authority=False,
+        )
+
+    def _compare_and_swap_pointer(  # noqa: C901
+        self,
+        raw: bytes,
+        *,
+        pointer_path: str | PurePosixPath,
+        history_root: str | PurePosixPath,
+        lock_path: str | PurePosixPath,
+        expected_sha256: str,
+        allow_reserved_authority: bool,
+    ) -> StoredBytes:
+        """CAS one exact pointer through an explicitly scoped authority lane."""
 
         if type(raw) is not bytes or not raw or len(raw) > self.max_read_bytes:
             raise SystemSecurityError("pointer bytes are invalid")
         pointer = canonical_system_path(pointer_path)
+        if not allow_reserved_authority:
+            _reject_reserved_authority_path(pointer)
         history = canonical_system_path(history_root)
         lock = canonical_system_path(lock_path)
         if pointer.parent != lock.parent:
@@ -1142,12 +1200,144 @@ class SecureSystemStorage:
                 pass
             os.close(parent)
 
+    def commit_initial_activation(  # noqa: C901
+        self,
+        *,
+        pointer_raw: bytes,
+        receipt_object_path: str | PurePosixPath,
+        receipt_raw: bytes,
+        authorization_object_path: str | PurePosixPath,
+        authorization_index_path: str | PurePosixPath,
+        authorization_raw: bytes,
+        prepared_object_path: str | PurePosixPath,
+        prepared_index_path: str | PurePosixPath,
+        prepared_raw: bytes,
+        marker_raw: bytes,
+    ) -> dict[str, object]:
+        """Persist one authorized first pointer and marker under the active lock.
+
+        Exact pointer-only recovery publishes only the already-authorized marker.
+        No state is ever rolled back to ``EMPTY``.
+        """
+
+        for label, raw in (
+            ("pointer", pointer_raw),
+            ("receipt", receipt_raw),
+            ("authorization", authorization_raw),
+            ("prepared transaction", prepared_raw),
+            ("marker", marker_raw),
+        ):
+            if type(raw) is not bytes or not raw or len(raw) > self.max_read_bytes:
+                raise SystemSecurityError(f"initial activation {label} bytes are invalid")
+        receipt_path = canonical_system_path(receipt_object_path)
+        authorization_path = canonical_system_path(authorization_object_path)
+        authorization_index = canonical_system_path(authorization_index_path)
+        prepared_path = canonical_system_path(prepared_object_path)
+        prepared_index = canonical_system_path(prepared_index_path)
+        _reject_reserved_authority_path(receipt_path)
+        _reject_reserved_authority_path(authorization_path)
+        _reject_reserved_authority_path(authorization_index)
+        _reject_reserved_authority_path(prepared_path)
+        _reject_reserved_authority_path(prepared_index)
+        expected_pointer_sha = _sha256(pointer_raw)
+        expected_marker_sha = _sha256(marker_raw)
+        lock = SYSTEM_ROOT / ".active.lock"
+        pointer_parent, pointer_leaf, pointer_path = self._parent_leaf(
+            ACTIVE_POINTER_PATH, create=True
+        )
+        temporary = f".{pointer_leaf}.cas-{os.getpid()}-{secrets.token_hex(8)}"
+        temporary_fd: int | None = None
+        try:
+            with self.exclusive_lock(lock):
+                current = self._read_leaf(
+                    pointer_parent,
+                    pointer_leaf,
+                    relative_path=pointer_path,
+                    optional=True,
+                )
+                marker = self.read_optional(MIGRATION_MARKER_PATH)
+                if current is None and marker is not None:
+                    raise SystemImmutableConflict("migration marker exists without active pointer")
+                if current is not None and current.data != pointer_raw:
+                    raise SystemCASMismatch(EMPTY_POINTER_SHA256, current.byte_sha256)
+                if marker is not None and marker.data != marker_raw:
+                    raise SystemImmutableConflict("permanent migration marker conflicts")
+
+                receipt = self.write_exact_once(receipt_path, receipt_raw)
+                authorization = self.write_exact_once(authorization_path, authorization_raw)
+                authorization_indexed = self.write_exact_once(
+                    authorization_index, authorization_raw
+                )
+                prepared = self.write_exact_once(prepared_path, prepared_raw)
+                prepared_indexed = self.write_exact_once(prepared_index, prepared_raw)
+                cas_performed = False
+                if current is None:
+                    temporary_fd = self._write_temporary_file(
+                        pointer_parent, temporary, pointer_raw
+                    )
+                    os.close(temporary_fd)
+                    temporary_fd = None
+                    os.replace(
+                        temporary,
+                        pointer_leaf,
+                        src_dir_fd=pointer_parent,
+                        dst_dir_fd=pointer_parent,
+                    )
+                    os.fsync(pointer_parent)
+                    current = self._read_leaf(
+                        pointer_parent,
+                        pointer_leaf,
+                        relative_path=pointer_path,
+                        optional=False,
+                    )
+                    if current is None or current.data != pointer_raw:
+                        raise SystemStorageError("initial pointer exact-byte readback mismatch")
+                    cas_performed = True
+
+                marker = self._write_exact_once(
+                    MIGRATION_MARKER_PATH,
+                    marker_raw,
+                    allow_reserved_authority=True,
+                )
+                if (
+                    current is None
+                    or current.byte_sha256 != expected_pointer_sha
+                    or marker.byte_sha256 != expected_marker_sha
+                    or receipt.data != receipt_raw
+                    or authorization.data != authorization_raw
+                    or authorization_indexed.data != authorization_raw
+                    or prepared.data != prepared_raw
+                    or prepared_indexed.data != prepared_raw
+                ):
+                    raise SystemStorageError("initial activation exact-byte readback mismatch")
+                return {
+                    "authorization": authorization,
+                    "authorization_index": authorization_indexed,
+                    "cas_performed": cas_performed,
+                    "marker": marker,
+                    "pointer": current,
+                    "prepared": prepared,
+                    "prepared_index": prepared_indexed,
+                    "receipt": receipt,
+                }
+        finally:
+            if temporary_fd is not None:
+                os.close(temporary_fd)
+            try:
+                os.unlink(temporary, dir_fd=pointer_parent)
+            except FileNotFoundError:
+                pass
+            os.close(pointer_parent)
+
 
 __all__ = [
     "ACTIVE_POINTER_PATH",
+    "ACTIVATION_AUTHORIZATIONS_ROOT",
+    "ACTIVATION_TRANSACTIONS_ROOT",
     "CANDIDATE_STATE_ROOT",
     "EMPTY_POINTER_SHA256",
     "GENERATIONS_ROOT",
+    "MIGRATION_MARKER_PATH",
     "OBJECTS_ROOT",
     "POINTER_HISTORY_ROOT",
     "SOURCE_VERIFICATION_CACHE_ROOT",

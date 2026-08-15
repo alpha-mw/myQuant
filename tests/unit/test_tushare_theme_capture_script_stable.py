@@ -15,6 +15,7 @@ from quant_investor.market.tushare import (
 )
 from quant_investor.market.tushare._core import canonical_bytes
 from quant_investor.market.tushare_transport import TushareResponse
+from tests.unit.tushare_response_fixtures import make_tushare_response
 from scripts.capture_tushare_theme_provider import run
 from scripts.probe_tushare_10000_capabilities import ProbeSafetyError
 
@@ -32,7 +33,7 @@ class Client:
             rows = [("20260810", "BK1001.DC", company, "平安银行")]
         else:
             rows = []
-        return TushareResponse(
+        return make_tushare_response(
             api_name=api_name,
             request_id=f"request-{self.calls}",
             reported_count=len(rows),

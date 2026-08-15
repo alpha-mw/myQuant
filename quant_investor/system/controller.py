@@ -416,7 +416,9 @@ def _main():
     if len(sys.argv) != 2:
         raise ControllerFailure("exact expected pointer SHA argument required")
     expected = sys.argv[1]
-    if expected != METADATA["empty_pointer_sha256"] and (
+    if expected == METADATA["empty_pointer_sha256"]:
+        raise ControllerFailure("emergency suspension requires a non-empty active pointer")
+    if (
         len(expected) != 64
         or any(character not in "0123456789abcdef" for character in expected)
     ):

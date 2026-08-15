@@ -899,6 +899,7 @@ _MIGRATION_SPECS: Final = {
             "target_generation_id",
             "target_generation_manifest_path",
             "target_generation_manifest_ref",
+            "target_release_manifest_ref",
             "target_active_pointer_path",
             "target_active_pointer_ref",
             "expected_active_pointer_sha256",
@@ -925,6 +926,91 @@ _MIGRATION_SPECS: Final = {
             "migration_replay_refused",
             "legacy_replay_refused",
             "blocker_codes",
+        },
+    ),
+    "system.activation_authorization": (
+        "authorization_id",
+        {
+            "authorization_id",
+            "state",
+            "migration_receipt_ref",
+            "target_generation_id",
+            "target_generation_manifest_ref",
+            "deployed_release_ref",
+            "target_active_pointer",
+            "target_active_pointer_ref",
+            "target_active_pointer_path",
+            "permanent_marker_ref",
+            "permanent_marker_path",
+            "expected_active_pointer_sha256",
+            "prepared_at",
+            "activated_at",
+            "actor_uid",
+            "os_actor",
+        },
+    ),
+    "system.activation_prepared": (
+        "transaction_id",
+        {
+            "transaction_id",
+            "state",
+            "activation_authorization_ref",
+            "migration_receipt_ref",
+            "target_active_pointer",
+            "target_active_pointer_ref",
+            "permanent_marker_ref",
+            "expected_active_pointer_sha256",
+            "prepared_at",
+            "actor_uid",
+        },
+    ),
+    "system.concurrent_task_handoff": (
+        "handoff_id",
+        {
+            "handoff_id",
+            "state",
+            "task_name",
+            "thread_id",
+            "accepted_baseline_commit",
+            "handoff_type",
+            "task_commit",
+            "task_tree",
+            "path_rows",
+            "focused_test_rows",
+            "writer_ended",
+            "main_clean",
+            "readback_rows",
+        },
+    ),
+    "system.legacy_source_disposition": (
+        "disposition_id",
+        {
+            "disposition_id",
+            "state",
+            "source_commit",
+            "rows",
+            "blocked_unresolved_count",
+        },
+    ),
+    "system.final_cutover_authorization": (
+        "final_authorization_id",
+        {
+            "final_authorization_id",
+            "state",
+            "accepted_baseline_commit",
+            "historical_integration_commit",
+            "historical_dirty_evidence_ref",
+            "concurrent_task_handoff_ref",
+            "legacy_disposition_ref",
+            "final_integration_commit",
+            "final_integration_tree",
+            "ancestry_rows",
+            "final_worktree_inventory_sha256",
+            "clean_checkout_readback_rows",
+            "user_authorization_basis",
+            "preflight_rows",
+            "final_build_authorized",
+            "cas_authorized",
         },
     ),
 }
@@ -1081,6 +1167,76 @@ SYSTEM_ASSEMBLY_REQUEST_CONTRACT: Final = _exact_contract(
     "assembly_request_id",
     SYSTEM_ASSEMBLY_REQUEST_FIELDS,
 )
+SYSTEM_BOOTSTRAP_OPERATOR_REQUEST_FIELDS: Final = frozenset(
+    {
+        "bootstrap_operation_id",
+        "state",
+        "source_root_id",
+        "release_manifest_ref",
+        "exchange_calendar_file_ref",
+        "market_scope_file_ref",
+        "market_pointer_file_ref",
+        "market_snapshot_manifest_file_ref",
+        "market_table_file_refs",
+        "pit_generation_manifest_file_ref",
+        "pit_membership_file_ref",
+        "calendar_manifest_file_ref",
+        "calendar_raw_file_refs",
+        "calendar_capture_file_refs",
+        "fundamental_pointer_file_ref",
+        "fundamental_generation_manifest_file_ref",
+        "fundamental_table_file_refs",
+        "bootstrap_decision_file_ref",
+        "skill_tree_sha256",
+        "automation_semantic_sha256",
+        "source_blockers",
+        "trusted_at",
+    }
+)
+SYSTEM_BOOTSTRAP_OPERATOR_REQUEST_CONTRACT: Final = _exact_contract(
+    "system.bootstrap_operator_request",
+    "bootstrap_operation_id",
+    SYSTEM_BOOTSTRAP_OPERATOR_REQUEST_FIELDS,
+)
+SYSTEM_EXCHANGE_CALENDAR_MANIFEST_FIELDS: Final = frozenset(
+    {
+        "calendar_manifest_id",
+        "state",
+        "coverage_start_date",
+        "cutoff_date",
+        "timezone",
+        "calendar_file_ref",
+        "transform_code_sha256",
+        "exchange_rows",
+    }
+)
+SYSTEM_EXCHANGE_CALENDAR_MANIFEST_CONTRACT: Final = _exact_contract(
+    "system.exchange_calendar_manifest",
+    "calendar_manifest_id",
+    SYSTEM_EXCHANGE_CALENDAR_MANIFEST_FIELDS,
+)
+SYSTEM_EXCHANGE_CALENDAR_CAPTURE_FIELDS: Final = frozenset(
+    {
+        "calendar_capture_id",
+        "state",
+        "exchange_id",
+        "issuer",
+        "source_url",
+        "captured_at",
+        "raw_file_ref",
+        "timezone",
+        "session_intervals",
+        "coverage_start_date",
+        "cutoff_date",
+        "daily_status_rows",
+        "transform_code_sha256",
+    }
+)
+SYSTEM_EXCHANGE_CALENDAR_CAPTURE_CONTRACT: Final = _exact_contract(
+    "system.exchange_calendar_capture",
+    "calendar_capture_id",
+    SYSTEM_EXCHANGE_CALENDAR_CAPTURE_FIELDS,
+)
 SYSTEM_READINESS_CONTRACT: Final = _exact_contract(
     "system.readiness", "readiness_id", READINESS_FIELDS
 )
@@ -1124,6 +1280,10 @@ __all__ = [
     "READINESS_FIELDS",
     "SYSTEM_ASSEMBLY_REQUEST_CONTRACT",
     "SYSTEM_ASSEMBLY_REQUEST_FIELDS",
+    "SYSTEM_BOOTSTRAP_OPERATOR_REQUEST_CONTRACT",
+    "SYSTEM_BOOTSTRAP_OPERATOR_REQUEST_FIELDS",
+    "SYSTEM_EXCHANGE_CALENDAR_MANIFEST_CONTRACT",
+    "SYSTEM_EXCHANGE_CALENDAR_MANIFEST_FIELDS",
     "SYSTEM_GENERATION_MANIFEST_CONTRACT",
     "SYSTEM_GENERATION_MANIFEST_FIELDS",
     "SYSTEM_INSTALLED_COMPONENT_MANIFEST_CONTRACT",

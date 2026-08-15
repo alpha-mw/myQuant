@@ -59,6 +59,10 @@ def decode_assembly_request(
     generation_state = payload["generation_state"]
     if type(generation_state) is not str or generation_state not in GENERATION_STATES:
         raise SystemContractError("assembly request generation_state is invalid")
+    if payload["migration_receipt_ref"] is not None:
+        raise SystemContractError("migration_receipt_ref must be the mandatory null tombstone")
+    if payload["migration_marker_ref"] is not None:
+        raise SystemContractError("migration_marker_ref must be the mandatory null tombstone")
     return {
         "generation_state": generation_state,
         "release_manifest_ref": _ref(payload["release_manifest_ref"], label="release_manifest_ref"),
@@ -86,16 +90,8 @@ def decode_assembly_request(
         ),
         "mainline_ref": _ref(payload["mainline_ref"], label="mainline_ref", nullable=True),
         "research_refs": _refs(payload["research_refs"], label="research_refs"),
-        "migration_receipt_ref": _ref(
-            payload["migration_receipt_ref"],
-            label="migration_receipt_ref",
-            nullable=True,
-        ),
-        "migration_marker_ref": _ref(
-            payload["migration_marker_ref"],
-            label="migration_marker_ref",
-            nullable=True,
-        ),
+        "migration_receipt_ref": None,
+        "migration_marker_ref": None,
         "skill_tree_sha256": _sha256(payload["skill_tree_sha256"], label="skill_tree_sha256"),
         "automation_semantic_sha256": _sha256(
             payload["automation_semantic_sha256"],

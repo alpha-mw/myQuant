@@ -20,6 +20,7 @@ from quant_investor.market.tushare.fundamental.models import (
 )
 from quant_investor.market.tushare._core import contract_sha256
 from quant_investor.market.tushare_transport import TushareResponse
+from tests.unit.tushare_response_fixtures import make_tushare_response
 
 NOW = "2026-08-09T08:00:00Z"
 CUTOFF = "2026-08-07T23:59:59Z"
@@ -139,7 +140,7 @@ class FakeClient:
                 values.append("预增")
             else:
                 values.append(Decimal("0.1"))
-        return TushareResponse(
+        return make_tushare_response(
             api_name=api_name,
             request_id=f"request-{self.calls}",
             reported_count=1,
@@ -183,7 +184,7 @@ def test_scope_mismatch_blocks_one_partition_without_retry_or_fallback() -> None
                 return response
             row = list(response.rows[0])
             row[0] = "999999.SZ"
-            return TushareResponse(
+            return make_tushare_response(
                 api_name=response.api_name,
                 request_id=response.request_id,
                 reported_count=1,
@@ -234,7 +235,7 @@ def test_private_checkpoint_resume_replays_without_network(tmp_path: Path) -> No
                 return response
             row = list(response.rows[0])
             row[response.fields.index("type")] = long_text
-            return TushareResponse(
+            return make_tushare_response(
                 api_name=response.api_name,
                 request_id=response.request_id,
                 reported_count=response.reported_count,

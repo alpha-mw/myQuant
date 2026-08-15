@@ -7,6 +7,7 @@ Factor or Research handlers can call System activation.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from quant_investor.cli.input import read_exact_request
@@ -160,37 +161,98 @@ def system_assemble(
     }
 
 
+def system_bootstrap_assemble(
+    *,
+    workspace_root: str,
+    input_root: str,
+    request_path: str,
+    expected_request_sha256: str,
+) -> dict[str, Any]:
+    """Run the production bootstrap assembler without activating System."""
+
+    from quant_investor.factors.governance.production import (
+        assemble_production_bootstrap,
+    )
+
+    raw, _ = _request(
+        workspace_root=workspace_root,
+        request_path=request_path,
+        expected_request_sha256=expected_request_sha256,
+    )
+    return assemble_production_bootstrap(
+        workspace_root=workspace_root,
+        input_root=Path(workspace_root) / input_root,
+        request_raw=raw,
+    )
+
+
 def system_activate(
     *,
     workspace_root: str,
     generation_id: str,
     expected_pointer_sha256: str,
-    deployed_release_ref_path: str | None = None,
-    expected_deployed_release_ref_sha256: str | None = None,
+    migration_receipt_path: str,
+    expected_migration_receipt_sha256: str,
+    activation_authorization_path: str,
+    expected_activation_authorization_sha256: str,
+    target_active_pointer_path: str,
+    expected_target_active_pointer_sha256: str,
+    deployed_release_ref_path: str,
+    expected_deployed_release_ref_sha256: str,
 ) -> dict[str, Any]:
     from quant_investor.system import SystemStore, validate_object_ref
 
+    receipt_raw, _ = _request(
+        workspace_root=workspace_root,
+        request_path=migration_receipt_path,
+        expected_request_sha256=expected_migration_receipt_sha256,
+    )
+    authorization_raw, _ = _request(
+        workspace_root=workspace_root,
+        request_path=activation_authorization_path,
+        expected_request_sha256=expected_activation_authorization_sha256,
+    )
+    pointer_raw, pointer_document = _request(
+        workspace_root=workspace_root,
+        request_path=target_active_pointer_path,
+        expected_request_sha256=expected_target_active_pointer_sha256,
+    )
     deployed_document = _optional_mapping(
         workspace_root=workspace_root,
         request_path=deployed_release_ref_path,
         expected_request_sha256=expected_deployed_release_ref_sha256,
         code="DEPLOYED_RELEASE_REF_ARGUMENTS_INVALID",
     )
-    deployed_ref = (
-        None
-        if deployed_document is None
-        else validate_object_ref(deployed_document, label="deployed_release_ref")
-    )
-    active = SystemStore(workspace_root).activate_generation(
-        generation_id,
-        expected_pointer_sha256=expected_pointer_sha256,
+    if deployed_document is None:
+        raise CommandError("DEPLOYED_RELEASE_REF_REQUIRED")
+    deployed_ref = validate_object_ref(deployed_document, label="deployed_release_ref")
+    if expected_pointer_sha256 != "EMPTY":
+        raise CommandError("INITIAL_ACTIVATION_EXPECTED_EMPTY_REQUIRED")
+    if (
+        type(pointer_document) is not dict
+        or pointer_document.get("generation_id") != generation_id
+        or pointer_document.get("previous_pointer_sha256") != expected_pointer_sha256
+    ):
+        raise CommandError("ACTIVATION_POINTER_ARGUMENT_MISMATCH")
+    active = SystemStore(workspace_root).activate_initial_generation(
+        target_active_pointer_raw=pointer_raw,
+        migration_receipt_raw=receipt_raw,
+        activation_authorization_raw=authorization_raw,
         deployed_release_ref=deployed_ref,
     )
+    activation = active["activation"]
     return {
         "status": "ACTIVATED",
         "active_generation_id": active["generation_id"],
         "generation_state": active["generation_state"],
-        "pointer_sha256": active["pointer_byte_sha256"],
+        "pointer_byte_sha256": active["pointer_byte_sha256"],
+        "pointer_semantic_sha256": active["pointer_byte_sha256"],
+        "migration_receipt_ref": activation["migration_receipt_ref"],
+        "authorization_ref": activation["authorization_ref"],
+        "marker_byte_sha256": activation["marker_byte_sha256"],
+        "marker_semantic_sha256": activation["marker_semantic_sha256"],
+        "cas_performed": activation["cas_performed"],
+        "marker_only_recovery": not activation["cas_performed"],
     }
 
 
@@ -205,6 +267,8 @@ def system_suspend(
     from quant_investor.system import SystemStore
 
     store = SystemStore(workspace_root)
+    if expected_pointer_sha256 == "EMPTY":
+        raise CommandError("SUSPEND_EXPECTED_NONEMPTY_REQUIRED")
     candidate = store.verify_generation(generation_id)
     if candidate.get("generation_state") != "SYSTEM_SUSPENDED":
         raise CommandError("SUSPENDED_GENERATION_REQUIRED")

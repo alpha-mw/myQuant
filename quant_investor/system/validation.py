@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 import hashlib
-import importlib
 import os
 from pathlib import PurePosixPath
 import re
@@ -899,11 +898,22 @@ def _invoke_callback(
     if before_rss > MAXIMUM_VALIDATION_RSS_BYTES:
         raise SystemSecurityError("contextual validation RSS bound exceeded")
     started = time.monotonic()
-    try:
-        module = importlib.import_module(profile["callback_module"])
-        callback = getattr(module, profile["callback_qualified_name"])
-    except (ImportError, AttributeError) as exc:
-        raise SystemPreconditionError("compiled validation callback is unavailable") from exc
+    from quant_investor.factors.governance.contextual import (
+        validate_bootstrap_contextual_run,
+        validate_prospective_contextual_run,
+    )
+
+    callbacks = {
+        (
+            "quant_investor.factors.governance.contextual",
+            "validate_bootstrap_contextual_run",
+        ): validate_bootstrap_contextual_run,
+        (
+            "quant_investor.factors.governance.contextual",
+            "validate_prospective_contextual_run",
+        ): validate_prospective_contextual_run,
+    }
+    callback = callbacks.get((profile["callback_module"], profile["callback_qualified_name"]))
     if (
         not callable(callback)
         or getattr(callback, "__module__", None) != profile["callback_module"]

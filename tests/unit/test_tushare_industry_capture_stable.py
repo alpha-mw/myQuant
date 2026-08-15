@@ -25,6 +25,7 @@ from quant_investor.market.tushare.industry_taxonomy import (
 )
 from quant_investor.market.tushare._core import FORBIDDEN_VERSION_FIELDS
 from quant_investor.market.tushare_transport import TushareResponse
+from tests.unit.tushare_response_fixtures import make_tushare_response
 
 NOW = "2026-08-11T07:30:00Z"
 
@@ -115,7 +116,7 @@ class FakeClient:
         level = kwargs["params"]["level"]
         count = dict(OFFICIAL_PARTITIONS)[level]
         rows = _rows(level, count)
-        return TushareResponse(
+        return make_tushare_response(
             api_name="index_classify",
             request_id=f"request-{level}",
             reported_count=count,
@@ -136,7 +137,7 @@ class FakeMembershipClient:
             flag=kwargs["params"]["is_new"],
         )
         values = tuple(row[field] for field in kwargs["expected_fields"])
-        return TushareResponse(
+        return make_tushare_response(
             api_name="index_member_all",
             request_id="membership-request-1",
             reported_count=1,

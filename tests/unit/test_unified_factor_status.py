@@ -313,3 +313,52 @@ def test_observed_projection_is_only_the_authoritative_composite_state() -> None
 
 def test_old_status_builder_surface_is_absent() -> None:
     assert not hasattr(governance, "build_factor_status")
+
+
+def test_active_bootstrap_and_observed_preregistration_remain_separate() -> None:
+    active, policy, receipt, evidence = _bootstrap_active_and_receipt()
+    context, attestation = _context_and_attestation(active, policy, receipt, evidence)
+    composite = build_composite_state(
+        custody_namespace_id="factor-observed-separation-test",
+        preregistration_ref=_stub_ref("factor.preregistration", "observed-preregistration", "1"),
+        cycle_state="PREREGISTERED",
+        transaction_sequence=1,
+        previous_composite_state_ref=None,
+        transaction_id="factor-custody-transaction-" + "2" * 64,
+        custody_record_count=1,
+        custody_head_ref=_stub_ref("factor.custody_record", "observed-custody", "3"),
+        selection_ref=None,
+        signal_capture_count=0,
+        signal_capture_head_ref=None,
+        observation_count=0,
+        observation_head_ref=None,
+        execution_evidence_ref=None,
+        evaluation_ref=None,
+        admitted_set_ref=None,
+        intrinsic_receipt_ref=None,
+        resolved_signal_slot_count=0,
+        resolved_label_slot_count=0,
+        slot_tree_sha256="4" * 64,
+        terminal=False,
+        blockers=[],
+        last_stored_at=STAMP,
+    )
+    payload = validate_factor_status(
+        _build_factor_status(
+            active_factor_set=active,
+            active_validation_receipt=receipt,
+            active_contextual_result=context,
+            active_validation_attestation=attestation,
+            observed_composite_state=composite,
+            trusted_at=STAMP,
+        )
+    )["payload"]
+    assert payload["active"]["factor_set_ref"] == _ref(active)
+    assert payload["active"]["state"] == "ACTIVE"
+    assert payload["observed"] == {
+        "composite_state_ref": _ref(composite),
+        "cycle_state": "PREREGISTERED",
+        "terminal": False,
+        "blockers": [],
+    }
+    assert payload["readiness"] == "READY"

@@ -24,10 +24,7 @@ from quant_investor.strategy_records.store import (  # noqa: E402
     load_registered_catalog,
     regular_file_sha256,
 )
-from quant_investor.v17_mainline import derive_mainline_state  # noqa: E402
 from scripts.export_cn_weekly_review_evidence import (  # noqa: E402
-    CANONICAL_STRATEGY_ID,
-    DECISION_LOG_PATH,
     DOMAIN_NAMES,
     DOMAIN_STATUSES,
     MAX_BUNDLE_BYTES,
@@ -37,11 +34,6 @@ from scripts.export_cn_weekly_review_evidence import (  # noqa: E402
     _content_sha,
     _overall,
     report_window,
-)
-from scripts.log_decision import (  # noqa: E402
-    DecisionLogError,
-    make_event as make_decision_event,
-    read_events as read_decision_events,
 )
 
 
@@ -259,76 +251,9 @@ def _check_formal_boundaries(bundle: dict[str, Any]) -> None:
         ):
             raise WeeklyEvidenceCheckError("blocked formal advisory leaked actions or log writes")
     else:
-        v17 = derive_mainline_state(
-            PROJECT_ROOT, canonical_strategy_id=CANONICAL_STRATEGY_ID
+        raise WeeklyEvidenceCheckError(
+            "retired legacy formal advisory cannot become FRESH"
         )
-        if not v17.is_active or v17.public_run != bundle.get("v17", {}).get("public_run"):
-            raise WeeklyEvidenceCheckError("formal advisory active V17 readback mismatch")
-        if (
-            formal.get("status") != "FORMAL_ADVISORY_READY"
-            or formal.get("formal_outcome") not in {"ADVISORY", "NO_ACTION"}
-            or not isinstance(formal.get("actions"), list)
-            or formal.get("executable") is not False
-            or decision_log.get("write_performed") is not False
-        ):
-            raise WeeklyEvidenceCheckError("fresh formal advisory contract is invalid")
-        envelope_path = decision_log.get("envelope_path")
-        envelope_sha = decision_log.get("envelope_sha256")
-        if not isinstance(envelope_path, str) or not isinstance(envelope_sha, str):
-            raise WeeklyEvidenceCheckError("decision-log envelope candidate is absent")
-        path = Path(envelope_path)
-        _check_local_ref(
-            {"path": envelope_path, "sha256": envelope_sha},
-            label="decision-log envelope candidate",
-        )
-        try:
-            envelope = json.loads(path.read_text(encoding="utf-8"))
-            validated = make_decision_event(envelope)
-        except (OSError, json.JSONDecodeError, DecisionLogError, ValueError) as exc:
-            raise WeeklyEvidenceCheckError("decision-log envelope is invalid") from exc
-        if envelope != validated:
-            raise WeeklyEvidenceCheckError("decision-log envelope is not canonical")
-        store = bundle.get("store")
-        public_run = bundle["v17"]["public_run"]
-        expected = {
-            "report_week": bundle["report_window"]["report_week"],
-            "scheduled_at": bundle["report_window"]["scheduled_at"],
-            "canonical_strategy_id": CANONICAL_STRATEGY_ID,
-            "identity_sha256": store["identity_sha256"],
-            "v17_active_run_sha256": public_run["mainline_run_ref"]["byte_sha256"],
-            "v17_active_pointer_sha256": public_run["active_pointer_ref"][
-                "byte_sha256"
-            ],
-            "store_pointer_sha256": store["pointer_sha256"],
-            "catalog_sha256": store["catalog_sha256"],
-            "performance_manifest_sha256": store["performance_history_ref"][
-                "manifest"
-            ]["sha256"],
-            "financial_state_sha256": store["active_closure"][
-                "financial_state_sha256"
-            ],
-            "formal_outcome": formal["formal_outcome"],
-            "actions": formal["actions"],
-            "executable": False,
-        }
-        if any(envelope.get(key) != value for key, value in expected.items()):
-            raise WeeklyEvidenceCheckError("decision-log envelope evidence binding mismatch")
-        log_status = bundle["domains"]["DECISION_LOG"]["status"]
-        already_recorded = decision_log.get("already_recorded")
-        if log_status == "FRESH":
-            if already_recorded is not True:
-                raise WeeklyEvidenceCheckError("fresh decision log lacks exact readback")
-            try:
-                events = read_decision_events(PROJECT_ROOT / DECISION_LOG_PATH)
-            except (DecisionLogError, OSError) as exc:
-                raise WeeklyEvidenceCheckError("decision log readback failed") from exc
-            if not any(row == envelope for row in events):
-                raise WeeklyEvidenceCheckError("recorded envelope is absent from decision log")
-        elif log_status == "PARTIAL":
-            if already_recorded is not False or decision_log.get("status") != "PENDING_APPEND":
-                raise WeeklyEvidenceCheckError("pending decision-log state is inconsistent")
-        else:
-            raise WeeklyEvidenceCheckError("fresh formal advisory has a blocked decision log")
     permissions = bundle.get("permissions")
     required_false = {
         "repository_source_write",

@@ -23,7 +23,7 @@ from quant_investor.factors.governance import (
     validate_factor_status,
 )
 from quant_investor.factors.governance.bootstrap import _factor_set_sha256, _set_rows
-from quant_investor.factors.governance.contextual import _signal_hashes
+from quant_investor.factors.governance.contextual import _signal_hashes, _signal_statistics
 from quant_investor.factors.governance.implementations import installed_semantic_row
 from quant_investor.factors.governance.source import decode_source_role, role_schema
 from quant_investor.intelligence import (
@@ -50,7 +50,8 @@ from quant_investor.mainline import (
 )
 from quant_investor.system import (
     BOOTSTRAP_VALIDATION_PROFILE,
-    EMPTY_POINTER_SHA256,
+    EMPTY,
+    SystemContractError,
     SystemStore,
     build_emergency_controller,
     build_suspended_generation,
@@ -428,15 +429,14 @@ def _build_bootstrap_runtime(
         for symbol, frame in market_frame.groupby("symbol", sort=True)
     }
     signals = compute_bootstrap_signals(frames, source_format="PARQUET")
-    signal_hashes = _signal_hashes(
-        {
-            factor_id: {
-                symbol: None if np.isnan(value) else float(value).hex()
-                for symbol, value in signals[factor_id].sort_index().items()
-            }
-            for factor_id in (LOW_DOLLAR_VOLUME, BLEND_W80)
+    canonical_signals = {
+        factor_id: {
+            symbol: None if np.isnan(value) else float(value).hex()
+            for symbol, value in signals[factor_id].sort_index().items()
         }
-    )
+        for factor_id in (LOW_DOLLAR_VOLUME, BLEND_W80)
+    }
+    signal_hashes = _signal_hashes(canonical_signals)
     definitions = bootstrap_factor_definitions()
     factor_rows, control_rows = _set_rows(definitions)
     factor_set_sha = _factor_set_sha256(
@@ -453,6 +453,23 @@ def _build_bootstrap_runtime(
             "implementation_rows": manifest["payload"]["implementation_rows"],
         }
     )
+    market_bundle_ref = _put_bootstrap_bundle(
+        store, "market", "market", market_ref
+    )
+    implementation_sha = hashlib.sha256(implementation_raw).hexdigest()
+    signal_statistics = _signal_statistics(
+        canonical_signals,
+        eligible_symbols=sorted(
+            row["symbol"]
+            for row in _bootstrap_pit_rows()
+            if row["tradable"] and row["total_mv"] > 0
+        ),
+        implementation_sha256s={
+            LOW_DOLLAR_VOLUME: implementation_sha,
+            BLEND_W80: implementation_sha,
+        },
+        source_bundle_sha256=market_bundle_ref["byte_sha256"],
+    )
     recomputation_raw = canonical_json_bytes(
         {
             "authority": "NON_AUTHORIZING",
@@ -465,6 +482,7 @@ def _build_bootstrap_runtime(
             "normalized_source_sha256s": normalized,
             "result": "EXACT_MATCH",
             "signal_sha256s": signal_hashes,
+            "signal_statistics": signal_statistics,
         }
     )
     source_rows = [
@@ -542,7 +560,7 @@ def _build_bootstrap_runtime(
             "implementation_tree_manifest",
             implementation_ref,
         ),
-        "market_bundle_ref": _put_bootstrap_bundle(store, "market", "market", market_ref),
+        "market_bundle_ref": market_bundle_ref,
         "pit_universe_bundle_ref": _put_bootstrap_bundle(store, "pit", "pit", pit_ref),
         "recomputation_bundle_ref": _put_bootstrap_bundle(
             store, "recomputation", "recomputation", recomputation_ref
@@ -590,7 +608,7 @@ def _operational_source_bundle(store: SystemStore, workspace_root: Path) -> dict
     fixture_root = workspace_root / "source-fixtures"
     fixture_root.mkdir()
     files = {
-        "calendar.json": b"{}",
+        "calendar.parquet": b"PAR1-calendar",
         "fundamental.json": b"{}",
         "fundamental.parquet": b"PAR1-fundamental",
         "market.json": b"{}",
@@ -614,7 +632,7 @@ def _operational_source_bundle(store: SystemStore, workspace_root: Path) -> dict
             created_at=NOW,
         )
 
-    calendar_ref = source("calendar.json", "JSON")
+    calendar_ref = source("calendar.parquet", "PARQUET")
     fundamental_refs = [
         ("json", source("fundamental.json", "JSON")),
         ("parquet", source("fundamental.parquet", "PARQUET")),
@@ -647,34 +665,6 @@ def _operational_source_bundle(store: SystemStore, workspace_root: Path) -> dict
             ("market_snapshot", market_ref),
             ("pit_membership", membership_ref),
         ],
-    )
-
-
-def _migration_receipt(source_ref: dict[str, str]) -> dict:
-    return seal_artifact(
-        "system.migration.receipt",
-        {
-            "migration_receipt_id": "migration-receipt-a",
-            "status": "READY_FOR_CAS",
-            "cutover_id": "unified-runtime-test",
-            "inventory_ref": source_ref,
-            "archive_plan_ref": source_ref,
-            "rules_ref": source_ref,
-            "source_to_target_rules_ref": source_ref,
-            "source_to_target": [],
-            "target_generation_id": None,
-            "target_generation_manifest_path": None,
-            "target_generation_manifest_ref": None,
-            "target_active_pointer_path": "results/system/_active.json",
-            "target_active_pointer_ref": None,
-            "expected_active_pointer_sha256": EMPTY_POINTER_SHA256,
-            "permanent_marker_path": None,
-            "write_performed": False,
-            "cas_performed": False,
-            "blocker_codes": [],
-            "summary": {"fixture": "MAINLINE_OPERATIONAL_READ"},
-        },
-        created_at=NOW,
     )
 
 
@@ -764,6 +754,12 @@ def test_real_operational_generation_returns_only_generation_bound_result(
     workspace_root.mkdir(mode=0o700)
     source_root = workspace_root
     store = SystemStore(workspace_root)
+    from unified_activation_helpers import prepare_migration_context
+
+    migration_context = prepare_migration_context(
+        store,
+        created_at="2026-08-13T23:59:59Z",
+    )
     factor_store = FactorValidationStore._for_testing(
         system_store=store,
         clock=lambda: datetime(2026, 8, 16, tzinfo=timezone.utc),
@@ -869,7 +865,6 @@ def test_real_operational_generation_returns_only_generation_bound_result(
         == attestation["payload"]["intrinsic_receipt_ref"]
     )
     initial_readiness_ref = store.put_object(initial_readiness)
-    migration_ref = store.put_object(_migration_receipt(source_ref))
     suspended = build_suspended_generation(
         store,
         blockers=["MAINLINE_OPERATIONAL_FIXTURE_CONTROLLER"],
@@ -891,7 +886,7 @@ def test_real_operational_generation_returns_only_generation_bound_result(
         factor_validation_attestation_ref=bootstrap.factor_validation_attestation_ref,
         mainline_ref=None,
         research_refs=[],
-        migration_receipt_ref=migration_ref,
+        migration_receipt_ref=None,
         migration_marker_ref=None,
         skill_tree_sha256="b" * 64,
         automation_semantic_sha256="c" * 64,
@@ -899,12 +894,15 @@ def test_real_operational_generation_returns_only_generation_bound_result(
         emergency_controller_sha256=controller["byte_sha256"],
         created_at=BOOTSTRAP_NOW,
     )
-    initial_active = store.activate_generation(
-        initial_generation["generation_id"],
-        expected_pointer_sha256=EMPTY_POINTER_SHA256,
-        activated_at=BOOTSTRAP_NOW,
-        os_actor="test-suite",
-        deployed_release_ref=release_ref,
+    from unified_activation_helpers import activate_initial
+
+    initial_active = activate_initial(
+        store,
+        initial_generation,
+        release_ref,
+        prepared_at="2026-08-13T23:59:59Z",
+        activated_at="2026-08-14T00:00:00Z",
+        migration_context=migration_context,
     )
     initial_state = MainlineStore(workspace_root).status(strategy_id=STRATEGY)
     assert initial_state == {
@@ -939,7 +937,7 @@ def test_real_operational_generation_returns_only_generation_bound_result(
         factor_validation_attestation_ref=bootstrap.factor_validation_attestation_ref,
         mainline_ref=candidate_ref,
         research_refs=research_refs,
-        migration_receipt_ref=migration_ref,
+        migration_receipt_ref=None,
         migration_marker_ref=None,
         skill_tree_sha256="b" * 64,
         automation_semantic_sha256="c" * 64,
@@ -1052,49 +1050,68 @@ def test_initial_store_is_uninitialized_and_reads_do_not_fabricate_result(
 def test_real_suspended_generation_activation_is_blocked_and_read_only(
     tmp_path: Path,
 ) -> None:
-    active = suspend_system(
-        tmp_path,
+    store = SystemStore(tmp_path)
+    generation = build_suspended_generation(
+        store,
         blockers=["SOURCE_CLOSURE_BLOCKED"],
         created_at=NOW,
-        os_actor="test-suite",
     )
+    with pytest.raises(SystemContractError, match="initial activation"):
+        suspend_system(
+            store,
+            blockers=["SOURCE_CLOSURE_BLOCKED"],
+            created_at=NOW,
+            expected_pointer_sha256=EMPTY,
+            os_actor="test-suite",
+        )
     before = sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*") if path.is_file())
 
     state = MainlineStore(tmp_path).status(strategy_id=STRATEGY)
     assert state == {
-        "active_generation_id": active["generation_id"],
-        "blockers": ["SOURCE_CLOSURE_BLOCKED"],
+        "active_generation_id": None,
+        "blockers": ["ACTIVE_GENERATION_ABSENT"],
         "investment_state": "BLOCKED",
-        "mainline_state": "BLOCKED",
+        "mainline_state": "UNINITIALIZED",
         "result": None,
         "status": "BLOCKED",
     }
-    assert set(active["pointer"]) == {
-        "activated_at",
-        "generation_id",
-        "manifest_sha256",
-        "os_actor",
-        "previous_pointer_sha256",
-    }
-    assert "kind" not in active["pointer"]
+    assert generation["generation_state"] == "SYSTEM_SUSPENDED"
+    assert not (tmp_path / "results/system/_active.json").exists()
 
     with pytest.raises(MainlineError) as captured:
         MainlineStore(tmp_path).read_public_run(strategy_id=STRATEGY)
-    assert captured.value.code == MAINLINE_BLOCKED
+    assert captured.value.code == MAINLINE_UNINITIALIZED
     assert captured.value.public_fields == state
     after = sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*") if path.is_file())
     assert after == before
 
 
+def _verified_suspended_projection(tmp_path: Path) -> dict[str, Any]:
+    store = SystemStore(tmp_path)
+    generation = build_suspended_generation(
+        store,
+        blockers=["SOURCE_CLOSURE_BLOCKED"],
+        created_at=NOW,
+    )
+    pointer = {
+        "activated_at": NOW,
+        "generation_id": generation["generation_id"],
+        "manifest_sha256": generation["manifest_sha256"],
+        "os_actor": "test-suite",
+        "previous_pointer_sha256": "1" * 64,
+    }
+    pointer_raw = canonical_json_bytes(pointer)
+    return {
+        **store.verify_generation(generation["generation_id"]),
+        "pointer": pointer,
+        "pointer_byte_sha256": hashlib.sha256(pointer_raw).hexdigest(),
+    }
+
+
 def test_caller_supplied_active_payload_must_retain_verified_pointer_binding(
     tmp_path: Path,
 ) -> None:
-    active = suspend_system(
-        tmp_path,
-        blockers=["SOURCE_CLOSURE_BLOCKED"],
-        created_at=NOW,
-        os_actor="test-suite",
-    )
+    active = _verified_suspended_projection(tmp_path)
     tampered = {**active, "pointer": {**active["pointer"], "os_actor": "other"}}
     tampered["pointer"]["generation_id"] = "0" * 64
 

@@ -60,15 +60,39 @@ class SystemCASMismatch(SystemStorageError):
         }
 
 
+class SystemActivationAuthorizationError(SystemPreconditionError):
+    default_code = "SYSTEM_ACTIVATION_AUTHORIZATION_INVALID"
+
+
+class SystemMigrationMarkerAbsent(SystemPreconditionError):
+    default_code = "SYSTEM_MIGRATION_MARKER_ABSENT"
+
+
+class SystemMigrationClosureError(SystemPreconditionError):
+    default_code = "SYSTEM_MIGRATION_CLOSURE_INVALID"
+
+
+class SystemActivationIncomplete(SystemStorageError):
+    default_code = "SYSTEM_ACTIVATION_INCOMPLETE"
+
+    def __init__(self, pointer_sha256: str) -> None:
+        super().__init__("authorized pointer exists but marker publication is incomplete")
+        self.public_fields = {"pointer_sha256": pointer_sha256}
+
+
 SYSTEM_ACTIVE_POINTER_ABSENT: Final = "SYSTEM_ACTIVE_POINTER_ABSENT"
 
 
 __all__ = [
     "SYSTEM_ACTIVE_POINTER_ABSENT",
     "SystemCASMismatch",
+    "SystemActivationAuthorizationError",
+    "SystemActivationIncomplete",
     "SystemContractError",
     "SystemError",
     "SystemImmutableConflict",
+    "SystemMigrationClosureError",
+    "SystemMigrationMarkerAbsent",
     "SystemNotFound",
     "SystemPreconditionError",
     "SystemSecurityError",

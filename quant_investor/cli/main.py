@@ -27,6 +27,7 @@ from quant_investor.cli.unified import (
     research_readiness,
     system_activate,
     system_assemble,
+    system_bootstrap_assemble,
     system_status,
     system_suspend,
     system_verify,
@@ -376,6 +377,18 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     _add_exact_request_arguments(system_assemble_parser)
 
+    system_bootstrap_assemble_parser = system_subparsers.add_parser(
+        "bootstrap-assemble",
+        help="从显式 strict source closure 组装首个非活动 generation",
+    )
+    _add_exact_request_arguments(system_bootstrap_assemble_parser)
+    system_bootstrap_assemble_parser.add_argument(
+        "--input-root",
+        required=True,
+        type=_workspace_relative_canonical_path,
+        help="workspace-relative root containing every sealed input",
+    )
+
     system_activate_parser = system_subparsers.add_parser(
         "activate", help="以 CAS 激活已验证 generation"
     )
@@ -384,7 +397,36 @@ def _build_parser() -> argparse.ArgumentParser:
     system_activate_parser.add_argument(
         "--expect-pointer-sha", required=True, type=_pointer_sha_argument
     )
-    _add_deployed_release_arguments(system_activate_parser)
+    for option, destination in (
+        ("--migration-receipt", "migration_receipt"),
+        ("--activation-authorization", "activation_authorization"),
+        ("--target-active-pointer", "target_active_pointer"),
+        ("--deployed-release-ref", "deployed_release_ref"),
+    ):
+        system_activate_parser.add_argument(
+            option,
+            dest=destination,
+            required=True,
+            type=_workspace_relative_canonical_path,
+        )
+    for option, destination in (
+        ("--expected-migration-receipt-sha256", "expected_migration_receipt_sha256"),
+        (
+            "--expected-activation-authorization-sha256",
+            "expected_activation_authorization_sha256",
+        ),
+        (
+            "--expected-target-active-pointer-sha256",
+            "expected_target_active_pointer_sha256",
+        ),
+        (
+            "--expected-deployed-release-ref-sha256",
+            "expected_deployed_release_ref_sha256",
+        ),
+    ):
+        system_activate_parser.add_argument(
+            option, dest=destination, required=True, type=_sha256_argument
+        )
 
     system_suspend_parser = system_subparsers.add_parser(
         "suspend", help="紧急 CAS 到预构建的最小挂起 generation"
@@ -816,12 +858,31 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
         )
         return
 
+    if args.command == "system" and args.system_command == "bootstrap-assemble":
+        _print_json(
+            system_bootstrap_assemble(
+                workspace_root=args.workspace_root,
+                input_root=args.input_root,
+                request_path=args.request,
+                expected_request_sha256=args.expected_request_sha256,
+            )
+        )
+        return
+
     if args.command == "system" and args.system_command == "activate":
         _print_json(
             system_activate(
                 workspace_root=args.workspace_root,
                 generation_id=args.generation,
                 expected_pointer_sha256=args.expect_pointer_sha,
+                migration_receipt_path=args.migration_receipt,
+                expected_migration_receipt_sha256=(args.expected_migration_receipt_sha256),
+                activation_authorization_path=args.activation_authorization,
+                expected_activation_authorization_sha256=(
+                    args.expected_activation_authorization_sha256
+                ),
+                target_active_pointer_path=args.target_active_pointer,
+                expected_target_active_pointer_sha256=(args.expected_target_active_pointer_sha256),
                 deployed_release_ref_path=args.deployed_release_ref,
                 expected_deployed_release_ref_sha256=(args.expected_deployed_release_ref_sha256),
             )
@@ -979,15 +1040,11 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
                 "--canonical-predecessor-root": args.canonical_predecessor_root,
                 "--expected-pointer-sha256": args.expected_pointer_sha256,
                 "--canonical-scope-path": args.canonical_scope_path,
-                "--canonical-market-pointer-path": (
-                    args.canonical_market_pointer_path
-                ),
+                "--canonical-market-pointer-path": (args.canonical_market_pointer_path),
                 "--canonical-pit-pointer-path": args.canonical_pit_pointer_path,
                 "--canonical-membership-path": args.canonical_membership_path,
                 "--history-audit-path": args.history_audit_path,
-                "--expected-history-audit-sha256": (
-                    args.expected_history_audit_sha256
-                ),
+                "--expected-history-audit-sha256": (args.expected_history_audit_sha256),
                 "--checkpoint-root": args.checkpoint_root,
             }
             missing_successor_args = sorted(
@@ -998,13 +1055,10 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
             if [item.strip().lower() for item in args.universes.split(",") if item.strip()] != [
                 "full_a"
             ]:
-                parser.error(
-                    "--safe-incremental-successor requires --universes full_a"
-                )
+                parser.error("--safe-incremental-successor requires --universes full_a")
             if missing_successor_args:
                 parser.error(
-                    "--safe-incremental-successor requires "
-                    + ", ".join(missing_successor_args)
+                    "--safe-incremental-successor requires " + ", ".join(missing_successor_args)
                 )
         result = run_fundamental_maintenance(
             market=args.market,
@@ -1020,22 +1074,14 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
             run_id=args.run_id,
             authoritative_full_rebuild=args.authoritative_full_rebuild,
             safe_incremental_successor=args.safe_incremental_successor,
-            canonical_predecessor_root=(
-                args.canonical_predecessor_root or None
-            ),
+            canonical_predecessor_root=(args.canonical_predecessor_root or None),
             expected_pointer_sha256=args.expected_pointer_sha256,
             canonical_scope_path=args.canonical_scope_path or None,
-            canonical_market_pointer_path=(
-                args.canonical_market_pointer_path or None
-            ),
-            canonical_pit_pointer_path=(
-                args.canonical_pit_pointer_path or None
-            ),
+            canonical_market_pointer_path=(args.canonical_market_pointer_path or None),
+            canonical_pit_pointer_path=(args.canonical_pit_pointer_path or None),
             canonical_membership_path=args.canonical_membership_path or None,
             history_audit_path=args.history_audit_path or None,
-            expected_history_audit_sha256=(
-                args.expected_history_audit_sha256
-            ),
+            expected_history_audit_sha256=(args.expected_history_audit_sha256),
             checkpoint_root=args.checkpoint_root or None,
             checkpoint_batch_size=args.checkpoint_batch_size,
             max_attempts=args.max_attempts,
@@ -1056,14 +1102,12 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
                 )
             if not args.staging_root or not args.expected_pointer_sha256:
                 parser.error(
-                    "fundamental-promote requires --staging-root and "
-                    "--expected-pointer-sha256"
+                    "fundamental-promote requires --staging-root and " "--expected-pointer-sha256"
                 )
         elif args.recover:
             if not args.journal_root or not args.journal_run_id:
                 parser.error(
-                    "safe successor recovery requires --journal-root and "
-                    "--journal-run-id"
+                    "safe successor recovery requires --journal-root and " "--journal-run-id"
                 )
         else:
             if not args.staging_root or not args.expected_pointer_sha256:
@@ -1073,8 +1117,7 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
                 )
             if args.execute and (not args.journal_root or not args.journal_run_id):
                 parser.error(
-                    "safe successor --execute requires --journal-root and "
-                    "--journal-run-id"
+                    "safe successor --execute requires --journal-root and " "--journal-run-id"
                 )
         _print_json(
             run_fundamental_promotion(

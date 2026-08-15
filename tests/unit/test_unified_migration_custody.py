@@ -20,7 +20,7 @@ from quant_investor.migration.errors import (
     UnifiedCutoverError,
 )
 from quant_investor.migration.migration import (
-    EMPTY_SHA256,
+    EMPTY_POINTER_SHA256,
     build_permanent_marker_payload,
     build_pre_cas_migration_receipt,
     validate_permanent_marker,
@@ -110,7 +110,7 @@ def _inventory(root: Path) -> dict[str, object]:
 def _generation_manifest() -> dict[str, object]:
     payload = {
         "assembly_id": "assembly-test",
-        "generation_state": "SYSTEM_SUSPENDED",
+        "generation_state": "OPERATIONAL",
         "contract_catalog_sha256": "1" * 64,
         "release_manifest_ref": {},
         "source_refs": [],
@@ -126,7 +126,7 @@ def _generation_manifest() -> dict[str, object]:
         "skill_tree_sha256": "2" * 64,
         "automation_semantic_sha256": "3" * 64,
         "readiness_matrix_ref": {},
-        "emergency_controller_sha256": None,
+        "emergency_controller_sha256": "4" * 64,
     }
     return seal_artifact("system.generation_manifest", payload, created_at=CREATED_AT)
 
@@ -138,7 +138,7 @@ def _active_pointer(manifest: dict[str, object]) -> dict[str, str]:
         "generation_id": str(manifest["semantic_sha256"]),
         "manifest_sha256": hashlib.sha256(manifest_raw).hexdigest(),
         "os_actor": "uid:test",
-        "previous_pointer_sha256": EMPTY_SHA256,
+        "previous_pointer_sha256": EMPTY_POINTER_SHA256,
     }
 
 
@@ -219,7 +219,7 @@ def test_pre_cas_receipt_is_idempotent_preserves_discrepancy_and_refuses_replay(
     payload = receipt["payload"]
     assert payload["cas_performed"] is False
     assert payload["write_performed"] is False
-    assert payload["expected_active_pointer_sha256"] == EMPTY_SHA256
+    assert payload["expected_active_pointer_sha256"] == EMPTY_POINTER_SHA256
     facts = payload["summary"]["baseline_custody_facts"]
     assert facts == load_rules(tmp_path, rules_path).rules.baseline_custody_facts
     assert sha(canonical_json_bytes(facts)) == BASELINE_CUSTODY_FACTS_SHA256

@@ -38,9 +38,12 @@ from .candidate_records import (
 from .errors import (
     SYSTEM_ACTIVE_POINTER_ABSENT,
     SystemCASMismatch,
+    SystemActivationAuthorizationError,
     SystemContractError,
     SystemError,
     SystemImmutableConflict,
+    SystemMigrationClosureError,
+    SystemMigrationMarkerAbsent,
     SystemNotFound,
     SystemPreconditionError,
     SystemSecurityError,
@@ -49,9 +52,12 @@ from .errors import (
 from .release import installed_code_manifest_sha256
 from .storage import (
     ACTIVE_POINTER_PATH,
+    ACTIVATION_AUTHORIZATIONS_ROOT,
+    ACTIVATION_TRANSACTIONS_ROOT,
     CANDIDATE_STATE_ROOT,
     EMPTY_POINTER_SHA256,
     GENERATIONS_ROOT,
+    MIGRATION_MARKER_PATH,
     OBJECTS_ROOT,
     POINTER_HISTORY_ROOT,
     VALIDATION_RUNS_ROOT,
@@ -1247,8 +1253,8 @@ class SystemStore:
 
         role_rules = {
             "exchange_calendar": (
-                frozenset({"JSON", "PARQUET"}),
-                frozenset(),
+                frozenset({"BINARY", "JSON", "PARQUET"}),
+                frozenset({"PARQUET"}),
             ),
             "fundamental_generation": (
                 frozenset({"JSON", "PARQUET"}),
@@ -1259,7 +1265,7 @@ class SystemStore:
                 frozenset({"JSON", "PARQUET"}),
             ),
             "pit_membership": (
-                frozenset({"PARQUET"}),
+                frozenset({"JSON", "PARQUET"}),
                 frozenset({"PARQUET"}),
             ),
         }
@@ -1583,23 +1589,16 @@ class SystemStore:
         normalized_research_refs, _ = self._resolve_refs(
             research_refs, label="research_refs", minimum=0
         )
-        migration_ref, migration_artifact = self._resolve_ref(
-            migration_receipt_ref,
-            label="migration_receipt_ref",
-            expected_kinds={"system.migration.receipt"} if operational else None,
-            nullable=not operational,
-        )
-        marker_ref, _ = self._resolve_ref(
-            migration_marker_ref,
-            label="migration_marker_ref",
-            expected_kinds={"system.migration.complete"},
-            nullable=True,
-        )
+        if migration_receipt_ref is not None:
+            raise SystemContractError("migration_receipt_ref must be the mandatory null tombstone")
+        if migration_marker_ref is not None:
+            raise SystemContractError("migration_marker_ref must be the mandatory null tombstone")
+        migration_ref = None
+        marker_ref = None
         if operational:
             for label, ref in (
                 ("factor_policy_ref", policy_ref),
                 ("factor_active_set_ref", active_set_ref),
-                ("migration_receipt_ref", migration_ref),
             ):
                 if ref is None:
                     raise SystemContractError(f"{label} is absent")
@@ -1656,8 +1655,6 @@ class SystemStore:
                 or factor_active_set_artifact is None
                 or factor_status_artifact is None
                 or validation_attestation_ref is None
-                or migration_artifact is None
-                or migration_artifact["kind"] != "system.migration.receipt"
             ):
                 raise SystemContractError("operational authority closure is invalid")
             self._validate_factor_generation_closure(
@@ -1682,9 +1679,6 @@ class SystemStore:
             generation_state=generation_state,
             release_id=release_ref["artifact_id"],
             readiness_id=readiness_ref["artifact_id"],
-            migration_receipt_id=(
-                migration_ref["artifact_id"] if migration_ref is not None else None
-            ),
             created_at=timestamp,
         )
 
@@ -1819,20 +1813,18 @@ class SystemStore:
         research_refs, research = self._resolve_refs(
             payload.get("research_refs"), label="manifest.research_refs", minimum=0
         )
-        migration_receipt_ref, migration_receipt = self._resolve_ref(
-            payload.get("migration_receipt_ref"),
-            label="manifest.migration_receipt_ref",
-            expected_kinds=(
-                {"system.migration.receipt"} if generation_state == "OPERATIONAL" else None
-            ),
-            nullable=generation_state == "SYSTEM_SUSPENDED",
-        )
-        migration_marker_ref, migration_marker = self._resolve_ref(
-            payload.get("migration_marker_ref"),
-            label="manifest.migration_marker_ref",
-            expected_kinds={"system.migration.complete"},
-            nullable=True,
-        )
+        if payload.get("migration_receipt_ref") is not None:
+            raise SystemContractError(
+                "manifest migration_receipt_ref must be the mandatory null tombstone"
+            )
+        if payload.get("migration_marker_ref") is not None:
+            raise SystemContractError(
+                "manifest migration_marker_ref must be the mandatory null tombstone"
+            )
+        migration_receipt_ref = None
+        migration_receipt = None
+        migration_marker_ref = None
+        migration_marker = None
         readiness_kind = (
             OPERATIONAL_READINESS_KIND
             if generation_state == "OPERATIONAL"
@@ -1872,7 +1864,6 @@ class SystemStore:
             for label, value in (
                 ("factor_policy", factor_policy),
                 ("factor_active_set", factor_active_set),
-                ("migration_receipt", migration_receipt),
             ):
                 if value is None:
                     raise SystemContractError(f"generation {label} binding is absent")
@@ -2046,9 +2037,14 @@ class SystemStore:
         os_actor: str | None = None,
         deployed_release_ref: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """CAS-activate a verified generation and return resolved active state."""
+        """CAS a later verified generation; first activation uses its own ceremony."""
 
         expected = _require_pointer_sha256(expected_pointer_sha256, label="expected_pointer_sha256")
+        if expected == EMPTY_POINTER_SHA256:
+            raise SystemActivationAuthorizationError(
+                "initial activation requires detached receipt and authorization"
+            )
+        self.verify_migration_completion()
         verified = self.verify_generation(generation_id, deployed_release_ref=deployed_release_ref)
         if verified["generation_state"] == "OPERATIONAL" and deployed_release_ref is None:
             raise SystemPreconditionError(
@@ -2070,7 +2066,9 @@ class SystemStore:
         current = self._storage.read_optional(ACTIVE_POINTER_PATH)
         if current is not None:
             self._validate_pointer(current.data)
-        stored = self._storage.compare_and_swap_active(raw, expected_sha256=expected)
+        stored = self._storage.compare_and_swap_active_authorized_nonempty(
+            raw, expected_sha256=expected
+        )
         replay = self._validate_pointer(stored.data)
         if replay != pointer:
             raise SystemStorageError("active pointer replay mismatch")
@@ -2078,6 +2076,191 @@ class SystemStore:
         if active is None:  # pragma: no cover - successful CAS created the pointer
             raise SystemStorageError("active pointer disappeared after CAS")
         return active
+
+    def activate_initial_generation(
+        self,
+        *,
+        target_active_pointer_raw: bytes,
+        migration_receipt_raw: bytes,
+        activation_authorization_raw: bytes,
+        deployed_release_ref: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Perform or exactly recover the sole authorized ``EMPTY`` activation."""
+
+        if any(
+            type(raw) is not bytes or not raw
+            for raw in (
+                target_active_pointer_raw,
+                migration_receipt_raw,
+                activation_authorization_raw,
+            )
+        ):
+            raise SystemActivationAuthorizationError(
+                "initial activation inputs must preserve exact non-empty bytes"
+            )
+        pointer = self._validate_pointer(target_active_pointer_raw)
+        if pointer["previous_pointer_sha256"] != EMPTY_POINTER_SHA256:
+            raise SystemActivationAuthorizationError(
+                "initial activation preimage must be literal EMPTY"
+            )
+        verified = self.verify_generation(
+            pointer["generation_id"], deployed_release_ref=deployed_release_ref
+        )
+        if verified["generation_state"] != "OPERATIONAL":
+            raise SystemActivationAuthorizationError(
+                "initial activation target must be OPERATIONAL"
+            )
+        if verified["manifest_sha256"] != pointer["manifest_sha256"]:
+            raise SystemActivationAuthorizationError("pointer manifest binding mismatch")
+        try:
+            from .activation import (
+                build_prepared_activation_transaction,
+                validate_activation_authorization,
+            )
+
+            authorization, marker = validate_activation_authorization(
+                activation_authorization_raw,
+                migration_receipt=migration_receipt_raw,
+                target_active_pointer=target_active_pointer_raw,
+                target_generation_manifest=verified["manifest"],
+                deployed_release_ref=deployed_release_ref,
+                current_uid=os.geteuid(),
+            )
+            prepared = build_prepared_activation_transaction(authorization)
+        except SystemError:
+            raise
+        except Exception as exc:
+            raise SystemActivationAuthorizationError(
+                "initial activation authorization closure failed"
+            ) from exc
+        receipt = self._validated_artifact(migration_receipt_raw)
+        if receipt["kind"] != "system.migration.receipt":
+            raise SystemActivationAuthorizationError("detached receipt kind is invalid")
+        receipt_ref = object_ref_for_artifact(receipt)
+        authorization_ref = object_ref_for_artifact(authorization)
+        prepared_ref = object_ref_for_artifact(prepared)
+        pointer_sha = hashlib.sha256(target_active_pointer_raw).hexdigest()
+        result = self._storage.commit_initial_activation(
+            pointer_raw=target_active_pointer_raw,
+            receipt_object_path=_object_path(receipt["kind"], receipt_ref["byte_sha256"]),
+            receipt_raw=migration_receipt_raw,
+            authorization_object_path=_object_path(
+                authorization["kind"], authorization_ref["byte_sha256"]
+            ),
+            authorization_index_path=(ACTIVATION_AUTHORIZATIONS_ROOT / f"{pointer_sha}.json"),
+            authorization_raw=activation_authorization_raw,
+            prepared_object_path=_object_path(prepared["kind"], prepared_ref["byte_sha256"]),
+            prepared_index_path=(ACTIVATION_TRANSACTIONS_ROOT / f"{pointer_sha}.json"),
+            prepared_raw=canonical_json_bytes(prepared),
+            marker_raw=canonical_json_bytes(marker),
+        )
+        active = self.read_active(deployed_release_ref=deployed_release_ref)
+        if active is None:
+            raise SystemStorageError("active pointer disappeared after initial activation")
+        completion = active["migration_completion"]
+        return {
+            **active,
+            "activation": {
+                "authorization_ref": authorization_ref,
+                "cas_performed": bool(result["cas_performed"]),
+                "marker_byte_sha256": completion["marker_byte_sha256"],
+                "marker_semantic_sha256": completion["marker"]["semantic_sha256"],
+                "migration_receipt_ref": receipt_ref,
+                "pointer_byte_sha256": pointer_sha,
+                "prepared_transaction_ref": prepared_ref,
+            },
+        }
+
+    def verify_migration_completion(  # noqa: C901
+        self, chain: Sequence[Mapping[str, Any]] | None = None
+    ) -> dict[str, Any]:
+        """Verify the permanent marker against the anchored initial pointer."""
+
+        pointer_chain = list(chain) if chain is not None else self._pointer_chain()
+        if not pointer_chain:
+            raise SystemMigrationMarkerAbsent("active pointer is absent")
+        initial_row = pointer_chain[-1]
+        initial_pointer = initial_row.get("pointer")
+        initial_pointer_sha = initial_row.get("pointer_byte_sha256")
+        if (
+            type(initial_pointer) is not dict
+            or type(initial_pointer_sha) is not str
+            or initial_pointer.get("previous_pointer_sha256") != EMPTY_POINTER_SHA256
+        ):
+            raise SystemMigrationClosureError("initial pointer ancestry is invalid")
+        marker_stored = self._storage.read_optional(MIGRATION_MARKER_PATH)
+        if marker_stored is None:
+            raise SystemMigrationMarkerAbsent("permanent migration marker is absent")
+        authorization_stored = self._storage.read_optional(
+            ACTIVATION_AUTHORIZATIONS_ROOT / f"{initial_pointer_sha}.json"
+        )
+        if authorization_stored is None:
+            raise SystemMigrationClosureError("initial authorization index is absent")
+        prepared_stored = self._storage.read_optional(
+            ACTIVATION_TRANSACTIONS_ROOT / f"{initial_pointer_sha}.json"
+        )
+        if prepared_stored is None:
+            raise SystemMigrationClosureError("prepared transaction index is absent")
+        try:
+            from quant_investor.migration.errors import UnifiedCutoverError
+            from quant_investor.migration.migration import validate_permanent_marker
+            from .activation import (
+                validate_activation_authorization,
+                validate_prepared_activation_transaction,
+            )
+
+            marker = validate_permanent_marker(marker_stored.data)
+            receipt_ref = validate_object_ref(
+                marker["payload"]["migration_receipt_ref"],
+                label="marker.migration_receipt_ref",
+            )
+            receipt = self.get_object(receipt_ref)
+            authorization = self._validated_artifact(authorization_stored.data)
+            if authorization["kind"] != "system.activation_authorization":
+                raise SystemMigrationClosureError("initial authorization kind is invalid")
+            deployed_ref = validate_object_ref(
+                authorization["payload"]["deployed_release_ref"],
+                label="authorization.deployed_release_ref",
+            )
+            generation = self._verify_generation(
+                initial_pointer["generation_id"],
+                deployed_release_ref=deployed_ref,
+                validation_level="stat",
+            )
+            validated_authorization, expected_marker = validate_activation_authorization(
+                authorization_stored.data,
+                migration_receipt=canonical_json_bytes(receipt),
+                target_active_pointer=canonical_json_bytes(initial_pointer),
+                target_generation_manifest=generation["manifest"],
+                deployed_release_ref=deployed_ref,
+                current_uid=os.geteuid(),
+            )
+            prepared = validate_prepared_activation_transaction(
+                prepared_stored.data,
+                authorization=authorization_stored.data,
+            )
+        except (SystemError, UnifiedCutoverError) as exc:
+            if isinstance(exc, SystemMigrationClosureError):
+                raise
+            raise SystemMigrationClosureError("permanent migration closure is invalid") from exc
+        if canonical_json_bytes(expected_marker) != marker_stored.data:
+            raise SystemMigrationClosureError("permanent marker exact bytes mismatch")
+        if object_ref_for_artifact(validated_authorization)["byte_sha256"] != (
+            hashlib.sha256(authorization_stored.data).hexdigest()
+        ):
+            raise SystemMigrationClosureError("authorization exact-byte identity mismatch")
+        return {
+            "authorization": validated_authorization,
+            "authorization_byte_sha256": authorization_stored.byte_sha256,
+            "initial_pointer": dict(initial_pointer),
+            "initial_pointer_byte_sha256": initial_pointer_sha,
+            "marker": marker,
+            "marker_byte_sha256": marker_stored.byte_sha256,
+            "migration_receipt": receipt,
+            "migration_receipt_ref": receipt_ref,
+            "prepared_transaction": prepared,
+            "prepared_transaction_byte_sha256": prepared_stored.byte_sha256,
+        }
 
     def read_active(
         self, *, deployed_release_ref: Mapping[str, Any] | None = None
@@ -2087,6 +2270,7 @@ class SystemStore:
         chain = self._pointer_chain()
         if not chain:
             return None
+        completion = self.verify_migration_completion(chain)
         current = chain[0]
         pointer = current["pointer"]
 
@@ -2106,6 +2290,7 @@ class SystemStore:
         return {
             "pointer": pointer,
             "pointer_byte_sha256": current["pointer_byte_sha256"],
+            "migration_completion": completion,
             **verified,
         }
 

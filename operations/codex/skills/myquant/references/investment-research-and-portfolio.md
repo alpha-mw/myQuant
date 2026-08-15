@@ -108,3 +108,4 @@ Lead with a concise investment verdict. For portfolios and candidates, use:
 Then summarize exposure, concentration, cash, candidate quality, evidence
 status, and next investment actions. Keep operational blockers short unless
 they directly change the conclusion.
+

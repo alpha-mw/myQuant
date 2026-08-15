@@ -17,7 +17,9 @@ from quant_investor.system import (
     EMPTY,
     EMERGENCY_CONTROLLER_PATH,
     SystemImmutableConflict,
+    SystemMigrationMarkerAbsent,
     SystemSecurityError,
+    SystemStorageError,
     SystemStore,
     build_emergency_controller,
     build_suspended_generation,
@@ -26,6 +28,9 @@ from quant_investor.system import (
 )
 import quant_investor.system.controller as controller_module
 import quant_investor.system.release as release_module
+from test_unified_system_bootstrap import _closure
+from unified_activation_helpers import activate_initial
+from unified_activation_helpers import prepare_initial_activation
 
 CREATED_AT = "2026-08-14T00:00:00Z"
 
@@ -90,23 +95,18 @@ def test_emergency_controller_is_exact_stdlib_only_current_uid_mode_0500(
 def test_controller_only_cas_targets_embedded_suspended_generation_and_retains_history(
     tmp_path: Path,
 ) -> None:
-    store, target, _, path = _target(tmp_path)
-    prior = build_suspended_generation(
-        store,
-        blockers=["PRIOR_ACTIVE"],
-        created_at="2026-08-14T00:01:00Z",
-    )
-    first = store.activate_generation(
-        prior["generation_id"],
-        expected_pointer_sha256=EMPTY,
-        activated_at="2026-08-14T00:01:01Z",
-        os_actor="test",
-    )
-    first_raw = (tmp_path / "results/system/_active.json").read_bytes()
+    closure = _closure(tmp_path)
+    store = closure["store"]
+    prior = store.assemble_generation(**closure["kwargs"])
+    first = activate_initial(store, prior, closure["release_ref"])
+    controller = verify_emergency_controller(store)
+    target = store.verify_generation(controller["generation_id"])
+    path = closure["workspace"] / str(EMERGENCY_CONTROLLER_PATH)
+    first_raw = (closure["workspace"] / "results/system/_active.json").read_bytes()
 
     completed = subprocess.run(
         [sys.executable, str(path), first["pointer_byte_sha256"]],
-        cwd=tmp_path,
+        cwd=closure["workspace"],
         check=False,
         capture_output=True,
     )
@@ -119,20 +119,88 @@ def test_controller_only_cas_targets_embedded_suspended_generation_and_retains_h
     active = store.read_active()
     assert active is not None
     assert active["generation_id"] == target["generation_id"]
-    history = tmp_path / "results/system/pointer_history" / f"{first['pointer_byte_sha256']}.json"
+    history = closure["workspace"] / "results/system/pointer_history" / f"{first['pointer_byte_sha256']}.json"
     assert history.read_bytes() == first_raw
 
-    active_before = (tmp_path / "results/system/_active.json").read_bytes()
+    active_before = (closure["workspace"] / "results/system/_active.json").read_bytes()
     conflict = subprocess.run(
         [sys.executable, str(path), first["pointer_byte_sha256"]],
-        cwd=tmp_path,
+        cwd=closure["workspace"],
         check=False,
         capture_output=True,
     )
     assert conflict.returncode == 2
     assert json.loads(conflict.stderr) == {"code": "SYSTEM_EMERGENCY_CAS_FAILED"}
     assert conflict.stdout == b""
-    assert (tmp_path / "results/system/_active.json").read_bytes() == active_before
+    assert (closure["workspace"] / "results/system/_active.json").read_bytes() == active_before
+
+
+def test_controller_can_contain_exact_pointer_only_activation_crash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    closure = _closure(tmp_path)
+    store = closure["store"]
+    operational = store.assemble_generation(**closure["kwargs"])
+    prepared = prepare_initial_activation(
+        store,
+        operational,
+        closure["release_ref"],
+        cutover_id="pointer-only-controller-containment",
+    )
+    original = store._storage._write_exact_once
+
+    def fail_marker(path: object, raw: bytes, *, allow_reserved_authority: bool):
+        if str(path) == "results/system/_migration_complete.json":
+            raise SystemStorageError("injected marker publication crash")
+        return original(path, raw, allow_reserved_authority=allow_reserved_authority)
+
+    monkeypatch.setattr(store._storage, "_write_exact_once", fail_marker)
+    with pytest.raises(SystemStorageError, match="injected marker publication crash"):
+        store.activate_initial_generation(**prepared)
+
+    pointer_path = closure["workspace"] / "results/system/_active.json"
+    marker_path = closure["workspace"] / "results/system/_migration_complete.json"
+    pointer_raw = pointer_path.read_bytes()
+    pointer_sha = hashlib.sha256(pointer_raw).hexdigest()
+    assert not marker_path.exists()
+    with pytest.raises(SystemMigrationMarkerAbsent):
+        store.read_active()
+
+    controller = verify_emergency_controller(store)
+    controller_path = closure["workspace"] / str(EMERGENCY_CONTROLLER_PATH)
+    completed = subprocess.run(
+        [sys.executable, str(controller_path), pointer_sha],
+        cwd=closure["workspace"],
+        check=False,
+        capture_output=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr.decode("utf-8")
+    report = json.loads(completed.stdout)
+    assert report["generation_id"] == controller["generation_id"]
+    assert report["state"] == "SYSTEM_SUSPENDED"
+    suspended_pointer = json.loads(pointer_path.read_bytes())
+    assert suspended_pointer["generation_id"] == controller["generation_id"]
+    assert suspended_pointer["previous_pointer_sha256"] == pointer_sha
+    assert not marker_path.exists()
+    with pytest.raises(SystemMigrationMarkerAbsent):
+        store.read_active()
+
+
+def test_controller_rejects_empty_preimage_even_for_valid_suspended_target(
+    tmp_path: Path,
+) -> None:
+    _, _, _, path = _target(tmp_path)
+    completed = subprocess.run(
+        [sys.executable, str(path), EMPTY],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+    )
+    assert completed.returncode == 2
+    assert json.loads(completed.stderr) == {"code": "SYSTEM_EMERGENCY_CAS_FAILED"}
+    assert not (tmp_path / "results/system/_active.json").exists()
 
 
 def test_controller_retention_requires_exact_readback_before_active_replace(

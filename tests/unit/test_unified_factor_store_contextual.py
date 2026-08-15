@@ -29,7 +29,7 @@ from quant_investor.factors.governance.bootstrap import (
     bootstrap_factor_definitions,
     compute_bootstrap_signals,
 )
-from quant_investor.factors.governance.contextual import _signal_hashes
+from quant_investor.factors.governance.contextual import _signal_hashes, _signal_statistics
 from quant_investor.factors.governance.custody import (
     custody_transaction_id,
     operation_request_sha256,
@@ -45,6 +45,7 @@ from quant_investor.system import (
     installed_code_manifest_sha256,
 )
 import quant_investor.system.store as system_store_module
+import quant_investor.system.validation as system_validation_module
 
 STAMP = "2026-08-16T00:00:00Z"
 DECISION_PATH = "operations/unified_cutover/bootstrap-decision.json"
@@ -432,6 +433,72 @@ def _release_and_manifest(
     return release_ref, manifest, store.put_object(manifest)
 
 
+def _statistics_signals(
+    low: dict[str, str | None],
+    blend: dict[str, str | None],
+) -> dict[str, dict[str, str | None]]:
+    return {LOW_DOLLAR_VOLUME: low, BLEND_W80: blend}
+
+
+@pytest.mark.parametrize(
+    ("signals", "message"),
+    [
+        (
+            _statistics_signals(
+                {"000001.SZ": None, "000002.SZ": None},
+                {"000001.SZ": "0x1.0000000000000p+0", "000002.SZ": "0x1.0000000000000p+1"},
+            ),
+            "empty or all null",
+        ),
+        (
+            _statistics_signals(
+                {"000001.SZ": "0x1.0000000000000p+0", "000002.SZ": "0x1.0000000000000p+0"},
+                {"000001.SZ": "0x1.0000000000000p+0", "000002.SZ": "0x1.0000000000000p+1"},
+            ),
+            "constant",
+        ),
+        (
+            _statistics_signals(
+                {"000001.SZ": "inf", "000002.SZ": "0x1.0000000000000p+1"},
+                {"000001.SZ": "0x1.0000000000000p+0", "000002.SZ": "0x1.0000000000000p+1"},
+            ),
+            "not finite",
+        ),
+    ],
+)
+def test_bootstrap_signal_statistics_reject_null_constant_and_nonfinite(
+    signals: dict[str, dict[str, str | None]],
+    message: str,
+) -> None:
+    with pytest.raises(FactorGovernanceError, match=message):
+        _signal_statistics(
+            signals,
+            eligible_symbols=["000001.SZ", "000002.SZ"],
+            implementation_sha256s={
+                LOW_DOLLAR_VOLUME: "a" * 64,
+                BLEND_W80: "b" * 64,
+            },
+            source_bundle_sha256="c" * 64,
+        )
+
+
+def test_bootstrap_signal_statistics_require_exact_pit_cohort() -> None:
+    signals = _statistics_signals(
+        {"000001.SZ": "0x1.0000000000000p+0", "000003.SZ": "0x1.0000000000000p+1"},
+        {"000001.SZ": "0x1.0000000000000p+0", "000003.SZ": "0x1.0000000000000p+1"},
+    )
+    with pytest.raises(FactorGovernanceError, match="signal/PIT cohort differs"):
+        _signal_statistics(
+            signals,
+            eligible_symbols=["000001.SZ", "000002.SZ"],
+            implementation_sha256s={
+                LOW_DOLLAR_VOLUME: "a" * 64,
+                BLEND_W80: "b" * 64,
+            },
+            source_bundle_sha256="c" * 64,
+        )
+
+
 def test_bootstrap_store_context_runner_and_status_are_exact_and_nonactivating(
     tmp_path: Path,
 ) -> None:
@@ -512,15 +579,14 @@ def test_bootstrap_store_context_runner_and_status_are_exact_and_nonactivating(
         for symbol, frame in market_frame.groupby("symbol", sort=True)
     }
     signals = compute_bootstrap_signals(frames, source_format="PARQUET")
-    signal_hashes = _signal_hashes(
-        {
-            factor_id: {
-                symbol: None if np.isnan(value) else float(value).hex()
-                for symbol, value in signals[factor_id].sort_index().items()
-            }
-            for factor_id in (LOW_DOLLAR_VOLUME, BLEND_W80)
+    canonical_signals = {
+        factor_id: {
+            symbol: None if np.isnan(value) else float(value).hex()
+            for symbol, value in signals[factor_id].sort_index().items()
         }
-    )
+        for factor_id in (LOW_DOLLAR_VOLUME, BLEND_W80)
+    }
+    signal_hashes = _signal_hashes(canonical_signals)
     definitions = bootstrap_factor_definitions()
     factor_rows, control_rows = _set_rows(definitions)
     factor_set_sha = _factor_set_sha256(
@@ -536,6 +602,21 @@ def test_bootstrap_store_context_runner_and_status_are_exact_and_nonactivating(
             "implementation_rows": manifest["payload"]["implementation_rows"],
         }
     )
+    market_bundle_ref = _bundle(system_store, "market", "market", market_ref)
+    implementation_sha = hashlib.sha256(implementation_raw).hexdigest()
+    signal_statistics = _signal_statistics(
+        canonical_signals,
+        eligible_symbols=sorted(
+            row["symbol"]
+            for row in _pit_rows()
+            if row["tradable"] and row["total_mv"] > 0
+        ),
+        implementation_sha256s={
+            LOW_DOLLAR_VOLUME: implementation_sha,
+            BLEND_W80: implementation_sha,
+        },
+        source_bundle_sha256=market_bundle_ref["byte_sha256"],
+    )
     recomputation_raw = canonical_json_bytes(
         {
             "authority": "NON_AUTHORIZING",
@@ -548,6 +629,7 @@ def test_bootstrap_store_context_runner_and_status_are_exact_and_nonactivating(
             "normalized_source_sha256s": normalized,
             "result": "EXACT_MATCH",
             "signal_sha256s": signal_hashes,
+            "signal_statistics": signal_statistics,
         }
     )
     source_rows = [
@@ -623,7 +705,7 @@ def test_bootstrap_store_context_runner_and_status_are_exact_and_nonactivating(
             "implementation_tree_manifest",
             implementation_ref,
         ),
-        "market_bundle_ref": _bundle(system_store, "market", "market", market_ref),
+        "market_bundle_ref": market_bundle_ref,
         "pit_universe_bundle_ref": _bundle(system_store, "pit", "pit", pit_ref),
         "recomputation_bundle_ref": _bundle(
             system_store, "recomputation", "recomputation", recomputation_ref
@@ -1104,6 +1186,7 @@ def test_full_prospective_store_context_replays_1442_raw_sources_without_activat
         )
 
     monkeypatch.setattr(system_store_module, "_utc_now", lambda: current_stamp[0])
+    monkeypatch.setattr(system_validation_module, "_utc_now", lambda: current_stamp[0])
     factor_store = FactorValidationStore._for_testing(
         system_store=system_store,
         clock=factor_clock,

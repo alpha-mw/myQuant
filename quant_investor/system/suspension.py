@@ -134,7 +134,7 @@ def suspend_system(
     *,
     blockers: Iterable[str],
     created_at: str,
-    expected_pointer_sha256: str = EMPTY_POINTER_SHA256,
+    expected_pointer_sha256: str,
     os_actor: str | None = None,
     code_sha256: str | None = None,
     wheel_sha256: str | None = None,
@@ -144,6 +144,9 @@ def suspend_system(
     producer_identity: str = "SYSTEM",
 ) -> dict[str, Any]:
     """Build and CAS-activate a minimal suspended generation."""
+
+    if expected_pointer_sha256 == EMPTY_POINTER_SHA256:
+        raise SystemContractError("suspension cannot perform initial activation")
 
     store = _store(store_or_workspace_root)
     generation = build_suspended_generation(

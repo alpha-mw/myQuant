@@ -186,6 +186,54 @@ def test_system_status_complete_when_uninitialized(
     assert system["capabilities"]["system"] == "UNINITIALIZED"
 
 
+def test_system_bootstrap_assemble_uses_exact_request_and_explicit_input_root(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import quant_investor.factors.governance.production as production
+
+    input_root = tmp_path / "sealed-inputs"
+    input_root.mkdir(mode=0o700)
+    request_path = tmp_path / "bootstrap-request.json"
+    digest = _canonical_request(request_path, {"sealed": True})
+    calls: list[dict[str, object]] = []
+
+    def assemble(**kwargs: object) -> dict[str, object]:
+        calls.append(dict(kwargs))
+        return {
+            "status": "OFFLINE_VERIFIED",
+            "generation_id": "1" * 64,
+            "active_pointer_write_count": 0,
+            "marker_write_count": 0,
+        }
+
+    monkeypatch.setattr(production, "assemble_production_bootstrap", assemble)
+    main(
+        [
+            "system",
+            "bootstrap-assemble",
+            "--workspace-root",
+            str(tmp_path),
+            "--input-root",
+            "sealed-inputs",
+            "--request",
+            "bootstrap-request.json",
+            "--expected-request-sha256",
+            digest,
+        ]
+    )
+
+    assert _line(capsys)["status"] == "OFFLINE_VERIFIED"
+    assert calls == [
+        {
+            "workspace_root": str(tmp_path),
+            "input_root": input_root,
+            "request_raw": request_path.read_bytes(),
+        }
+    ]
+
+
 def test_factor_status_builds_only_from_exact_refs_and_preserves_active_pointer(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

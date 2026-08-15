@@ -15,9 +15,12 @@ from quant_investor.contracts import (
     seal_artifact,
 )
 from quant_investor.system import (
+    ACTIVE_POINTER_PATH,
     BOOTSTRAP_VALIDATION_PROFILE,
     COMPONENT_REGISTRY_SHA256,
     EMERGENCY_CONTROLLER_PATH,
+    EMPTY,
+    MIGRATION_MARKER_PATH,
     SystemContractError,
     SystemNotFound,
     SystemSecurityError,
@@ -34,6 +37,43 @@ MEDIA = {
     "PARQUET": "application/vnd.apache.parquet",
     "PYTHON": "text/x-python",
 }
+
+
+@pytest.mark.parametrize(
+    "reserved_path",
+    [ACTIVE_POINTER_PATH, MIGRATION_MARKER_PATH],
+)
+def test_generic_storage_writers_reject_reserved_authority_paths(
+    tmp_path: Path,
+    reserved_path: object,
+) -> None:
+    _workspace, _source, store = _roots(tmp_path)
+    storage = store._storage
+    with pytest.raises(SystemSecurityError, match="sealed operation"):
+        storage.write_exact_once(reserved_path, b"{}\n")
+    with pytest.raises(SystemSecurityError, match="sealed operation"):
+        storage.write_executable_exact_once(reserved_path, b"#!/bin/sh\n")
+    with pytest.raises(SystemSecurityError, match="sealed operation"):
+        storage.write_atomic_directory(reserved_path, {"payload.json": b"{}\n"})
+    with pytest.raises(SystemSecurityError, match="sealed operation"):
+        storage.compare_and_swap_pointer(
+            b"{}\n",
+            pointer_path=reserved_path,
+            history_root="results/system/test-history",
+            lock_path="results/system/.test.lock",
+            expected_sha256=EMPTY,
+        )
+
+
+def test_public_active_cas_and_empty_nonempty_lane_are_closed(tmp_path: Path) -> None:
+    _workspace, _source, store = _roots(tmp_path)
+    storage = store._storage
+    with pytest.raises(SystemSecurityError, match="System-owned"):
+        storage.compare_and_swap_active(b"{}\n", expected_sha256=EMPTY)
+    with pytest.raises(SystemSecurityError, match="detached authorization"):
+        storage.compare_and_swap_active_authorized_nonempty(
+            b"{}\n", expected_sha256=EMPTY
+        )
 
 
 def _sha(value: str) -> str:
@@ -270,7 +310,7 @@ def _operational_generation(
 ) -> tuple[SystemStore, dict[str, Any], dict[str, Path]]:
     _, source_root, store = _roots(tmp_path)
     source_rows = {
-        "calendar.json": ("JSON", b'{"sessions":["2026-08-14"]}'),
+        "calendar.parquet": ("PARQUET", b"PAR1calendar"),
         "fundamental-manifest.json": ("JSON", b'{"state":"immutable"}'),
         "fundamental.parquet": ("PARQUET", b"PAR1fundamental"),
         "market-manifest.json": ("JSON", b'{"state":"immutable"}'),
@@ -304,7 +344,7 @@ def _operational_generation(
         store,
         "operational-sources",
         [
-            ("exchange_calendar", refs["calendar.json"]),
+            ("exchange_calendar", refs["calendar.parquet"]),
             ("fundamental_generation", fundamental),
             ("market_snapshot", market),
             ("pit_membership", refs["pit.parquet"]),
@@ -360,7 +400,6 @@ def _operational_generation(
             created_at=CREATED_AT,
         )
     )
-    migration = _put_generic(store, "system.migration.receipt", "migration")
     readiness = store.put_object(
         seal_artifact(
             "intelligence_readiness",
@@ -398,7 +437,7 @@ def _operational_generation(
         factor_validation_attestation_ref=validation["validation_attestation_ref"],
         mainline_ref=None,
         research_refs=[],
-        migration_receipt_ref=migration,
+        migration_receipt_ref=None,
         migration_marker_ref=None,
         skill_tree_sha256=_sha("skills"),
         automation_semantic_sha256=_sha("automation"),

@@ -623,30 +623,14 @@ def _default_staging_validator(
     generation_root: Path,
     historical_only: bool,
 ) -> Any:
-    import_errors: list[Exception] = []
-    for module_name in (
-        "quant_investor.market.fundamental_incremental",
-        "quant_investor.market.fundamental_successor",
-        "quant_investor.market.fundamental_successor_derivation",
-    ):
-        try:
-            module = __import__(
-                module_name,
-                fromlist=["validate_successor_provenance"],
-            )
-            validator = getattr(module, "validate_successor_provenance")
-        except (ImportError, AttributeError) as exc:
-            import_errors.append(exc)
-            continue
-        return validator(
-            dict(pointer),
-            dict(manifest),
-            generation_root=root,
-            historical_only=historical_only,
-        )
-    raise SuccessorPromotionError(
-        "successor staging validator is unavailable"
-    ) from (import_errors[-1] if import_errors else None)
+    from .fundamental_incremental import validate_successor_provenance
+
+    return validate_successor_provenance(
+        dict(pointer),
+        dict(manifest),
+        generation_root=root,
+        historical_only=historical_only,
+    )
 
 
 def _scan_generation(root: str | Path) -> dict[str, Any]:

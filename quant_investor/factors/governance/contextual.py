@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 import hashlib
+import math
 from typing import Any, Final
 
 import pandas as pd
@@ -290,7 +291,7 @@ def _bundle_source(
     return bundle, ref
 
 
-def _bootstrap_sources(
+def _bootstrap_sources(  # noqa: C901
     system_store: SystemStore,
     policy: Mapping[str, Any],
 ) -> tuple[
@@ -330,6 +331,24 @@ def _bootstrap_sources(
         finally:
             del frame
 
+    def project_bootstrap_pit(table: Any, binding: Mapping[str, Any]) -> dict[str, Any]:
+        del binding
+        frame = table.to_pandas()
+        try:
+            eligible = frame.loc[
+                frame["tradable"].eq(True) & frame["total_mv"].gt(0),  # noqa: E712
+                "symbol",
+            ].tolist()
+            if (
+                not eligible
+                or any(type(symbol) is not str for symbol in eligible)
+                or eligible != sorted(set(eligible))
+            ):
+                raise FactorGovernanceError("Bootstrap PIT eligible cohort is not exact")
+            return {"eligible_symbols": eligible}
+        finally:
+            del frame
+
     for outer_role, (inner_role, source_format, decoder_role) in _BOOTSTRAP_ROLE_MATRIX.items():
         bundle, source_ref = _bundle_source(
             system_store,
@@ -359,11 +378,17 @@ def _bootstrap_sources(
                 projector=(
                     project_bootstrap_market
                     if decoder_role == "market_history"
-                    else lambda table, binding: {}
+                    else (
+                        project_bootstrap_pit
+                        if decoder_role == "pit_universe"
+                        else lambda table, binding: {}
+                    )
                 ),
             )
             if decoder_role == "market_history":
                 decoded["signals"] = value.projection["signals"]
+            if decoder_role == "pit_universe":
+                decoded["eligible_symbols"] = value.projection["eligible_symbols"]
             decoded[decoder_role] = {
                 "binding": dict(value.binding),
             }
@@ -379,6 +404,73 @@ def _signal_hashes(signals: Mapping[str, Mapping[str, Any]]) -> dict[str, str]:
         ).hexdigest()
         for factor_id, values in sorted(signals.items())
     }
+
+
+def _signal_statistics(  # noqa: C901
+    signals: Mapping[str, Mapping[str, Any]],
+    *,
+    eligible_symbols: Sequence[str],
+    implementation_sha256s: Mapping[str, str],
+    source_bundle_sha256: str,
+) -> list[dict[str, Any]]:
+    """Seal non-empty, nonconstant exact-replay evidence for active factors."""
+
+    cohort = list(eligible_symbols)
+    if not cohort or cohort != sorted(set(cohort)):
+        raise FactorGovernanceError("Bootstrap PIT eligible cohort is not canonical")
+    cohort_sha = hashlib.sha256(canonical_json_bytes(cohort)).hexdigest()
+    signal_hashes = _signal_hashes(signals)
+    if set(signals) != {LOW_DOLLAR_VOLUME, BLEND_W80}:
+        raise FactorGovernanceError("Bootstrap active signal set is not exact")
+    rows: list[dict[str, Any]] = []
+    for factor_id in (LOW_DOLLAR_VOLUME, BLEND_W80):
+        values = signals[factor_id]
+        symbols = sorted(values)
+        if symbols != cohort:
+            raise FactorGovernanceError("Bootstrap signal/PIT cohort differs")
+        finite_values: list[str] = []
+        for symbol in symbols:
+            value = values[symbol]
+            if value is None:
+                continue
+            if type(value) is not str:
+                raise FactorGovernanceError("Bootstrap signal is not canonical float hex")
+            try:
+                number = float.fromhex(value)
+            except ValueError as exc:
+                raise FactorGovernanceError("Bootstrap signal is not canonical float hex") from exc
+            if not math.isfinite(number) or number.hex() != value:
+                raise FactorGovernanceError("Bootstrap signal is not finite canonical float hex")
+            finite_values.append(value)
+        finite_count = len(finite_values)
+        distinct_finite_count = len(set(finite_values))
+        if finite_count <= 0:
+            raise FactorGovernanceError("Bootstrap active signal is empty or all null")
+        if distinct_finite_count <= 1:
+            raise FactorGovernanceError("Bootstrap active signal is constant")
+        implementation_sha = require_sha256(
+            implementation_sha256s.get(factor_id),
+            label=f"{factor_id}.implementation_sha256",
+        )
+        rows.append(
+            {
+                "coverage_denominator": len(cohort),
+                "coverage_numerator": finite_count,
+                "coverage_rate": f"{finite_count / len(cohort):.12f}",
+                "distinct_finite_count": distinct_finite_count,
+                "factor_id": factor_id,
+                "finite_count": finite_count,
+                "implementation_sha256": implementation_sha,
+                "sealed_pit_eligible_cohort": cohort,
+                "signal_sha256": signal_hashes[factor_id],
+                "signal_symbol_set_sha256": cohort_sha,
+                "source_bundle_sha256": require_sha256(
+                    source_bundle_sha256, label="source_bundle_sha256"
+                ),
+                "source_symbol_count": len(symbols),
+            }
+        )
+    return rows
 
 
 def _validate_bootstrap_json_documents(
@@ -413,6 +505,17 @@ def _validate_bootstrap_json_documents(
         {"factor_id": row["factor_id"], "weight": row["weight"]}
         for row in active["payload"]["factor_rows"]
     ]
+    implementation_sha256s = {
+        row["factor_id"]: row["implementation_sha256"] for row in policy["payload"]["factor_rows"]
+    }
+    signal_statistics = _signal_statistics(
+        decoded["signals"],
+        eligible_symbols=decoded["eligible_symbols"],
+        implementation_sha256s=implementation_sha256s,
+        source_bundle_sha256=policy["payload"]["source_refs"][
+            [row["role"] for row in policy["payload"]["source_refs"]].index("market")
+        ]["ref"]["byte_sha256"],
+    )
     expected_recomputation = {
         "authority": "NON_AUTHORIZING",
         "domain": "myquant-bootstrap-recomputation",
@@ -422,6 +525,7 @@ def _validate_bootstrap_json_documents(
         "normalized_source_sha256s": normalized,
         "result": "EXACT_MATCH",
         "signal_sha256s": _signal_hashes(decoded["signals"]),
+        "signal_statistics": signal_statistics,
     }
     if documents["recomputation"]["document"] != expected_recomputation:
         raise FactorGovernanceError("Bootstrap recomputation document differs")

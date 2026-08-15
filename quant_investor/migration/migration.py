@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-import hashlib
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -61,12 +60,16 @@ from .rules import (
     path_matches_glob,
     pointer_filename_matches,
 )
+from quant_investor.system_authority import (
+    ACTIVE_POINTER_PATH,
+    EMPTY_POINTER_SHA256,
+    MIGRATION_MARKER_PATH,
+)
 
 MIGRATION_RECEIPT_KIND: Final = "system.migration.receipt"
 MIGRATION_RECEIPT_CONTRACT_SHA256: Final = get_contract(MIGRATION_RECEIPT_KIND).contract_sha256
 PERMANENT_MARKER_KIND: Final = "system.migration.complete"
 PERMANENT_MARKER_CONTRACT_SHA256: Final = get_contract(PERMANENT_MARKER_KIND).contract_sha256
-EMPTY_SHA256: Final = hashlib.sha256(b"").hexdigest()
 
 MIGRATION_RECEIPT_PAYLOAD_FIELDS: Final = frozenset(
     {
@@ -88,6 +91,7 @@ MIGRATION_RECEIPT_PAYLOAD_FIELDS: Final = frozenset(
         "target_generation_id",
         "target_generation_manifest_path",
         "target_generation_manifest_ref",
+        "target_release_manifest_ref",
         "write_performed",
     }
 )
@@ -325,11 +329,11 @@ def _validated_active_pointer(value: Mapping[str, Any] | bytes) -> dict[str, Any
         raise UnifiedCutoverError(RECEIPT_INVALID, "target active pointer is invalid") from exc
     if type(document) is not dict or set(document) != _ACTIVE_POINTER_FIELDS:
         raise UnifiedCutoverError(RECEIPT_INVALID, "active pointer fields are not exact")
-    for key in ("generation_id", "manifest_sha256", "previous_pointer_sha256"):
+    for key in ("generation_id", "manifest_sha256"):
         value_at_key = document[key]
         if type(value_at_key) is not str or SHA256_RE.fullmatch(value_at_key) is None:
             raise UnifiedCutoverError(RECEIPT_INVALID, f"active pointer {key} is invalid")
-    if document["previous_pointer_sha256"] != EMPTY_SHA256:
+    if document["previous_pointer_sha256"] != EMPTY_POINTER_SHA256:
         raise UnifiedCutoverError(
             RECEIPT_INVALID, "first unified pointer must bind the empty prevalue"
         )
@@ -340,6 +344,38 @@ def _validated_active_pointer(value: Mapping[str, Any] | bytes) -> dict[str, Any
     ):
         raise UnifiedCutoverError(RECEIPT_INVALID, "active pointer metadata is invalid")
     return document
+
+
+def build_initial_active_pointer(
+    target_generation_manifest: Mapping[str, Any] | bytes,
+    *,
+    activated_at: str,
+    os_actor: str,
+) -> dict[str, Any]:
+    """Build exact first-pointer content without consulting a clock or OS actor."""
+
+    manifest = _validated_artifact(
+        target_generation_manifest,
+        expected_kind="system.generation_manifest",
+        label="target generation manifest",
+    )
+    payload = manifest["payload"]
+    if (
+        payload.get("generation_state") != "OPERATIONAL"
+        or payload.get("migration_receipt_ref") is not None
+        or payload.get("migration_marker_ref") is not None
+    ):
+        raise UnifiedCutoverError(
+            RECEIPT_INVALID, "initial target must be an acyclic operational generation"
+        )
+    pointer = {
+        "generation_id": manifest["semantic_sha256"],
+        "manifest_sha256": artifact_byte_sha256(manifest),
+        "previous_pointer_sha256": EMPTY_POINTER_SHA256,
+        "activated_at": activated_at,
+        "os_actor": os_actor,
+    }
+    return _validated_active_pointer(pointer)
 
 
 def _active_pointer_ref(pointer: Mapping[str, Any]) -> dict[str, str]:
@@ -521,6 +557,18 @@ def build_pre_cas_migration_receipt(
         expected_kind="system.generation_manifest",
         label="target generation manifest",
     )
+    manifest_payload = manifest["payload"]
+    if (
+        manifest_payload.get("generation_state") != "OPERATIONAL"
+        or manifest_payload.get("migration_receipt_ref") is not None
+        or manifest_payload.get("migration_marker_ref") is not None
+    ):
+        raise UnifiedCutoverError(
+            RECEIPT_INVALID, "target must be an acyclic operational generation"
+        )
+    release_ref = manifest_payload.get("release_manifest_ref")
+    if type(release_ref) is not dict:
+        raise UnifiedCutoverError(RECEIPT_INVALID, "target release binding is absent")
     generation_id = pointer.get("generation_id")
     if type(generation_id) is not str or _GENERATION_ID_RE.fullmatch(generation_id) is None:
         raise UnifiedCutoverError(RECEIPT_INVALID, "target generation_id is invalid")
@@ -558,7 +606,7 @@ def build_pre_cas_migration_receipt(
         "blocker_codes": [],
         "cas_performed": False,
         "cutover_id": normalized_cutover,
-        "expected_active_pointer_sha256": EMPTY_SHA256,
+        "expected_active_pointer_sha256": EMPTY_POINTER_SHA256,
         "inventory_ref": artifact_exact_ref(normalized_inventory),
         "permanent_marker_path": rules.unified_layout.permanent_marker,
         "rules_ref": _exact_rules_ref(
@@ -585,6 +633,7 @@ def build_pre_cas_migration_receipt(
         "target_generation_id": generation_id,
         "target_generation_manifest_path": generation_path,
         "target_generation_manifest_ref": artifact_exact_ref(manifest),
+        "target_release_manifest_ref": dict(release_ref),
         "write_performed": False,
     }
     payload = {
@@ -629,7 +678,7 @@ def validate_pre_cas_migration_receipt(
     if (
         payload["status"] != "READY_FOR_CAS"
         or payload["blocker_codes"] != []
-        or payload["expected_active_pointer_sha256"] != EMPTY_SHA256
+        or payload["expected_active_pointer_sha256"] != EMPTY_POINTER_SHA256
         or payload["write_performed"] is not False
         or payload["cas_performed"] is not False
         or payload["summary"].get("shadow_copy_count") != 0
@@ -676,6 +725,44 @@ def validate_pre_cas_migration_receipt(
     return document
 
 
+def validate_pre_cas_activation_target(
+    migration_receipt: Mapping[str, Any] | bytes,
+    target_active_pointer: Mapping[str, Any] | bytes,
+    target_generation_manifest: Mapping[str, Any] | bytes,
+) -> dict[str, Any]:
+    """Deep-bind a detached receipt to one exact operational first pointer."""
+
+    receipt = validate_pre_cas_migration_receipt(migration_receipt)
+    pointer = _validated_active_pointer(target_active_pointer)
+    manifest = _validated_artifact(
+        target_generation_manifest,
+        expected_kind="system.generation_manifest",
+        label="target generation manifest",
+    )
+    manifest_payload = manifest["payload"]
+    payload = receipt["payload"]
+    generation_id = manifest["semantic_sha256"]
+    generation_path = f"results/system/generations/{generation_id}/manifest.json"
+    if (
+        manifest_payload.get("generation_state") != "OPERATIONAL"
+        or manifest_payload.get("migration_receipt_ref") is not None
+        or manifest_payload.get("migration_marker_ref") is not None
+        or pointer["generation_id"] != generation_id
+        or pointer["manifest_sha256"] != artifact_byte_sha256(manifest)
+        or payload["target_generation_id"] != generation_id
+        or payload["target_generation_manifest_ref"] != artifact_exact_ref(manifest)
+        or payload["target_generation_manifest_path"] != generation_path
+        or payload["target_release_manifest_ref"]
+        != manifest_payload.get("release_manifest_ref")
+        or payload["target_active_pointer_ref"] != _active_pointer_ref(pointer)
+        or payload["target_active_pointer_path"] != str(ACTIVE_POINTER_PATH)
+        or payload["permanent_marker_path"] != str(MIGRATION_MARKER_PATH)
+        or payload["expected_active_pointer_sha256"] != EMPTY_POINTER_SHA256
+    ):
+        raise UnifiedCutoverError(RECEIPT_INVALID, "activation target binding mismatch")
+    return receipt
+
+
 def write_pre_cas_migration_receipt(
     path: str | os.PathLike[str],
     receipt: Mapping[str, Any] | bytes,
@@ -693,7 +780,9 @@ def build_permanent_marker_payload(
 ) -> dict[str, Any]:
     """Build the permanent post-CAS marker without performing a write."""
 
-    receipt = validate_pre_cas_migration_receipt(migration_receipt)
+    receipt = validate_pre_cas_activation_target(
+        migration_receipt, active_pointer, generation_manifest
+    )
     pointer = _validated_active_pointer(active_pointer)
     manifest = _validated_artifact(
         generation_manifest,
@@ -765,7 +854,7 @@ def validate_permanent_marker(
 
 
 __all__ = [
-    "EMPTY_SHA256",
+    "EMPTY_POINTER_SHA256",
     "MIGRATION_RECEIPT_CONTRACT_SHA256",
     "MIGRATION_RECEIPT_KIND",
     "PERMANENT_MARKER_CONTRACT_SHA256",
@@ -774,10 +863,12 @@ __all__ = [
     "SourceTargetRule",
     "assert_pre_cas_cutover_state",
     "build_permanent_marker_payload",
+    "build_initial_active_pointer",
     "build_pre_cas_migration_receipt",
     "build_unified_migration_receipt",
     "load_source_target_rules",
     "validate_permanent_marker",
+    "validate_pre_cas_activation_target",
     "validate_pre_cas_migration_receipt",
     "write_pre_cas_migration_receipt",
 ]

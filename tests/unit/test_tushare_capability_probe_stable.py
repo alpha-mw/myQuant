@@ -15,6 +15,7 @@ from quant_investor.market.tushare import (
     validate_tushare_request_receipt,
 )
 from quant_investor.market.tushare_transport import TushareHttpsError, TushareResponse
+from tests.unit.tushare_response_fixtures import make_tushare_response
 
 NOW = "2026-08-14T08:00:00Z"
 
@@ -69,7 +70,7 @@ def response(
     reported_count: int | None = None,
     has_more: bool = False,
 ) -> TushareResponse:
-    return TushareResponse(
+    return make_tushare_response(
         api_name="daily_basic",
         request_id="request-1",
         reported_count=len(rows) if reported_count is None else reported_count,

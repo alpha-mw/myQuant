@@ -24,6 +24,8 @@ from quant_investor.system import (
     build_suspended_generation,
     decode_assembly_request,
 )
+from test_unified_system_bootstrap import _closure
+from unified_activation_helpers import activate_initial, prepare_initial_activation
 
 CREATED_AT = "2026-08-14T00:00:00Z"
 
@@ -120,17 +122,11 @@ def test_object_layout_is_kind_scoped_and_readback_is_exact(tmp_path: Path) -> N
 
 
 def test_empty_activation_pointer_and_previous_bytes_are_retained(tmp_path: Path) -> None:
-    store = _store(tmp_path)
-    first_generation = _suspended(store)
-    first_release = first_generation["manifest"]["payload"]["release_manifest_ref"]
-    first = store.activate_generation(
-        first_generation["generation_id"],
-        expected_pointer_sha256=EMPTY,
-        activated_at="2026-08-14T00:00:01Z",
-        os_actor="test-actor",
-        deployed_release_ref=first_release,
-    )
-    active_path = tmp_path / str(ACTIVE_POINTER_PATH)
+    closure = _closure(tmp_path)
+    store = closure["store"]
+    first_generation = store.assemble_generation(**closure["kwargs"])
+    first = activate_initial(store, first_generation, closure["release_ref"])
+    active_path = closure["workspace"] / str(ACTIVE_POINTER_PATH)
     first_bytes = active_path.read_bytes()
 
     assert set(first["pointer"]) == set(POINTER_FIELDS)
@@ -143,16 +139,15 @@ def test_empty_activation_pointer_and_previous_bytes_are_retained(tmp_path: Path
         blocker="SECOND_SUSPENSION",
         created_at="2026-08-14T00:01:00Z",
     )
-    second_release = second_generation["manifest"]["payload"]["release_manifest_ref"]
     second = store.activate_generation(
         second_generation["generation_id"],
         expected_pointer_sha256=first["pointer_byte_sha256"],
         activated_at="2026-08-14T00:01:01Z",
         os_actor="test-actor",
-        deployed_release_ref=second_release,
+        deployed_release_ref=second_generation["manifest"]["payload"]["release_manifest_ref"],
     )
 
-    history = tmp_path / "results/system/pointer_history" / f"{first['pointer_byte_sha256']}.json"
+    history = closure["workspace"] / "results/system/pointer_history" / f"{first['pointer_byte_sha256']}.json"
     assert history.read_bytes() == first_bytes
     assert second["pointer"]["previous_pointer_sha256"] == first["pointer_byte_sha256"]
     newest = store.pointer_history()
@@ -165,14 +160,10 @@ def test_empty_activation_pointer_and_previous_bytes_are_retained(tmp_path: Path
 
 
 def test_pointer_history_rejects_missing_retained_bytes(tmp_path: Path) -> None:
-    store = _store(tmp_path)
-    first_generation = _suspended(store)
-    first = store.activate_generation(
-        first_generation["generation_id"],
-        expected_pointer_sha256=EMPTY,
-        activated_at="2026-08-14T00:00:01Z",
-        os_actor="test",
-    )
+    closure = _closure(tmp_path)
+    store = closure["store"]
+    first_generation = store.assemble_generation(**closure["kwargs"])
+    first = activate_initial(store, first_generation, closure["release_ref"])
     second_generation = _suspended(
         store,
         blocker="SECOND",
@@ -184,7 +175,7 @@ def test_pointer_history_rejects_missing_retained_bytes(tmp_path: Path) -> None:
         activated_at="2026-08-14T00:01:01Z",
         os_actor="test",
     )
-    retained = tmp_path / "results/system/pointer_history" / f"{first['pointer_byte_sha256']}.json"
+    retained = closure["workspace"] / "results/system/pointer_history" / f"{first['pointer_byte_sha256']}.json"
     retained.unlink()
 
     from quant_investor.system import SystemNotFound
@@ -194,14 +185,10 @@ def test_pointer_history_rejects_missing_retained_bytes(tmp_path: Path) -> None:
 
 
 def test_pointer_history_rejects_retained_byte_hash_mismatch(tmp_path: Path) -> None:
-    store = _store(tmp_path)
-    first_generation = _suspended(store)
-    first = store.activate_generation(
-        first_generation["generation_id"],
-        expected_pointer_sha256=EMPTY,
-        activated_at="2026-08-14T00:00:01Z",
-        os_actor="test",
-    )
+    closure = _closure(tmp_path)
+    store = closure["store"]
+    first_generation = store.assemble_generation(**closure["kwargs"])
+    first = activate_initial(store, first_generation, closure["release_ref"])
     second_generation = _suspended(
         store,
         blocker="SECOND",
@@ -213,7 +200,7 @@ def test_pointer_history_rejects_retained_byte_hash_mismatch(tmp_path: Path) -> 
         activated_at="2026-08-14T00:01:01Z",
         os_actor="test",
     )
-    retained = tmp_path / "results/system/pointer_history" / f"{first['pointer_byte_sha256']}.json"
+    retained = closure["workspace"] / "results/system/pointer_history" / f"{first['pointer_byte_sha256']}.json"
     forged = {**first["pointer"], "os_actor": "forged"}
     retained.write_bytes(canonical_json_bytes(forged))
     retained.chmod(0o600)
@@ -255,31 +242,36 @@ def test_pointer_history_rejects_a_cycle_before_resolving_generations(
 
 
 def test_concurrent_empty_cas_has_one_winner_and_safe_conflict(tmp_path: Path) -> None:
-    store = _store(tmp_path)
+    closure = _closure(tmp_path)
+    store = closure["store"]
     generations = [
-        _suspended(
-            store,
-            blocker=f"CAS_{index}",
-            created_at=f"2026-08-14T00:0{index}:00Z",
+        store.assemble_generation(
+            **{**closure["kwargs"], "created_at": f"2026-08-14T00:0{index}:00Z"}
         )
         for index in (1, 2)
     ]
+    preparations = [
+        prepare_initial_activation(
+            store,
+            generation,
+            closure["release_ref"],
+            cutover_id=f"concurrent-{index}",
+            prepared_at="2026-08-14T00:00:00Z",
+            activated_at="2026-08-14T00:03:00Z",
+        )
+        for index, generation in enumerate(generations)
+    ]
     barrier = threading.Barrier(2)
 
-    def activate(generation: dict[str, Any]) -> object:
+    def activate(prepared: dict[str, Any]) -> object:
         barrier.wait()
         try:
-            return store.activate_generation(
-                generation["generation_id"],
-                expected_pointer_sha256=EMPTY,
-                activated_at="2026-08-14T00:03:00Z",
-                os_actor="cas-test",
-            )
+            return store.activate_initial_generation(**prepared)
         except Exception as exc:  # captured for exact assertion below
             return exc
 
     with ThreadPoolExecutor(max_workers=2) as executor:
-        outcomes = list(executor.map(activate, generations))
+        outcomes = list(executor.map(activate, preparations))
 
     conflicts = [row for row in outcomes if isinstance(row, SystemCASMismatch)]
     winners = [row for row in outcomes if isinstance(row, dict)]
@@ -351,16 +343,11 @@ def test_assembly_request_decoder_is_exact_and_assembles_only_stored_refs(
 
 
 def test_status_external_routing_excludes_scheduler_from_identity(tmp_path: Path) -> None:
-    store = _store(tmp_path)
-    generation = _suspended(store)
-    release = generation["manifest"]["payload"]["release_manifest_ref"]
-    active = store.activate_generation(
-        generation["generation_id"],
-        expected_pointer_sha256=EMPTY,
-        activated_at="2026-08-14T00:00:01Z",
-        os_actor="test",
-        deployed_release_ref=release,
-    )
+    closure = _closure(tmp_path)
+    store = closure["store"]
+    generation = store.assemble_generation(**closure["kwargs"])
+    release = closure["release_ref"]
+    active = activate_initial(store, generation, release)
     expected = active["manifest"]["payload"]["automation_semantic_sha256"]
 
     disabled = store.status(
@@ -384,15 +371,11 @@ def test_status_external_routing_excludes_scheduler_from_identity(tmp_path: Path
 def test_corrupt_current_pointer_is_not_accepted_even_with_its_byte_sha(
     tmp_path: Path,
 ) -> None:
-    store = _store(tmp_path)
-    first_generation = _suspended(store)
-    first = store.activate_generation(
-        first_generation["generation_id"],
-        expected_pointer_sha256=EMPTY,
-        activated_at="2026-08-14T00:00:01Z",
-        os_actor="test",
-    )
-    active_path = tmp_path / str(ACTIVE_POINTER_PATH)
+    closure = _closure(tmp_path)
+    store = closure["store"]
+    first_generation = store.assemble_generation(**closure["kwargs"])
+    first = activate_initial(store, first_generation, closure["release_ref"])
+    active_path = closure["workspace"] / str(ACTIVE_POINTER_PATH)
     corrupt = dict(first["pointer"])
     corrupt["unexpected"] = True
     corrupt_raw = canonical_json_bytes(corrupt)
@@ -414,13 +397,9 @@ def test_corrupt_current_pointer_is_not_accepted_even_with_its_byte_sha(
 
 
 def test_first_activation_never_writes_outside_tmp_workspace(tmp_path: Path) -> None:
-    store = _store(tmp_path)
-    generation = _suspended(store)
-    store.activate_generation(
-        generation["generation_id"],
-        expected_pointer_sha256=EMPTY,
-        activated_at="2026-08-14T00:00:01Z",
-        os_actor=f"uid:{os.geteuid()}",
-    )
+    closure = _closure(tmp_path)
+    store = closure["store"]
+    generation = store.assemble_generation(**closure["kwargs"])
+    activate_initial(store, generation, closure["release_ref"])
 
-    assert (tmp_path / "results/system/_active.json").is_file()
+    assert (closure["workspace"] / "results/system/_active.json").is_file()

@@ -73,11 +73,10 @@ from .prospective import (
     _build_observation,
     _build_preregistration,
     _build_signal_capture,
+    _validate_configuration_selection_prevalidated,
     _validate_observation_prevalidated,
     _validate_signal_capture_prevalidated,
-    validate_configuration_selection,
     validate_preregistration,
-    validate_signal_capture,
 )
 from .receipt import _build_factor_validation_receipt
 from .source import (
@@ -355,6 +354,23 @@ class FactorValidationStore:
             raise FactorGovernanceError("test clock must be callable")
         instance = cls(system_store=system_store)
         instance._clock = clock
+        _clock_stamp(instance._clock)
+        return instance
+
+    @classmethod
+    def for_sealed_operation(
+        cls,
+        *,
+        system_store: SystemStore,
+        trusted_at: str,
+    ) -> FactorValidationStore:
+        """Bind one production operation to its already-sealed UTC timestamp."""
+
+        instant = _timestamp_value(trusted_at)
+        if instant > _utc_now():
+            raise FactorGovernanceError("sealed operation timestamp may not be in the future")
+        instance = cls(system_store=system_store)
+        instance._clock = lambda: instant
         _clock_stamp(instance._clock)
         return instance
 
@@ -2082,7 +2098,10 @@ class FactorValidationStore:
                 label="selection_ref",
                 expected_kind="factor.configuration_selection",
             )
-            selection = validate_configuration_selection(selection, preregistration=preregistration)
+            selection = _validate_configuration_selection_prevalidated(
+                selection,
+                preregistration=preregistration,
+            )
         manifest_ref = preregistration["payload"]["factor_validator_manifest_ref"]
         _, manifest = self._resolve(
             manifest_ref,
@@ -2363,7 +2382,10 @@ class FactorValidationStore:
             label="selection_ref",
             expected_kind="factor.configuration_selection",
         )
-        selection = validate_configuration_selection(selection, preregistration=preregistration)
+        selection = _validate_configuration_selection_prevalidated(
+            selection,
+            preregistration=preregistration,
+        )
         _, capture = self._resolve(
             capture_ref,
             label="signal_capture_ref",
@@ -2376,7 +2398,7 @@ class FactorValidationStore:
                 label="capture.previous_signal_capture_ref",
                 expected_kind="factor.signal_capture",
             )
-        capture = validate_signal_capture(
+        capture = _validate_signal_capture_prevalidated(
             capture,
             preregistration=preregistration,
             selection=selection,
@@ -2869,7 +2891,10 @@ class FactorValidationStore:
             label="selection_ref",
             expected_kind="factor.configuration_selection",
         )
-        selection = validate_configuration_selection(selection, preregistration=preregistration)
+        selection = _validate_configuration_selection_prevalidated(
+            selection,
+            preregistration=preregistration,
+        )
         captures, observations = self._resolve_prospective_stage_closure(
             composite=transition.previous,
             preregistration=preregistration,

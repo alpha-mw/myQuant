@@ -8,7 +8,6 @@ from types import SimpleNamespace
 import pytest
 
 from quant_investor.strategy_records.store import StrategyRecordStoreError
-from quant_investor.v17_mainline.contracts import seal_document
 from scripts import export_cn_weekly_review_evidence as weekly
 
 
@@ -228,110 +227,12 @@ def test_web_research_requires_bounded_https_official_sources() -> None:
         )
 
 
-def _formal_sidecar(*, risk_required: bool = True) -> tuple[dict, dict, list[dict]]:
-    evidence_ref = {
-        "schema_id": "myquant.v17.v4.risk-evidence.v1",
-        "relative_path": "results/v17_v4_formal_research/evidence/risk.json",
-        "byte_sha256": "a" * 64,
+def test_legacy_formal_advisory_is_permanently_inert() -> None:
+    assert weekly._reject_legacy_formal_advisory() == {
+        "status": "FORMAL_ADVISORY_BLOCKED",
+        "actions": [],
+        "executable": False,
     }
-    portfolio_ref = {
-        "schema_id": "myquant.v17.v4.portfolio-output.v1",
-        "relative_path": "results/v17_v4_formal_research/output/portfolio.json",
-        "byte_sha256": "b" * 64,
-    }
-    source_ref = {
-        "schema_id": "myquant.v17.v4.pit-generation-catalog.v1",
-        "relative_path": "data/private/v17_v4_sources/catalog.json",
-        "byte_sha256": "c" * 64,
-    }
-    public_run = {
-        "portfolio_output_ref": portfolio_ref,
-        "source_closure_ref": source_ref,
-    }
-    sidecar = seal_document(
-        {
-            "schema_id": weekly.FORMAL_WEEKLY_ADVISORY_SCHEMA,
-            "protocol": "myquant.v17.v4",
-            "report_week": "2026-W33",
-            "scheduled_at": "2026-08-16T10:00:00Z",
-            "canonical_strategy_id": weekly.CANONICAL_STRATEGY_ID,
-            "store_binding": {
-                "identity_sha256": "d" * 64,
-                "store_pointer_sha256": "e" * 64,
-                "catalog_sha256": "f" * 64,
-                "performance_manifest_sha256": "1" * 64,
-                "financial_state_sha256": "2" * 64,
-            },
-            "portfolio_output_ref": portfolio_ref,
-            "source_closure_ref": source_ref,
-            "gates": {
-                name: {"verified": True, "ref": evidence_ref}
-                for name in weekly.FORMAL_GATE_NAMES
-            },
-            "formal_outcome": "ADVISORY",
-            "actions": [
-                {
-                    "symbol": "000001.SZ",
-                    "company_name": "平安银行",
-                    "action": "REDUCE",
-                    "shares_delta": -100,
-                    "validity": "2026-W34 only",
-                    "invalidation": "Formal risk result is superseded",
-                    "evidence_refs": [
-                        {
-                            "path": evidence_ref["relative_path"],
-                            "sha256": evidence_ref["byte_sha256"],
-                        }
-                    ],
-                    "risk_reduction_required": risk_required,
-                    "executable": False,
-                }
-            ],
-            "supersedes_event_id": None,
-            "executable": False,
-        }
-    )
-    return sidecar, public_run, [evidence_ref]
-
-
-def test_formal_sidecar_requires_active_v17_evidence_and_exact_risk_gate() -> None:
-    sidecar, public_run, refs = _formal_sidecar()
-    store = {
-        "identity_sha256": "d" * 64,
-        "pointer_sha256": "e" * 64,
-        "catalog_sha256": "f" * 64,
-        "performance_history_ref": {"manifest": {"sha256": "1" * 64}},
-        "active_closure": {"financial_state_sha256": "2" * 64},
-    }
-    result = weekly._validate_formal_advisory_sidecar(
-        sidecar,
-        public_run=public_run,
-        formal_evidence_refs=refs,
-        store_evidence=store,
-        holdings={
-            "positions": [
-                {"symbol": "000001.SZ", "name": "平安银行", "shares": 200}
-            ]
-        },
-        window=weekly.report_window("2026-08-16T10:00:00Z"),
-    )
-    assert result["status"] == "ADVISORY"
-    assert result["actions"][0]["shares_delta"] == -100
-
-    invalid, public_run, refs = _formal_sidecar(risk_required=False)
-    with pytest.raises(weekly.WeeklyEvidenceError, match="risk requirement"):
-        weekly._validate_formal_advisory_sidecar(
-            invalid,
-            public_run=public_run,
-            formal_evidence_refs=refs,
-            store_evidence=store,
-            holdings={
-                "positions": [
-                    {"symbol": "000001.SZ", "name": "平安银行", "shares": 200}
-                ]
-            },
-            window=weekly.report_window("2026-08-16T10:00:00Z"),
-        )
 
 
 def _write_json(path: Path, value: dict) -> None:
@@ -410,12 +311,9 @@ def test_malicious_narratives_cannot_create_holdings_or_formal_actions(
     )
     monkeypatch.setattr(
         weekly,
-        "derive_mainline_state",
+        "MainlineStore",
         lambda *_args, **_kwargs: SimpleNamespace(
-            derived_state="UNINITIALIZED",
-            blocker=SimpleNamespace(value="ACTIVE_POINTER_MISSING"),
-            public_run=None,
-            is_active=False,
+            status=lambda **_ignored: {"mainline_state": "UNINITIALIZED"}
         ),
     )
     args = argparse.Namespace(

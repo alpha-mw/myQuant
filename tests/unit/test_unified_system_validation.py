@@ -556,7 +556,7 @@ def test_corrupt_prepared_mapping_fails_closed_without_callback_replay(
     assert list(fixture["workspace"].rglob("completion.json")) == []
 
 
-def test_runner_rejects_process_rss_above_the_hard_limit_before_import(
+def test_runner_rejects_process_rss_above_the_hard_limit_before_callback_resolution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(validation_module, "_open_fd_count", lambda: 0)
@@ -564,15 +564,6 @@ def test_runner_rejects_process_rss_above_the_hard_limit_before_import(
         validation_module,
         "_maximum_rss_bytes",
         lambda: MAXIMUM_VALIDATION_RSS_BYTES + 1,
-    )
-    imported = [False]
-
-    def forbidden_import(name: str) -> None:
-        del name
-        imported[0] = True
-
-    monkeypatch.setattr(
-        "quant_investor.system.validation.importlib.import_module", forbidden_import
     )
     with pytest.raises(SystemSecurityError, match="RSS"):
         validation_module._invoke_callback(
@@ -585,4 +576,3 @@ def test_runner_rejects_process_rss_above_the_hard_limit_before_import(
             validation_request={},
             trusted_at=STAMP,
         )
-    assert imported == [False]

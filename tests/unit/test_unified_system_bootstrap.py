@@ -28,7 +28,7 @@ from quant_investor.factors.governance.bootstrap import (
     compute_bootstrap_signals,
 )
 from quant_investor.factors.governance.common import business_identity
-from quant_investor.factors.governance.contextual import _signal_hashes
+from quant_investor.factors.governance.contextual import _signal_hashes, _signal_statistics
 from quant_investor.factors.governance.implementations import installed_semantic_row
 from quant_investor.factors.governance.source import decode_source_role, role_schema
 from quant_investor.intelligence import assess_readiness
@@ -307,15 +307,14 @@ def _bootstrap_sources(
         for symbol, frame in market_frame.groupby("symbol", sort=True)
     }
     signals = compute_bootstrap_signals(frames, source_format="PARQUET")
-    signal_hashes = _signal_hashes(
-        {
-            factor_id: {
-                symbol: None if np.isnan(value) else float(value).hex()
-                for symbol, value in signals[factor_id].sort_index().items()
-            }
-            for factor_id in (LOW_DOLLAR_VOLUME, BLEND_W80)
+    canonical_signals = {
+        factor_id: {
+            symbol: None if np.isnan(value) else float(value).hex()
+            for symbol, value in signals[factor_id].sort_index().items()
         }
-    )
+        for factor_id in (LOW_DOLLAR_VOLUME, BLEND_W80)
+    }
+    signal_hashes = _signal_hashes(canonical_signals)
     definitions = bootstrap_factor_definitions()
     factor_rows, control_rows = _set_rows(definitions)
     factor_set_sha = _factor_set_sha256(
@@ -329,6 +328,21 @@ def _bootstrap_sources(
             "implementation_rows": manifest["payload"]["implementation_rows"],
         }
     )
+    market_bundle_ref = _bundle(store, "market", [("market", market_ref)])
+    implementation_sha = hashlib.sha256(implementation_raw).hexdigest()
+    signal_statistics = _signal_statistics(
+        canonical_signals,
+        eligible_symbols=sorted(
+            row["symbol"]
+            for row in _pit_rows()
+            if row["tradable"] and row["total_mv"] > 0
+        ),
+        implementation_sha256s={
+            LOW_DOLLAR_VOLUME: implementation_sha,
+            BLEND_W80: implementation_sha,
+        },
+        source_bundle_sha256=market_bundle_ref["byte_sha256"],
+    )
     recomputation_raw = canonical_json_bytes(
         {
             "authority": "NON_AUTHORIZING",
@@ -341,6 +355,7 @@ def _bootstrap_sources(
             "normalized_source_sha256s": normalized,
             "result": "EXACT_MATCH",
             "signal_sha256s": signal_hashes,
+            "signal_statistics": signal_statistics,
         }
     )
     source_rows = [
@@ -415,7 +430,7 @@ def _bootstrap_sources(
             "implementation",
             [("implementation_tree_manifest", implementation_ref)],
         ),
-        "market_bundle_ref": _bundle(store, "market", [("market", market_ref)]),
+        "market_bundle_ref": market_bundle_ref,
         "pit_universe_bundle_ref": _bundle(store, "pit", [("pit", pit_ref)]),
         "recomputation_bundle_ref": _bundle(
             store, "recomputation", [("recomputation", recomputation_ref)]
@@ -531,7 +546,6 @@ def _closure(tmp_path: Path) -> dict[str, Any]:
         market_ref=market_ref,
         pit_ref=pit_ref,
     )
-    migration_ref = _generic(store, "system.migration.receipt", "migration")
     suspended = build_suspended_generation(
         store,
         blockers=["EMERGENCY_TARGET"],
@@ -554,7 +568,7 @@ def _closure(tmp_path: Path) -> dict[str, Any]:
         "factor_validation_attestation_ref": validation["validation_attestation_ref"],
         "mainline_ref": None,
         "research_refs": [],
-        "migration_receipt_ref": migration_ref,
+        "migration_receipt_ref": None,
         "migration_marker_ref": None,
         "skill_tree_sha256": _sha("skills"),
         "automation_semantic_sha256": _sha("automation"),
@@ -621,7 +635,7 @@ def _evidence_identity(payload: dict[str, Any]) -> str:
     "mutation",
     ["source_role", "code_sha", "implementation_sha", "w75_selectable"],
 )
-def test_factor_business_mutations_remain_inert_and_never_publish_generation(
+def test_operational_bootstrap_mutations_fail_before_generation_publication(
     tmp_path: Path,
     mutation: str,
 ) -> None:
