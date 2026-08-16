@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from quant_investor.contracts import canonical_json_bytes, seal_artifact
+from quant_investor.market import exchange_calendar_official as official
 from quant_investor.market.exchange_calendar_closure import (
     build_exchange_calendar_compilation,
     runtime_json_bytes,
@@ -47,7 +48,15 @@ def _decoder_id(exchange: str, role: str, category: str | None = None) -> str:
     return f"test-only.native.{exchange.lower()}.{role.lower()}{suffix}"
 
 
-def _decoder(exchange: str, role: str, raw: bytes, *, media_type: str) -> dict[str, object]:
+def _decoder(
+    exchange: str,
+    role: str,
+    raw: bytes,
+    *,
+    media_type: str,
+    issuer_category_id: str | None,
+) -> dict[str, object]:
+    del issuer_category_id
     assert media_type == "application/json"
     document = json.loads(raw)
     assert document["native_exchange"] == exchange
@@ -203,7 +212,7 @@ def _case(
             else:
                 request_url = f"https://{HOSTS[exchange]}/calendar/{role.lower()}"
             endpoint = (
-                "/calendar/annual"
+                "{INDEX_ENTRY_BODY_URL}"
                 if role == "ANNUAL_HOLIDAY_NOTICE"
                 else (
                     "/calendar/notice-index"
@@ -425,6 +434,248 @@ def _build(case: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _expand_annual_notice_bodies(case: dict[str, Any], *, exchange: str) -> None:
+    annual = next(
+        row
+        for row in case["captures"]
+        if row["payload"]["exchange_id"] == exchange
+        and row["payload"]["evidence_role"] == "ANNUAL_HOLIDAY_NOTICE"
+    )
+    index_position, index_capture = next(
+        (position, row)
+        for position, row in enumerate(case["captures"])
+        if row["payload"]["exchange_id"] == exchange
+        and row["payload"]["evidence_role"] == "NOTICE_INDEX_SNAPSHOT"
+    )
+    original_raw = case["raw_resolver"](annual["payload"]["raw_file_ref"])
+    body_captures = [annual]
+    entries = [
+        {
+            "entry_id": f"{exchange.lower()}-annual-2024",
+            "publish_date": "2023-12-29",
+            "title": "Official annual market closure notice 2024",
+            "body_url": annual["payload"]["effective_url"],
+            "relevant": True,
+            "evidence_role": "ANNUAL_HOLIDAY_NOTICE",
+        }
+    ]
+    for year in (2025, 2026):
+        raw_ref = _file_ref(
+            f"raw/{exchange.lower()}-annual-{year}.json",
+            original_raw,
+        )
+        case["raw_by_ref"][canonical_json_bytes(raw_ref)] = original_raw
+        url = f"https://{HOSTS[exchange]}/calendar/annual/{year}"
+        payload = copy.deepcopy(annual["payload"])
+        payload.update(
+            {
+                "calendar_capture_id": f"{exchange.lower()}-annual-{year}-capture",
+                "request_url": url,
+                "effective_url": url,
+                "raw_file_ref": raw_ref,
+            }
+        )
+        capture = seal_artifact(
+            "system.exchange_calendar_capture",
+            payload,
+            created_at=BASE,
+        )
+        case["captures"].append(capture)
+        body_captures.append(capture)
+        entries.append(
+            {
+                "entry_id": f"{exchange.lower()}-annual-{year}",
+                "publish_date": f"{year - 1}-12-29",
+                "title": f"Official annual market closure notice {year}",
+                "body_url": url,
+                "relevant": True,
+                "evidence_role": "ANNUAL_HOLIDAY_NOTICE",
+            }
+        )
+
+    annual_admission = next(
+        row
+        for row in case["admissions"]
+        if row["payload"]["exchange_id"] == exchange
+        and row["payload"]["evidence_role"] == "ANNUAL_HOLIDAY_NOTICE"
+    )
+    session_capture = next(
+        row
+        for row in case["captures"]
+        if row["payload"]["exchange_id"] == exchange
+        and row["payload"]["evidence_role"] == "SESSION_RULE"
+    )
+    session_projection = json.loads(
+        case["raw_resolver"](session_capture["payload"]["raw_file_ref"])
+    )["projection"]
+    extra_roles = (
+        (
+            "TEMPORARY_CLOSURE_NOTICE",
+            {"closure_dates": ["2026-01-01"]},
+            "2025-06-01",
+        ),
+        ("SESSION_CHANGE_NOTICE", session_projection, "2026-04-01"),
+    )
+    for role, projection, publish_date in extra_roles:
+        slug = role.lower()
+        raw = _native(exchange, role, projection)
+        raw_ref = _file_ref(f"raw/{exchange.lower()}-{slug}.json", raw)
+        fixture_ref = _file_ref(
+            f"raw/{exchange.lower()}-{slug}-fixture.json",
+            raw,
+            size=True,
+        )
+        case["raw_by_ref"][canonical_json_bytes(raw_ref)] = raw
+        case["raw_by_ref"][canonical_json_bytes(fixture_ref)] = raw
+        url = f"https://{HOSTS[exchange]}/calendar/{slug}"
+        admission_payload = copy.deepcopy(annual_admission["payload"])
+        admission_payload.update(
+            {
+                "decoder_admission_id": f"{exchange.lower()}-{slug}-admission",
+                "evidence_role": role,
+                "fixture_request_url": url,
+                "fixture_effective_url": url,
+                "fixture_raw_file_ref": fixture_ref,
+                "fixture_raw_sha256": fixture_ref["byte_sha256"],
+                "decoder_id": _decoder_id(exchange, role),
+                "fixture_projection_sha256": _sha(canonical_json_bytes(projection)),
+            }
+        )
+        admission = seal_artifact(
+            "system.exchange_calendar_decoder_admission",
+            admission_payload,
+            created_at=BASE,
+        )
+        case["admissions"].append(admission)
+        case["admission_by_subject"][(exchange, role, None)] = admission
+        capture_payload = copy.deepcopy(annual["payload"])
+        capture_payload.update(
+            {
+                "calendar_capture_id": f"{exchange.lower()}-{slug}-capture",
+                "evidence_role": role,
+                "request_url": url,
+                "effective_url": url,
+                "raw_file_ref": raw_ref,
+                "raw_sha256": raw_ref["byte_sha256"],
+                "raw_byte_length": len(raw),
+                "decoder_admission_ref": object_ref_for_artifact(admission),
+                "decoder_id": _decoder_id(exchange, role),
+                "projection_sha256": _sha(canonical_json_bytes(projection)),
+            }
+        )
+        capture = seal_artifact(
+            "system.exchange_calendar_capture",
+            capture_payload,
+            created_at=BASE,
+        )
+        case["captures"].append(capture)
+        body_captures.append(capture)
+        entries.append(
+            {
+                "entry_id": f"{exchange.lower()}-{slug}",
+                "publish_date": publish_date,
+                "title": f"Official {role.lower()} notice",
+                "body_url": url,
+                "relevant": True,
+                "evidence_role": role,
+            }
+        )
+    entries.sort(key=lambda row: (row["publish_date"], row["entry_id"]))
+
+    index_projection = json.loads(case["raw_resolver"](index_capture["payload"]["raw_file_ref"]))[
+        "projection"
+    ]
+    index_projection["reported_item_count"] = len(entries)
+    index_projection["entries"] = entries
+    index_raw = _native(exchange, "NOTICE_INDEX_SNAPSHOT", index_projection)
+    index_raw_ref = _file_ref(f"raw/{exchange.lower()}-notice-index-multi.json", index_raw)
+    case["raw_by_ref"][canonical_json_bytes(index_raw_ref)] = index_raw
+    index_payload = copy.deepcopy(index_capture["payload"])
+    index_payload.update(
+        {
+            "raw_file_ref": index_raw_ref,
+            "raw_sha256": index_raw_ref["byte_sha256"],
+            "raw_byte_length": len(index_raw),
+            "projection_sha256": _sha(canonical_json_bytes(index_projection)),
+        }
+    )
+    new_index_capture = seal_artifact(
+        "system.exchange_calendar_capture",
+        index_payload,
+        created_at=BASE,
+    )
+    case["captures"][index_position] = new_index_capture
+
+    closure_position, closure = next(
+        (position, row)
+        for position, row in enumerate(case["indexes"])
+        if row["payload"]["exchange_id"] == exchange
+    )
+    closure_payload = copy.deepcopy(closure["payload"])
+    new_index_ref = object_ref_for_artifact(new_index_capture)
+    closure_payload.update(
+        {
+            "root_capture_ref": new_index_ref,
+            "page_capture_refs": [new_index_ref],
+            "reported_item_count": len(entries),
+            "observed_item_count": len(entries),
+            "entry_rows": entries,
+            "body_capture_refs": sorted(
+                (object_ref_for_artifact(row) for row in body_captures),
+                key=canonical_json_bytes,
+            ),
+        }
+    )
+    case["indexes"][closure_position] = seal_artifact(
+        "system.exchange_calendar_index_closure",
+        closure_payload,
+        created_at=BASE,
+    )
+
+
+def _install_default_test_registry(
+    monkeypatch: pytest.MonkeyPatch,
+    case: dict[str, Any],
+) -> None:
+    admissions = dict(case["admission_by_subject"])
+    decoder_ids = {key: value["payload"]["decoder_id"] for key, value in admissions.items()}
+    decoders = {
+        key: (
+            lambda raw, *, media_type, subject=key: _decoder(
+                subject[0],
+                subject[1],
+                raw,
+                media_type=media_type,
+                issuer_category_id=subject[2],
+            )
+        )
+        for key in admissions
+    }
+    monkeypatch.setattr(official, "DECODER_ADMISSIONS", admissions)
+    monkeypatch.setattr(official, "DECODER_IDS", decoder_ids)
+    monkeypatch.setattr(official, "PROJECTION_DECODERS", decoders)
+    monkeypatch.setattr(official, "REQUIRED_CATEGORY_SETS", dict(case["category_sets"]))
+    monkeypatch.setattr(official, "decoder_code_sha256", lambda: DECODER_SHA)
+
+
+def _build_with_default_wiring(case: dict[str, Any]) -> dict[str, Any]:
+    return build_exchange_calendar_compilation(
+        compilation_id="official-cn-calendar-default-wiring-test",
+        coverage_start_date=case["coverage"].isoformat(),
+        cutoff_date=case["cutoff"].isoformat(),
+        release_ref=case["release_ref"],
+        pit_exchange_ids=case["exchanges"],
+        market_session_dates=case["market_sessions"],
+        capture_documents=case["captures"],
+        admission_documents=case["admissions"],
+        index_closure_documents=case["indexes"],
+        raw_resolver=case["raw_resolver"],
+        calendar_json_file_ref=case["json_ref"],
+        calendar_parquet_file_ref=case["parquet_ref"],
+        created_at=BASE,
+    )
+
+
 def test_native_closure_replays_three_exchanges_and_exact_outputs() -> None:
     case = _case()
     artifact = _build(case)
@@ -453,6 +704,87 @@ def test_native_closure_replays_three_exchanges_and_exact_outputs() -> None:
     bse_sessions = artifact["payload"]["exchange_rows"][0]["session_rule_intervals"]
     assert bse_sessions[0]["session_intervals"][0]["phase"] == "OPENING_CALL_AUCTION"
     assert all(row["open_session_count"] >= 391 for row in artifact["payload"]["exchange_rows"])
+
+
+def test_default_category_dispatch_supports_multiple_exact_indexed_body_urls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case(exchanges=("SSE",))
+    _expand_annual_notice_bodies(case, exchange="SSE")
+    _install_default_test_registry(monkeypatch, case)
+
+    artifact = _build_with_default_wiring(case)
+    assert artifact["payload"]["state"] == "COMPILED"
+    annual_urls = sorted(
+        row["payload"]["effective_url"]
+        for row in case["captures"]
+        if row["payload"]["evidence_role"] == "ANNUAL_HOLIDAY_NOTICE"
+    )
+    assert annual_urls == [
+        "https://www.sse.com.cn/calendar/annual",
+        "https://www.sse.com.cn/calendar/annual/2025",
+        "https://www.sse.com.cn/calendar/annual/2026",
+    ]
+    assert {
+        row["payload"]["evidence_role"]
+        for row in case["captures"]
+        if row["payload"]["evidence_role"]
+        in {
+            "ANNUAL_HOLIDAY_NOTICE",
+            "TEMPORARY_CLOSURE_NOTICE",
+            "SESSION_CHANGE_NOTICE",
+        }
+    } == {
+        "ANNUAL_HOLIDAY_NOTICE",
+        "TEMPORARY_CLOSURE_NOTICE",
+        "SESSION_CHANGE_NOTICE",
+    }
+    assert (
+        validate_exchange_calendar_compilation(
+            artifact,
+            pit_exchange_ids=case["exchanges"],
+            market_session_dates=case["market_sessions"],
+            capture_documents=case["captures"],
+            admission_documents=case["admissions"],
+            index_closure_documents=case["indexes"],
+            raw_resolver=case["raw_resolver"],
+            expected_release_ref=case["release_ref"],
+        )
+        == artifact
+    )
+
+
+def test_indexed_body_url_and_decoder_category_mismatch_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wrong_body = _case(exchanges=("SSE",))
+    _expand_annual_notice_bodies(wrong_body, exchange="SSE")
+    capture_index = next(
+        index
+        for index, row in enumerate(wrong_body["captures"])
+        if row["payload"]["calendar_capture_id"] == "sse-annual-2026-capture"
+    )
+    payload = copy.deepcopy(wrong_body["captures"][capture_index]["payload"])
+    payload["request_url"] = "https://www.sse.com.cn/calendar/not-indexed"
+    payload["effective_url"] = payload["request_url"]
+    wrong_body["captures"][capture_index] = seal_artifact(
+        "system.exchange_calendar_capture",
+        payload,
+        created_at=BASE,
+    )
+    with pytest.raises(SystemContractError, match="outside the sealed capture closure"):
+        _build(wrong_body)
+
+    wrong_category = _case(exchanges=("SSE",))
+    _install_default_test_registry(monkeypatch, wrong_category)
+    key = ("SSE", "NOTICE_INDEX_SNAPSHOT", "TRADING_CALENDAR_NOTICES")
+    wrong_decoder = official.PROJECTION_DECODERS.pop(key)
+    official.PROJECTION_DECODERS[("SSE", "NOTICE_INDEX_SNAPSHOT", None)] = wrong_decoder
+    with pytest.raises(
+        SystemContractError,
+        match="OFFICIAL_CALENDAR_WIRE_CONTRACT_UNVERIFIED",
+    ):
+        _build_with_default_wiring(wrong_category)
 
 
 def test_request_headers_and_projection_tamper_fail_closed() -> None:

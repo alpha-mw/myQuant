@@ -8,7 +8,7 @@ be relabelled as a native SSE, SZSE, or BSE response.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 import hashlib
 from pathlib import Path
@@ -45,6 +45,10 @@ EVIDENCE_ROLES: Final = frozenset(
 DECODER_IDS: Final[dict[tuple[str, str, str | None], str]] = {}
 DECODER_ADMISSIONS: Final[dict[tuple[str, str, str | None], Mapping[str, Any]]] = {}
 REQUIRED_CATEGORY_SETS: Final[dict[tuple[str, str], Mapping[str, Any]]] = {}
+ProjectionDecoder = Callable[[bytes], Mapping[str, object]]
+PROJECTION_DECODERS: Final[
+    dict[tuple[str, str, str | None], Callable[..., Mapping[str, object]]]
+] = {}
 
 _UNVERIFIED = "OFFICIAL_CALENDAR_WIRE_CONTRACT_UNVERIFIED"
 _ADMISSION_KIND = "system.exchange_calendar_decoder_admission"
@@ -120,6 +124,7 @@ _QUERY_VALUE_SOURCES: Final = frozenset(
     }
 )
 _MAXIMUM_REDIRECTS: Final = 5
+INDEX_ENTRY_BODY_ENDPOINT: Final = "{INDEX_ENTRY_BODY_URL}"
 
 
 def decoder_code_sha256() -> str:
@@ -139,12 +144,22 @@ def _validate_endpoint(payload: Mapping[str, Any]) -> None:
         raise SystemContractError("official calendar decoder admission subject differs")
     issuer, hostname = _EXCHANGE_AUTHORITIES[exchange]
     endpoint = payload["endpoint_path_query_template"]
-    parsed = urlsplit(endpoint) if type(endpoint) is str else None
+    is_indexed_body = role in {
+        "ANNUAL_HOLIDAY_NOTICE",
+        "TEMPORARY_CLOSURE_NOTICE",
+        "SESSION_CHANGE_NOTICE",
+    }
     if (
         payload["issuer"] != issuer
         or payload["endpoint_scheme"] != "https"
         or payload["endpoint_host"] != hostname
-        or parsed is None
+    ):
+        raise SystemContractError("official calendar decoder endpoint admission differs")
+    if is_indexed_body and endpoint == INDEX_ENTRY_BODY_ENDPOINT:
+        return
+    parsed = urlsplit(endpoint) if type(endpoint) is str else None
+    if (
+        parsed is None
         or not endpoint.startswith("/")
         or parsed.scheme
         or parsed.netloc
@@ -518,19 +533,29 @@ def decode_capture_projection(
     raw: bytes,
     *,
     media_type: str,
+    issuer_category_id: str | None = None,
 ) -> Mapping[str, object]:
     """Reject every unadmitted issuer body before it can gain authority."""
 
-    del raw, media_type
-    decoder_id(exchange, role)
-    raise _reject(exchange, role)  # pragma: no cover - registry is empty
+    key = (exchange, role, issuer_category_id)
+    decoder_id(exchange, role, issuer_category_id)
+    try:
+        decoder = PROJECTION_DECODERS[key]
+    except KeyError as exc:
+        raise _reject(exchange, role) from exc
+    projection = decoder(raw, media_type=media_type)
+    if not isinstance(projection, Mapping):
+        raise SystemContractError("official calendar decoder projection is not a mapping")
+    return projection
 
 
 __all__ = [
     "DECODER_IDS",
     "DECODER_ADMISSIONS",
+    "PROJECTION_DECODERS",
     "REQUIRED_CATEGORY_SETS",
     "EVIDENCE_ROLES",
+    "INDEX_ENTRY_BODY_ENDPOINT",
     "decode_capture_projection",
     "decode_session_intervals",
     "decoder_code_sha256",

@@ -131,3 +131,34 @@ def test_decoder_admission_contract_binds_endpoint_response_and_native_fixture()
     )
     with pytest.raises(SystemContractError, match="redirect authority"):
         validate_decoder_admission(cross_host)
+
+    indexed_body = copy.deepcopy(admission["payload"])
+    indexed_body["endpoint_path_query_template"] = "{INDEX_ENTRY_BODY_URL}"
+    indexed_body_admission = seal_artifact(
+        "system.exchange_calendar_decoder_admission",
+        indexed_body,
+        created_at=BASE,
+    )
+    assert validate_decoder_admission(indexed_body_admission) == indexed_body_admission
+
+    wrong_host = copy.deepcopy(indexed_body)
+    wrong_host["endpoint_host"] = "www.bse.cn"
+    with pytest.raises(SystemContractError, match="endpoint admission"):
+        validate_decoder_admission(
+            seal_artifact(
+                "system.exchange_calendar_decoder_admission",
+                wrong_host,
+                created_at=BASE,
+            )
+        )
+
+    non_body = copy.deepcopy(indexed_body)
+    non_body["evidence_role"] = "SESSION_RULE"
+    with pytest.raises(SystemContractError, match="endpoint admission"):
+        validate_decoder_admission(
+            seal_artifact(
+                "system.exchange_calendar_decoder_admission",
+                non_body,
+                created_at=BASE,
+            )
+        )

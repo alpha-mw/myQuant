@@ -1059,7 +1059,11 @@ def _run_callback_worker(  # noqa: C901
                     raise SystemSecurityError(
                         "contextual validation worker file descriptor limit is unavailable"
                     )
-                resource.setrlimit(resource.RLIMIT_NOFILE, (worker_limit, hard_limit))
+                # This process is fork-scoped and exits immediately after the
+                # callback. Lower both limits so callback code cannot reopen a
+                # transient descriptor window by restoring the inherited hard
+                # limit and then closing descriptors before postflight.
+                resource.setrlimit(resource.RLIMIT_NOFILE, (worker_limit, worker_limit))
                 try:
                     result = callback(
                         system_store=store,

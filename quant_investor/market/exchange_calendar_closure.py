@@ -300,6 +300,8 @@ def _header_rows(value: Any, *, label: str) -> list[dict[str, str]]:
 
 
 def _endpoint_matches(template: str, request_url: str) -> bool:
+    if template == official.INDEX_ENTRY_BODY_ENDPOINT:
+        return True
     parsed = urlsplit(request_url)
     target = parsed.path + (("?" + parsed.query) if parsed.query else "")
     return "{" not in template and "}" not in template and template == target
@@ -357,8 +359,15 @@ def _default_decoder(
     raw: bytes,
     *,
     media_type: str,
+    issuer_category_id: str | None,
 ) -> Mapping[str, object]:
-    return official.decode_capture_projection(exchange, role, raw, media_type=media_type)
+    return official.decode_capture_projection(
+        exchange,
+        role,
+        raw,
+        media_type=media_type,
+        issuer_category_id=issuer_category_id,
+    )
 
 
 def _projection(  # noqa: C901
@@ -367,6 +376,7 @@ def _projection(  # noqa: C901
     role: str,
     raw: bytes,
     media_type: str,
+    issuer_category_id: str | None,
     decoder: ProjectionDecoder,
 ) -> dict[str, Any]:
     if role not in official.EVIDENCE_ROLES:
@@ -377,6 +387,7 @@ def _projection(  # noqa: C901
             cast(official.EvidenceRole, role),
             raw,
             media_type=media_type,
+            issuer_category_id=issuer_category_id,
         )
     )
     if role == "TRADING_WEEK_RULE":
@@ -632,6 +643,7 @@ def _validate_capture(  # noqa: C901
         role=role,
         raw=fixture,
         media_type=admission_payload["raw_media_type"],
+        issuer_category_id=category_id,
         decoder=decoder,
     )
     if (
@@ -662,6 +674,7 @@ def _validate_capture(  # noqa: C901
         role=role,
         raw=raw,
         media_type=media_type,
+        issuer_category_id=category_id,
         decoder=decoder,
     )
     if payload["projection_sha256"] != _sha256(canonical_json_bytes(projection)):
@@ -849,7 +862,10 @@ def _derive_index_closure(  # noqa: C901
     for ref in body_refs:
         capture, _, _ = _capture_for_ref(capture_map, ref, label="calendar index body capture")
         payload = capture["payload"]
-        key = (payload["effective_url"], payload["evidence_role"])
+        # The issuer index authorizes the exact requested body URL. Any
+        # admitted same-host redirect remains separately closed by the capture
+        # chain and must not silently replace the index authority key.
+        key = (payload["request_url"], payload["evidence_role"])
         if payload["exchange_id"] != exchange or payload["evidence_role"] not in BODY_ROLES:
             raise SystemContractError("calendar index body subject differs")
         if key in body_by_subject:

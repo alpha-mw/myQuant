@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from contextlib import contextmanager
 import hashlib
 from datetime import date, datetime, timedelta, timezone
 import json
@@ -1809,6 +1810,222 @@ def test_calendar_budget_preflight_precedes_staging_and_materialization(
             request_raw=request_raw,
         )
     assert not (workspace / "data/private/system_source_staging").exists()
+    assert not (workspace / "results/system/generations").exists()
+
+
+def test_calendar_preflight_rejects_in_root_input_symlink_before_staging(
+    tmp_path: Path,
+) -> None:
+    workspace, release_ref = _seed_workspace(tmp_path)
+    input_root = tmp_path / "sealed-inputs"
+    files = _inputs(input_root)
+    reference = files["calendar_raw_file_refs"][0]
+    source = input_root / reference["relative_path"]
+    replacement = source.parent / "same-root-calendar-replacement.bin"
+    replacement.write_bytes(source.read_bytes())
+    replacement.chmod(0o600)
+    source.unlink()
+    source.symlink_to(replacement.name)
+
+    with pytest.raises(SystemSecurityError, match="symlink"):
+        assemble_production_bootstrap(
+            workspace_root=workspace,
+            input_root=input_root,
+            request_raw=_request(
+                workspace_root=workspace,
+                release_ref=release_ref,
+                files=files,
+            ),
+        )
+    assert not (workspace / "data/private/system_source_staging").exists()
+    assert not (workspace / "results/system/generations").exists()
+
+
+def test_descriptor_copy_rejects_symlinked_input_root(
+    tmp_path: Path,
+) -> None:
+    input_root = tmp_path / "inputs"
+    input_root.mkdir(mode=0o700)
+    source = input_root / "source.bin"
+    source.write_bytes(b"sealed-source")
+    source.chmod(0o600)
+    alias = tmp_path / "input-alias"
+    alias.symlink_to(input_root, target_is_directory=True)
+    target = tmp_path / "staging" / "source.bin"
+    target.parent.mkdir(mode=0o700)
+
+    with pytest.raises(SystemSecurityError, match="root.*symlink"):
+        production_module._copy_verified_input(
+            input_root=alias,
+            reference={
+                "relative_path": source.name,
+                "byte_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+            },
+            target=target,
+            maximum_bytes=1024,
+        )
+    assert not target.exists()
+
+
+def test_descriptor_copy_rejects_inode_swap_before_staging_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    input_root = tmp_path / "inputs"
+    input_root.mkdir(mode=0o700)
+    source = input_root / "source.bin"
+    source.write_bytes(b"sealed-source")
+    source.chmod(0o600)
+    reference = {
+        "relative_path": source.name,
+        "byte_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+    }
+    target = tmp_path / "staging" / "source.bin"
+    target.parent.mkdir(mode=0o700)
+    real_open = production_module._open_input_leaf
+
+    @contextmanager
+    def swapped(*args: Any, **kwargs: Any) -> Any:
+        with real_open(*args, **kwargs) as opened:
+            replacement = input_root / "replacement.bin"
+            replacement.write_bytes(b"sealed-source")
+            replacement.chmod(0o600)
+            source.unlink()
+            replacement.rename(source)
+            yield opened
+
+    monkeypatch.setattr(production_module, "_open_input_leaf", swapped)
+    with pytest.raises(SystemSecurityError, match="changed during bounded copy"):
+        production_module._copy_verified_input(
+            input_root=input_root,
+            reference=reference,
+            target=target,
+            maximum_bytes=1024,
+        )
+    assert not target.exists()
+
+
+def test_descriptor_copy_rejects_growth_past_role_bound_before_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    input_root = tmp_path / "inputs"
+    input_root.mkdir(mode=0o700)
+    source = input_root / "source.bin"
+    source.write_bytes(b"12345678")
+    source.chmod(0o600)
+    reference = {
+        "relative_path": source.name,
+        "byte_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+    }
+    target = tmp_path / "staging" / "source.bin"
+    target.parent.mkdir(mode=0o700)
+    real_open = production_module._open_input_leaf
+
+    @contextmanager
+    def grown(*args: Any, **kwargs: Any) -> Any:
+        with real_open(*args, **kwargs) as opened:
+            with source.open("ab") as stream:
+                stream.write(b"9")
+            source.chmod(0o600)
+            yield opened
+
+    monkeypatch.setattr(production_module, "_open_input_leaf", grown)
+    with pytest.raises(SystemSecurityError, match="copy byte bound"):
+        production_module._copy_verified_input(
+            input_root=input_root,
+            reference=reference,
+            target=target,
+            maximum_bytes=8,
+        )
+    assert not target.exists()
+
+
+@pytest.mark.parametrize("mutation", ["mode", "hardlink", "sparse_over_bound"])
+def test_descriptor_copy_rejects_unsafe_input_storage_before_publication(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    input_root = tmp_path / "inputs"
+    input_root.mkdir(mode=0o700)
+    source = input_root / "source.bin"
+    source.write_bytes(b"sealed-source")
+    source.chmod(0o600)
+    maximum = 1024
+    if mutation == "mode":
+        source.chmod(0o640)
+    elif mutation == "hardlink":
+        os.link(source, input_root / "unexpected-link.bin")
+    else:
+        with source.open("wb") as stream:
+            stream.seek(maximum)
+            stream.write(b"x")
+        source.chmod(0o600)
+    reference = {
+        "relative_path": source.name,
+        "byte_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+    }
+    target = tmp_path / "staging" / "source.bin"
+    target.parent.mkdir(mode=0o700)
+
+    with pytest.raises(SystemSecurityError, match="storage security"):
+        production_module._copy_verified_input(
+            input_root=input_root,
+            reference=reference,
+            target=target,
+            maximum_bytes=maximum,
+        )
+    assert not target.exists()
+
+
+def test_calendar_copy_rechecks_aggregate_budget_after_preflight_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace, release_ref = _seed_workspace(tmp_path)
+    input_root = tmp_path / "sealed-inputs"
+    files = _inputs(input_root)
+    request_raw = _request(
+        workspace_root=workspace,
+        release_ref=release_ref,
+        files=files,
+    )
+    before_objects = sorted(
+        path.relative_to(workspace)
+        for path in (workspace / "results/system/objects").rglob("*.json")
+    )
+    real_preflight = production_module._preflight_calendar_input_budget
+
+    def drift_after_preflight(*, normalized: Any, input_root: Path) -> None:
+        real_preflight(normalized=normalized, input_root=input_root)
+        rows = production_module._calendar_reference_rows(normalized)
+        total = sum(
+            (input_root / reference["relative_path"]).stat().st_size
+            for _field, _ordinal, reference in rows
+        )
+        monkeypatch.setattr(production_module, "_MAXIMUM_CALENDAR_REPLAY_BYTES", total)
+        reference = normalized["calendar_index_closure_file_refs"][-1]
+        source = input_root / reference["relative_path"]
+        with source.open("ab") as stream:
+            stream.write(b"x")
+        source.chmod(0o600)
+
+    monkeypatch.setattr(
+        production_module,
+        "_preflight_calendar_input_budget",
+        drift_after_preflight,
+    )
+    with pytest.raises(SystemSecurityError):
+        assemble_production_bootstrap(
+            workspace_root=workspace,
+            input_root=input_root,
+            request_raw=request_raw,
+        )
+    after_objects = sorted(
+        path.relative_to(workspace)
+        for path in (workspace / "results/system/objects").rglob("*.json")
+    )
+    assert after_objects == before_objects
     assert not (workspace / "results/system/generations").exists()
 
 

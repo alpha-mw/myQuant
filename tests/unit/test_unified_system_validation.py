@@ -4,6 +4,7 @@ import copy
 import hashlib
 import os
 from pathlib import Path
+import resource
 import threading
 from typing import Any
 
@@ -621,3 +622,23 @@ def test_invocation_worker_rejects_transient_file_descriptor_peak() -> None:
             trusted_at=STAMP,
             maximum_seconds=30,
         )
+
+
+def test_invocation_worker_hard_fd_limit_cannot_be_restored() -> None:
+    def attempt_restore(**_kwargs: Any) -> dict[str, bool]:
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        assert soft == validation_module.MAXIMUM_VALIDATION_OPEN_FDS
+        assert hard == validation_module.MAXIMUM_VALIDATION_OPEN_FDS
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (hard + 1, hard + 1))
+        except (OSError, ValueError):
+            return {"hard_limit_is_irreversible_in_child": True}
+        raise SystemSecurityError("validation worker restored its inherited FD hard limit")
+
+    assert validation_module._run_callback_worker(
+        attempt_restore,
+        store=object(),
+        validation_request={},
+        trusted_at=STAMP,
+        maximum_seconds=30,
+    )[0] == {"hard_limit_is_irreversible_in_child": True}

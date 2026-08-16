@@ -311,8 +311,12 @@ def _validate_calendar_size_rows(
 def _preflight_calendar_input_budget(*, normalized: Mapping[str, Any], input_root: Path) -> None:
     sizes: list[tuple[str, int, int]] = []
     for field, ordinal, reference in _calendar_reference_rows(normalized):
-        path = _stable_input_path(input_root, reference)
-        sizes.append((field, ordinal, os.lstat(path).st_size))
+        with _open_input_leaf(
+            input_root,
+            reference,
+            maximum_bytes=_CALENDAR_INPUT_BYTE_LIMITS[field],
+        ) as (_descriptor, metadata, _parent, _leaf):
+            sizes.append((field, ordinal, metadata.st_size))
     _validate_calendar_size_rows(sizes)
 
 
@@ -428,27 +432,151 @@ def validate_bootstrap_operator_request(
     }
 
 
-def _stable_input_path(input_root: Path, reference: Mapping[str, str]) -> Path:
+def _absolute_input_root(input_root: Path) -> Path:
+    candidate = input_root.absolute()
+    if not candidate.is_absolute() or any(part == ".." for part in candidate.parts):
+        raise SystemSecurityError("bootstrap input root is not canonical")
+    return candidate
+
+
+def _verify_input_directory(metadata: os.stat_result) -> None:
+    mode = stat.S_IMODE(metadata.st_mode)
+    if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid() or mode & 0o022:
+        raise SystemSecurityError("bootstrap input directory security is invalid")
+
+
+@contextmanager
+def _open_input_root(input_root: Path) -> Iterator[tuple[Path, int, os.stat_result]]:
+    """Walk every absolute root component without following a symlink."""
+
+    root = _absolute_input_root(input_root)
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    directory: int | None = None
     try:
-        root = input_root.resolve(strict=True)
-        candidate = root.joinpath(reference["relative_path"]).resolve(strict=True)
-        candidate.relative_to(root)
-        metadata = os.lstat(candidate)
-    except (OSError, RuntimeError, ValueError) as exc:
-        raise SystemSecurityError("bootstrap input path is unavailable") from exc
+        directory = os.open(root.anchor, directory_flags)
+        for part in root.parts[1:]:
+            child = os.open(part, directory_flags, dir_fd=directory)
+            os.close(directory)
+            directory = child
+        before = os.fstat(directory)
+        mode = stat.S_IMODE(before.st_mode)
+        path_before = os.lstat(root)
+        if (
+            not stat.S_ISDIR(before.st_mode)
+            or before.st_uid != os.geteuid()
+            or mode != 0o700
+            or _file_identity(before) != _file_identity(path_before)
+        ):
+            raise SystemSecurityError("bootstrap input root security is invalid")
+        yield root, directory, before
+        after = os.fstat(directory)
+        path_after = os.lstat(root)
+        if _file_identity(before) != _file_identity(after) or _file_identity(
+            after
+        ) != _file_identity(path_after):
+            raise SystemSecurityError("bootstrap input root changed during descriptor use")
+    except (SystemContractError, SystemSecurityError, SystemStorageError):
+        raise
+    except OSError as exc:
+        raise SystemSecurityError(
+            "bootstrap input root is unavailable or contains a symlink"
+        ) from exc
+    finally:
+        if directory is not None:
+            os.close(directory)
+
+
+def _input_root_path(input_root: Path) -> Path:
+    with _open_input_root(input_root) as (root, _descriptor, _metadata):
+        return root
+
+
+def _verify_input_file(metadata: os.stat_result, *, maximum_bytes: int) -> None:
     mode = stat.S_IMODE(metadata.st_mode)
     if (
         not stat.S_ISREG(metadata.st_mode)
-        or stat.S_ISLNK(metadata.st_mode)
         or metadata.st_uid != os.geteuid()
         or metadata.st_nlink != 1
-        or mode & 0o022
-        or mode & 0o111
+        or mode != 0o600
         or metadata.st_size <= 0
-        or metadata.st_size > _MAX_INPUT_BYTES
+        or metadata.st_size > maximum_bytes
     ):
         raise SystemSecurityError("bootstrap input storage security is invalid")
-    return candidate
+
+
+@contextmanager
+def _open_input_leaf(
+    input_root: Path,
+    reference: Mapping[str, str],
+    *,
+    maximum_bytes: int,
+) -> Iterator[tuple[int, os.stat_result, int, str]]:
+    """Pin an explicit input through no-follow directory descriptors."""
+
+    relative = PurePosixPath(reference["relative_path"])
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    read_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    directory: int | None = None
+    descriptor: int | None = None
+    try:
+        with _open_input_root(input_root) as (_root, root_descriptor, _root_metadata):
+            directory = os.dup(root_descriptor)
+            os.set_inheritable(directory, False)
+            for part in relative.parts[:-1]:
+                child = os.open(part, directory_flags, dir_fd=directory)
+                _verify_input_directory(os.fstat(child))
+                os.close(directory)
+                directory = child
+            leaf = relative.name
+            path_before = os.stat(leaf, dir_fd=directory, follow_symlinks=False)
+            if stat.S_ISLNK(path_before.st_mode):
+                raise SystemSecurityError("bootstrap input path contains a symlink")
+            _verify_input_file(path_before, maximum_bytes=maximum_bytes)
+            descriptor = os.open(leaf, read_flags, dir_fd=directory)
+            before = os.fstat(descriptor)
+            _verify_input_file(before, maximum_bytes=maximum_bytes)
+            if _file_identity(path_before) != _file_identity(before):
+                raise SystemSecurityError("bootstrap input path changed before open")
+            yield descriptor, before, directory, leaf
+            after = os.fstat(descriptor)
+            path_after = os.stat(leaf, dir_fd=directory, follow_symlinks=False)
+            _verify_input_file(after, maximum_bytes=maximum_bytes)
+            _verify_input_file(path_after, maximum_bytes=maximum_bytes)
+            if _file_identity(before) != _file_identity(after) or _file_identity(
+                after
+            ) != _file_identity(path_after):
+                raise SystemSecurityError("bootstrap input path changed during descriptor use")
+    except (SystemContractError, SystemSecurityError, SystemStorageError):
+        raise
+    except OSError as exc:
+        raise SystemSecurityError(
+            "bootstrap input path is unavailable or contains a symlink"
+        ) from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if directory is not None:
+            os.close(directory)
+
+
+def _stable_input_path(input_root: Path, reference: Mapping[str, str]) -> Path:
+    with _open_input_leaf(
+        input_root,
+        reference,
+        maximum_bytes=_MAX_INPUT_BYTES,
+    ):
+        pass
+    return _input_root_path(input_root) / reference["relative_path"]
 
 
 def _file_identity(value: os.stat_result) -> tuple[int, int, int, int, int, int, int]:
@@ -622,12 +750,16 @@ def _verify_input(
     input_root: Path,
     reference: Mapping[str, str],
 ) -> tuple[Path, int]:
-    path = _stable_input_path(input_root, reference)
-    first, size = _file_digest(path)
-    second, second_size = _file_digest(path)
+    with _open_input_leaf(
+        input_root,
+        reference,
+        maximum_bytes=_MAX_INPUT_BYTES,
+    ) as (descriptor, _metadata, _parent, _leaf):
+        first, size = _descriptor_digest(descriptor, maximum_bytes=_MAX_INPUT_BYTES)
+        second, second_size = _descriptor_digest(descriptor, maximum_bytes=_MAX_INPUT_BYTES)
     if first != reference["byte_sha256"] or second != first or second_size != size:
         raise SystemSecurityError("bootstrap input exact hash changed")
-    return path, size
+    return _input_root_path(input_root) / reference["relative_path"], size
 
 
 def _ensure_staging_root(workspace_root: Path, operation_id: str) -> Path:
@@ -685,61 +817,118 @@ def _destination(staging_root: Path, relative: str) -> Path:
     return path
 
 
-def _copy_exact_once(source: Path, target: Path, expected_sha: str) -> None:  # noqa: C901
-    if target.exists():
-        observed, _ = _file_digest(target)
-        if observed != expected_sha:
-            raise SystemStorageError("source staging exact-once conflict")
-        return
-    temporary = target.parent / f".{target.name}.tmp-{os.getpid()}-{secrets.token_hex(8)}"
-    input_fd = os.open(
-        source,
-        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
-    )
-    output_fd: int | None = None
-    try:
-        output_fd = os.open(
-            temporary,
-            os.O_WRONLY
-            | os.O_CREAT
-            | os.O_EXCL
-            | getattr(os, "O_NOFOLLOW", 0)
-            | getattr(os, "O_CLOEXEC", 0),
-            0o600,
-        )
-        while True:
-            chunk = os.read(input_fd, 1024 * 1024)
-            if not chunk:
-                break
-            view = memoryview(chunk)
-            while view:
-                written = os.write(output_fd, view)
-                view = view[written:]
-        os.fsync(output_fd)
-        os.close(output_fd)
-        output_fd = None
+def _descriptor_digest(descriptor: int, *, maximum_bytes: int) -> tuple[str, int]:
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    before = os.fstat(descriptor)
+    digest = hashlib.sha256()
+    size = 0
+    while True:
+        chunk = os.read(descriptor, min(1024 * 1024, maximum_bytes + 1 - size))
+        if not chunk:
+            break
+        size += len(chunk)
+        if size > maximum_bytes:
+            raise SystemSecurityError("bootstrap input exceeds its descriptor byte bound")
+        digest.update(chunk)
+    after = os.fstat(descriptor)
+    if _file_identity(before) != _file_identity(after) or size != after.st_size:
+        raise SystemSecurityError("bootstrap input changed during descriptor hash")
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    return digest.hexdigest(), size
+
+
+def _copy_verified_input(  # noqa: C901
+    *,
+    input_root: Path,
+    reference: Mapping[str, str],
+    target: Path,
+    maximum_bytes: int,
+) -> int:
+    expected_sha = reference["byte_sha256"]
+    with _open_input_leaf(
+        input_root,
+        reference,
+        maximum_bytes=maximum_bytes,
+    ) as (input_fd, before, parent_fd, leaf):
+        if target.exists():
+            first, size = _descriptor_digest(input_fd, maximum_bytes=maximum_bytes)
+            second, second_size = _descriptor_digest(input_fd, maximum_bytes=maximum_bytes)
+            observed, observed_size = _file_digest(target)
+            if (
+                first != expected_sha
+                or second != first
+                or second_size != size
+                or observed != expected_sha
+                or observed_size != size
+            ):
+                raise SystemStorageError("source staging exact-once conflict")
+            return size
+
+        temporary = target.parent / f".{target.name}.tmp-{os.getpid()}-{secrets.token_hex(8)}"
+        output_fd: int | None = None
         try:
-            os.link(temporary, target, follow_symlinks=False)
-        except FileExistsError as exc:
-            raise SystemStorageError("source staging exact-once conflict") from exc
-        temporary.unlink()
-        os.chmod(target, 0o600, follow_symlinks=False)
-        directory_fd = os.open(target.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
-    finally:
-        os.close(input_fd)
-        if output_fd is not None:
+            output_fd = os.open(
+                temporary,
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0),
+                0o600,
+            )
+            digest = hashlib.sha256()
+            size = 0
+            while True:
+                chunk = os.read(input_fd, min(1024 * 1024, maximum_bytes + 1 - size))
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > maximum_bytes:
+                    raise SystemSecurityError("bootstrap input exceeds its copy byte bound")
+                digest.update(chunk)
+                view = memoryview(chunk)
+                while view:
+                    written = os.write(output_fd, view)
+                    view = view[written:]
+            after = os.fstat(input_fd)
+            path_after = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)
+            if (
+                size != before.st_size
+                or digest.hexdigest() != expected_sha
+                or _file_identity(before) != _file_identity(after)
+                or _file_identity(after) != _file_identity(path_after)
+            ):
+                raise SystemSecurityError(
+                    "bootstrap input exact hash or identity changed during bounded copy"
+                )
+            second, second_size = _descriptor_digest(input_fd, maximum_bytes=maximum_bytes)
+            if second != expected_sha or second_size != size:
+                raise SystemSecurityError("bootstrap input exact hash changed after copy")
+            os.fsync(output_fd)
             os.close(output_fd)
-        try:
+            output_fd = None
+            try:
+                os.link(temporary, target, follow_symlinks=False)
+            except FileExistsError as exc:
+                raise SystemStorageError("source staging exact-once conflict") from exc
             temporary.unlink()
-        except FileNotFoundError:
-            pass
-    observed, _ = _file_digest(target)
-    if observed != expected_sha:
+            os.chmod(target, 0o600, follow_symlinks=False)
+            directory_fd = os.open(target.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        finally:
+            if output_fd is not None:
+                os.close(output_fd)
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+    observed, observed_size = _file_digest(target)
+    if observed != expected_sha or observed_size != size:
         raise SystemStorageError("source staging exact-byte readback mismatch")
+    return size
 
 
 def _write_exact_once(target: Path, raw: bytes) -> None:
@@ -1033,12 +1222,33 @@ def _strict_projection(
     )
 
 
-def _copy_request_inputs(
+def _copy_request_inputs(  # noqa: C901
     *,
     normalized: Mapping[str, Any],
     input_root: Path,
     staging_root: Path,
 ) -> dict[str, list[str] | str]:
+    calendar_bytes = 0
+
+    def copy_one(field: str, reference: Mapping[str, str], target: Path) -> None:
+        nonlocal calendar_bytes
+        maximum = _MAX_INPUT_BYTES
+        if field in _CALENDAR_INPUT_BYTE_LIMITS:
+            remaining = _MAXIMUM_CALENDAR_REPLAY_BYTES - calendar_bytes
+            if remaining <= 0:
+                raise SystemSecurityError("calendar replay exceeds its aggregate copy bound")
+            maximum = min(_CALENDAR_INPUT_BYTE_LIMITS[field], remaining)
+        size = _copy_verified_input(
+            input_root=input_root,
+            reference=reference,
+            target=target,
+            maximum_bytes=maximum,
+        )
+        if field in _CALENDAR_INPUT_BYTE_LIMITS:
+            calendar_bytes += size
+            if calendar_bytes > _MAXIMUM_CALENDAR_REPLAY_BYTES:
+                raise SystemSecurityError("calendar replay exceeds its aggregate copy bound")
+
     destinations = {
         "exchange_calendar_file_ref": "calendar_replay/"
         + normalized["files"]["exchange_calendar_file_ref"]["relative_path"],
@@ -1057,9 +1267,8 @@ def _copy_request_inputs(
     copied: dict[str, list[str] | str] = {}
     for field, relative in destinations.items():
         reference = normalized["files"][field]
-        source, _ = _verify_input(input_root, reference)
         target = _destination(staging_root, relative)
-        _copy_exact_once(source, target, reference["byte_sha256"])
+        copy_one(field, reference, target)
         copied[field] = relative
     for field in (
         "fundamental_pointer_file_ref",
@@ -1067,18 +1276,16 @@ def _copy_request_inputs(
     ):
         reference = normalized["files"][field]
         relative = f"fundamental_replay/{reference['relative_path']}"
-        source, _ = _verify_input(input_root, reference)
         target = _destination(staging_root, relative)
-        _copy_exact_once(source, target, reference["byte_sha256"])
+        copy_one(field, reference, target)
         copied[field] = relative
     for field, prefix in (("market_table_file_refs", "closure/market_tables"),):
         rows: list[str] = []
         for index, reference in enumerate(normalized[field]):
             suffix = PurePosixPath(reference["relative_path"]).suffix.lower()
             relative = f"{prefix}/{index:04d}{suffix}"
-            source, _ = _verify_input(input_root, reference)
             target = _destination(staging_root, relative)
-            _copy_exact_once(source, target, reference["byte_sha256"])
+            copy_one(field, reference, target)
             rows.append(relative)
         copied[field] = rows
     for field in (
@@ -1090,18 +1297,16 @@ def _copy_request_inputs(
         rows = []
         for reference in normalized[field]:
             relative = "calendar_replay/" + reference["relative_path"]
-            source, _ = _verify_input(input_root, reference)
             target = _destination(staging_root, relative)
-            _copy_exact_once(source, target, reference["byte_sha256"])
+            copy_one(field, reference, target)
             rows.append(relative)
         copied[field] = rows
     for field in ("fundamental_table_file_refs", "fundamental_evidence_file_refs"):
         rows = []
         for reference in normalized[field]:
             relative = f"fundamental_replay/{reference['relative_path']}"
-            source, _ = _verify_input(input_root, reference)
             target = _destination(staging_root, relative)
-            _copy_exact_once(source, target, reference["byte_sha256"])
+            copy_one(field, reference, target)
             rows.append(relative)
         copied[field] = rows
     return copied
@@ -3241,8 +3446,8 @@ def assemble_production_bootstrap(  # noqa: C901
     """Materialize, validate, and offline-assemble; never activate."""
 
     normalized = validate_bootstrap_operator_request(request_raw)
-    workspace = Path(workspace_root).resolve(strict=True)
-    inputs = Path(input_root).resolve(strict=True)
+    workspace = Path(workspace_root).absolute()
+    inputs = _input_root_path(Path(input_root))
     workspace_stat = os.lstat(workspace)
     inputs_stat = os.lstat(inputs)
     if (
@@ -3267,7 +3472,6 @@ def assemble_production_bootstrap(  # noqa: C901
         raise SystemContractError("deployed release ref kind is invalid")
     _preflight_calendar_input_budget(normalized=normalized, input_root=inputs)
     staging = _ensure_staging_root(workspace, normalized["operation_id"])
-    bootstrap_operator_request_ref = store.put_object(normalized["document"])
 
     copied_local = _copy_request_inputs(
         normalized=normalized,
@@ -3288,6 +3492,7 @@ def assemble_production_bootstrap(  # noqa: C901
     derived_source_blockers = _derive_source_blockers(fundamental_closure)
     if normalized["source_blockers"] != derived_source_blockers:
         raise SystemContractError("declared source blockers differ from machine projection")
+    bootstrap_operator_request_ref = store.put_object(normalized["document"])
     copied = _prefix_copied_paths(copied_local, normalized["operation_id"])
     created_at = normalized["trusted_at"]
     factor_store = FactorValidationStore.for_sealed_operation(

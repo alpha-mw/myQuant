@@ -237,8 +237,9 @@ retained native issuer capture, so every calendar assembly stops with
 fixtures, official-hostname assertions, weekday/holiday inference, bars,
 Macro data, provider calendars, and legacy calendars cannot satisfy this gate.
 A future decoder admission must bind the exchange and evidence role to the
-exact HTTPS endpoint/query contract, redirect policy, real status/content type
-and response headers, retained native body bytes and SHA, capture time,
+exact HTTPS endpoint/query contract (or, for a notice body, to the exact body
+URL carried by a validated notice-index entry), redirect policy, real
+status/content type and response headers, retained native body bytes and SHA, capture time,
 decoder bytes, and normalized projection SHA. Decoder tests must replay that
 retained capture rather than manufacture a body from the expected projection.
 The runtime calendar is compiled from admitted official trading-week rules,
@@ -253,6 +254,12 @@ must all close. Per-role counts, individual object sizes, and aggregate replay
 bytes are bounded before source bodies are materialized. Until this native
 rule/notice closure covers every exchange in the sealed PIT cohort through the
 exact cutoff, production generation publication and CAS remain blocked.
+
+The currently admitted index contract is deliberately page-number-only and
+requires the exact four semantic query values (category, page, publication
+start, publication end). It does not claim cursor support. A real issuer index
+that uses a cursor, fixed literal parameters, or no server-side date filter
+requires a separately reviewed exact contract and retained native fixture.
 
 Any unknown pointer, caller, writer, authority claim, resolver difference,
 custody failure, source-closure mismatch, test failure,
