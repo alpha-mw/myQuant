@@ -87,6 +87,10 @@ def _resolve_exposure_table(mart_root: str | Path) -> tuple[Path, Mapping[str, A
     pointer = load_fundamental_pointer(mart_root)
     if pointer is None:
         raise FundamentalGenerationError("fundamental pointer missing")
+    if not isinstance(pointer.get("derivation_binding"), Mapping):
+        raise FundamentalGenerationError(
+            "fundamental derivation binding missing"
+        )
     base = Path(mart_root).expanduser()
     relative = str(dict(pointer.get("tables", {}) or {}).get(EXPOSURE_TABLE, ""))
     if not relative:
@@ -219,6 +223,10 @@ def load_governed_exposure_maps(
         )
 
     generation_id = str(pointer.get("generation_id", "") or "")
+    derivation_binding = dict(pointer["derivation_binding"])
+    binding_aware_research_ready = (
+        derivation_binding.get("binding_aware_research_ready") is True
+    )
     frame = frame.copy()
     frame["ts_code"] = frame["ts_code"].map(normalize_ts_code)
     frame["trade_date"] = pd.to_datetime(
@@ -374,7 +382,8 @@ def load_governed_exposure_maps(
         {value for value in sizes.values() if value != UNKNOWN}
     )
     ready = (
-        coverage_ratio >= 0.95
+        binding_aware_research_ready
+        and coverage_ratio >= 0.95
         and evaluation_date_coverage_ratio == 1.0
         and min_cross_section_coverage_ratio >= 0.95
         and size_pair_coverage_ratio >= 0.95
@@ -388,6 +397,28 @@ def load_governed_exposure_maps(
         "blocker": "" if ready else "governed_exposure_incomplete",
         "source": GOVERNED_EXPOSURE_SOURCE,
         "generation_id": generation_id,
+        "derivation_binding": derivation_binding,
+        "derivation_binding_sha256": str(
+            derivation_binding.get("binding_sha256") or ""
+        ),
+        "mixed_generation": derivation_binding.get("mixed") is True,
+        "original_seam": str(
+            derivation_binding.get("original_seam") or ""
+        ),
+        "append_parent_cutoff": str(
+            derivation_binding.get("append_parent_cutoff") or ""
+        ),
+        "fundamental_target_cutoff": str(
+            derivation_binding.get("target_cutoff") or ""
+        ),
+        "legacy_direct_reader_provenance": str(
+            derivation_binding.get("legacy_direct_reader_provenance") or ""
+        ),
+        "binding_aware_research_ready": binding_aware_research_ready,
+        "homogeneous_history_ready": (
+            derivation_binding.get("homogeneous_history_ready") is True
+        ),
+        "methodology_boundary_preserved": True,
         "table_path": str(table_path),
         "table_sha256": table_sha256,
         "catalog_validated": True,

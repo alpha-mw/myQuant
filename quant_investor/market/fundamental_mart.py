@@ -5353,6 +5353,12 @@ def run_cn_fundamental_maintenance(
     run_id: str = "",
     authoritative_full_rebuild: bool = False,
     safe_incremental_successor: bool = False,
+    append_first_successor: bool = False,
+    historical_taint_evidence: Sequence[Mapping[str, Any]] = (),
+    income_support_dependencies: Sequence[Mapping[str, Any]] = (),
+    financial_support_dependencies: Sequence[Mapping[str, Any]] = (),
+    taint_analysis_dry_run: bool = False,
+    audit_run_root: str | Path | None = None,
     canonical_predecessor_root: str | Path | None = None,
     expected_pointer_sha256: str = "",
     canonical_scope_path: str | Path | None = None,
@@ -5376,6 +5382,82 @@ def run_cn_fundamental_maintenance(
         else list(universes or DEFAULT_UNIVERSES)
     )
     resolved_run_id = str(run_id or "").strip() or _run_id(as_of)
+    if append_first_successor and not safe_incremental_successor:
+        raise ValueError(
+            "append-first successor requires safe incremental successor mode"
+        )
+    if historical_taint_evidence and not append_first_successor:
+        raise ValueError(
+            "historical taint evidence requires append-first successor mode"
+        )
+    if (
+        income_support_dependencies or financial_support_dependencies
+    ) and not append_first_successor:
+        raise ValueError(
+            "financial support dependencies require append-first successor mode"
+        )
+    if taint_analysis_dry_run:
+        if authoritative_full_rebuild or safe_incremental_successor:
+            raise ValueError(
+                "taint analysis dry-run is exclusive of rebuild and successor modes"
+            )
+        if raw_input_dir or raw_tables or checkpoint_root:
+            raise ValueError(
+                "taint analysis dry-run cannot use raw input or checkpoint-root"
+            )
+        if not allow_live:
+            raise ValueError("taint analysis dry-run requires --allow-live")
+        if [item.lower() for item in universe_list] != ["full_a"]:
+            raise ValueError("taint analysis dry-run requires universes=full_a")
+        required_taint_values = {
+            "audit_run_root": audit_run_root,
+            "canonical_predecessor_root": canonical_predecessor_root,
+            "expected_pointer_sha256": expected_pointer_sha256,
+            "canonical_scope_path": canonical_scope_path,
+            "canonical_market_pointer_path": canonical_market_pointer_path,
+            "canonical_pit_pointer_path": canonical_pit_pointer_path,
+            "canonical_membership_path": canonical_membership_path,
+            "history_audit_path": history_audit_path,
+            "expected_history_audit_sha256": expected_history_audit_sha256,
+            "run_id": resolved_run_id,
+            "as_of": as_of,
+        }
+        missing = sorted(
+            name for name, value in required_taint_values.items() if not value
+        )
+        if missing:
+            raise ValueError(
+                "taint analysis dry-run missing required values: "
+                + ", ".join(missing)
+            )
+        retry_backoffs = tuple(
+            min(
+                float(max_retry_backoff_seconds),
+                float(retry_backoff_seconds) * (2**attempt),
+            )
+            for attempt in range(max(0, int(max_attempts) - 1))
+        )
+        from .fundamental_successor import run_cn_fundamental_taint_dry_run
+
+        return run_cn_fundamental_taint_dry_run(
+            as_of=as_of,
+            run_id=resolved_run_id,
+            audit_run_root=audit_run_root,
+            canonical_root=canonical_predecessor_root,
+            expected_pointer_sha256=expected_pointer_sha256,
+            canonical_market_pointer_path=canonical_market_pointer_path,
+            canonical_pit_pointer_path=canonical_pit_pointer_path,
+            canonical_membership_path=canonical_membership_path,
+            canonical_scope_path=canonical_scope_path,
+            history_audit_path=history_audit_path,
+            expected_history_audit_sha256=expected_history_audit_sha256,
+            allow_live=allow_live,
+            universes=universe_list,
+            max_attempts=int(max_attempts),
+            retry_backoff_seconds=retry_backoffs,
+            requests_per_second=float(requests_per_second),
+            client=pro,
+        )
     if safe_incremental_successor:
         if authoritative_full_rebuild:
             raise ValueError(
@@ -5434,6 +5516,10 @@ def run_cn_fundamental_maintenance(
             retry_backoff_seconds=retry_backoffs,
             requests_per_second=float(requests_per_second),
             client=pro,
+            append_first=append_first_successor,
+            historical_taint_evidence=historical_taint_evidence,
+            income_support_dependencies=income_support_dependencies,
+            financial_support_dependencies=financial_support_dependencies,
         )
     if authoritative_full_rebuild:
         if not allow_live:

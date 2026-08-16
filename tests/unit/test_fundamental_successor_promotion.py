@@ -53,6 +53,26 @@ def _file_ref(path: Path) -> dict[str, Any]:
     }
 
 
+def test_stable_json_read_has_explicit_per_call_limit(tmp_path: Path) -> None:
+    path = tmp_path / "large-for-local-limit.json"
+    payload = _json_bytes({"value": "bounded"})
+    _write(path, payload)
+
+    with pytest.raises(promotion.SuccessorPromotionError, match="unreasonably large"):
+        promotion._stable_small_bytes(
+            path,
+            label="fixture manifest",
+            maximum_bytes=len(payload) - 1,
+        )
+    readback, identity = promotion._stable_small_bytes(
+        path,
+        label="fixture manifest",
+        maximum_bytes=len(payload),
+    )
+    assert readback == payload
+    assert identity.sha256 == _sha(payload)
+
+
 def _pointer_binding(
     pointer_path: Path,
     *,
@@ -632,6 +652,29 @@ def test_success_uses_fixed_lock_order_and_durable_phase_order(
     for record in (fixture["journal"] / "run-1").glob("*.json"):
         assert stat_mode(record) == 0o600
     assert stat_mode(fixture["journal"]) == 0o700
+
+
+def test_predecessor_manifest_limit_does_not_expand_candidate_postcheck(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture(tmp_path)
+    observed_limits: list[int] = []
+    original = promotion._validate_pointer_references
+
+    def traced(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        observed_limits.append(
+            int(kwargs.get("manifest_maximum_bytes", promotion._MAX_JSON_BYTES))
+        )
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(promotion, "_validate_pointer_references", traced)
+    result = _promote(fixture)
+
+    assert result["promoted"] is True
+    assert promotion._MAX_PREDECESSOR_MANIFEST_JSON_BYTES in observed_limits
+    assert promotion._MAX_JSON_BYTES in observed_limits
+    assert observed_limits[-1] == promotion._MAX_JSON_BYTES
 
 
 def stat_mode(path: Path) -> int:
