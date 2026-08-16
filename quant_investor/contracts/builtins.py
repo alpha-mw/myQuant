@@ -1061,6 +1061,31 @@ _MIGRATION_SPECS: Final = {
             "source_tree_import",
         },
     ),
+    "system.production_bootstrap_receipt": (
+        "production_bootstrap_receipt_id",
+        {
+            "production_bootstrap_receipt_id",
+            "state",
+            "bootstrap_operator_request_ref",
+            "input_source_rows",
+            "deployed_release_ref",
+            "source_refs",
+            "factor_source_object_refs",
+            "factor_policy_ref",
+            "factor_evidence_refs",
+            "factor_active_set_ref",
+            "factor_validation_attestation_ref",
+            "readiness_matrix_ref",
+            "emergency_controller_sha256",
+            "skill_tree_sha256",
+            "automation_semantic_sha256",
+            "source_blockers",
+            "signal_statistics",
+            "signal_statistics_sha256",
+            "assembler_module_path",
+            "assembler_code_sha256",
+        },
+    ),
 }
 MIGRATION_CONTRACTS: Final = tuple(
     _exact_contract(kind, identity_field, fields)

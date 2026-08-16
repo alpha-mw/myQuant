@@ -2182,6 +2182,20 @@ class SystemStore:
         if verified["manifest_sha256"] != pointer["manifest_sha256"]:
             raise SystemActivationAuthorizationError("pointer manifest binding mismatch")
         try:
+            from quant_investor.factors.governance.production import (
+                validate_production_bootstrap_generation_closure,
+            )
+
+            validate_production_bootstrap_generation_closure(
+                store=self,
+                verified_generation=verified,
+                deployed_release_ref=deployed_release_ref,
+            )
+        except SystemError as exc:
+            raise SystemActivationAuthorizationError(
+                "initial target lacks valid production bootstrap closure"
+            ) from exc
+        try:
             from .activation import (
                 build_prepared_activation_transaction,
                 validate_activation_authorization,
@@ -2230,6 +2244,19 @@ class SystemStore:
                 object_resolver=self.get_object,
                 deployed_release_ref=deployed_release_ref,
                 validation_mode="PRE_CAS_CURRENT",
+            )
+            locked_generation = self.verify_generation(
+                pointer["generation_id"],
+                deployed_release_ref=deployed_release_ref,
+            )
+            if locked_generation["manifest_sha256"] != pointer["manifest_sha256"]:
+                raise SystemActivationAuthorizationError(
+                    "pointer manifest binding drifted under activation lock"
+                )
+            validate_production_bootstrap_generation_closure(
+                store=self,
+                verified_generation=locked_generation,
+                deployed_release_ref=deployed_release_ref,
             )
 
         result = self._storage._commit_initial_activation(
@@ -2325,6 +2352,20 @@ class SystemStore:
                 deployed_release_ref=deployed_ref,
                 validation_level="stat",
             )
+            from quant_investor.factors.governance.production import (
+                validate_production_bootstrap_generation_closure,
+            )
+
+            try:
+                validate_production_bootstrap_generation_closure(
+                    store=self,
+                    verified_generation=generation,
+                    deployed_release_ref=deployed_ref,
+                )
+            except SystemError as exc:
+                raise SystemMigrationClosureError(
+                    "initial generation production bootstrap closure is invalid"
+                ) from exc
             final_authorization = validate_final_cutover_authorization_closure(
                 final_authorization_stored.data,
                 repository_root=self.workspace_root,

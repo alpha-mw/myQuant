@@ -46,10 +46,12 @@ from quant_investor.factors.governance.bootstrap import (
     compute_bootstrap_signals,
 )
 from quant_investor.factors.governance.contextual import (
+    _bootstrap_sources,
     _signal_hashes,
     _signal_statistics,
 )
 from quant_investor.factors.governance.implementations import installed_semantic_row
+from quant_investor.factors.governance.errors import FactorGovernanceError
 from quant_investor.factors.governance.source import decode_source_role
 from quant_investor.factors.governance.source import role_schema
 from quant_investor.intelligence import assess_readiness
@@ -73,6 +75,11 @@ from quant_investor.system.errors import (
 )
 from quant_investor.system.requests import ASSEMBLY_REQUEST_FIELDS
 from quant_investor.system.components import BOOTSTRAP_VALIDATION_PROFILE
+from quant_investor.system.bootstrap_receipt import (
+    ASSEMBLER_MODULE_PATH,
+    build_production_bootstrap_receipt,
+    validate_production_bootstrap_receipt,
+)
 from quant_investor.system.storage import ACTIVE_POINTER_PATH, MIGRATION_MARKER_PATH
 from quant_investor.system.store import SystemStore, object_ref_for_artifact, validate_object_ref
 from quant_investor.system.suspension import build_suspended_generation
@@ -832,14 +839,16 @@ def _copy_request_inputs(
     staging_root: Path,
 ) -> dict[str, list[str] | str]:
     destinations = {
-        "exchange_calendar_file_ref": "bootstrap/exchange_calendar.parquet",
+        "exchange_calendar_file_ref": "calendar_replay/"
+        + normalized["files"]["exchange_calendar_file_ref"]["relative_path"],
         "market_scope_file_ref": "closure/market_scope.json",
         "market_pointer_file_ref": "closure/market_pointer.json",
         "market_snapshot_manifest_file_ref": "closure/market_snapshot_manifest.json",
         "pit_pointer_file_ref": "closure/pit_pointer.json",
         "pit_generation_manifest_file_ref": "closure/pit_generation_manifest.json",
         "pit_membership_file_ref": "closure/pit_membership.parquet",
-        "calendar_manifest_file_ref": "closure/calendar_manifest.json",
+        "calendar_manifest_file_ref": "calendar_replay/"
+        + normalized["files"]["calendar_manifest_file_ref"]["relative_path"],
         "bootstrap_decision_file_ref": ("operations/unified_cutover/bootstrap-decision.json"),
     }
     copied: dict[str, list[str] | str] = {}
@@ -859,15 +868,20 @@ def _copy_request_inputs(
         target = _destination(staging_root, relative)
         _copy_exact_once(source, target, reference["byte_sha256"])
         copied[field] = relative
-    for field, prefix in (
-        ("calendar_raw_file_refs", "closure/calendar_raw"),
-        ("calendar_capture_file_refs", "closure/calendar_captures"),
-        ("market_table_file_refs", "closure/market_tables"),
-    ):
+    for field, prefix in (("market_table_file_refs", "closure/market_tables"),):
         rows: list[str] = []
         for index, reference in enumerate(normalized[field]):
             suffix = PurePosixPath(reference["relative_path"]).suffix.lower()
             relative = f"{prefix}/{index:04d}{suffix}"
+            source, _ = _verify_input(input_root, reference)
+            target = _destination(staging_root, relative)
+            _copy_exact_once(source, target, reference["byte_sha256"])
+            rows.append(relative)
+        copied[field] = rows
+    for field in ("calendar_raw_file_refs", "calendar_capture_file_refs"):
+        rows = []
+        for reference in normalized[field]:
+            relative = "calendar_replay/" + reference["relative_path"]
             source, _ = _verify_input(input_root, reference)
             target = _destination(staging_root, relative)
             _copy_exact_once(source, target, reference["byte_sha256"])
@@ -1672,6 +1686,495 @@ def _validate_calendar_manifest(  # noqa: C901
     return manifest
 
 
+def _receipt_input_source_rows(
+    *,
+    normalized: Mapping[str, Any],
+    scalar_refs: Mapping[str, Mapping[str, Any]],
+    list_refs: Mapping[str, Sequence[Mapping[str, Any]]],
+) -> list[dict[str, Any]]:
+    """Bind every operator-request input to its immutable stored source object."""
+
+    rows: list[dict[str, Any]] = []
+    expected_scalar = set(normalized["files"])
+    if set(scalar_refs) != expected_scalar:
+        raise SystemContractError("production receipt scalar input closure differs")
+    expected_lists = {
+        "calendar_raw_file_refs",
+        "calendar_capture_file_refs",
+        "market_table_file_refs",
+        "fundamental_table_file_refs",
+        "fundamental_evidence_file_refs",
+    }
+    if set(list_refs) != expected_lists:
+        raise SystemContractError("production receipt list input closure differs")
+    for field, input_ref in normalized["files"].items():
+        rows.append(
+            {
+                "field": field,
+                "ordinal": 0,
+                "input_file_ref": dict(input_ref),
+                "source_object_ref": validate_object_ref(
+                    scalar_refs[field], label=f"{field} source object"
+                ),
+            }
+        )
+    for field in sorted(expected_lists):
+        inputs = normalized[field]
+        sources = list_refs[field]
+        if len(inputs) != len(sources):
+            raise SystemContractError(f"production receipt {field} cardinality differs")
+        for ordinal, (input_ref, source_ref) in enumerate(zip(inputs, sources, strict=True)):
+            rows.append(
+                {
+                    "field": field,
+                    "ordinal": ordinal,
+                    "input_file_ref": dict(input_ref),
+                    "source_object_ref": validate_object_ref(
+                        source_ref, label=f"{field}[{ordinal}] source object"
+                    ),
+                }
+            )
+    rows.sort(key=lambda row: (row["field"], row["ordinal"]))
+    if len({row["source_object_ref"]["byte_sha256"] for row in rows}) != len(rows):
+        raise SystemContractError("production receipt input source objects are duplicated")
+    return rows
+
+
+def _receipt_copied_paths(
+    *,
+    store: SystemStore,
+    normalized: Mapping[str, Any],
+    input_source_rows: Sequence[Mapping[str, Any]],
+) -> tuple[dict[str, list[str] | str], dict[tuple[str, int], dict[str, str]]]:
+    """Replay exact request-to-source bindings without trusting receipt claims."""
+
+    expected: dict[tuple[str, int], dict[str, str]] = {
+        (field, 0): dict(reference) for field, reference in normalized["files"].items()
+    }
+    for field in (
+        "calendar_raw_file_refs",
+        "calendar_capture_file_refs",
+        "market_table_file_refs",
+        "fundamental_table_file_refs",
+        "fundamental_evidence_file_refs",
+    ):
+        expected.update(
+            {
+                (field, ordinal): dict(reference)
+                for ordinal, reference in enumerate(normalized[field])
+            }
+        )
+    observed: dict[tuple[str, int], dict[str, str]] = {}
+    copied: dict[str, list[str] | str] = {}
+    source_refs_seen: set[tuple[str, ...]] = set()
+    for row in input_source_rows:
+        key = (row["field"], row["ordinal"])
+        if key not in expected or key in observed or row["input_file_ref"] != expected[key]:
+            raise SystemContractError("production receipt input/request binding differs")
+        source_ref = validate_object_ref(
+            row["source_object_ref"], label=f"production receipt input {key}"
+        )
+        ref_key = tuple(
+            source_ref[field]
+            for field in (
+                "kind",
+                "contract_sha256",
+                "artifact_id",
+                "semantic_sha256",
+                "byte_sha256",
+            )
+        )
+        if ref_key in source_refs_seen:
+            raise SystemContractError("production receipt input source ref is duplicated")
+        source_refs_seen.add(ref_key)
+        source = store.get_object(source_ref)
+        if source["kind"] != "system.source_object":
+            raise SystemContractError("production receipt input is not a source object")
+        payload = store._verify_source_object(source)
+        if payload["byte_sha256"] != expected[key]["byte_sha256"]:
+            raise SystemContractError("production receipt input source bytes differ")
+        observed[key] = source_ref
+        field, ordinal = key
+        if field in normalized["files"]:
+            copied[field] = payload["relative_path"]
+        else:
+            values = copied.setdefault(field, [])
+            if type(values) is not list or ordinal != len(values):
+                raise SystemContractError("production receipt list input order differs")
+            values.append(payload["relative_path"])
+    if set(observed) != set(expected):
+        raise SystemContractError("production receipt input closure is incomplete")
+    return copied, observed
+
+
+def _strict_table_rows(store: SystemStore, source_ref: Mapping[str, Any]) -> list[dict[str, Any]]:
+    source = store.get_object(source_ref)
+    payload = store._verify_source_object(source)
+    try:
+        return (
+            pq.ParquetFile(store.source_root / payload["relative_path"])
+            .read(use_threads=False)
+            .to_pylist()
+        )
+    except Exception as exc:
+        raise SystemContractError("strict production source table replay failed") from exc
+
+
+def _exact_source_bundle(
+    store: SystemStore,
+    bundle_ref: Mapping[str, Any],
+    *,
+    expected_sources: Sequence[tuple[str, Mapping[str, Any]]],
+    label: str,
+) -> dict[str, str]:
+    ref = validate_object_ref(bundle_ref, label=f"{label} ref")
+    artifact = store.get_object(ref)
+    expected_rows = sorted(
+        [
+            {"role": role, "source_ref": validate_object_ref(source_ref)}
+            for role, source_ref in expected_sources
+        ],
+        key=lambda row: row["role"].encode("utf-8"),
+    )
+    if (
+        artifact["kind"] != "system.source_bundle"
+        or artifact["payload"].get("state") != "IMMUTABLE"
+        or artifact["payload"].get("sources") != expected_rows
+    ):
+        raise SystemContractError(f"{label} exact source topology differs")
+    store._verify_source_bundle(artifact, require_sources=True)
+    return ref
+
+
+def _validate_operational_source_topology(
+    *,
+    store: SystemStore,
+    operational_source_ref: Mapping[str, Any],
+    observed_inputs: Mapping[tuple[str, int], Mapping[str, Any]],
+    calendar_ref: Mapping[str, Any],
+    market_ref: Mapping[str, Any],
+    pit_ref: Mapping[str, Any],
+) -> None:
+    """Require the manifest's four-role closure to contain the replayed bytes."""
+
+    def scalar(field: str) -> Mapping[str, Any]:
+        return observed_inputs[(field, 0)]
+
+    def values(field: str) -> list[Mapping[str, Any]]:
+        rows = [
+            (ordinal, ref)
+            for (row_field, ordinal), ref in observed_inputs.items()
+            if row_field == field
+        ]
+        rows.sort(key=lambda row: row[0])
+        if [ordinal for ordinal, _ref in rows] != list(range(len(rows))):
+            raise SystemContractError(f"{field} operational source ordinals differ")
+        return [ref for _ordinal, ref in rows]
+
+    calendar_top = _exact_source_bundle(
+        store,
+        _source_role_ref(store, operational_source_ref, "exchange_calendar"),
+        label="calendar operational source",
+        expected_sources=[
+            ("calendar", calendar_ref),
+            ("manifest", scalar("calendar_manifest_file_ref")),
+            *[
+                (f"official-raw-{index:04d}", ref)
+                for index, ref in enumerate(values("calendar_raw_file_refs"))
+            ],
+            *[
+                (f"official-capture-{index:04d}", ref)
+                for index, ref in enumerate(values("calendar_capture_file_refs"))
+            ],
+        ],
+    )
+    market_top = _exact_source_bundle(
+        store,
+        _source_role_ref(store, operational_source_ref, "market_snapshot"),
+        label="market operational source",
+        expected_sources=[
+            ("manifest", scalar("market_snapshot_manifest_file_ref")),
+            ("pointer", scalar("market_pointer_file_ref")),
+            ("scope", scalar("market_scope_file_ref")),
+            ("table", market_ref),
+            *[
+                (f"raw-table-{index:04d}", ref)
+                for index, ref in enumerate(values("market_table_file_refs"))
+            ],
+        ],
+    )
+    fundamental_top = _exact_source_bundle(
+        store,
+        _source_role_ref(store, operational_source_ref, "fundamental_generation"),
+        label="Fundamental operational source",
+        expected_sources=[
+            ("manifest", scalar("fundamental_generation_manifest_file_ref")),
+            ("pointer", scalar("fundamental_pointer_file_ref")),
+            *[
+                (f"table-{index:04d}", ref)
+                for index, ref in enumerate(values("fundamental_table_file_refs"))
+            ],
+            *[
+                (f"evidence-{index:04d}", ref)
+                for index, ref in enumerate(values("fundamental_evidence_file_refs"))
+            ],
+        ],
+    )
+    pit_top = _exact_source_bundle(
+        store,
+        _source_role_ref(store, operational_source_ref, "pit_membership"),
+        label="PIT operational source",
+        expected_sources=[
+            ("manifest", scalar("pit_generation_manifest_file_ref")),
+            ("pointer", scalar("pit_pointer_file_ref")),
+            ("membership", scalar("pit_membership_file_ref")),
+            ("strict-universe", pit_ref),
+        ],
+    )
+    _exact_source_bundle(
+        store,
+        operational_source_ref,
+        label="operational source closure",
+        expected_sources=[
+            ("exchange_calendar", calendar_top),
+            ("fundamental_generation", fundamental_top),
+            ("market_snapshot", market_top),
+            ("pit_membership", pit_top),
+        ],
+    )
+
+
+def _source_role_ref(
+    store: SystemStore,
+    bundle_ref: Mapping[str, Any],
+    role: str,
+) -> dict[str, str]:
+    bundle = store.get_object(validate_object_ref(bundle_ref))
+    rows = bundle["payload"].get("sources")
+    matches = [row for row in rows if row.get("role") == role] if type(rows) is list else []
+    if len(matches) != 1 or set(matches[0]) != {"role", "source_ref"}:
+        raise SystemContractError(f"operational source role {role} is not exact")
+    return validate_object_ref(matches[0]["source_ref"], label=f"operational {role}")
+
+
+def _validate_production_bootstrap_generation_closure(  # noqa: C901
+    *,
+    store: SystemStore,
+    verified_generation: Mapping[str, Any],
+    deployed_release_ref: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Deep-replay the sole production receipt required for first activation."""
+
+    if verified_generation.get("generation_state") != "OPERATIONAL":
+        raise SystemContractError("production bootstrap receipt requires OPERATIONAL generation")
+    manifest = verified_generation["manifest"]
+    manifest_payload = manifest["payload"]
+    research_refs = manifest_payload["research_refs"]
+    research = verified_generation["research"]
+    if len(research_refs) != 1 or len(research) != 1:
+        raise SystemContractError("operational generation must bind one production receipt")
+    receipt = validate_production_bootstrap_receipt(research[0])
+    receipt_ref = object_ref_for_artifact(receipt)
+    if receipt_ref != research_refs[0]:
+        raise SystemContractError("production bootstrap receipt exact ref differs")
+    payload = receipt["payload"]
+    release_ref = validate_object_ref(deployed_release_ref, label="deployed_release_ref")
+    exact_manifest_bindings = {
+        "deployed_release_ref": manifest_payload["release_manifest_ref"],
+        "source_refs": manifest_payload["source_refs"],
+        "factor_source_object_refs": manifest_payload["factor_source_object_refs"],
+        "factor_policy_ref": manifest_payload["factor_policy_ref"],
+        "factor_evidence_refs": manifest_payload["factor_evidence_refs"],
+        "factor_active_set_ref": manifest_payload["factor_active_set_ref"],
+        "factor_validation_attestation_ref": manifest_payload["factor_validation_attestation_ref"],
+        "readiness_matrix_ref": manifest_payload["readiness_matrix_ref"],
+        "emergency_controller_sha256": manifest_payload["emergency_controller_sha256"],
+        "skill_tree_sha256": manifest_payload["skill_tree_sha256"],
+        "automation_semantic_sha256": manifest_payload["automation_semantic_sha256"],
+    }
+    if any(payload[field] != value for field, value in exact_manifest_bindings.items()):
+        raise SystemContractError("production receipt/generation binding differs")
+    if payload["deployed_release_ref"] != release_ref:
+        raise SystemContractError("production receipt/deployed release differs")
+    assembler_path = Path(__file__).resolve(strict=True)
+    if (
+        payload["assembler_module_path"] != ASSEMBLER_MODULE_PATH
+        or _sha256(assembler_path.read_bytes()) != payload["assembler_code_sha256"]
+    ):
+        raise SystemContractError("production receipt assembler code identity differs")
+
+    request_ref = validate_object_ref(
+        payload["bootstrap_operator_request_ref"], label="bootstrap_operator_request_ref"
+    )
+    request = store.get_object(request_ref)
+    normalized = validate_bootstrap_operator_request(request)
+    if normalized["release_manifest_ref"] != release_ref:
+        raise SystemContractError("production request/release binding differs")
+    if (
+        normalized["skill_tree_sha256"] != payload["skill_tree_sha256"]
+        or normalized["automation_semantic_sha256"] != payload["automation_semantic_sha256"]
+        or normalized["source_blockers"] != payload["source_blockers"]
+    ):
+        raise SystemContractError("production request/receipt control binding differs")
+    copied, observed_inputs = _receipt_copied_paths(
+        store=store,
+        normalized=normalized,
+        input_source_rows=payload["input_source_rows"],
+    )
+
+    factor_policy = verified_generation["factor_policy"]
+    bundles, factor_sources, decoded, documents = _bootstrap_sources(store, factor_policy)
+    del bundles
+    ref_fields = (
+        "kind",
+        "contract_sha256",
+        "artifact_id",
+        "semantic_sha256",
+        "byte_sha256",
+    )
+    if sorted(
+        factor_sources.values(), key=lambda row: tuple(row[field] for field in ref_fields)
+    ) != sorted(
+        manifest_payload["factor_source_object_refs"],
+        key=lambda row: tuple(row[field] for field in ref_fields),
+    ):
+        raise SystemContractError("production receipt Factor source closure differs")
+    calendar_ref = factor_sources["exchange_calendar"]
+    market_ref = factor_sources["market"]
+    pit_ref = factor_sources["pit_universe"]
+    if calendar_ref != observed_inputs[("exchange_calendar_file_ref", 0)]:
+        raise SystemContractError("strict calendar/request source binding differs")
+    if len(manifest_payload["source_refs"]) != 1:
+        raise SystemContractError("production operational source cardinality differs")
+    _validate_operational_source_topology(
+        store=store,
+        operational_source_ref=manifest_payload["source_refs"][0],
+        observed_inputs=observed_inputs,
+        calendar_ref=calendar_ref,
+        market_ref=market_ref,
+        pit_ref=pit_ref,
+    )
+    _normalized_shas, eligible, strict_signals, source_projection = _strict_projection(
+        store,
+        calendar_ref=calendar_ref,
+        pit_ref=pit_ref,
+        market_ref=market_ref,
+    )
+    market_closure = _validate_market_closure(
+        normalized=normalized,
+        staging_root=store.source_root,
+        copied=copied,
+    )
+    raw_market_rows, market_caps, raw_sessions = _read_raw_market_rows(
+        staging_root=store.source_root,
+        copied=copied,
+        closure=market_closure,
+    )
+    raw_pit_rows = _read_raw_pit_rows(
+        staging_root=store.source_root,
+        copied=copied,
+        closure=market_closure,
+        cutoff_market_caps=market_caps,
+    )
+    if _strict_table_rows(store, market_ref) != raw_market_rows:
+        raise SystemContractError("strict market materialization differs from canonical input")
+    if _strict_table_rows(store, pit_ref) != raw_pit_rows:
+        raise SystemContractError("strict PIT materialization differs from canonical input")
+    frames = {
+        symbol: group.drop(columns=["symbol"]).reset_index(drop=True)
+        for symbol, group in pd.DataFrame(raw_market_rows).groupby("symbol", sort=True)
+    }
+    recomputed = compute_bootstrap_signals(frames, source_format="PARQUET")
+    raw_signals = {
+        factor_id: {
+            symbol: None if pd.isna(value) else float(value).hex()
+            for symbol, value in recomputed[factor_id].sort_index().items()
+        }
+        for factor_id in (LOW_DOLLAR_VOLUME, BLEND_W80)
+    }
+    if raw_signals != strict_signals or strict_signals != decoded["signals"]:
+        raise SystemContractError("production raw/strict Factor signal replay differs")
+    raw_session_dates = [
+        datetime.strptime(value, "%Y%m%d").date().isoformat() for value in raw_sessions
+    ]
+    if (
+        market_closure["scope_symbols"] != source_projection["all_pit_symbols"]
+        or market_closure["eligible_symbols"] != eligible
+        or raw_session_dates != source_projection["market_sessions"]
+        or source_projection["market_symbols"] != eligible
+    ):
+        raise SystemContractError("production market/PIT cohort replay differs")
+    calendar_root = store.source_root / "calendar_replay"
+    for field in (
+        "exchange_calendar_file_ref",
+        "calendar_manifest_file_ref",
+    ):
+        if copied[field] != "calendar_replay/" + normalized["files"][field]["relative_path"]:
+            raise SystemContractError("production calendar replay path differs")
+    for field in ("calendar_raw_file_refs", "calendar_capture_file_refs"):
+        expected_paths = ["calendar_replay/" + row["relative_path"] for row in normalized[field]]
+        if copied[field] != expected_paths:
+            raise SystemContractError("production calendar evidence replay paths differ")
+    _validate_calendar_manifest(
+        normalized=normalized,
+        input_root=calendar_root,
+        cohort_symbols=source_projection["all_pit_symbols"],
+        source_projection=source_projection,
+    )
+    _validate_fundamental_closure(
+        normalized=normalized,
+        staging_root=store.source_root,
+        copied=copied,
+        expected_cutoff=market_closure["cutoff"],
+    )
+
+    recomputation = documents["recomputation"]["document"]
+    if (
+        recomputation.get("signal_statistics") != payload["signal_statistics"]
+        or _sha256(canonical_json_bytes(payload["signal_statistics"]))
+        != payload["signal_statistics_sha256"]
+    ):
+        raise SystemContractError("production receipt signal statistics replay differs")
+    active = verified_generation["factor_active_set"]["payload"]
+    expected_factor_rows, expected_control_rows = _set_rows(bootstrap_factor_definitions())
+    if (
+        active.get("factor_rows") != expected_factor_rows
+        or active.get("control_rows") != expected_control_rows
+        or active.get("producer_identity") != "NOT_CLAIMED"
+        or active.get("admission_route") != "BOOTSTRAP_EXCEPTION"
+    ):
+        raise SystemContractError("production receipt Factor authority target differs")
+    readiness = verified_generation["readiness"]["payload"]
+    if (
+        readiness.get("factor_state") != "READY"
+        or readiness.get("mainline_state") != "UNINITIALIZED"
+        or readiness.get("investment_state") != "BLOCKED"
+        or readiness.get("producer_identity") != "NOT_CLAIMED"
+        or readiness.get("admission_route") != "BOOTSTRAP_EXCEPTION"
+        or not set(payload["source_blockers"]) <= set(readiness.get("blockers", []))
+    ):
+        raise SystemContractError("production receipt readiness target differs")
+    return receipt
+
+
+def validate_production_bootstrap_generation_closure(
+    *,
+    store: SystemStore,
+    verified_generation: Mapping[str, Any],
+    deployed_release_ref: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Translate only expected Factor replay failures into a System hard gate."""
+
+    try:
+        return _validate_production_bootstrap_generation_closure(
+            store=store,
+            verified_generation=verified_generation,
+            deployed_release_ref=deployed_release_ref,
+        )
+    except FactorGovernanceError as exc:
+        raise SystemContractError("production bootstrap Factor closure replay failed") from exc
+
+
 def assemble_production_bootstrap(  # noqa: C901
     *,
     workspace_root: str | os.PathLike[str],
@@ -1708,6 +2211,7 @@ def assemble_production_bootstrap(  # noqa: C901
     release = store.get_object(release_ref)
     if release["kind"] != "system.release":
         raise SystemContractError("deployed release ref kind is invalid")
+    bootstrap_operator_request_ref = store.put_object(normalized["document"])
 
     copied = _copy_request_inputs(
         normalized=normalized,
@@ -1788,7 +2292,7 @@ def assemble_production_bootstrap(  # noqa: C901
     )
     _validate_calendar_manifest(
         normalized=normalized,
-        input_root=inputs,
+        input_root=staging / "calendar_replay",
         cohort_symbols=source_projection["all_pit_symbols"],
         source_projection=source_projection,
     )
@@ -2147,6 +2651,51 @@ def assemble_production_bootstrap(  # noqa: C901
         suspended_generation_id=suspended["generation_id"],
     )
     receipt = store.get_object(bootstrap.intrinsic_receipt_ref)
+    input_source_rows = _receipt_input_source_rows(
+        normalized=normalized,
+        scalar_refs={
+            "exchange_calendar_file_ref": calendar_ref,
+            "market_scope_file_ref": raw_objects["market_scope_file_ref"],
+            "market_pointer_file_ref": raw_objects["market_pointer_file_ref"],
+            "market_snapshot_manifest_file_ref": raw_objects["market_snapshot_manifest_file_ref"],
+            "pit_pointer_file_ref": raw_objects["pit_pointer_file_ref"],
+            "pit_generation_manifest_file_ref": raw_objects["pit_generation_manifest_file_ref"],
+            "pit_membership_file_ref": raw_objects["pit_membership_file_ref"],
+            "calendar_manifest_file_ref": raw_objects["calendar_manifest_file_ref"],
+            "fundamental_pointer_file_ref": raw_objects["fundamental_pointer_file_ref"],
+            "fundamental_generation_manifest_file_ref": raw_objects[
+                "fundamental_generation_manifest_file_ref"
+            ],
+            "bootstrap_decision_file_ref": decision_ref,
+        },
+        list_refs={
+            "calendar_raw_file_refs": calendar_raw_refs,
+            "calendar_capture_file_refs": calendar_capture_refs,
+            "market_table_file_refs": market_table_refs,
+            "fundamental_table_file_refs": fundamental_table_refs,
+            "fundamental_evidence_file_refs": fundamental_evidence_refs,
+        },
+    )
+    production_receipt = build_production_bootstrap_receipt(
+        bootstrap_operator_request_ref=bootstrap_operator_request_ref,
+        input_source_rows=input_source_rows,
+        deployed_release_ref=release_ref,
+        source_refs=[operational_sources],
+        factor_source_object_refs=validation["contextual_result"]["payload"]["source_object_refs"],
+        factor_policy_ref=bootstrap.policy_ref,
+        factor_evidence_refs=receipt["payload"]["evidence_refs"],
+        factor_active_set_ref=bootstrap.active_set_ref,
+        factor_validation_attestation_ref=validation["validation_attestation_ref"],
+        readiness_matrix_ref=readiness_ref,
+        emergency_controller_sha256=controller["byte_sha256"],
+        skill_tree_sha256=normalized["skill_tree_sha256"],
+        automation_semantic_sha256=normalized["automation_semantic_sha256"],
+        source_blockers=normalized["source_blockers"],
+        signal_statistics=statistics,
+        assembler_code_sha256=_sha256(Path(__file__).resolve(strict=True).read_bytes()),
+        created_at=created_at,
+    )
+    production_receipt_ref = store.put_object(production_receipt)
     assembly_payload = {
         "generation_state": "OPERATIONAL",
         "release_manifest_ref": release_ref,
@@ -2159,7 +2708,7 @@ def assemble_production_bootstrap(  # noqa: C901
         "factor_active_set_ref": bootstrap.active_set_ref,
         "factor_validation_attestation_ref": validation["validation_attestation_ref"],
         "mainline_ref": None,
-        "research_refs": [],
+        "research_refs": [production_receipt_ref],
         "migration_receipt_ref": None,
         "migration_marker_ref": None,
         "skill_tree_sha256": normalized["skill_tree_sha256"],
@@ -2184,6 +2733,11 @@ def assemble_production_bootstrap(  # noqa: C901
         generation["generation_id"],
         deployed_release_ref=release_ref,
     )
+    validate_production_bootstrap_generation_closure(
+        store=store,
+        verified_generation=verified,
+        deployed_release_ref=release_ref,
+    )
     if (workspace / str(ACTIVE_POINTER_PATH)).exists() or (
         workspace / str(MIGRATION_MARKER_PATH)
     ).exists():
@@ -2193,6 +2747,7 @@ def assemble_production_bootstrap(  # noqa: C901
         "operation_id": normalized["operation_id"],
         "source_root": str(staging),
         "assembly_request_ref": assembly_request_ref,
+        "production_bootstrap_receipt_ref": production_receipt_ref,
         "generation_id": generation["generation_id"],
         "generation": verified,
         "suspended_generation_id": suspended["generation_id"],
@@ -2211,4 +2766,5 @@ __all__ = [
     "FILE_REF_FIELDS",
     "assemble_production_bootstrap",
     "validate_bootstrap_operator_request",
+    "validate_production_bootstrap_generation_closure",
 ]

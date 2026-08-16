@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import quant_investor.factors.governance.production as production_module
 
 from quant_investor.contracts import canonical_json_bytes, seal_artifact
 from quant_investor.system import (
@@ -28,6 +29,19 @@ from test_unified_system_bootstrap import _closure
 from unified_activation_helpers import activate_initial, prepare_initial_activation
 
 CREATED_AT = "2026-08-14T00:00:00Z"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_pointer_protocol_from_production_source_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """These tests exercise CAS mechanics; production closure has its own suite."""
+
+    monkeypatch.setattr(
+        production_module,
+        "validate_production_bootstrap_generation_closure",
+        lambda **_kwargs: {},
+    )
 
 
 def _sha(value: str) -> str:

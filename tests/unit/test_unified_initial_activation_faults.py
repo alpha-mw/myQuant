@@ -7,6 +7,7 @@ import subprocess
 from types import SimpleNamespace
 
 import pytest
+import quant_investor.factors.governance.production as production_module
 
 from quant_investor.contracts import (
     canonical_json_bytes,
@@ -30,6 +31,19 @@ from quant_investor.system import (
 )
 from test_unified_system_bootstrap import _closure
 from unified_activation_helpers import prepare_initial_activation
+
+
+@pytest.fixture(autouse=True)
+def _isolate_pointer_protocol_from_production_source_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fault injection remains below the independently tested source hard gate."""
+
+    monkeypatch.setattr(
+        production_module,
+        "validate_production_bootstrap_generation_closure",
+        lambda **_kwargs: {},
+    )
 
 
 def _case(tmp_path: Path) -> tuple[dict, dict, dict]:
@@ -280,15 +294,15 @@ def test_uid_release_and_preimage_drift_fail_before_empty_cas(
     import quant_investor.system.store as store_module
 
     actual_uid = os.geteuid()
-    monkeypatch.setattr(
-        store_module,
-        "os",
-        SimpleNamespace(geteuid=lambda: actual_uid + 1),
-    )
-    with pytest.raises(SystemActivationAuthorizationError, match="UID changed"):
-        store.activate_initial_generation(**inputs)
+    with monkeypatch.context() as uid_patch:
+        uid_patch.setattr(
+            store_module,
+            "os",
+            SimpleNamespace(geteuid=lambda: actual_uid + 1),
+        )
+        with pytest.raises(SystemActivationAuthorizationError, match="UID changed"):
+            store.activate_initial_generation(**inputs)
     assert not (root / str(ACTIVE_POINTER_PATH)).exists()
-    monkeypatch.undo()
 
     missing_release = {**inputs["deployed_release_ref"], "byte_sha256": "f" * 64}
     with pytest.raises(SystemContractError, match="deployed release identity"):

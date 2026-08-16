@@ -26,8 +26,15 @@ from quant_investor.market.exchange_calendar_official import (
     decoder_code_sha256,
     decoder_id as production_decoder_id,
 )
-from quant_investor.system import SystemContractError, SystemPreconditionError
-from quant_investor.system import SystemStore, installed_code_manifest_sha256
+from quant_investor.system import (
+    SystemActivationAuthorizationError,
+    SystemContractError,
+    SystemPreconditionError,
+    SystemStore,
+    decode_assembly_request,
+    installed_code_manifest_sha256,
+)
+from unified_activation_helpers import prepare_initial_activation
 
 from tests.unit.test_unified_system_bootstrap import (
     BASE,
@@ -743,12 +750,174 @@ def test_production_bootstrap_materializes_and_offline_verifies(tmp_path: Path) 
     assert all(row["distinct_finite_count"] > 1 for row in result["signal_statistics"])
     assert result["active_pointer_write_count"] == 0
     assert result["marker_write_count"] == 0
+    assert result["generation"]["manifest"]["payload"]["research_refs"] == [
+        result["production_bootstrap_receipt_ref"]
+    ]
     assert not (workspace / "results/system/_active.json").exists()
     assert not (workspace / "results/system/_migration_complete.json").exists()
     for path in Path(result["source_root"]).rglob("*"):
         if path.is_file():
             assert path.stat().st_mode & 0o777 == 0o600
             assert path.stat().st_nlink == 1
+
+
+def test_production_bootstrap_receipt_allows_exact_isolated_initial_activation(
+    tmp_path: Path,
+) -> None:
+    workspace, release_ref = _seed_workspace(tmp_path)
+    input_root = tmp_path / "sealed-inputs"
+    result = assemble_production_bootstrap(
+        workspace_root=workspace,
+        input_root=input_root,
+        request_raw=_request(release_ref=release_ref, files=_inputs(input_root)),
+    )
+    store = SystemStore(
+        workspace,
+        source_root=result["source_root"],
+        source_root_id="production-bootstrap-source-test",
+    )
+    prepared = prepare_initial_activation(
+        store,
+        result["generation"],
+        release_ref,
+    )
+
+    activated = store.activate_initial_generation(**prepared)
+
+    assert activated["activation"]["cas_performed"] is True
+    assert activated["generation_state"] == "OPERATIONAL"
+    assert activated["factor_status"]["payload"]["readiness"] == "READY"
+    assert activated["migration_completion"]["marker"]["payload"]["status"] == "COMPLETE"
+
+
+def test_production_bootstrap_receipt_binding_mutations_block_initial_activation(
+    tmp_path: Path,
+) -> None:
+    workspace, release_ref = _seed_workspace(tmp_path)
+    input_root = tmp_path / "sealed-inputs"
+    result = assemble_production_bootstrap(
+        workspace_root=workspace,
+        input_root=input_root,
+        request_raw=_request(release_ref=release_ref, files=_inputs(input_root)),
+    )
+    store = SystemStore(
+        workspace,
+        source_root=result["source_root"],
+        source_root_id="production-bootstrap-source-test",
+    )
+    receipt = store.get_object(result["production_bootstrap_receipt_ref"])
+    assembly_request = store.get_object(result["assembly_request_ref"])
+    base_kwargs = decode_assembly_request(assembly_request)
+
+    def reseal(mutator: Any) -> dict[str, str]:
+        payload = dict(receipt["payload"])
+        mutator(payload)
+        body = {
+            key: payload[key] for key in sorted(payload) if key != "production_bootstrap_receipt_id"
+        }
+        payload["production_bootstrap_receipt_id"] = (
+            "production-bootstrap-" + hashlib.sha256(canonical_json_bytes(body)).hexdigest()
+        )
+        return store.put_object(
+            seal_artifact(
+                "system.production_bootstrap_receipt",
+                payload,
+                created_at=receipt["created_at"],
+            )
+        )
+
+    def mutate_statistics(payload: dict[str, Any]) -> None:
+        rows = [dict(row) for row in payload["signal_statistics"]]
+        rows[0]["finite_count"] += 1
+        payload["signal_statistics"] = rows
+        payload["signal_statistics_sha256"] = hashlib.sha256(canonical_json_bytes(rows)).hexdigest()
+
+    mutations = [
+        lambda payload: payload.__setitem__(
+            "deployed_release_ref", result["production_bootstrap_receipt_ref"]
+        ),
+        lambda payload: payload.__setitem__(
+            "source_refs", [result["production_bootstrap_receipt_ref"]]
+        ),
+        lambda payload: payload.__setitem__(
+            "factor_policy_ref", result["production_bootstrap_receipt_ref"]
+        ),
+        lambda payload: payload.__setitem__(
+            "readiness_matrix_ref", result["production_bootstrap_receipt_ref"]
+        ),
+        lambda payload: payload.__setitem__("emergency_controller_sha256", "f" * 64),
+        lambda payload: payload.__setitem__("assembler_code_sha256", "e" * 64),
+        mutate_statistics,
+    ]
+    for mutate in mutations:
+        mutated_ref = reseal(mutate)
+        generation = store.assemble_generation(**{**base_kwargs, "research_refs": [mutated_ref]})
+        prepared = prepare_initial_activation(store, generation, release_ref)
+        with pytest.raises(
+            SystemActivationAuthorizationError,
+            match="lacks valid production bootstrap closure",
+        ):
+            store.activate_initial_generation(**prepared)
+        assert not (workspace / "results/system/_active.json").exists()
+        assert not (workspace / "results/system/_migration_complete.json").exists()
+
+    wrong_kind_generation = store.assemble_generation(
+        **{**base_kwargs, "research_refs": [release_ref]}
+    )
+    wrong_kind_prepared = prepare_initial_activation(store, wrong_kind_generation, release_ref)
+    with pytest.raises(
+        SystemActivationAuthorizationError,
+        match="lacks valid production bootstrap closure",
+    ):
+        store.activate_initial_generation(**wrong_kind_prepared)
+    with pytest.raises(SystemContractError, match="duplicate|sorted and unique"):
+        store.assemble_generation(
+            **{
+                **base_kwargs,
+                "research_refs": [
+                    result["production_bootstrap_receipt_ref"],
+                    result["production_bootstrap_receipt_ref"],
+                ],
+            }
+        )
+
+
+def test_production_source_drift_after_receipt_blocks_before_initial_cas(
+    tmp_path: Path,
+) -> None:
+    workspace, release_ref = _seed_workspace(tmp_path)
+    input_root = tmp_path / "sealed-inputs"
+    result = assemble_production_bootstrap(
+        workspace_root=workspace,
+        input_root=input_root,
+        request_raw=_request(release_ref=release_ref, files=_inputs(input_root)),
+    )
+    store = SystemStore(
+        workspace,
+        source_root=result["source_root"],
+        source_root_id="production-bootstrap-source-test",
+    )
+    receipt = store.get_object(result["production_bootstrap_receipt_ref"])
+    raw_market_row = next(
+        row
+        for row in receipt["payload"]["input_source_rows"]
+        if row["field"] == "market_table_file_refs"
+    )
+    source = store.get_object(raw_market_row["source_object_ref"])
+    source_path = Path(result["source_root"]) / source["payload"]["relative_path"]
+    source_path.write_bytes(source_path.read_bytes() + b"tamper")
+    source_path.chmod(0o600)
+    prepared = prepare_initial_activation(
+        store,
+        result["generation"],
+        release_ref,
+    )
+
+    with pytest.raises(SystemContractError, match="byte hash|byte binding|source"):
+        store.activate_initial_generation(**prepared)
+
+    assert not (workspace / "results/system/_active.json").exists()
+    assert not (workspace / "results/system/_migration_complete.json").exists()
 
 
 def test_production_bootstrap_rejects_input_drift(tmp_path: Path) -> None:
@@ -898,6 +1067,9 @@ def test_production_bootstrap_requires_explicit_daily_open_closed_evidence(
             input_root=input_root,
             request_raw=_request(release_ref=release_ref, files=files),
         )
+    assert not (workspace / "results/system/objects/system.production_bootstrap_receipt").exists()
+    assert not (workspace / "results/system/generations").exists()
+    assert not (workspace / "results/system/_active.json").exists()
 
 
 def test_production_bootstrap_rejects_unadmitted_synthetic_calendar_body(
@@ -921,6 +1093,9 @@ def test_production_bootstrap_rejects_unadmitted_synthetic_calendar_body(
             input_root=input_root,
             request_raw=_request(release_ref=release_ref, files=files),
         )
+    assert not (workspace / "results/system/objects/system.production_bootstrap_receipt").exists()
+    assert not (workspace / "results/system/generations").exists()
+    assert not (workspace / "results/system/_active.json").exists()
 
 
 def test_production_bootstrap_rejects_synthetic_daily_date_gap(tmp_path: Path) -> None:
