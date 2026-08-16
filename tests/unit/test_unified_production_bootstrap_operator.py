@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 from datetime import date, datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 from typing import Any
 
 import pyarrow.parquet as pq
@@ -38,6 +41,7 @@ from quant_investor.system import (
     SystemStore,
     decode_assembly_request,
     installed_code_manifest_sha256,
+    verify_emergency_controller,
 )
 from unified_activation_helpers import prepare_initial_activation
 
@@ -861,6 +865,67 @@ def test_production_bootstrap_receipt_allows_exact_isolated_initial_activation(
     monkeypatch.setattr(store_module, "installed_code_manifest_sha256", lambda: "f" * 64)
     historical = SystemStore(workspace).verify_migration_completion()
     assert historical["marker"]["payload"]["status"] == "COMPLETE"
+
+    controller = verify_emergency_controller(store)
+    suspended_pointer_raw = canonical_json_bytes(
+        {
+            "generation_id": controller["generation_id"],
+            "manifest_sha256": controller["manifest_sha256"],
+            "previous_pointer_sha256": activated["pointer_byte_sha256"],
+            "activated_at": "2026-08-14T00:00:02Z",
+            "os_actor": f"uid:{os.geteuid()}:emergency-suspend",
+        }
+    )
+    marker_path = workspace / "results/system/_migration_complete.json"
+    marker_before = marker_path.read_bytes()
+    source_root = Path(__file__).resolve().parents[2]
+    script = r"""
+import base64
+import json
+import sys
+import quant_investor.system.controller as controller
+from quant_investor.system import SystemContractError, SystemStore
+
+controller._CONTROLLER_BODY = controller._CONTROLLER_BODY + "\n# descendant implementation\n"
+
+def reject_current_catalog(*_args, **_kwargs):
+    raise SystemContractError("descendant compiled catalog must not reinterpret anchor")
+
+SystemStore.read_contract_catalog = reject_current_catalog
+store = SystemStore(sys.argv[1])
+raw = base64.b64decode(sys.argv[3].encode("ascii"))
+result = store.activate_suspended_generation(
+    target_active_pointer_raw=raw,
+    expected_pointer_sha256=sys.argv[2],
+)
+print(json.dumps({
+    "generation_state": result["generation_state"],
+    "factor_authority": result["factor_authority"],
+}, sort_keys=True))
+"""
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(workspace),
+            activated["pointer_byte_sha256"],
+            base64.b64encode(suspended_pointer_raw).decode("ascii"),
+        ],
+        cwd=source_root,
+        env={**os.environ, "PYTHONPATH": str(source_root)},
+        check=False,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == {
+        "factor_authority": "BLOCKED",
+        "generation_state": "SYSTEM_SUSPENDED",
+    }
+    assert marker_path.read_bytes() == marker_before
 
 
 def test_production_bootstrap_receipt_binding_mutations_block_initial_activation(

@@ -211,8 +211,13 @@ historical metadata envelope. It neither compares the initial catalog with the
 descendant compiled catalog nor regenerates the initial controller from the
 descendant controller template. Historical source files remain owner/mode/link
 checked and exact-hash checked; historical code is read as bytes and is never
-executed. The same anchor permits a later non-empty transition to an already
-verified `SYSTEM_SUSPENDED` generation without granting Factor authority.
+executed. Emergency containment walks the secure raw pointer history to the
+literal-`EMPTY` root, authenticates that initial manifest and stored catalog,
+and statically resolves the one suspended generation and manifest sealed into
+the initial controller. It deliberately does not read, repair, or require the
+permanent marker, so an absent or malformed marker cannot disable containment.
+Only that fixed target may receive the non-empty CAS; a second otherwise valid
+`SYSTEM_SUSPENDED` generation is rejected and Factor authority remains blocked.
 
 Fundamental safe-successor replay consumes an explicit sealed fileset resolver.
 JSON and evidence inputs use bounded exact-byte reads; Parquet inputs remain

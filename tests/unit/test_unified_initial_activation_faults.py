@@ -28,6 +28,8 @@ from quant_investor.system import (
     SystemMigrationMarkerAbsent,
     SystemPreconditionError,
     SystemStorageError,
+    SystemStore,
+    build_suspended_generation,
     build_prepared_activation_transaction,
     validate_activation_authorization,
     verify_emergency_controller,
@@ -80,6 +82,22 @@ def _direct_write(root: Path, relative: object, raw: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(raw)
     path.chmod(0o600)
+
+
+def _emergency_pointer_raw(
+    store: SystemStore,
+    previous_pointer_sha256: str,
+) -> bytes:
+    controller = verify_emergency_controller(store)
+    return canonical_json_bytes(
+        {
+            "generation_id": controller["generation_id"],
+            "manifest_sha256": controller["manifest_sha256"],
+            "previous_pointer_sha256": previous_pointer_sha256,
+            "activated_at": "2026-08-14T00:00:02Z",
+            "os_actor": f"uid:{os.geteuid()}:emergency-suspend",
+        }
+    )
 
 
 def test_no_transaction_and_authorization_only_leave_pointer_absent(
@@ -247,26 +265,18 @@ def test_fresh_descendant_process_uses_historical_anchor_and_can_suspend(
     closure, _generation, inputs = _case(tmp_path)
     store = closure["store"]
     activated = store.activate_initial_generation(**inputs)
-    controller = verify_emergency_controller(store)
-    target_pointer = canonical_json_bytes(
-        {
-            "generation_id": controller["generation_id"],
-            "manifest_sha256": controller["manifest_sha256"],
-            "previous_pointer_sha256": activated["pointer_byte_sha256"],
-            "activated_at": "2026-08-14T00:00:02Z",
-            "os_actor": f"uid:{os.geteuid()}:emergency-suspend",
-        }
-    )
+    target_pointer = _emergency_pointer_raw(store, activated["pointer_byte_sha256"])
+    marker_path = closure["workspace"] / str(MIGRATION_MARKER_PATH)
+    marker_path.write_bytes(b"{}\n")
+    marker_path.chmod(0o600)
     source_root = Path(__file__).resolve().parents[2]
     script = r"""
 import base64
 import json
 import sys
-import quant_investor.factors.governance.production as production
 import quant_investor.system.controller as controller
 from quant_investor.system import SystemContractError, SystemStore
 
-production.validate_production_bootstrap_generation_closure = lambda **_kwargs: {}
 controller._CONTROLLER_BODY = controller._CONTROLLER_BODY + "\n# descendant implementation\n"
 
 def reject_current_catalog(*_args, **_kwargs):
@@ -275,21 +285,12 @@ def reject_current_catalog(*_args, **_kwargs):
 SystemStore.read_contract_catalog = reject_current_catalog
 
 store = SystemStore(sys.argv[1], source_root=sys.argv[4], source_root_id=sys.argv[5])
-try:
-    before = store.read_active()
-except Exception as exc:
-    current = exc
-    while current is not None:
-        print(type(current).__name__ + ":" + str(current), file=sys.stderr)
-        current = current.__cause__
-    raise
 raw = base64.b64decode(sys.argv[3].encode("ascii"))
 suspended = store.activate_suspended_generation(
     target_active_pointer_raw=raw,
     expected_pointer_sha256=sys.argv[2],
 )
 print(json.dumps({
-    "before": before["generation_state"],
     "after": suspended["generation_state"],
     "factor_authority": suspended["factor_authority"],
 }, sort_keys=True))
@@ -317,9 +318,107 @@ print(json.dumps({
     result = json.loads(completed.stdout)
     assert result == {
         "after": "SYSTEM_SUSPENDED",
-        "before": "OPERATIONAL",
         "factor_authority": "BLOCKED",
     }
+    assert marker_path.read_bytes() == b"{}\n"
+
+
+@pytest.mark.parametrize("marker_state", ["absent", "malformed"])
+def test_fixed_emergency_target_is_independent_from_marker_closure(
+    tmp_path: Path,
+    marker_state: str,
+) -> None:
+    closure, _generation, inputs = _case(tmp_path)
+    store = closure["store"]
+    activated = store.activate_initial_generation(**inputs)
+    root = closure["workspace"]
+    marker_path = root / str(MIGRATION_MARKER_PATH)
+    if marker_state == "absent":
+        marker_path.unlink()
+        expected_marker: bytes | None = None
+    else:
+        expected_marker = b"{}\n"
+        marker_path.write_bytes(expected_marker)
+        marker_path.chmod(0o600)
+    target_raw = _emergency_pointer_raw(store, activated["pointer_byte_sha256"])
+
+    suspended = store.activate_suspended_generation(
+        target_active_pointer_raw=target_raw,
+        expected_pointer_sha256=activated["pointer_byte_sha256"],
+    )
+
+    assert suspended["generation_state"] == "SYSTEM_SUSPENDED"
+    assert suspended["factor_authority"] == "BLOCKED"
+    assert (root / str(ACTIVE_POINTER_PATH)).read_bytes() == target_raw
+    if expected_marker is None:
+        assert not marker_path.exists()
+    else:
+        assert marker_path.read_bytes() == expected_marker
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["second_target", "operational_kind", "wrong_manifest", "controller", "extra_field"],
+)
+def test_emergency_target_mutations_fail_before_cas_and_preserve_marker(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    closure, generation, inputs = _case(tmp_path)
+    store = closure["store"]
+    activated = store.activate_initial_generation(**inputs)
+    root = closure["workspace"]
+    active_path = root / str(ACTIVE_POINTER_PATH)
+    marker_path = root / str(MIGRATION_MARKER_PATH)
+    active_before = active_path.read_bytes()
+    marker_before = marker_path.read_bytes()
+    controller = verify_emergency_controller(store)
+    generation_id = controller["generation_id"]
+    manifest_sha = controller["manifest_sha256"]
+    if mutation == "second_target":
+        second = build_suspended_generation(
+            store,
+            blockers=["UNSEALED_SECOND_TARGET"],
+            created_at="2026-08-14T00:00:03Z",
+        )
+        generation_id = second["generation_id"]
+        manifest_sha = second["manifest_sha256"]
+    elif mutation == "operational_kind":
+        generation_id = generation["generation_id"]
+        manifest_sha = generation["manifest_sha256"]
+    elif mutation == "wrong_manifest":
+        manifest_sha = "f" * 64
+    elif mutation == "controller":
+        controller_path = root / "results/system/control/suspend.py"
+        controller_path.chmod(0o600)
+        controller_path.write_bytes(controller_path.read_bytes() + b"# tampered\n")
+        controller_path.chmod(0o500)
+    else:
+        manifest_path = root / "results/system/generations" / generation_id / "manifest.json"
+        manifest = parse_canonical_json_bytes(
+            manifest_path.read_bytes(), label="suspended manifest"
+        )
+        manifest["payload"]["unexpected"] = True
+        manifest_path.write_bytes(canonical_json_bytes(manifest))
+        manifest_path.chmod(0o600)
+    target_raw = canonical_json_bytes(
+        {
+            "generation_id": generation_id,
+            "manifest_sha256": manifest_sha,
+            "previous_pointer_sha256": activated["pointer_byte_sha256"],
+            "activated_at": "2026-08-14T00:00:02Z",
+            "os_actor": f"uid:{os.geteuid()}:emergency-suspend",
+        }
+    )
+
+    with pytest.raises(SystemError):
+        store.activate_suspended_generation(
+            target_active_pointer_raw=target_raw,
+            expected_pointer_sha256=activated["pointer_byte_sha256"],
+        )
+
+    assert active_path.read_bytes() == active_before
+    assert marker_path.read_bytes() == marker_before
 
 
 def test_marker_only_and_different_pointer_are_never_overwritten(tmp_path: Path) -> None:

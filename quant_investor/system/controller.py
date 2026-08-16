@@ -264,8 +264,22 @@ def verify_emergency_controller(
     except Exception as exc:
         raise SystemContractError("emergency suspended manifest is invalid") from exc
     payload = manifest.get("payload") if type(manifest) is dict else None
+    envelope_fields = {
+        "kind",
+        "contract_sha256",
+        "artifact_id",
+        "created_at",
+        "payload",
+        "semantic_sha256",
+    }
     if (
-        type(payload) is not dict
+        type(manifest) is not dict
+        or set(manifest) != envelope_fields
+        or manifest.get("kind") != SYSTEM_GENERATION_MANIFEST_CONTRACT.kind
+        or manifest.get("contract_sha256") != metadata.get("manifest_contract_sha256")
+        or type(payload) is not dict
+        or type(metadata.get("manifest_payload_fields")) is not list
+        or metadata.get("manifest_payload_fields") != sorted(payload)
         or manifest.get("semantic_sha256") != generation_id
         or payload.get("generation_state") != "SYSTEM_SUSPENDED"
         or payload.get("source_refs") != []
@@ -317,6 +331,8 @@ def verify_emergency_controller(
         "path": str(EMERGENCY_CONTROLLER_PATH),
         "byte_sha256": stored.byte_sha256,
         "generation_id": generation_id,
+        "manifest_contract_sha256": manifest["contract_sha256"],
+        "manifest_payload_fields": tuple(metadata["manifest_payload_fields"]),
         "manifest_sha256": manifest_stored.byte_sha256,
     }
 

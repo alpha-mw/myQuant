@@ -35,9 +35,12 @@ Initial `system activate` is the only first-pointer writer. It consumes exact
 bytes and expected SHAs for the detached migration receipt, final cutover
 authorization, activation authorization, target pointer, and deployed release.
 `system suspend` is a separate non-empty-to-suspended lane and likewise consumes
-an exact presealed target pointer. The installed emergency controller verifies
-those bytes but has no pointer write authority. Every read, verify, factor,
-research-status, and public-result route performs no activation.
+an exact presealed target pointer. Its only accepted target is the suspended
+generation and manifest sealed into the initial controller. The System resolves
+that fixed target from raw pointer history without requiring or modifying the
+permanent marker, while the installed emergency controller itself has no pointer
+write authority. Every read, verify, factor, research-status, and public-result
+route performs no activation.
 
 Use `--help` from the intended checkout before any operator run. Arguments are
 not inferred from the old command name. Missing required paths, identities,

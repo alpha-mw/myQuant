@@ -24,6 +24,7 @@ from quant_investor.system import (
     SystemStore,
     build_suspended_generation,
     decode_assembly_request,
+    verify_emergency_controller,
 )
 from test_unified_system_bootstrap import _closure
 from unified_activation_helpers import activate_initial, prepare_initial_activation
@@ -82,6 +83,11 @@ def _activate_suspended(
         ),
         expected_pointer_sha256=previous_sha256,
     )
+
+
+def _controller_target(store: SystemStore) -> dict[str, Any]:
+    controller = verify_emergency_controller(store)
+    return store.verify_generation(controller["generation_id"])
 
 
 def test_absent_status_and_verify_are_normal_reports(tmp_path: Path) -> None:
@@ -167,11 +173,7 @@ def test_empty_activation_pointer_and_previous_bytes_are_retained(tmp_path: Path
     assert first["pointer"]["manifest_sha256"] == first["manifest_sha256"]
     assert stat.S_IMODE(active_path.stat().st_mode) == 0o600
 
-    second_generation = _suspended(
-        store,
-        blocker="SECOND_SUSPENSION",
-        created_at="2026-08-14T00:01:00Z",
-    )
+    second_generation = _controller_target(store)
     second = _activate_suspended(store, second_generation, first["pointer_byte_sha256"])
 
     history = (
@@ -195,11 +197,7 @@ def test_pointer_history_rejects_missing_retained_bytes(tmp_path: Path) -> None:
     store = closure["store"]
     first_generation = store.assemble_generation(**closure["kwargs"])
     first = activate_initial(store, first_generation, closure["release_ref"])
-    second_generation = _suspended(
-        store,
-        blocker="SECOND",
-        created_at="2026-08-14T00:01:00Z",
-    )
+    second_generation = _controller_target(store)
     _activate_suspended(store, second_generation, first["pointer_byte_sha256"])
     retained = (
         closure["workspace"]
@@ -219,11 +217,7 @@ def test_pointer_history_rejects_retained_byte_hash_mismatch(tmp_path: Path) -> 
     store = closure["store"]
     first_generation = store.assemble_generation(**closure["kwargs"])
     first = activate_initial(store, first_generation, closure["release_ref"])
-    second_generation = _suspended(
-        store,
-        blocker="SECOND",
-        created_at="2026-08-14T00:01:00Z",
-    )
+    second_generation = _controller_target(store)
     _activate_suspended(store, second_generation, first["pointer_byte_sha256"])
     retained = (
         closure["workspace"]

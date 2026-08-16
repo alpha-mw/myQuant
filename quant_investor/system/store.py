@@ -633,7 +633,9 @@ class SystemStore:
         if roles != sorted(roles) or len(roles) != len(set(roles)):
             raise SystemContractError("historical source bundle roles are not exact")
 
-    def _verify_historical_initial_generation(self, generation_id: str) -> dict[str, Any]:
+    def _verify_historical_initial_generation(  # noqa: C901
+        self, generation_id: str
+    ) -> dict[str, Any]:
         """Authenticate the immutable initial object graph without current validators."""
 
         normalized_id = _require_sha256(generation_id, label="historical generation_id")
@@ -705,11 +707,9 @@ class SystemStore:
             payload.get("emergency_controller_sha256"),
             label="historical emergency controller SHA",
         )
-        controller = self._storage.read_executable(
-            PurePosixPath("results/system/control/suspend.py")
-        )
-        if controller.byte_sha256 != emergency_sha:
-            raise SystemContractError("historical emergency controller bytes changed")
+        from .controller import verify_emergency_controller
+
+        controller = verify_emergency_controller(self, expected_sha256=emergency_sha)
         return {
             "verified": True,
             "generation_state": "OPERATIONAL",
@@ -743,19 +743,30 @@ class SystemStore:
             "migration_marker": None,
             "readiness": readiness,
             "emergency_controller": {
-                "verified": True,
-                "byte_sha256": controller.byte_sha256,
+                **controller,
                 "historical": True,
             },
             "deployed_release_verified": False,
             "historical_release_verified": True,
         }
 
-    def _verify_historical_suspended_generation(self, generation_id: str) -> dict[str, Any]:
+    def _verify_historical_suspended_generation(
+        self,
+        generation_id: str,
+        *,
+        expected_manifest_sha256: str,
+        expected_manifest_contract_sha256: str,
+        expected_manifest_payload_fields: Sequence[str],
+    ) -> dict[str, Any]:
         """Authenticate a prebuilt suspended target without current catalog equality."""
 
         normalized_id = _require_sha256(generation_id, label="historical suspended generation")
         stored = self._storage.read(GENERATIONS_ROOT / normalized_id / "manifest.json")
+        if stored.byte_sha256 != _require_sha256(
+            expected_manifest_sha256,
+            label="controller suspended manifest SHA",
+        ):
+            raise SystemContractError("historical suspended manifest bytes differ")
         try:
             provisional = parse_canonical_json_bytes(
                 stored.data, label="historical suspended manifest"
@@ -771,7 +782,18 @@ class SystemStore:
         catalog, dispatch = self._read_historical_contract_catalog(catalog_sha)
         manifest = self._validate_historical_artifact(stored.data, dispatch=dispatch)
         payload = manifest["payload"]
-        if manifest["semantic_sha256"] != normalized_id:
+        payload_fields = tuple(expected_manifest_payload_fields)
+        if (
+            manifest["kind"] != MANIFEST_KIND
+            or manifest["contract_sha256"]
+            != _require_sha256(
+                expected_manifest_contract_sha256,
+                label="controller manifest contract SHA",
+            )
+            or set(payload) != set(payload_fields)
+            or len(payload_fields) != len(set(payload_fields))
+            or manifest["semantic_sha256"] != normalized_id
+        ):
             raise SystemContractError("historical suspended identity differs")
         manifest_ref = {
             "kind": manifest["kind"],
@@ -801,10 +823,35 @@ class SystemStore:
             raise SystemContractError("historical suspended closure is not minimal")
         release = self._historical_get_object(payload["release_manifest_ref"], dispatch=dispatch)
         readiness = self._historical_get_object(payload["readiness_matrix_ref"], dispatch=dispatch)
+        release_payload = release.get("payload")
         readiness_payload = readiness.get("payload")
-        if type(readiness_payload) is not dict or any(
-            readiness_payload.get(field) != "SUSPENDED"
-            for field in ("factor_state", "mainline_state", "investment_state")
+        if (
+            release.get("kind") != RELEASE_KIND
+            or type(release_payload) is not dict
+            or set(release_payload)
+            != {
+                "release_id",
+                "state",
+                "code_sha256",
+                "wheel_sha256",
+                "code_manifest_sha256",
+            }
+            or release_payload.get("state") != "SYSTEM_SUSPENDED"
+        ):
+            raise SystemContractError("historical suspended release differs")
+        if (
+            readiness.get("kind") != SUSPENDED_READINESS_KIND
+            or type(readiness_payload) is not dict
+            or set(readiness_payload) != set(READINESS_FIELDS)
+            or any(
+                readiness_payload.get(field) != "SUSPENDED"
+                for field in ("factor_state", "mainline_state", "investment_state")
+            )
+            or readiness_payload.get("factor_status_ref") is not None
+            or readiness_payload.get("mainline_candidate_ref") is not None
+            or readiness_payload.get("admission_route") != "SUSPENDED"
+            or type(readiness_payload.get("blockers")) is not list
+            or not readiness_payload["blockers"]
         ):
             raise SystemContractError("historical suspended readiness differs")
         return {
@@ -841,6 +888,70 @@ class SystemStore:
             "emergency_controller": None,
             "deployed_release_verified": False,
             "historical_release_verified": True,
+        }
+
+    def _resolve_historical_emergency_anchor(self) -> dict[str, Any]:
+        """Resolve the initial fixed controller target without marker replay."""
+
+        chain = self._pointer_chain()
+        if not chain:
+            raise SystemMigrationMarkerAbsent("active pointer is absent")
+        initial = chain[-1]
+        pointer = initial.get("pointer")
+        pointer_sha = initial.get("pointer_byte_sha256")
+        if (
+            type(pointer) is not dict
+            or type(pointer_sha) is not str
+            or pointer.get("previous_pointer_sha256") != EMPTY_POINTER_SHA256
+        ):
+            raise SystemMigrationClosureError("initial pointer ancestry is invalid")
+        generation_id = _require_sha256(
+            pointer.get("generation_id"), label="initial pointer generation"
+        )
+        manifest_stored = self._storage.read(GENERATIONS_ROOT / generation_id / "manifest.json")
+        if manifest_stored.byte_sha256 != _require_sha256(
+            pointer.get("manifest_sha256"), label="initial pointer manifest"
+        ):
+            raise SystemMigrationClosureError("initial pointer manifest bytes differ")
+        try:
+            provisional = parse_canonical_json_bytes(
+                manifest_stored.data, label="historical initial manifest"
+            )
+        except ContractError as exc:
+            raise SystemMigrationClosureError(
+                "historical initial manifest is not canonical"
+            ) from exc
+        payload = provisional.get("payload") if type(provisional) is dict else None
+        if type(payload) is not dict:
+            raise SystemMigrationClosureError("historical initial manifest is invalid")
+        catalog_sha = _require_sha256(
+            payload.get("contract_catalog_sha256"),
+            label="historical initial catalog",
+        )
+        _catalog, dispatch = self._read_historical_contract_catalog(catalog_sha)
+        manifest = self._validate_historical_artifact(
+            manifest_stored.data,
+            dispatch=dispatch,
+        )
+        if (
+            manifest.get("kind") != MANIFEST_KIND
+            or manifest.get("semantic_sha256") != generation_id
+            or manifest["payload"].get("generation_state") != "OPERATIONAL"
+        ):
+            raise SystemMigrationClosureError("historical initial generation differs")
+        emergency_sha = _require_sha256(
+            manifest["payload"].get("emergency_controller_sha256"),
+            label="historical emergency controller SHA",
+        )
+        from .controller import verify_emergency_controller
+
+        controller = verify_emergency_controller(self, expected_sha256=emergency_sha)
+        return {
+            "initial_pointer": pointer,
+            "initial_pointer_byte_sha256": pointer_sha,
+            "initial_manifest": manifest,
+            "initial_manifest_byte_sha256": manifest_stored.byte_sha256,
+            "controller": controller,
         }
 
     @staticmethod
@@ -2536,11 +2647,21 @@ class SystemStore:
         self._validate_pointer(current.data)
         if current.byte_sha256 != expected:
             raise SystemCASMismatch(expected, current.byte_sha256)
-        if self._storage.read_optional(MIGRATION_MARKER_PATH) is not None:
-            self.verify_migration_completion()
-            verified = self._verify_historical_suspended_generation(pointer["generation_id"])
-        else:
-            verified = self.verify_generation(pointer["generation_id"])
+        anchor = self._resolve_historical_emergency_anchor()
+        controller = anchor["controller"]
+        if (
+            pointer["generation_id"] != controller["generation_id"]
+            or pointer["manifest_sha256"] != controller["manifest_sha256"]
+        ):
+            raise SystemActivationAuthorizationError(
+                "suspension target differs from the initial controller"
+            )
+        verified = self._verify_historical_suspended_generation(
+            pointer["generation_id"],
+            expected_manifest_sha256=controller["manifest_sha256"],
+            expected_manifest_contract_sha256=controller["manifest_contract_sha256"],
+            expected_manifest_payload_fields=controller["manifest_payload_fields"],
+        )
         if verified["generation_state"] != "SYSTEM_SUSPENDED":
             raise SystemActivationAuthorizationError("emergency target must be SYSTEM_SUSPENDED")
         if verified["manifest_sha256"] != pointer["manifest_sha256"]:
@@ -2866,7 +2987,20 @@ class SystemStore:
                     validation_level="stat",
                 )
             except SystemContractError:
-                verified = self._verify_historical_suspended_generation(pointer["generation_id"])
+                controller = completion["initial_generation"]["emergency_controller"]
+                if (
+                    pointer["generation_id"] != controller["generation_id"]
+                    or pointer["manifest_sha256"] != controller["manifest_sha256"]
+                ):
+                    raise SystemContractError(
+                        "historical suspended pointer differs from initial controller"
+                    )
+                verified = self._verify_historical_suspended_generation(
+                    pointer["generation_id"],
+                    expected_manifest_sha256=controller["manifest_sha256"],
+                    expected_manifest_contract_sha256=controller["manifest_contract_sha256"],
+                    expected_manifest_payload_fields=controller["manifest_payload_fields"],
+                )
         if verified["manifest_sha256"] != pointer["manifest_sha256"]:
             raise SystemContractError("active pointer manifest binding mismatch")
         if (
