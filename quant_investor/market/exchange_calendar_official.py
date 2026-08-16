@@ -19,7 +19,24 @@ from urllib.parse import urlsplit
 from quant_investor.contracts import ContractError, validate_artifact
 from quant_investor.system.errors import SystemContractError
 
-EvidenceRole = Literal["DAILY_STATUS", "SESSION_RULE"]
+EvidenceRole = Literal[
+    "TRADING_WEEK_RULE",
+    "SESSION_RULE",
+    "ANNUAL_HOLIDAY_NOTICE",
+    "TEMPORARY_CLOSURE_NOTICE",
+    "SESSION_CHANGE_NOTICE",
+    "NOTICE_INDEX_SNAPSHOT",
+]
+EVIDENCE_ROLES: Final = frozenset(
+    {
+        "TRADING_WEEK_RULE",
+        "SESSION_RULE",
+        "ANNUAL_HOLIDAY_NOTICE",
+        "TEMPORARY_CLOSURE_NOTICE",
+        "SESSION_CHANGE_NOTICE",
+        "NOTICE_INDEX_SNAPSHOT",
+    }
+)
 
 # Adding an entry is a production authority change and requires a retained
 # native issuer capture plus an exact endpoint/response/decoder admission
@@ -36,6 +53,9 @@ _EXCHANGE_AUTHORITIES: Final = {
     "SZSE": ("SZSE_OFFICIAL", "www.szse.cn"),
     "BSE": ("BSE_OFFICIAL", "www.bse.cn"),
 }
+_SAFE_RESPONSE_HEADERS: Final = frozenset(
+    {"cache-control", "content-length", "content-type", "etag", "last-modified"}
+)
 _ADMISSION_FIELDS: Final = frozenset(
     {
         "decoder_admission_id",
@@ -46,6 +66,10 @@ _ADMISSION_FIELDS: Final = frozenset(
         "endpoint_scheme",
         "endpoint_host",
         "endpoint_path_query_template",
+        "fixture_request_url",
+        "fixture_effective_url",
+        "fixture_redirect_chain",
+        "fixture_tls_verified",
         "redirect_policy",
         "http_status",
         "raw_media_type",
@@ -74,7 +98,7 @@ def _reject(exchange: str, role: str) -> SystemContractError:
 def _validate_endpoint(payload: Mapping[str, Any]) -> None:
     exchange = payload["exchange_id"]
     role = payload["evidence_role"]
-    if exchange not in _EXCHANGE_AUTHORITIES or role not in {"DAILY_STATUS", "SESSION_RULE"}:
+    if exchange not in _EXCHANGE_AUTHORITIES or role not in EVIDENCE_ROLES:
         raise SystemContractError("official calendar decoder admission subject differs")
     issuer, hostname = _EXCHANGE_AUTHORITIES[exchange]
     endpoint = payload["endpoint_path_query_template"]
@@ -110,6 +134,7 @@ def _validate_response(payload: Mapping[str, Any]) -> None:
             or type(row["name"]) is not str
             or row["name"] != row["name"].lower()
             or type(row["value"]) is not str
+            or row["name"] not in _SAFE_RESPONSE_HEADERS
             for row in headers
         )
         or not any(
@@ -118,6 +143,31 @@ def _validate_response(payload: Mapping[str, Any]) -> None:
         )
     ):
         raise SystemContractError("official calendar response-header admission differs")
+    request_url = payload["fixture_request_url"]
+    effective_url = payload["fixture_effective_url"]
+    redirects = payload["fixture_redirect_chain"]
+    if (
+        type(request_url) is not str
+        or type(effective_url) is not str
+        or type(redirects) is not list
+        or any(type(item) is not str for item in redirects)
+        or payload["fixture_tls_verified"] is not True
+    ):
+        raise SystemContractError("official calendar fixture transport admission differs")
+    expected_host = _EXCHANGE_AUTHORITIES[payload["exchange_id"]][1]
+    for url in [request_url, *redirects, effective_url]:
+        parsed = urlsplit(url)
+        if (
+            parsed.scheme != "https"
+            or parsed.hostname != expected_host
+            or parsed.username is not None
+            or parsed.password is not None
+        ):
+            raise SystemContractError("official calendar fixture redirect authority differs")
+    if redirects and redirects[-1] != effective_url:
+        raise SystemContractError("official calendar fixture redirect chain is incomplete")
+    if not redirects and effective_url != request_url:
+        raise SystemContractError("official calendar fixture effective URL differs")
 
 
 def _validate_fixture(payload: Mapping[str, Any]) -> None:
@@ -193,13 +243,6 @@ def decoder_id(exchange: str, role: EvidenceRole) -> str:
     return value
 
 
-def decode_daily_status(exchange: str, raw: bytes, *, media_type: str) -> list[dict[str, str]]:
-    """Reject daily evidence while no native issuer contract is admitted."""
-
-    del raw, media_type
-    raise _reject(exchange, "DAILY_STATUS")
-
-
 def decode_session_intervals(exchange: str, raw: bytes, *, media_type: str) -> list[dict[str, str]]:
     """Reject session evidence while no native issuer contract is admitted."""
 
@@ -224,8 +267,8 @@ def decode_capture_projection(
 __all__ = [
     "DECODER_IDS",
     "DECODER_ADMISSIONS",
+    "EVIDENCE_ROLES",
     "decode_capture_projection",
-    "decode_daily_status",
     "decode_session_intervals",
     "decoder_code_sha256",
     "decoder_admission",

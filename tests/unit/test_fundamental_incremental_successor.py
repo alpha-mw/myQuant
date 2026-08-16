@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 import hashlib
 import json
@@ -13,8 +14,10 @@ import pyarrow.parquet as pq
 import pytest
 import quant_investor.market.fundamental_incremental as successor_module
 
+from quant_investor.market import fundamental_incremental as incremental_module
 from quant_investor.market.fundamental_incremental import (
     RAW_TABLES,
+    SUCCESSOR_APPEND_FIRST_MODE,
     SUCCESSOR_PROVENANCE_SCHEMA,
     SafeSuccessorError,
     assemble_safe_successor,
@@ -30,6 +33,7 @@ from quant_investor.market.fundamental_provider_contract import (
     frame_fingerprint,
 )
 from quant_investor.system import SystemContractError, SystemSecurityError
+
 
 SYMBOLS = ("000001.SZ", "000002.SZ", "000003.SZ")
 PARENT_CUTOFF = "20260806"
@@ -50,7 +54,8 @@ def _support_bytes() -> dict[str, bytes]:
             b'"cn-fundamental-generation.v1","status":"OK"}\n'
         ),
         "support_manifest": (
-            b'{"schema_version":"fixture-successor-support.v1",' b'"status":"sealed"}\n'
+            b'{"schema_version":"fixture-successor-support.v1",'
+            b'"status":"sealed"}\n'
         ),
     }
 
@@ -285,7 +290,9 @@ def _raw_tables(target: str = "20260808") -> dict[str, pd.DataFrame]:
             },
         ]
     )
-    raw["forecast"] = pd.DataFrame([row for row in forecast if row["ann_date"] <= target])
+    raw["forecast"] = pd.DataFrame(
+        [row for row in forecast if row["ann_date"] <= target]
+    )
     return raw
 
 
@@ -331,6 +338,241 @@ def _bundle(
         target_cutoff=target,
         run_id=f"successor_{target}",
     )
+
+
+class _NoAggregateAccessStore(Mapping[str, object]):
+    def __init__(self, tables: Mapping[str, pd.DataFrame], batch_rows: int = 2) -> None:
+        self._tables = {name: frame.copy() for name, frame in tables.items()}
+        self._batch_rows = batch_rows
+        self.getitem_calls = 0
+        self.table_fingerprints = {
+            name: frame_fingerprint(frame) for name, frame in self._tables.items()
+        }
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(RAW_TABLES)
+
+    def __len__(self) -> int:
+        return len(RAW_TABLES)
+
+    def __getitem__(self, key: str) -> object:
+        self.getitem_calls += 1
+        raise AssertionError(f"aggregate access forbidden: {key}")
+
+    def iter_batches(
+        self,
+        table: str,
+        *,
+        batch_rows: int,
+        batch_bytes: int,
+    ) -> Iterator[pd.DataFrame]:
+        assert batch_rows >= self._batch_rows
+        assert batch_bytes > 0
+        frame = self._tables[table]
+        for start in range(0, len(frame), self._batch_rows):
+            yield frame.iloc[start : start + self._batch_rows].copy()
+
+
+def _derivation_budget(raw: Mapping[str, pd.DataFrame]) -> dict:
+    body = {
+        "schema_version": (
+            "cn-fundamental-successor-derivation-accumulator-budget.v1"
+        ),
+        "status": "PASS",
+        "period_anchor_row_limit": len(SYMBOLS),
+        "forecast_anchor_row_limit": len(SYMBOLS),
+        "period_delta_row_limit": sum(len(raw[table]) for table in RAW_TABLES[:4]),
+        "period_lineage_row_limit": sum(len(raw[table]) for table in RAW_TABLES[:4]),
+        "forecast_delta_row_limit": len(raw["forecast"]),
+        "daily_basic_row_limit": len(raw["daily_basic"]),
+        "total_accumulator_byte_limit": 64 * 1024 * 1024,
+        "effective_memory_headroom_bytes": 1024 * 1024 * 1024,
+        "post_capture_receipt_sha256": "a" * 64,
+    }
+    body["binding_sha256"] = canonical_json_sha256(body)
+    return body
+
+
+def _sorted_raw(raw: Mapping[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
+    return {
+        table: frame.sort_values(
+            [
+                column
+                for column in ("ts_code", "ann_date", "trade_date", "end_date")
+                if column in frame.columns
+            ],
+            kind="mergesort",
+        ).reset_index(drop=True)
+        if not frame.empty
+        else frame.copy()
+        for table, frame in raw.items()
+    }
+
+
+def _streamed_bundle(
+    raw: Mapping[str, pd.DataFrame],
+    *,
+    budget: Mapping[str, object] | None = None,
+):
+    sorted_raw = _sorted_raw(raw)
+    store = _NoAggregateAccessStore(sorted_raw)
+    plan = seal_support_plan(
+        store,
+        parent_cutoff=PARENT_CUTOFF,
+        target_cutoff="20260808",
+        permanent_support_refs=_support_refs(),
+        extra={
+            "derivation_resource_budget": dict(
+                budget or _derivation_budget(sorted_raw)
+            )
+        },
+    )
+    bundle = assemble_safe_successor(
+        parent_tables=_parent_tables(),
+        parent_closure=_parent_closure(_parent_tables()),
+        support_raw_tables=store,
+        plan_metadata=plan,
+        keyset_closure=_keyset(sorted_raw),
+        parent_cutoff=PARENT_CUTOFF,
+        target_cutoff="20260808",
+        run_id="successor_20260808",
+    )
+    return bundle, store, sorted_raw
+
+
+def test_streamed_support_is_reference_equivalent_without_aggregate_getitem() -> None:
+    sorted_raw = _sorted_raw(_raw_tables("20260808"))
+    reference = _bundle(target="20260808", raw=sorted_raw)
+    streamed, store, _raw = _streamed_bundle(sorted_raw)
+
+    assert store.getitem_calls == 0
+    assert frame_fingerprint(streamed.period_suffix) == frame_fingerprint(
+        reference.period_suffix
+    )
+    assert frame_fingerprint(streamed.daily_suffix) == frame_fingerprint(
+        reference.daily_suffix
+    )
+    assert streamed.lineage["period_rows"] == reference.lineage["period_rows"]
+    streaming = streamed.lineage["support_streaming"]
+    assert all(
+        streaming[lane]["full_table_getitem_used"] is False
+        for lane in ("financial", "forecast", "daily_basic")
+    )
+    assert streaming["financial"]["maximum_resident_source_rows"] <= 9
+
+
+def test_deep_prefix_retains_only_boundary_anchors_and_delta() -> None:
+    shallow = _sorted_raw(_raw_tables("20260808"))
+    deep = {table: frame.copy() for table, frame in shallow.items()}
+    quarter_ends = ("0331", "0630", "0930", "1231")
+    for table in RAW_TABLES[:4]:
+        historical = []
+        for symbol in SYMBOLS:
+            for year in range(2010, 2025):
+                for quarter_end in quarter_ends:
+                    historical.append(
+                        _financial_row(
+                            table,
+                            symbol,
+                            f"{year}{quarter_end}",
+                            f"{year + 1}0101",
+                            delta=False,
+                        )
+                    )
+        deep[table] = pd.concat(
+            [deep[table], pd.DataFrame(historical)], ignore_index=True
+        )
+    historical_forecast = []
+    for symbol in SYMBOLS:
+        for year in range(2010, 2025):
+            for quarter_end in quarter_ends:
+                historical_forecast.append(
+                    {
+                        "ts_code": symbol,
+                        "end_date": f"{year}{quarter_end}",
+                        "ann_date": f"{year + 1}0101",
+                        "p_change_min": 10.0,
+                        "p_change_max": 10.0,
+                        "type": "预增",
+                        "summary": "historical",
+                        "change_reason": "historical",
+                        "source": "fixture",
+                        "fetched_at": f"{year + 1}-01-01T08:00:00Z",
+                    }
+                )
+    deep["forecast"] = pd.concat(
+        [deep["forecast"], pd.DataFrame(historical_forecast)], ignore_index=True
+    )
+    deep = _sorted_raw(deep)
+
+    shallow_bundle, _shallow_store, _shallow_raw = _streamed_bundle(shallow)
+    deep_reference = _bundle(target="20260808", raw=deep)
+    deep_bundle, deep_store, _deep_raw = _streamed_bundle(deep)
+
+    assert deep_store.getitem_calls == 0
+    assert frame_fingerprint(deep_bundle.period_suffix) == frame_fingerprint(
+        deep_reference.period_suffix
+    )
+    assert frame_fingerprint(deep_bundle.daily_suffix) == frame_fingerprint(
+        deep_reference.daily_suffix
+    )
+    assert frame_fingerprint(deep_bundle.period_suffix) == frame_fingerprint(
+        shallow_bundle.period_suffix
+    )
+    assert frame_fingerprint(deep_bundle.daily_suffix) == frame_fingerprint(
+        shallow_bundle.daily_suffix
+    )
+    shallow_streaming = shallow_bundle.lineage["support_streaming"]
+    deep_streaming = deep_bundle.lineage["support_streaming"]
+    expected_counts = {
+        "daily_basic": 6,
+        "forecast_anchor": 3,
+        "forecast_delta": 2,
+        "period_anchor": 3,
+        "period_delta": 3,
+        "period_lineage": 3,
+    }
+    assert shallow_streaming["accumulator"]["counts"] == expected_counts
+    assert deep_streaming["accumulator"]["counts"] == expected_counts
+    assert deep_streaming["financial"]["retained_prefix_winners"] == len(SYMBOLS)
+    assert deep_streaming["financial"]["retained_delta_records"] == 3
+    assert deep_streaming["financial"]["retained_delta_lineage"] == 3
+    assert deep_streaming["forecast"]["retained_prefix_winners"] == len(SYMBOLS)
+    assert deep_streaming["forecast"]["retained_delta_records"] == 2
+    assert deep_streaming["financial"]["full_support_records_retained"] is False
+    assert deep_streaming["forecast"]["full_support_records_retained"] is False
+    assert (
+        deep_streaming["financial"]["maximum_resident_source_rows"]
+        > shallow_streaming["financial"]["maximum_resident_source_rows"]
+    )
+
+
+def test_streamed_derivation_fails_closed_at_sealed_accumulator_limit() -> None:
+    raw = _sorted_raw(_raw_tables("20260808"))
+    budget = _derivation_budget(raw)
+    budget["daily_basic_row_limit"] = len(raw["daily_basic"]) - 1
+    budget.pop("binding_sha256")
+    budget["binding_sha256"] = canonical_json_sha256(budget)
+
+    with pytest.raises(SafeSuccessorError) as failure:
+        _streamed_bundle(raw, budget=budget)
+    assert failure.value.code == "DERIVATION_ACCUMULATOR_LIMIT_EXCEEDED"
+
+
+def test_financial_symbol_cap_applies_across_all_four_support_tables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw = _sorted_raw(_raw_tables("20260808"))
+    for table in RAW_TABLES[:4]:
+        raw[table]["resource_padding"] = ""
+        first = raw[table].index[raw[table]["ts_code"] == SYMBOLS[0]][0]
+        raw[table].loc[first, "resource_padding"] = "x" * 9_000
+    monkeypatch.setattr(incremental_module, "SUPPORT_STREAM_BATCH_BYTES", 16_384)
+    monkeypatch.setattr(incremental_module, "SUPPORT_SYMBOL_MAX_BYTES", 32_768)
+
+    with pytest.raises(SafeSuccessorError) as failure:
+        _streamed_bundle(raw)
+    assert failure.value.code == "SUPPORT_SYMBOL_RESOURCE_LIMIT"
 
 
 def test_v2_to_v3_to_v3_flattens_chain_and_retains_original_seam() -> None:
@@ -381,7 +623,10 @@ def test_boundary_anchor_mismatch_blocks_and_declared_nonreachability_passes() -
     raw = _raw_tables("20260807")
     for table in RAW_TABLES[:4]:
         raw[table] = raw[table][
-            ~((raw[table]["ts_code"] == "000001.SZ") & (raw[table]["ann_date"] <= PARENT_CUTOFF))
+            ~(
+                (raw[table]["ts_code"] == "000001.SZ")
+                & (raw[table]["ann_date"] <= PARENT_CUTOFF)
+            )
         ].reset_index(drop=True)
     raw["forecast"] = raw["forecast"][
         ~(
@@ -409,7 +654,9 @@ def test_boundary_anchor_mismatch_blocks_and_declared_nonreachability_passes() -
         target_cutoff="20260807",
         run_id="nonreachable",
     )
-    assert result.lineage["boundary"]["period"]["000001.SZ"] == ("LANE_NON_REACHABLE_DECLARED")
+    assert result.lineage["boundary"]["period"]["000001.SZ"] == (
+        "LANE_NON_REACHABLE_DECLARED"
+    )
 
 
 def test_hidden_previous_year_dependency_must_be_present_or_proven_absent() -> None:
@@ -420,7 +667,10 @@ def test_hidden_previous_year_dependency_must_be_present_or_proven_absent() -> N
         "netprofit_yoy",
     ] = np.nan
     raw["income"] = raw["income"][
-        ~((raw["income"]["ts_code"] == "000001.SZ") & (raw["income"]["end_date"] == "20250630"))
+        ~(
+            (raw["income"]["ts_code"] == "000001.SZ")
+            & (raw["income"]["end_date"] == "20250630")
+        )
     ].reset_index(drop=True)
     with pytest.raises(SafeSuccessorError, match="HIDDEN_DEPENDENCY_UNPROVEN"):
         _bundle(target="20260807", raw=raw)
@@ -429,7 +679,10 @@ def test_hidden_previous_year_dependency_must_be_present_or_proven_absent() -> N
 def test_hidden_dependency_before_support_start_has_specific_stop_code() -> None:
     raw = _raw_tables("20260807")
     for table in ("fina_indicator", "income", "balancesheet", "cashflow"):
-        selector = (raw[table]["ts_code"] == "000001.SZ") & (raw[table]["ann_date"] == "20260807")
+        selector = (
+            (raw[table]["ts_code"] == "000001.SZ")
+            & (raw[table]["ann_date"] == "20260807")
+        )
         raw[table].loc[selector, "end_date"] = "20200101"
     raw["fina_indicator"].loc[
         (raw["fina_indicator"]["ts_code"] == "000001.SZ")
@@ -482,7 +735,10 @@ def test_same_day_batch_is_permutation_invariant() -> None:
 def test_future_revision_does_not_look_back_and_forecast_carries_then_supersedes() -> None:
     bundle = _bundle(target="20260808")
     symbol = bundle.daily_suffix[bundle.daily_suffix["ts_code"] == "000001.SZ"]
-    by_date = {row.trade_date.strftime("%Y%m%d"): row for row in symbol.itertuples(index=False)}
+    by_date = {
+        row.trade_date.strftime("%Y%m%d"): row
+        for row in symbol.itertuples(index=False)
+    }
     assert by_date["20260807"].forecast_revision == pytest.approx(0.30)
     assert by_date["20260807"].forecast_summary == "first"
     assert by_date["20260808"].forecast_revision == pytest.approx(0.50)
@@ -503,11 +759,9 @@ def test_decimal_size_ties_and_future_session_invariance() -> None:
     }
 
     raw_two = _raw_tables("20260808")
-    raw_two["daily_basic"].loc[raw_two["daily_basic"]["trade_date"] == "20260807", "total_mv"] = [
-        "100",
-        "100",
-        "300",
-    ]
+    raw_two["daily_basic"].loc[
+        raw_two["daily_basic"]["trade_date"] == "20260807", "total_mv"
+    ] = ["100", "100", "300"]
     two = _bundle(target="20260808", raw=raw_two)
     prior = two.daily_suffix[two.daily_suffix["trade_date"] == pd.Timestamp("2026-08-07")]
     assert dict(zip(prior["ts_code"], prior["size_bucket"])) == first_buckets
@@ -555,15 +809,22 @@ def test_no_period_state_is_counted_but_true_missing_blocks() -> None:
 
 def test_nonbar_scope_symbols_are_included_in_boundary_proof() -> None:
     raw = _raw_tables("20260807")
-    observed = [(row.ts_code, row.trade_date) for row in raw["daily_basic"].itertuples(index=False)]
+    observed = [
+        (row.ts_code, row.trade_date)
+        for row in raw["daily_basic"].itertuples(index=False)
+    ]
     keyset = build_keyset_closure(
         observed_bar_keys=observed,
         daily_basic_keys=observed,
         suspended_keys=[("000004.SZ", "20260807")],
     )
     bundle = _bundle(target="20260807", raw=raw, keyset=keyset)
-    assert bundle.lineage["boundary"]["period"]["000004.SZ"] == ("LANE_NON_REACHABLE_EMPTY")
-    assert bundle.lineage["boundary"]["forecast"]["000004.SZ"] == ("LANE_NON_REACHABLE_EMPTY")
+    assert bundle.lineage["boundary"]["period"]["000004.SZ"] == (
+        "LANE_NON_REACHABLE_EMPTY"
+    )
+    assert bundle.lineage["boundary"]["forecast"]["000004.SZ"] == (
+        "LANE_NON_REACHABLE_EMPTY"
+    )
 
 
 def test_successor_chain_rejects_cycle_and_self_reference() -> None:
@@ -614,8 +875,12 @@ def _path_backed_case(tmp_path: Path):
         frame.to_parquet(path, index=False)
         parent_paths[name] = path
     closure = _parent_closure(parents)
-    closure["table_sha256"] = {name: _sha(path.read_bytes()) for name, path in parent_paths.items()}
-    closure["validated_frame_fingerprints"] = dict(closure["table_frame_fingerprints"])
+    closure["table_sha256"] = {
+        name: _sha(path.read_bytes()) for name, path in parent_paths.items()
+    }
+    closure["validated_frame_fingerprints"] = dict(
+        closure["table_frame_fingerprints"]
+    )
     raw = _raw_tables("20260807")
     plan = seal_support_plan(
         raw,
@@ -642,7 +907,8 @@ def _path_backed_case(tmp_path: Path):
     expected_scope.write_bytes(b'{"as_of":"20260807","true_missing":0}\n')
     market_pointer = tmp_path / "market_pointer.json"
     market_pointer.write_bytes(
-        b'{"manifest_path":"immutable/market_manifest.json",' b'"snapshot_id":"market-20260807"}\n'
+        b'{"manifest_path":"immutable/market_manifest.json",'
+        b'"snapshot_id":"market-20260807"}\n'
     )
     pit_pointer = tmp_path / "pit_pointer.json"
     pit_pointer.write_bytes(
@@ -684,7 +950,8 @@ def _path_backed_case(tmp_path: Path):
         },
     }
     support_files = {
-        _support_refs()[name]["path"]: payload for name, payload in _support_bytes().items()
+        _support_refs()[name]["path"]: payload
+        for name, payload in _support_bytes().items()
     }
     evidence_sha = {name: _sha(payload) for name, payload in support_files.items()}
     provider = seal_successor_provider_manifest(
@@ -734,7 +1001,8 @@ def test_staging_exact_readback_and_permanent_support_tamper_block(tmp_path: Pat
         "homogeneous_history_ready": False,
     }
     readiness_state = {
-        name: pointer["metadata"]["readiness"][name] for name in validated["machine_states"]
+        name: pointer["metadata"]["readiness"][name]
+        for name in validated["machine_states"]
     }
     assert readiness_state == validated["machine_states"]
     assert pointer["metadata"]["readiness"]["gate2_contract"] == (
@@ -749,9 +1017,11 @@ def test_staging_exact_readback_and_permanent_support_tamper_block(tmp_path: Pat
         "cn-fundamental-derivation.safe-successor.v1"
     )
     for document in (pointer, manifest):
-        metadata_state = {name: document["metadata"][name] for name in validated["machine_states"]}
+        metadata_state = {
+            name: document["metadata"][name]
+            for name in validated["machine_states"]
+        }
         assert metadata_state == validated["machine_states"]
-
     altered_pointer = copy.deepcopy(pointer)
     altered_manifest = copy.deepcopy(manifest)
     for document in (altered_pointer, altered_manifest):
@@ -826,7 +1096,9 @@ def test_staging_exact_readback_and_permanent_support_tamper_block(tmp_path: Pat
     predecessor_pointer.write_bytes(original)
 
     for name in ("market_pointer", "pit_pointer"):
-        relative = Path(pointer["metadata"]["target_bindings"][name]["sealed_ref"]["path"])
+        relative = Path(
+            pointer["metadata"]["target_bindings"][name]["sealed_ref"]["path"]
+        )
         sealed_pointer = evidence_root / relative
         original_sealed = sealed_pointer.read_bytes()
         sealed_pointer.write_bytes(b'{"tampered":true}\n')
@@ -847,6 +1119,474 @@ def test_staging_exact_readback_and_permanent_support_tamper_block(tmp_path: Pat
             manifest,
             generation_root=capture.staging_root,
             historical_only=True,
+        )
+
+
+def test_stage_and_provenance_replay_same_versioned_source_fileset(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle, targets, support_files, _provider = _path_backed_case(tmp_path)
+    support_files = dict(support_files)
+    support_files["source/binding.json"] = b'{"binding":"source"}\n'
+    source_manifest_sha256 = "a" * 64
+    implementation_sha256 = "b" * 64
+    provider = seal_successor_provider_manifest(
+        bundle,
+        provider="fixture",
+        request_receipts_sha256="f" * 64,
+        evidence_files={name: _sha(payload) for name, payload in support_files.items()},
+        extra={
+            "implementation_sha256": implementation_sha256,
+            "source_fileset_manifest_sha256": source_manifest_sha256,
+        },
+    )
+    calls: list[Path] = []
+
+    def validate_source(
+        root: str | Path,
+        *,
+        expected_implementation_sha256: str | None = None,
+    ) -> dict[str, object]:
+        source_root = Path(root)
+        calls.append(source_root)
+        assert (source_root / "binding.json").read_bytes() == support_files[
+            "source/binding.json"
+        ]
+        assert expected_implementation_sha256 == implementation_sha256
+        return {
+            "manifest_sha256": source_manifest_sha256,
+            "resource_accounting": {"resource_sha256": "c" * 64},
+            "schema_version": "cn-fundamental-successor-provider-manifest.v3",
+        }
+
+    monkeypatch.setattr(
+        "quant_investor.market.fundamental_successor_source."
+        "validate_successor_support_fileset",
+        validate_source,
+    )
+    capture = stage_successor_generation(
+        bundle,
+        staging_root=tmp_path / "staging-with-source",
+        generation_id="staged_successor",
+        provider_manifest=provider,
+        target_bindings=targets,
+        provider_evidence_files=support_files,
+    )
+    pointer = json.loads(capture.pointer_bytes)
+    manifest = json.loads(capture.manifest_bytes)
+    assert pointer["metadata"]["source_fileset_validation"]["status"] == "PASS"
+
+    receipt = validate_successor_provenance(
+        pointer,
+        manifest,
+        generation_root=capture.staging_root,
+        historical_only=True,
+    )
+    assert receipt["source_fileset_validation"]["manifest_sha256"] == (
+        source_manifest_sha256
+    )
+    # Staging validates once before sealing and once through its own exact
+    # readback; the independent provenance call replays the same source policy.
+    assert len(calls) == 3
+
+
+def _append_first_raw(*, include_partial_financial: bool = False) -> dict[str, pd.DataFrame]:
+    raw = {name: pd.DataFrame() for name in RAW_TABLES}
+    if include_partial_financial:
+        raw["income"] = pd.DataFrame(
+            [
+                _financial_row(
+                    "income",
+                    "000001.SZ",
+                    "20260630",
+                    "20260807",
+                    delta=True,
+                )
+            ]
+        )
+    raw["daily_basic"] = pd.DataFrame(
+        [
+            {
+                "ts_code": symbol,
+                "trade_date": "20260807",
+                "total_mv": value,
+                "sector": "fixture-sector",
+            }
+            for symbol, value in zip(SYMBOLS, ("100", "200", "300"))
+        ]
+    )
+    return raw
+
+
+def test_append_first_uses_immutable_parent_without_prefix_replay() -> None:
+    parents = _parent_tables()
+    raw = _append_first_raw()
+    registry_sha = "9" * 64
+    plan = seal_support_plan(
+        raw,
+        parent_cutoff=PARENT_CUTOFF,
+        target_cutoff="20260807",
+        permanent_support_refs=_support_refs(),
+        support_prefix_mode=SUCCESSOR_APPEND_FIRST_MODE,
+        historical_taint_registry_sha256=registry_sha,
+        extra={"support_start": "20260807"},
+    )
+    bundle = assemble_safe_successor(
+        parent_tables=parents,
+        parent_closure=_parent_closure(parents),
+        support_raw_tables=raw,
+        plan_metadata=plan,
+        keyset_closure=_keyset(raw),
+        parent_cutoff=PARENT_CUTOFF,
+        target_cutoff="20260807",
+        run_id="append_first_successor",
+    )
+
+    assert bundle.derivation_evidence["support_prefix_mode"] == (
+        SUCCESSOR_APPEND_FIRST_MODE
+    )
+    assert bundle.derivation_evidence["historical_taint_registry_sha256"] == (
+        registry_sha
+    )
+    assert bundle.lineage["boundary"]["support_prefix_row_count"] == 0
+    assert len(bundle.period_suffix) == 0
+    assert len(bundle.daily_suffix) == len(SYMBOLS)
+
+
+def test_append_first_blocks_delta_with_unclosed_historical_dependency() -> None:
+    parents = _parent_tables()
+    raw = _append_first_raw(include_partial_financial=True)
+    plan = seal_support_plan(
+        raw,
+        parent_cutoff=PARENT_CUTOFF,
+        target_cutoff="20260807",
+        permanent_support_refs=_support_refs(),
+        support_prefix_mode=SUCCESSOR_APPEND_FIRST_MODE,
+        historical_taint_registry_sha256="9" * 64,
+        extra={"support_start": "20260807"},
+    )
+
+    with pytest.raises(SafeSuccessorError, match="SUPPORT_START_ANCHOR_UNCLOSED"):
+        assemble_safe_successor(
+            parent_tables=parents,
+            parent_closure=_parent_closure(parents),
+            support_raw_tables=raw,
+            plan_metadata=plan,
+            keyset_closure=_keyset(raw),
+            parent_cutoff=PARENT_CUTOFF,
+            target_cutoff="20260807",
+            run_id="append_first_blocked",
+        )
+
+
+def test_append_first_consumes_only_declared_income_support_dependency() -> None:
+    parents = _parent_tables()
+    raw = _append_first_raw(include_partial_financial=True)
+    raw["income"] = pd.concat(
+        [
+            pd.DataFrame(
+                [
+                    _financial_row(
+                        "income",
+                        "000001.SZ",
+                        "20250630",
+                        "20250830",
+                        delta=False,
+                    )
+                ]
+            ),
+            raw["income"],
+        ],
+        ignore_index=True,
+    )
+    indicator = _financial_row(
+        "fina_indicator",
+        "000001.SZ",
+        "20260630",
+        "20260807",
+        delta=True,
+    )
+    indicator["netprofit_yoy"] = np.nan
+    raw["fina_indicator"] = pd.DataFrame([indicator])
+    raw["balancesheet"] = pd.DataFrame(
+        [
+            _financial_row(
+                "balancesheet",
+                "000001.SZ",
+                "20260630",
+                "20260807",
+                delta=True,
+            )
+        ]
+    )
+    raw["cashflow"] = pd.DataFrame(
+        [
+            _financial_row(
+                "cashflow",
+                "000001.SZ",
+                "20260630",
+                "20260807",
+                delta=True,
+            )
+        ]
+    )
+    dependency = {"ts_code": "000001.SZ", "end_date": "20250630"}
+    plan = seal_support_plan(
+        raw,
+        parent_cutoff=PARENT_CUTOFF,
+        target_cutoff="20260807",
+        permanent_support_refs=_support_refs(),
+        support_prefix_mode=SUCCESSOR_APPEND_FIRST_MODE,
+        historical_taint_registry_sha256="9" * 64,
+        append_first_income_dependencies=(dependency,),
+        extra={"support_start": "20260807"},
+    )
+
+    bundle = assemble_safe_successor(
+        parent_tables=parents,
+        parent_closure=_parent_closure(parents),
+        support_raw_tables=raw,
+        plan_metadata=plan,
+        keyset_closure=_keyset(raw),
+        parent_cutoff=PARENT_CUTOFF,
+        target_cutoff="20260807",
+        run_id="append_first_dependency",
+    )
+
+    assert len(bundle.period_suffix) == 1
+    assert bundle.lineage["boundary"]["support_prefix_row_count"] == 0
+    assert bundle.lineage["period_rows"][0]["previous_year_income"]["row_binding"]
+
+
+def test_append_first_consumes_declared_balancesheet_support_dependency() -> None:
+    parents = _parent_tables()
+    raw = _append_first_raw()
+    indicator = _financial_row(
+        "fina_indicator",
+        "000001.SZ",
+        "20260630",
+        "20260807",
+        delta=True,
+    )
+    indicator["debt_to_assets"] = np.nan
+    raw["fina_indicator"] = pd.DataFrame([indicator])
+    raw["income"] = pd.DataFrame(
+        [
+            _financial_row(
+                "income",
+                "000001.SZ",
+                "20260630",
+                "20260807",
+                delta=True,
+            )
+        ]
+    )
+    raw["cashflow"] = pd.DataFrame(
+        [
+            _financial_row(
+                "cashflow",
+                "000001.SZ",
+                "20260630",
+                "20260807",
+                delta=True,
+            )
+        ]
+    )
+    raw["balancesheet"] = pd.DataFrame(
+        [
+            _financial_row(
+                "balancesheet",
+                "000001.SZ",
+                "20260630",
+                "20260801",
+                delta=False,
+            )
+        ]
+    )
+    plan = seal_support_plan(
+        raw,
+        parent_cutoff=PARENT_CUTOFF,
+        target_cutoff="20260807",
+        permanent_support_refs=_support_refs(),
+        support_prefix_mode=SUCCESSOR_APPEND_FIRST_MODE,
+        historical_taint_registry_sha256="9" * 64,
+        append_first_financial_dependencies=(
+            {
+                "table": "balancesheet",
+                "ts_code": "000001.SZ",
+                "end_date": "20260630",
+            },
+        ),
+        extra={"support_start": "20260807"},
+    )
+
+    bundle = assemble_safe_successor(
+        parent_tables=parents,
+        parent_closure=_parent_closure(parents),
+        support_raw_tables=raw,
+        plan_metadata=plan,
+        keyset_closure=_keyset(raw),
+        parent_cutoff=PARENT_CUTOFF,
+        target_cutoff="20260807",
+        run_id="append_first_balance_dependency",
+    )
+
+    requirements = bundle.lineage["period_rows"][0]["dependency_requirements"]
+    assert any(
+        row["table"] == "balancesheet" and row["row_binding"]
+        for row in requirements
+    )
+
+
+def test_append_first_rejects_declared_income_support_not_consumed() -> None:
+    parents = _parent_tables()
+    raw = _append_first_raw()
+    raw["income"] = pd.DataFrame(
+        [
+            _financial_row(
+                "income",
+                "000001.SZ",
+                "20250630",
+                "20250830",
+                delta=False,
+            )
+        ]
+    )
+    plan = seal_support_plan(
+        raw,
+        parent_cutoff=PARENT_CUTOFF,
+        target_cutoff="20260807",
+        permanent_support_refs=_support_refs(),
+        support_prefix_mode=SUCCESSOR_APPEND_FIRST_MODE,
+        historical_taint_registry_sha256="9" * 64,
+        append_first_income_dependencies=(
+            {"ts_code": "000001.SZ", "end_date": "20250630"},
+        ),
+        extra={"support_start": "20260807"},
+    )
+
+    with pytest.raises(
+        SafeSuccessorError,
+        match="APPEND_FIRST_FINANCIAL_DEPENDENCY_NOT_EXACTLY_CONSUMED",
+    ):
+        assemble_safe_successor(
+            parent_tables=parents,
+            parent_closure=_parent_closure(parents),
+            support_raw_tables=raw,
+            plan_metadata=plan,
+            keyset_closure=_keyset(raw),
+            parent_cutoff=PARENT_CUTOFF,
+            target_cutoff="20260807",
+            run_id="append_first_unused_dependency",
+        )
+
+
+def test_append_first_consumes_exact_provider_absence_proof() -> None:
+    parents = _parent_tables()
+    raw = _append_first_raw(include_partial_financial=True)
+    indicator = _financial_row(
+        "fina_indicator",
+        "000001.SZ",
+        "20260630",
+        "20260807",
+        delta=True,
+    )
+    indicator["netprofit_yoy"] = np.nan
+    raw["fina_indicator"] = pd.DataFrame([indicator])
+    raw["balancesheet"] = pd.DataFrame(
+        [
+            _financial_row(
+                "balancesheet",
+                "000001.SZ",
+                "20260630",
+                "20260807",
+                delta=True,
+            )
+        ]
+    )
+    raw["cashflow"] = pd.DataFrame(
+        [
+            _financial_row(
+                "cashflow",
+                "000001.SZ",
+                "20260630",
+                "20260807",
+                delta=True,
+            )
+        ]
+    )
+    plan = seal_support_plan(
+        raw,
+        parent_cutoff=PARENT_CUTOFF,
+        target_cutoff="20260807",
+        permanent_support_refs=_support_refs(),
+        support_prefix_mode=SUCCESSOR_APPEND_FIRST_MODE,
+        historical_taint_registry_sha256="9" * 64,
+        absence_proofs=(
+            {
+                "status": "PROVEN_ABSENT",
+                "table": "income",
+                "symbol": "000001.SZ",
+                "end_date": "20250630",
+                "available_through": "20260807",
+                "evidence_sha256": "8" * 64,
+            },
+        ),
+        extra={"support_start": "20260807"},
+    )
+
+    bundle = assemble_safe_successor(
+        parent_tables=parents,
+        parent_closure=_parent_closure(parents),
+        support_raw_tables=raw,
+        plan_metadata=plan,
+        keyset_closure=_keyset(raw),
+        parent_cutoff=PARENT_CUTOFF,
+        target_cutoff="20260807",
+        run_id="append_first_absence",
+    )
+
+    assert bundle.lineage["period_rows"][0]["previous_year_income"]["absence_proven"]
+    assert bundle.lineage["boundary"]["bounded_financial_absence_proof_count"] == 1
+
+
+def test_append_first_rejects_unused_provider_absence_proof() -> None:
+    parents = _parent_tables()
+    raw = _append_first_raw()
+    plan = seal_support_plan(
+        raw,
+        parent_cutoff=PARENT_CUTOFF,
+        target_cutoff="20260807",
+        permanent_support_refs=_support_refs(),
+        support_prefix_mode=SUCCESSOR_APPEND_FIRST_MODE,
+        historical_taint_registry_sha256="9" * 64,
+        absence_proofs=(
+            {
+                "status": "PROVEN_ABSENT",
+                "table": "income",
+                "symbol": "000001.SZ",
+                "end_date": "20250630",
+                "available_through": "20260807",
+                "evidence_sha256": "8" * 64,
+            },
+        ),
+        extra={"support_start": "20260807"},
+    )
+
+    with pytest.raises(
+        SafeSuccessorError,
+        match="APPEND_FIRST_FINANCIAL_ABSENCE_NOT_EXACTLY_CONSUMED",
+    ):
+        assemble_safe_successor(
+            parent_tables=parents,
+            parent_closure=_parent_closure(parents),
+            support_raw_tables=raw,
+            plan_metadata=plan,
+            keyset_closure=_keyset(raw),
+            parent_cutoff=PARENT_CUTOFF,
+            target_cutoff="20260807",
+            run_id="append_first_unused_absence",
         )
 
 

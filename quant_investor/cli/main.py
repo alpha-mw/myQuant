@@ -632,6 +632,53 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="冻结健康 predecessor，仅在隔离 staging 构造 append-only successor",
     )
+    market_fundamental.add_argument(
+        "--append-first-successor",
+        action="store_true",
+        help=(
+            "以 immutable predecessor 为历史边界，仅采集 (parent,target]；"
+            "必须提供可重放的历史冲突证据，当前窗口冲突仍 fail closed"
+        ),
+    )
+    market_fundamental.add_argument(
+        "--historical-taint-failure-evidence",
+        action="append",
+        default=[],
+        metavar="ABSOLUTE_FAILURE_ROOT#ORDINAL",
+        help=(
+            "append-first 所需的历史 failure evidence；可重复，"
+            "例如 /private/tmp/run/capture-failures#3564"
+        ),
+    )
+    market_fundamental.add_argument(
+        "--successor-income-support",
+        action="append",
+        default=[],
+        metavar="TS_CODE@YYYYMMDD",
+        help=(
+            "append-first 的精确上年同期 income 计算依赖；可重复，"
+            "仅能作为推导支持，不能发布为历史前缀"
+        ),
+    )
+    market_fundamental.add_argument(
+        "--successor-financial-support",
+        action="append",
+        default=[],
+        metavar="TABLE:TS_CODE@YYYYMMDD",
+        help=(
+            "append-first 的精确 financial fallback 依赖；TABLE 仅允许 "
+            "income、balancesheet、cashflow，可重复"
+        ),
+    )
+    market_fundamental.add_argument(
+        "--taint-analysis-dry-run",
+        action="store_true",
+        help=(
+            "调用 live provider 做 promotion-ineligible taint capture；"
+            "不写 staging、canonical 或 promotion"
+        ),
+    )
+    market_fundamental.add_argument("--audit-run-root", default="")
     market_fundamental.add_argument("--canonical-predecessor-root", default="")
     market_fundamental.add_argument("--expected-pointer-sha256", default="")
     market_fundamental.add_argument("--canonical-scope-path", default="")
@@ -1037,11 +1084,145 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
         return
 
     if args.command == "market" and args.market_command == "fundamental-maintain":
-        if args.authoritative_full_rebuild and args.safe_incremental_successor:
-            parser.error(
-                "--authoritative-full-rebuild and --safe-incremental-successor "
-                "are mutually exclusive"
+        historical_taint_evidence = []
+        for raw_evidence in args.historical_taint_failure_evidence:
+            root_text, separator, ordinal_text = str(raw_evidence).rpartition("#")
+            if (
+                not separator
+                or not root_text
+                or not Path(root_text).expanduser().is_absolute()
+                or not ordinal_text.isdigit()
+            ):
+                parser.error(
+                    "--historical-taint-failure-evidence must be "
+                    "ABSOLUTE_FAILURE_ROOT#ORDINAL"
+                )
+            historical_taint_evidence.append(
+                {
+                    "failure_root": str(Path(root_text).expanduser()),
+                    "ordinal": int(ordinal_text),
+                }
             )
+        income_support_dependencies = []
+        for raw_dependency in args.successor_income_support:
+            symbol_text, separator, period_text = str(raw_dependency).partition("@")
+            symbol = symbol_text.strip().upper()
+            if (
+                not separator
+                or re.fullmatch(r"[0-9]{6}\.(?:BJ|SH|SZ)", symbol) is None
+                or re.fullmatch(r"[0-9]{8}", period_text) is None
+            ):
+                parser.error("--successor-income-support must be TS_CODE@YYYYMMDD")
+            income_support_dependencies.append(
+                {"ts_code": symbol, "end_date": period_text}
+            )
+        financial_support_dependencies = []
+        for raw_dependency in args.successor_financial_support:
+            table_text, table_separator, subject_text = str(raw_dependency).partition(":")
+            symbol_text, date_separator, period_text = subject_text.partition("@")
+            table = table_text.strip().lower()
+            symbol = symbol_text.strip().upper()
+            if (
+                not table_separator
+                or not date_separator
+                or table not in {"balancesheet", "cashflow", "income"}
+                or re.fullmatch(r"[0-9]{6}\.(?:BJ|SH|SZ)", symbol) is None
+                or re.fullmatch(r"[0-9]{8}", period_text) is None
+            ):
+                parser.error(
+                    "--successor-financial-support must be "
+                    "TABLE:TS_CODE@YYYYMMDD"
+                )
+            financial_support_dependencies.append(
+                {"table": table, "ts_code": symbol, "end_date": period_text}
+            )
+        selected_special_modes = sum(
+            bool(value)
+            for value in (
+                args.authoritative_full_rebuild,
+                args.safe_incremental_successor,
+                args.taint_analysis_dry_run,
+            )
+        )
+        if selected_special_modes > 1:
+            parser.error(
+                "--authoritative-full-rebuild, --safe-incremental-successor, "
+                "and --taint-analysis-dry-run are mutually exclusive"
+            )
+        if args.append_first_successor and not args.safe_incremental_successor:
+            parser.error(
+                "--append-first-successor requires --safe-incremental-successor"
+            )
+        if args.append_first_successor and not historical_taint_evidence:
+            parser.error(
+                "--append-first-successor requires at least one "
+                "--historical-taint-failure-evidence"
+            )
+        if historical_taint_evidence and not args.append_first_successor:
+            parser.error(
+                "--historical-taint-failure-evidence requires "
+                "--append-first-successor"
+            )
+        if (
+            income_support_dependencies or financial_support_dependencies
+        ) and not args.append_first_successor:
+            parser.error(
+                "successor financial support requires --append-first-successor"
+            )
+        if args.taint_analysis_dry_run:
+            required_taint_args = {
+                "--run-id": args.run_id,
+                "--as-of": args.as_of,
+                "--audit-run-root": args.audit_run_root,
+                "--canonical-predecessor-root": args.canonical_predecessor_root,
+                "--expected-pointer-sha256": args.expected_pointer_sha256,
+                "--canonical-scope-path": args.canonical_scope_path,
+                "--canonical-market-pointer-path": (
+                    args.canonical_market_pointer_path
+                ),
+                "--canonical-pit-pointer-path": args.canonical_pit_pointer_path,
+                "--canonical-membership-path": args.canonical_membership_path,
+                "--history-audit-path": args.history_audit_path,
+                "--expected-history-audit-sha256": (
+                    args.expected_history_audit_sha256
+                ),
+            }
+            missing_taint_args = sorted(
+                name for name, value in required_taint_args.items() if not value
+            )
+            if not args.allow_live:
+                missing_taint_args.append("--allow-live")
+            if missing_taint_args:
+                parser.error(
+                    "--taint-analysis-dry-run requires "
+                    + ", ".join(missing_taint_args)
+                )
+            if not Path(args.audit_run_root).expanduser().is_absolute():
+                parser.error("--audit-run-root must be absolute")
+            if [
+                item.strip().lower()
+                for item in args.universes.split(",")
+                if item.strip()
+            ] != ["full_a"]:
+                parser.error(
+                    "--taint-analysis-dry-run requires --universes full_a"
+                )
+            conflicting_taint_args = []
+            if args.raw_input_dir:
+                conflicting_taint_args.append("--raw-input-dir")
+            if args.checkpoint_root:
+                conflicting_taint_args.append("--checkpoint-root")
+            if args.data_root != "data/parquet/cn":
+                conflicting_taint_args.append("--data-root")
+            if args.snapshot_root != "data/cn_market_full/_snapshots/fundamental":
+                conflicting_taint_args.append("--snapshot-root")
+            if args.reports_root != "reports/fundamental_readiness":
+                conflicting_taint_args.append("--reports-root")
+            if conflicting_taint_args:
+                parser.error(
+                    "--taint-analysis-dry-run rejects staging/generation "
+                    "arguments: " + ", ".join(conflicting_taint_args)
+                )
         if args.authoritative_full_rebuild and (
             not args.canonical_scope_path
             or not args.canonical_market_pointer_path
@@ -1095,6 +1276,12 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
             run_id=args.run_id,
             authoritative_full_rebuild=args.authoritative_full_rebuild,
             safe_incremental_successor=args.safe_incremental_successor,
+            append_first_successor=args.append_first_successor,
+            historical_taint_evidence=historical_taint_evidence,
+            income_support_dependencies=income_support_dependencies,
+            financial_support_dependencies=financial_support_dependencies,
+            taint_analysis_dry_run=args.taint_analysis_dry_run,
+            audit_run_root=args.audit_run_root or None,
             canonical_predecessor_root=(args.canonical_predecessor_root or None),
             expected_pointer_sha256=args.expected_pointer_sha256,
             canonical_scope_path=args.canonical_scope_path or None,
@@ -1110,8 +1297,17 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
             max_retry_backoff_seconds=args.max_retry_backoff_seconds,
             requests_per_second=args.requests_per_second,
         )
-        if args.authoritative_full_rebuild or args.safe_incremental_successor:
+        if (
+            args.authoritative_full_rebuild
+            or args.safe_incremental_successor
+            or args.taint_analysis_dry_run
+        ):
             _print_json(result)
+        if (
+            args.taint_analysis_dry_run
+            and result.get("taint_analysis_status") != "PASS"
+        ):
+            raise SystemExit(2)
         return
 
     if args.command == "market" and args.market_command == "fundamental-promote":

@@ -147,9 +147,9 @@ def test_missing_fake_or_unresolved_final_cutover_authority_cannot_cas(
         )
 
     unresolved_payload = dict(original["payload"])
-    unresolved_ref = dict(unresolved_payload["concurrent_task_handoff_ref"])
+    unresolved_ref = dict(unresolved_payload["main_checkout_adoption_ref"])
     unresolved_ref["byte_sha256"] = "f" * 64
-    unresolved_payload["concurrent_task_handoff_ref"] = unresolved_ref
+    unresolved_payload["main_checkout_adoption_ref"] = unresolved_ref
     unresolved = seal_artifact(
         "system.final_cutover_authorization",
         unresolved_payload,

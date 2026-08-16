@@ -8,16 +8,19 @@ import sys
 
 import pytest
 
-from quant_investor.contracts import canonical_json_bytes
+from quant_investor.contracts import canonical_json_bytes, seal_artifact
 from quant_investor.migration import (
     REQUIRED_FINAL_PREFLIGHT_GATES,
     build_concurrent_task_handoff,
     build_final_cutover_authorization,
     build_legacy_source_disposition,
+    build_main_checkout_adoption,
     publish_authority_artifact,
     run_cutover_gate,
     validate_concurrent_task_handoff,
     validate_final_cutover_authorization,
+    validate_main_checkout_adoption,
+    validate_main_checkout_adoption_closure,
     validate_cutover_gate_evidence,
 )
 from quant_investor.migration.authority import (
@@ -101,6 +104,76 @@ def _disposition() -> dict[str, object]:
     )
 
 
+def _adoption(gate_evidence: list[dict[str, object]]) -> dict[str, object]:
+    rows = [
+        {
+            "path": f"adopted/path-{index:02d}.txt",
+            "status": "ADDED",
+            "mode": "100644",
+            "size": index + 1,
+            "git_blob_oid": f"{index + 10:040x}",
+            "byte_sha256": f"{index + 100:064x}",
+        }
+        for index in range(22)
+    ]
+    dispositions = [
+        {
+            "path": row["path"],
+            "partition": "TASK_ORIGIN" if index < 17 else "ORPHAN",
+            "decision": "EXACT_PRESERVED",
+            "target_path": row["path"],
+            "target_blob_oid": row["git_blob_oid"],
+            "behavior_test_selector": f"test_adopted_{index:02d}",
+            "reason": "the exact test path is retained",
+        }
+        for index, row in enumerate(rows)
+    ]
+    gate_refs = sorted(
+        [
+            {
+                "gate_id": evidence["payload"]["gate_id"],
+                "evidence_ref": object_ref_for_artifact(evidence),
+            }
+            for evidence in gate_evidence
+        ],
+        key=lambda row: row["gate_id"],
+    )
+    return build_main_checkout_adoption(
+        adoption_id="main-checkout-adoption",
+        task_name="A股 V17 日度数据更新（仅数据维护）",
+        thread_id="01a00138-7152-7722-8dbd-8c9bd184273d",
+        accepted_baseline_commit="a" * 40,
+        accepted_baseline_tree="9" * 40,
+        adoption_commit="b" * 40,
+        adoption_tree="c" * 40,
+        adoption_parent="a" * 40,
+        path_rows=rows,
+        task_origin_paths=[row["path"] for row in rows[:17]],
+        orphan_paths=[row["path"] for row in rows[17:]],
+        disposition_rows=dispositions,
+        focused_test_rows=[
+            {
+                "command": "pytest tests/unit/test_adoption.py -q",
+                "exit_code": 0,
+                "stdout_sha256": "f" * 64,
+                "status": "PASS",
+            }
+        ],
+        full_gate_refs=gate_refs,
+        source_task_completion={
+            "status": "COMPLETED_WITHOUT_COMMIT",
+            "latest_turn_id": "01a0086f-f4f5-7bd2-873e-4e874369c021",
+            "completed_at": BASE,
+            "final_message_sha256": "e" * 64,
+        },
+        readback_rows=_readbacks("b" * 40, "c" * 40),
+        user_authorization_basis="explicit repository-owner prospective adoption",
+        writer_ended=True,
+        main_clean=True,
+        created_at=BASE,
+    )
+
+
 def _gate_evidence(commit: str, tree: str, subject_ref: dict[str, str]) -> list[dict[str, object]]:
     executable = Path(sys.executable).resolve()
     executable_sha = hashlib.sha256(executable.read_bytes()).hexdigest()
@@ -135,6 +208,172 @@ def _gate_evidence(commit: str, tree: str, subject_ref: dict[str, str]) -> list[
         )
         for gate_id in sorted(REQUIRED_FINAL_PREFLIGHT_GATES)
     ]
+
+
+def _real_adoption(tmp_path: Path) -> tuple[Path, dict[str, object], list[dict[str, object]]]:
+    root = tmp_path / "adoption-repository"
+    root.mkdir()
+    subprocess.run(["git", "-C", str(root), "init", "-q"], check=True)
+    subprocess.run(["git", "-C", str(root), "config", "user.name", "Adoption Test"], check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "config", "user.email", "adoption@example.invalid"],
+        check=True,
+    )
+    (root / "baseline.txt").write_text("baseline\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(root), "add", "baseline.txt"], check=True)
+    subprocess.run(["git", "-C", str(root), "commit", "-q", "-m", "baseline"], check=True)
+    baseline = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "HEAD"],
+        check=True,
+        stdout=subprocess.PIPE,
+        text=True,
+    ).stdout.strip()
+    baseline_tree = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "HEAD^{tree}"],
+        check=True,
+        stdout=subprocess.PIPE,
+        text=True,
+    ).stdout.strip()
+    for index in range(22):
+        path = root / "adopted" / f"path-{index:02d}.txt"
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(f"adopted-{index:02d}\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(root), "add", "adopted"], check=True)
+    subprocess.run(["git", "-C", str(root), "commit", "-q", "-m", "adoption"], check=True)
+    commit = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "HEAD"],
+        check=True,
+        stdout=subprocess.PIPE,
+        text=True,
+    ).stdout.strip()
+    tree = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "HEAD^{tree}"],
+        check=True,
+        stdout=subprocess.PIPE,
+        text=True,
+    ).stdout.strip()
+    rows: list[dict[str, object]] = []
+    dispositions: list[dict[str, object]] = []
+    inventory_rows: list[dict[str, str]] = []
+    raw_inventory = subprocess.run(
+        ["git", "-C", str(root), "ls-tree", "-rz", "--full-tree", commit],
+        check=True,
+        stdout=subprocess.PIPE,
+    ).stdout
+    for entry in raw_inventory.split(b"\0"):
+        if not entry:
+            continue
+        header, path_raw = entry.split(b"\t", 1)
+        mode, kind, oid = header.split(b" ", 2)
+        if kind != b"blob":
+            continue
+        inventory_rows.append(
+            {
+                "path": path_raw.decode(),
+                "mode": mode.decode(),
+                "git_blob_oid": oid.decode(),
+            }
+        )
+    for index in range(22):
+        path = f"adopted/path-{index:02d}.txt"
+        ls_tree = subprocess.run(
+            ["git", "-C", str(root), "ls-tree", commit, "--", path],
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+        ).stdout.strip()
+        mode, _kind, blob_and_path = ls_tree.split(" ", 2)
+        oid, observed_path = blob_and_path.split("\t", 1)
+        raw = subprocess.run(
+            ["git", "-C", str(root), "cat-file", "blob", oid],
+            check=True,
+            stdout=subprocess.PIPE,
+        ).stdout
+        rows.append(
+            {
+                "path": observed_path,
+                "status": "ADDED",
+                "mode": mode,
+                "size": len(raw),
+                "git_blob_oid": oid,
+                "byte_sha256": hashlib.sha256(raw).hexdigest(),
+            }
+        )
+        dispositions.append(
+            {
+                "path": observed_path,
+                "partition": "TASK_ORIGIN" if index < 17 else "ORPHAN",
+                "decision": "EXACT_PRESERVED",
+                "target_path": observed_path,
+                "target_blob_oid": oid,
+                "behavior_test_selector": f"test_real_adoption_{index:02d}",
+                "reason": "the immutable Git blob is retained exactly",
+            }
+        )
+    subject_ref = object_ref_for_artifact(_handoff())
+    gate_evidence = _gate_evidence(commit, tree, subject_ref)
+    gate_refs = sorted(
+        [
+            {
+                "gate_id": evidence["payload"]["gate_id"],
+                "evidence_ref": object_ref_for_artifact(evidence),
+            }
+            for evidence in gate_evidence
+        ],
+        key=lambda row: row["gate_id"],
+    )
+    inventory_sha = hashlib.sha256(canonical_json_bytes(inventory_rows)).hexdigest()
+    readbacks = [
+        {
+            "commit": commit,
+            "tree": tree,
+            "status_porcelain_sha256": hashlib.sha256(b"").hexdigest(),
+            "path_inventory_sha256": inventory_sha,
+            "observed_at": BASE,
+        },
+        {
+            "commit": commit,
+            "tree": tree,
+            "status_porcelain_sha256": hashlib.sha256(b"").hexdigest(),
+            "path_inventory_sha256": inventory_sha,
+            "observed_at": "2026-08-16T00:00:01Z",
+        },
+    ]
+    adoption = build_main_checkout_adoption(
+        adoption_id="real-main-checkout-adoption",
+        task_name="A股 V17 日度数据更新（仅数据维护）",
+        thread_id="01a00138-7152-7722-8dbd-8c9bd184273d",
+        accepted_baseline_commit=baseline,
+        accepted_baseline_tree=baseline_tree,
+        adoption_commit=commit,
+        adoption_tree=tree,
+        adoption_parent=baseline,
+        path_rows=rows,
+        task_origin_paths=[row["path"] for row in rows[:17]],
+        orphan_paths=[row["path"] for row in rows[17:]],
+        disposition_rows=dispositions,
+        focused_test_rows=[
+            {
+                "command": "pytest adoption",
+                "exit_code": 0,
+                "stdout_sha256": "f" * 64,
+                "status": "PASS",
+            }
+        ],
+        full_gate_refs=gate_refs,
+        source_task_completion={
+            "status": "COMPLETED_WITHOUT_COMMIT",
+            "latest_turn_id": "01a0086f-f4f5-7bd2-873e-4e874369c021",
+            "completed_at": BASE,
+            "final_message_sha256": "e" * 64,
+        },
+        readback_rows=readbacks,
+        user_authorization_basis="explicit repository-owner prospective adoption",
+        writer_ended=True,
+        main_clean=True,
+        created_at=BASE,
+    )
+    return root, adoption, gate_refs
 
 
 def test_concurrent_handoff_requires_clean_stable_double_read(tmp_path: Path) -> None:
@@ -180,12 +419,17 @@ def test_legacy_disposition_blocks_unresolved_rows() -> None:
 def test_final_cutover_authorization_is_machine_derived_from_passed_gates() -> None:
     handoff_ref = object_ref_for_artifact(_handoff())
     disposition_ref = object_ref_for_artifact(_disposition())
+    gate_evidence = _gate_evidence("4" * 40, "5" * 40, handoff_ref)
+    adoption = _adoption(gate_evidence)
+    assert validate_main_checkout_adoption(adoption) == adoption
+    adoption_ref = object_ref_for_artifact(adoption)
     authorization = build_final_cutover_authorization(
         final_authorization_id="unified-final-cutover",
         accepted_baseline_commit="a" * 40,
         historical_integration_commit="3" * 40,
         historical_dirty_evidence_ref=handoff_ref,
-        concurrent_task_handoff_ref=handoff_ref,
+        concurrent_task_handoff_ref=None,
+        main_checkout_adoption_ref=adoption_ref,
         legacy_disposition_ref=disposition_ref,
         deployed_release_ref=handoff_ref,
         release_commit="4" * 40,
@@ -200,7 +444,7 @@ def test_final_cutover_authorization_is_machine_derived_from_passed_gates() -> N
         final_worktree_inventory_sha256="6" * 64,
         clean_checkout_readback_rows=_readbacks("4" * 40, "5" * 40),
         user_authorization_basis="explicit current-task production authorization",
-        preflight_evidence=_gate_evidence("4" * 40, "5" * 40, handoff_ref),
+        preflight_evidence=gate_evidence,
         created_at=BASE,
     )
 
@@ -214,7 +458,8 @@ def test_final_cutover_authorization_is_machine_derived_from_passed_gates() -> N
             accepted_baseline_commit="a" * 40,
             historical_integration_commit="3" * 40,
             historical_dirty_evidence_ref=handoff_ref,
-            concurrent_task_handoff_ref=handoff_ref,
+            concurrent_task_handoff_ref=None,
+            main_checkout_adoption_ref=adoption_ref,
             legacy_disposition_ref=disposition_ref,
             deployed_release_ref=handoff_ref,
             release_commit="4" * 40,
@@ -228,6 +473,92 @@ def test_final_cutover_authorization_is_machine_derived_from_passed_gates() -> N
             user_authorization_basis="explicit current-task production authorization",
             preflight_evidence=[],
             created_at=BASE,
+        )
+
+
+def test_main_checkout_adoption_deeply_replays_exact_git_delta(tmp_path: Path) -> None:
+    root, adoption, gate_refs = _real_adoption(tmp_path)
+    assert validate_main_checkout_adoption_closure(
+        adoption,
+        repository_root=root,
+        final_commit=adoption["payload"]["adoption_commit"],
+        final_preflight_rows=gate_refs,
+    ) == adoption
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["commit", "parent", "tree", "status", "mode", "blob", "size", "sha"],
+)
+def test_main_checkout_adoption_git_identity_tamper_fails_closed(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    root, adoption, gate_refs = _real_adoption(tmp_path)
+    payload = dict(adoption["payload"])
+    if mutation == "commit":
+        payload["adoption_commit"] = "f" * 40
+    elif mutation == "parent":
+        payload["adoption_parent"] = "f" * 40
+    elif mutation == "tree":
+        payload["adoption_tree"] = "f" * 40
+    else:
+        path_rows = [dict(row) for row in payload["path_rows"]]
+        if mutation == "status":
+            path_rows[0]["status"] = "MODIFIED"
+        elif mutation == "mode":
+            path_rows[0]["mode"] = "100755"
+        elif mutation == "blob":
+            path_rows[0]["git_blob_oid"] = "f" * 40
+        elif mutation == "size":
+            path_rows[0]["size"] = int(path_rows[0]["size"]) + 1
+        else:
+            path_rows[0]["byte_sha256"] = "f" * 64
+        payload["path_rows"] = path_rows
+    tampered = seal_artifact(
+        "system.main_checkout_adoption",
+        payload,
+        created_at=adoption["created_at"],
+    )
+    with pytest.raises((SystemContractError, SystemPreconditionError)):
+        validate_main_checkout_adoption_closure(
+            tampered,
+            repository_root=root,
+            final_commit=adoption["payload"]["adoption_commit"],
+            final_preflight_rows=gate_refs,
+        )
+
+
+@pytest.mark.parametrize("mutation", ["missing", "extra", "duplicate", "reordered"])
+def test_main_checkout_adoption_path_set_tamper_fails_closed(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    root, adoption, gate_refs = _real_adoption(tmp_path)
+    payload = dict(adoption["payload"])
+    path_rows = [dict(row) for row in payload["path_rows"]]
+    if mutation == "missing":
+        path_rows.pop()
+    elif mutation == "extra":
+        extra = dict(path_rows[-1])
+        extra["path"] = "adopted/path-99.txt"
+        path_rows.append(extra)
+    elif mutation == "duplicate":
+        path_rows[-1] = dict(path_rows[-2])
+    else:
+        path_rows[0], path_rows[1] = path_rows[1], path_rows[0]
+    payload["path_rows"] = path_rows
+    tampered = seal_artifact(
+        "system.main_checkout_adoption",
+        payload,
+        created_at=adoption["created_at"],
+    )
+    with pytest.raises((SystemContractError, SystemPreconditionError)):
+        validate_main_checkout_adoption_closure(
+            tampered,
+            repository_root=root,
+            final_commit=adoption["payload"]["adoption_commit"],
+            final_preflight_rows=gate_refs,
         )
 
 

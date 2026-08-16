@@ -18,14 +18,20 @@ import math
 import os
 from pathlib import Path
 import re
+import resource
 import shutil
+import sqlite3
 import stat
+import subprocess
+import sys
 import tempfile
 import time
 from types import MappingProxyType
 from typing import Any, Final, NoReturn, Protocol
 
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 from quant_investor.market.tushare_transport import (
     TushareHttpsError,
@@ -33,28 +39,46 @@ from quant_investor.market.tushare_transport import (
     replay_tushare_response_bytes,
 )
 
-FUNDAMENTAL_SUCCESSOR_SUPPORT_PLAN_SCHEMA: Final = "myquant-fundamental-successor-support-plan.v3"
+FUNDAMENTAL_SUCCESSOR_SUPPORT_PLAN_SCHEMA: Final = "myquant-fundamental-successor-support-plan.v4"
 FUNDAMENTAL_SUCCESSOR_REQUEST_RECEIPT_SCHEMA: Final = (
-    "myquant-fundamental-successor-request-receipt.v3"
+    "myquant-fundamental-successor-request-receipt.v4"
 )
 FUNDAMENTAL_SUCCESSOR_SUPPORT_FILESET_SCHEMA: Final = (
-    "myquant-fundamental-successor-support-fileset.v3"
+    "myquant-fundamental-successor-support-fileset.v5"
 )
 FUNDAMENTAL_SUCCESSOR_CANONICALIZATION_POLICY: Final = (
-    "myquant-fundamental-successor-canonicalization.v2"
+    "myquant-fundamental-successor-canonicalization.v4"
 )
 FUNDAMENTAL_SUCCESSOR_PROVIDER_MANIFEST_SCHEMA: Final = (
-    "cn-fundamental-successor-provider-manifest.v3"
+    "cn-fundamental-successor-provider-manifest.v5"
 )
-FUNDAMENTAL_SUCCESSOR_BINDING_SCHEMA: Final = "myquant-fundamental-successor-support-binding.v3"
-FUNDAMENTAL_SUCCESSOR_RECORD_SCHEMA: Final = "myquant-fundamental-successor-support-record.v3"
-FUNDAMENTAL_SUCCESSOR_TABLE_SCHEMA: Final = "myquant-fundamental-successor-canonical-table.v2"
+FUNDAMENTAL_SUCCESSOR_BINDING_SCHEMA: Final = "myquant-fundamental-successor-support-binding.v5"
+FUNDAMENTAL_SUCCESSOR_RECORD_SCHEMA: Final = "myquant-fundamental-successor-support-record.v4"
+FUNDAMENTAL_SUCCESSOR_TABLE_SCHEMA: Final = "myquant-fundamental-successor-canonical-table.v4"
 FUNDAMENTAL_SUCCESSOR_REQUEST_ENVELOPE_SCOPE_SCHEMA: Final = (
     "myquant-fundamental-successor-request-envelope-scope.v1"
 )
 FUNDAMENTAL_SUCCESSOR_CANONICAL_SUBJECT_SCOPE_SCHEMA: Final = (
     "myquant-fundamental-successor-canonical-subject-scope.v1"
 )
+FUNDAMENTAL_SUCCESSOR_FAILURE_EVIDENCE_SCHEMA: Final = (
+    "myquant-fundamental-successor-failure-evidence.v1"
+)
+FUNDAMENTAL_SUCCESSOR_OPAQUE_COMP_TYPE_EVIDENCE_SCHEMA: Final = (
+    "myquant-fundamental-successor-opaque-comp-type-evidence.v2"
+)
+FUNDAMENTAL_SUCCESSOR_OPAQUE_COMP_TYPE_ACCOUNTING_SCHEMA: Final = (
+    "myquant-fundamental-successor-opaque-comp-type-accounting.v2"
+)
+FUNDAMENTAL_SUCCESSOR_CLASSIFICATION_PARTITION_SCHEMA: Final = (
+    "myquant-fundamental-successor-observation-classification.v1"
+)
+FUNDAMENTAL_SUCCESSOR_UNSUPPORTED_INVENTORY_SCHEMA: Final = (
+    "myquant-fundamental-successor-unsupported-inventory.v1"
+)
+
+_DEFERRED_AUTHORITY_STATE: Final = "DEFERRED_UNSUPPORTED_OBSERVATIONS"
+_AUTHORITATIVE_AUTHORITY_STATE: Final = "AUTHORITATIVE_DELTA_COMPLETE"
 
 SUCCESSOR_SUPPORT_PLAN_VERSION: Final = FUNDAMENTAL_SUCCESSOR_SUPPORT_PLAN_SCHEMA
 SUCCESSOR_SUPPORT_REQUEST_RECEIPT_VERSION: Final = FUNDAMENTAL_SUCCESSOR_REQUEST_RECEIPT_SCHEMA
@@ -65,6 +89,10 @@ SUCCESSOR_SUPPORT_PROVIDER_MANIFEST_VERSION: Final = FUNDAMENTAL_SUCCESSOR_PROVI
 _HEX_SHA256_RE: Final = re.compile(r"^[0-9a-f]{64}$", re.ASCII)
 _DATE_RE: Final = re.compile(r"^[0-9]{8}$", re.ASCII)
 _TS_CODE_RE: Final = re.compile(r"^[0-9]{6}\.(?:BJ|SH|SZ)$", re.ASCII)
+_PROVIDER_EXTERNAL_TS_CODE_RE: Final = re.compile(
+    r"^(?:[A-Z][0-9]{5}|[0-9]{6}![1-9][0-9]{0,2})\.(?:BJ|SH|SZ)$",
+    re.ASCII,
+)
 _POINTER_NAMES: Final = frozenset({"market", "pit", "predecessor"})
 _STATEMENT_TABLES: Final = frozenset({"balancesheet", "cashflow", "income"})
 _TABLES: Final = (
@@ -153,6 +181,8 @@ _EXPECTED_FIELDS: Final = {
 }
 _DATE_FIELDS: Final = frozenset({"ann_date", "end_date", "f_ann_date", "trade_date"})
 _CLASS_FIELDS: Final = frozenset({"comp_type", "report_type", "update_flag"})
+_SUPPORTED_COMP_TYPES: Final = frozenset({"1", "2", "3", "4"})
+_OPAQUE_BALANCESHEET_COMP_TYPE: Final = "7"
 _TEXT_FIELDS: Final = frozenset({"change_reason", "summary", "type"})
 _AVAILABILITY_POLICY: Final = {
     "balancesheet": "F_ANN_DATE_ELSE_ANN_DATE",
@@ -171,7 +201,9 @@ _UPDATE_POLICY: Final = {
     "income": "REQUIRED_ZERO_OR_ONE_DOMINANCE",
 }
 _PHYSICAL_CLASS_POLICY: Final = {
-    "balancesheet": "REPORT_TYPE_ONE_COMP_TYPE_ONE_TO_FOUR",
+    "balancesheet": (
+        "REPORT_TYPE_ONE_COMP_TYPE_1_TO_4_PLUS_7_OPAQUE_EQUIVALENCE_ONLY"
+    ),
     "cashflow": "REPORT_TYPE_ONE_COMP_TYPE_ONE_TO_FOUR",
     "daily_basic": "ABSENT",
     "fina_indicator": "ABSENT",
@@ -187,16 +219,39 @@ _SECRET_KEY_FRAGMENTS: Final = (
     "token",
 )
 _DEFAULT_MINIMUM_FREE_DISK_BYTES: Final = 256 * 1024 * 1024
-_DEFAULT_MAXIMUM_RECORD_BYTES: Final = 128 * 1024 * 1024
+_DEFAULT_MAXIMUM_RECORD_BYTES: Final = 32 * 1024 * 1024
 _DECODE_ESTIMATED_BYTES_PER_CELL: Final = 512
 _MAX_TABLE_MEMORY_FRACTION: Final = Decimal("0.50")
+_PARQUET_ROW_GROUP_ROWS: Final = 2_048
+_MAX_STREAM_BATCH_ROWS: Final = 2_048
+_MAX_STREAM_BATCH_BYTES: Final = 16 * 1024 * 1024
+_MAX_SYMBOL_ROWS: Final = 100_000
+_MAX_SYMBOL_BYTES: Final = 64 * 1024 * 1024
+_PARQUET_SCHEMA: Final = pa.schema(
+    [
+        pa.field("ts_code", pa.string(), nullable=False),
+        pa.field("sort_date", pa.string(), nullable=False),
+        pa.field("end_date", pa.string(), nullable=False),
+        pa.field("row_json", pa.binary(), nullable=False),
+    ]
+)
 
 
 class FundamentalSuccessorSourceError(RuntimeError):
     """A static-code acquisition or evidence-validation failure."""
 
-    def __init__(self, code: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        *,
+        response_evidence: Mapping[str, Any] | None = None,
+        raw_response_bytes: bytes | None = None,
+    ) -> None:
         self.code = code
+        self.response_evidence = (
+            dict(response_evidence) if response_evidence is not None else None
+        )
+        self.raw_response_bytes = raw_response_bytes
         super().__init__(code)
 
     def __str__(self) -> str:
@@ -327,15 +382,41 @@ def _symbol(value: Any) -> str:
     return normalized
 
 
+def _response_symbol(value: Any, *, symbols: frozenset[str]) -> str:
+    """Keep exact provider-external identities only outside subject scope."""
+
+    if type(value) is not str:
+        _fail("SUCCESSOR_SYMBOL_INVALID")
+    normalized = value.strip().upper()
+    if value != normalized:
+        _fail("SUCCESSOR_SYMBOL_ALIAS_UNSUPPORTED")
+    if _TS_CODE_RE.fullmatch(normalized) is not None:
+        return normalized
+    if (
+        _PROVIDER_EXTERNAL_TS_CODE_RE.fullmatch(normalized) is not None
+        and normalized not in symbols
+    ):
+        return normalized
+    _fail("SUCCESSOR_SYMBOL_INVALID")
+
+
 def _scope_ref(body: Mapping[str, Any]) -> dict[str, Any]:
     return _sealed(body, identity_field="scope_sha256")
 
 
 def _request_envelope_scope_ref(requests: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    has_bounded_dependencies = any(
+        request.get("partition_type") == "EXACT_SYMBOL_REPORT_PERIOD_SUPPORT"
+        for request in requests
+    )
     return _scope_ref(
         {
             "identity_policy": "EXACT_CANONICAL_TS_CODE_NO_ALIASES",
-            "partition_contract": "GLOBAL_PROVIDER_EXACT_PARTITION_ALL_SYMBOLS",
+            "partition_contract": (
+                "GLOBAL_DELTA_PARTITIONS_PLUS_EXACT_SUBJECT_PERIOD_DEPENDENCIES"
+                if has_bounded_dependencies
+                else "GLOBAL_PROVIDER_EXACT_PARTITION_ALL_SYMBOLS"
+            ),
             "request_topology_sha256": _sha256(_canonical_json_bytes(list(requests))),
             "schema_version": FUNDAMENTAL_SUCCESSOR_REQUEST_ENVELOPE_SCOPE_SCHEMA,
         }
@@ -427,6 +508,7 @@ def _build_request_rows(
     support_start: str,
     target_date: str,
     open_sessions: Sequence[str],
+    financial_support_dependencies: Sequence[Mapping[str, str]],
 ) -> list[dict[str, Any]]:
     dates = _natural_dates(support_start, target_date)
     rows: list[dict[str, Any]] = []
@@ -464,7 +546,55 @@ def _build_request_rows(
                     partition_type=partition_type,
                 )
             )
+    for dependency in financial_support_dependencies:
+        rows.append(
+            _request_row(
+                ordinal=len(rows),
+                table=dependency["table"],
+                params={
+                    "period": dependency["end_date"],
+                    "ts_code": dependency["ts_code"],
+                },
+                partition_type="EXACT_SYMBOL_REPORT_PERIOD_SUPPORT",
+            )
+        )
     return rows
+
+
+def _financial_support_dependencies(
+    values: Sequence[Mapping[str, Any]],
+    *,
+    support_start: str,
+    subject_symbols: Sequence[str],
+) -> tuple[dict[str, str], ...]:
+    if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
+        _fail("SUCCESSOR_FINANCIAL_SUPPORT_DEPENDENCIES_INVALID")
+    subjects = frozenset(subject_symbols)
+    normalized: list[dict[str, str]] = []
+    for value in values:
+        if not isinstance(value, Mapping) or set(value) != {
+            "end_date",
+            "table",
+            "ts_code",
+        }:
+            _fail("SUCCESSOR_FINANCIAL_SUPPORT_DEPENDENCIES_INVALID")
+        table = str(value["table"])
+        if table not in _STATEMENT_TABLES:
+            _fail("SUCCESSOR_FINANCIAL_SUPPORT_TABLE_INVALID")
+        symbol = _symbol(value["ts_code"])
+        end_date = _date(value["end_date"], label="financial_support_end_date")
+        if symbol not in subjects or end_date >= support_start:
+            _fail("SUCCESSOR_FINANCIAL_SUPPORT_DEPENDENCY_OUT_OF_SCOPE")
+        normalized.append({"end_date": end_date, "table": table, "ts_code": symbol})
+    ordered = sorted(
+        normalized,
+        key=lambda row: (row["table"], row["ts_code"], row["end_date"]),
+    )
+    if len(
+        {(row["table"], row["ts_code"], row["end_date"]) for row in ordered}
+    ) != len(ordered):
+        _fail("SUCCESSOR_FINANCIAL_SUPPORT_DEPENDENCY_DUPLICATE")
+    return tuple(ordered)
 
 
 def build_successor_support_plan(
@@ -474,6 +604,8 @@ def build_successor_support_plan(
     open_sessions: Sequence[str],
     symbols: Sequence[str],
     canonical_subject_scope_authority_sha256: str,
+    income_support_dependencies: Sequence[Mapping[str, Any]] = (),
+    financial_support_dependencies: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     """Build a deterministic exact-partition production acquisition plan."""
 
@@ -497,10 +629,20 @@ def build_successor_support_plan(
     )
     if not subject_symbols:
         _fail("SUCCESSOR_SYMBOL_SCOPE_EMPTY")
+    dependency_values = [
+        {"table": "income", **dict(value)}
+        for value in income_support_dependencies
+    ] + [dict(value) for value in financial_support_dependencies]
+    dependencies = _financial_support_dependencies(
+        dependency_values,
+        support_start=support,
+        subject_symbols=subject_symbols,
+    )
     requests = _build_request_rows(
         support_start=support,
         target_date=target,
         open_sessions=sessions,
+        financial_support_dependencies=dependencies,
     )
     request_topology_sha256 = _sha256(_canonical_json_bytes(requests))
     request_envelope_scope_ref = _request_envelope_scope_ref(requests)
@@ -513,7 +655,12 @@ def build_successor_support_plan(
         "canonical_subject_scope_ref": canonical_subject_scope_ref,
         "endpoint_capabilities": _endpoint_capabilities(),
         "report_period_envelope": {
-            "capture_policy": "ALL_REPORT_PERIODS_FOR_EXACT_ANNOUNCEMENT_DATE",
+            "capture_policy": (
+                "ALL_REPORT_PERIODS_FOR_EXACT_ANNOUNCEMENT_DATE_PLUS_"
+                "SEALED_EXACT_FINANCIAL_SUPPORT"
+                if dependencies
+                else "ALL_REPORT_PERIODS_FOR_EXACT_ANNOUNCEMENT_DATE"
+            ),
             "lower_bound": None,
             "upper_bound_policy": "END_DATE_NOT_AFTER_AVAILABILITY",
         },
@@ -528,6 +675,8 @@ def build_successor_support_plan(
         "support_start": support,
         "target_date": target,
     }
+    if dependencies:
+        body["financial_support_dependencies"] = list(dependencies)
     return _sealed(body, identity_field="plan_sha256")
 
 
@@ -554,7 +703,9 @@ def replay_successor_support_requests(
         "support_start",
         "target_date",
     }
-    if set(sealed) != required:
+    allowed_fields = required | {"financial_support_dependencies"}
+    observed_fields = set(sealed)
+    if observed_fields != required and observed_fields != allowed_fields:
         _fail("SUCCESSOR_PLAN_FIELDS_INVALID")
     if (
         sealed["schema_version"] != FUNDAMENTAL_SUCCESSOR_SUPPORT_PLAN_SCHEMA
@@ -567,9 +718,10 @@ def replay_successor_support_requests(
         target_date=sealed["target_date"],
         open_sessions=sealed["open_sessions"],
         symbols=sealed["subject_symbols"],
-        canonical_subject_scope_authority_sha256=sealed["canonical_subject_scope_ref"][
-            "authority_closure_sha256"
-        ],
+        canonical_subject_scope_authority_sha256=sealed[
+            "canonical_subject_scope_ref"
+        ]["authority_closure_sha256"],
+        financial_support_dependencies=sealed.get("financial_support_dependencies", ()),
     )
     if _canonical_json_bytes(sealed) != _canonical_json_bytes(expected):
         _fail("SUCCESSOR_PLAN_REPLAY_MISMATCH")
@@ -643,9 +795,9 @@ def _row_sort_key(row: Mapping[str, Any], fields: Sequence[str]) -> bytes:
 def _class_text(value: Any, *, required: bool) -> str | None:
     if value is None and not required:
         return None
-    if type(value) is int and value in {0, 1, 2, 3, 4}:
+    if type(value) is int and value in {0, 1, 2, 3, 4, 7}:
         return str(value)
-    if type(value) is str and value in {"0", "1", "2", "3", "4"}:
+    if type(value) is str and value in {"0", "1", "2", "3", "4", "7"}:
         return value
     _fail("SUCCESSOR_CLASSIFICATION_VALUE_INVALID")
 
@@ -687,7 +839,7 @@ def _normalize_response_row(
             _fail("SUCCESSOR_RESPONSE_FIELD_TYPE_INVALID")
         if kind == "TEXT" and value is not None and type(value) is not str:
             _fail("SUCCESSOR_RESPONSE_FIELD_TYPE_INVALID")
-    symbol = _symbol(row["ts_code"])
+    symbol = _response_symbol(row["ts_code"], symbols=symbols)
     if enforce_subject_scope and symbol not in symbols:
         _fail("SUCCESSOR_RESPONSE_SYMBOL_OUT_OF_SCOPE")
     row["ts_code"] = symbol
@@ -703,8 +855,16 @@ def _normalize_response_row(
     if table in _STATEMENT_TABLES:
         ann_date = _row_date(row["ann_date"], label="ann_date")
         f_ann_date = _row_date(row["f_ann_date"], label="f_ann_date", optional=True)
-        if params.get("start_date") != params.get("end_date") or ann_date != params.get(
-            "start_date"
+        if request.get("partition_type") == "EXACT_SYMBOL_REPORT_PERIOD_SUPPORT":
+            if (
+                table not in _STATEMENT_TABLES
+                or symbol != params.get("ts_code")
+                or end_date != params.get("period")
+            ):
+                _fail("SUCCESSOR_RESPONSE_PARTITION_SCOPE_MISMATCH")
+        elif (
+            params.get("start_date") != params.get("end_date")
+            or ann_date != params.get("start_date")
         ):
             _fail("SUCCESSOR_RESPONSE_PARTITION_SCOPE_MISMATCH")
         availability = f_ann_date or ann_date
@@ -715,7 +875,10 @@ def _normalize_response_row(
         report_type = _class_text(row["report_type"], required=True)
         comp_type = _class_text(row["comp_type"], required=True)
         update_flag = _class_text(row["update_flag"], required=True)
-        if report_type != "1" or comp_type not in {"1", "2", "3", "4"}:
+        accepted_comp_types = set(_SUPPORTED_COMP_TYPES)
+        if table == "balancesheet":
+            accepted_comp_types.add(_OPAQUE_BALANCESHEET_COMP_TYPE)
+        if report_type != "1" or comp_type not in accepted_comp_types:
             _fail("SUCCESSOR_STATEMENT_PHYSICAL_CLASS_INVALID")
         if update_flag not in {"0", "1"}:
             _fail("SUCCESSOR_UPDATE_FLAG_INVALID")
@@ -781,10 +944,263 @@ def _projection_fields(table: str) -> tuple[str, ...]:
     return tuple(field for field in _output_fields(table) if field not in excluded)
 
 
+def _opaque_comp_type_evidence(
+    table: str,
+    rows: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    fields = _output_fields(table)
+    opaque_rows = [
+        dict(row)
+        for row in rows
+        if str(row.get("comp_type") or "")
+        == _OPAQUE_BALANCESHEET_COMP_TYPE
+    ]
+    if opaque_rows and table != "balancesheet":
+        _fail("SUCCESSOR_STATEMENT_PHYSICAL_CLASS_INVALID")
+    if not opaque_rows:
+        return _sealed(
+            {
+                "schema_version": (
+                    FUNDAMENTAL_SUCCESSOR_OPAQUE_COMP_TYPE_EVIDENCE_SCHEMA
+                ),
+                "opaque_comp_type_observation_count": 0,
+                "opaque_comp_type_business_key_count": 0,
+                "opaque_comp_type_observation_multiset_sha256": _sha256(
+                    _canonical_json_bytes(
+                        {"fields": list(fields), "rows": []}
+                    )
+                ),
+                "opaque_to_supported_peer_pair_keyset_sha256": _sha256(
+                    _canonical_json_bytes([])
+                ),
+                "opaque_equivalent_business_keys": [],
+                "deferred_business_keys": [],
+                "deferred_observations": [],
+                "opaque_deferred_observation_count": 0,
+                "opaque_unpaired_count": 0,
+                "opaque_material_conflict_count": 0,
+            },
+            identity_field="evidence_sha256",
+        )
+
+    exact_seen: set[bytes] = set()
+    exact_rows: list[dict[str, Any]] = []
+    for value in rows:
+        row = dict(value)
+        token = _canonical_json_bytes(_typed_row(row, fields, logical=False))
+        if token not in exact_seen:
+            exact_seen.add(token)
+            exact_rows.append(row)
+    physical_groups: dict[tuple[str, ...], list[dict[str, Any]]] = {}
+    for row in exact_rows:
+        physical_key = (
+            *_business_key(table, row),
+            *_physical_update_identity(table, row),
+        )
+        physical_groups.setdefault(physical_key, []).append(row)
+    survivors: list[dict[str, Any]] = []
+    for candidates in physical_groups.values():
+        highest = max(_update_rank(table, row) for row in candidates)
+        survivors.extend(
+            row
+            for row in candidates
+            if _update_rank(table, row) == highest
+        )
+
+    logical_groups: dict[tuple[str, ...], list[dict[str, Any]]] = {}
+    for row in survivors:
+        logical_groups.setdefault(_business_key(table, row), []).append(row)
+    peer_pairs: list[dict[str, Any]] = []
+    equivalent_business_keys: list[list[str]] = []
+    deferred_business_keys: list[list[str]] = []
+    deferred_observations: list[dict[str, Any]] = []
+    projection_fields = _projection_fields(table)
+    for key, candidates in logical_groups.items():
+        opaque = [
+            row
+            for row in candidates
+            if str(row.get("comp_type") or "")
+            == _OPAQUE_BALANCESHEET_COMP_TYPE
+        ]
+        if not opaque:
+            continue
+        supported = [
+            row
+            for row in candidates
+            if str(row.get("comp_type") or "") in _SUPPORTED_COMP_TYPES
+        ]
+        if not supported:
+            opaque_projection_tokens = {
+                _canonical_json_bytes(
+                    _typed_row(row, projection_fields, logical=True)
+                )
+                for row in opaque
+            }
+            if len(opaque_projection_tokens) != 1:
+                _fail("SUCCESSOR_OPAQUE_COMP_TYPE_MATERIAL_CONFLICT")
+            deferred_business_keys.append(list(key))
+            for row in sorted(opaque, key=lambda value: _row_sort_key(value, fields)):
+                encoded = _typed_row(row, fields, logical=False)
+                deferred_observations.append(
+                    {
+                        "business_key": list(key),
+                        "row_sha256": _sha256(_canonical_json_bytes(encoded)),
+                        "typed_row": encoded,
+                    }
+                )
+            continue
+        projection_tokens = {
+            _canonical_json_bytes(
+                _typed_row(row, projection_fields, logical=True)
+            )
+            for row in (*opaque, *supported)
+        }
+        if len(projection_tokens) != 1:
+            _fail("SUCCESSOR_OPAQUE_COMP_TYPE_EQUIVALENCE_UNCLOSED")
+        equivalent_business_keys.append(list(key))
+        peer_pairs.append(
+            {
+                "business_key": list(key),
+                "opaque_comp_type": _OPAQUE_BALANCESHEET_COMP_TYPE,
+                "supported_comp_types": sorted(
+                    {
+                        str(row["comp_type"])
+                        for row in supported
+                    }
+                ),
+            }
+        )
+
+    opaque_observations = sorted(
+        (_typed_row(row, fields, logical=False) for row in opaque_rows),
+        key=_canonical_json_bytes,
+    )
+    opaque_business_keys = sorted(
+        {tuple(_business_key(table, row)) for row in opaque_rows},
+        key=lambda key: tuple(value.encode("utf-8") for value in key),
+    )
+    peer_pairs.sort(
+        key=lambda value: _canonical_json_bytes(value)
+    )
+    equivalent_business_keys.sort(key=_canonical_json_bytes)
+    deferred_business_keys.sort(key=_canonical_json_bytes)
+    deferred_observations.sort(key=_canonical_json_bytes)
+    if len(peer_pairs) + len(deferred_business_keys) != len(opaque_business_keys):
+        _fail("SUCCESSOR_OPAQUE_COMP_TYPE_CLASSIFICATION_UNCLOSED")
+    return _sealed(
+        {
+            "schema_version": (
+                FUNDAMENTAL_SUCCESSOR_OPAQUE_COMP_TYPE_EVIDENCE_SCHEMA
+            ),
+            "opaque_comp_type_observation_count": len(opaque_rows),
+            "opaque_comp_type_business_key_count": len(
+                opaque_business_keys
+            ),
+            "opaque_comp_type_observation_multiset_sha256": _sha256(
+                _canonical_json_bytes(
+                    {"fields": list(fields), "rows": opaque_observations}
+                )
+            ),
+            "opaque_to_supported_peer_pair_keyset_sha256": _sha256(
+                _canonical_json_bytes(peer_pairs)
+            ),
+            "opaque_equivalent_business_keys": equivalent_business_keys,
+            "deferred_business_keys": deferred_business_keys,
+            "deferred_observations": deferred_observations,
+            "opaque_deferred_observation_count": len(deferred_observations),
+            "opaque_unpaired_count": len(deferred_business_keys),
+            "opaque_material_conflict_count": 0,
+        },
+        identity_field="evidence_sha256",
+    )
+
+
+def _validate_opaque_comp_type_evidence(
+    value: Mapping[str, Any],
+) -> dict[str, Any]:
+    evidence = _validate_seal(value, identity_field="evidence_sha256")
+    required = {
+        "deferred_business_keys",
+        "deferred_observations",
+        "evidence_sha256",
+        "opaque_deferred_observation_count",
+        "opaque_equivalent_business_keys",
+        "opaque_comp_type_business_key_count",
+        "opaque_comp_type_observation_count",
+        "opaque_comp_type_observation_multiset_sha256",
+        "opaque_material_conflict_count",
+        "opaque_to_supported_peer_pair_keyset_sha256",
+        "opaque_unpaired_count",
+        "schema_version",
+    }
+    count_fields = {
+        "opaque_comp_type_business_key_count",
+        "opaque_comp_type_observation_count",
+        "opaque_deferred_observation_count",
+        "opaque_material_conflict_count",
+        "opaque_unpaired_count",
+    }
+    if (
+        set(evidence) != required
+        or evidence["schema_version"]
+        != FUNDAMENTAL_SUCCESSOR_OPAQUE_COMP_TYPE_EVIDENCE_SCHEMA
+        or any(
+            type(evidence[field]) is not int or evidence[field] < 0
+            for field in count_fields
+        )
+        or evidence["opaque_material_conflict_count"] != 0
+        or type(evidence["deferred_business_keys"]) is not list
+        or type(evidence["opaque_equivalent_business_keys"]) is not list
+        or type(evidence["deferred_observations"]) is not list
+        or evidence["opaque_unpaired_count"]
+        != len(evidence["deferred_business_keys"])
+        or evidence["opaque_deferred_observation_count"]
+        != len(evidence["deferred_observations"])
+    ):
+        _fail("SUCCESSOR_OPAQUE_COMP_TYPE_EVIDENCE_INVALID")
+    deferred_keys = {
+        tuple(value)
+        for value in evidence["deferred_business_keys"]
+        if type(value) is list and all(type(part) is str for part in value)
+    }
+    equivalent_keys = {
+        tuple(value)
+        for value in evidence["opaque_equivalent_business_keys"]
+        if type(value) is list and all(type(part) is str for part in value)
+    }
+    if (
+        len(deferred_keys) != len(evidence["deferred_business_keys"])
+        or len(equivalent_keys) != len(evidence["opaque_equivalent_business_keys"])
+        or deferred_keys.intersection(equivalent_keys)
+    ):
+        _fail("SUCCESSOR_OPAQUE_COMP_TYPE_EVIDENCE_INVALID")
+    for observation in evidence["deferred_observations"]:
+        if (
+            type(observation) is not dict
+            or set(observation) != {"business_key", "row_sha256", "typed_row"}
+            or tuple(observation["business_key"]) not in deferred_keys
+            or type(observation["typed_row"]) is not list
+            or _sha256(_canonical_json_bytes(observation["typed_row"]))
+            != observation["row_sha256"]
+        ):
+            _fail("SUCCESSOR_OPAQUE_COMP_TYPE_EVIDENCE_INVALID")
+    for field in (
+        "evidence_sha256",
+        "opaque_comp_type_observation_multiset_sha256",
+        "opaque_to_supported_peer_pair_keyset_sha256",
+    ):
+        _hex_sha256(evidence[field], label=field)
+    return evidence
+
+
 def _canonicalize_rows(
     table: str,
     rows: Sequence[Mapping[str, Any]],
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    opaque_evidence = _opaque_comp_type_evidence(table, rows)
+    deferred_keys = {
+        tuple(value) for value in opaque_evidence["deferred_business_keys"]
+    }
     fields = _output_fields(table)
     exact_seen: set[bytes] = set()
     exact_rows: list[dict[str, Any]] = []
@@ -818,6 +1234,7 @@ def _canonicalize_rows(
         logical_groups.setdefault(_business_key(table, row), []).append(row)
     accepted: list[dict[str, Any]] = []
     projection_collapsed = 0
+    deferred = 0
     projection_fields = _projection_fields(table)
     for key in sorted(
         logical_groups,
@@ -829,17 +1246,41 @@ def _canonicalize_rows(
             token = _canonical_json_bytes(_typed_row(row, projection_fields, logical=True))
             projections.setdefault(token, []).append(row)
         if len(projections) != 1:
+            if any(
+                str(row.get("comp_type") or "")
+                == _OPAQUE_BALANCESHEET_COMP_TYPE
+                for row in winners
+            ):
+                _fail("SUCCESSOR_OPAQUE_COMP_TYPE_EQUIVALENCE_UNCLOSED")
             _fail("SUCCESSOR_MATERIAL_DUPLICATE_CONFLICT")
         equivalent = next(iter(projections.values()))
+        if key in deferred_keys:
+            if any(
+                str(row.get("comp_type") or "")
+                != _OPAQUE_BALANCESHEET_COMP_TYPE
+                for row in equivalent
+            ):
+                _fail("SUCCESSOR_OPAQUE_COMP_TYPE_CLASSIFICATION_UNCLOSED")
+            deferred += len(equivalent)
+            continue
         projection_collapsed += len(equivalent) - 1
         # All business values are equal here.  Physical classification is the
         # only tie-break input; no content hash selects a winner.
-        accepted.append(min(equivalent, key=lambda row: _row_sort_key(row, fields)))
+        supported = [
+            row
+            for row in equivalent
+            if str(row.get("comp_type") or "")
+            != _OPAQUE_BALANCESHEET_COMP_TYPE
+        ]
+        accepted.append(
+            min(supported or equivalent, key=lambda row: _row_sort_key(row, fields))
+        )
     accepted.sort(key=lambda row: _row_sort_key(row, fields))
     return accepted, {
         "exact_duplicates_collapsed": exact_collapsed,
         "projection_equivalent_duplicates_collapsed": projection_collapsed,
         "superseded_updates_discarded": dominated,
+        "deferred_opaque_observations": deferred,
     }
 
 
@@ -940,9 +1381,16 @@ def _scope_partition_identity(
             table, out_of_scope_rows, logical=False
         ),
         "out_of_scope_symbol_count": len(excluded_symbols),
-        "out_of_scope_symbol_keyset_sha256": _sha256(_canonical_json_bytes(excluded_symbols)),
-        "request_envelope_scope_ref_sha256": request_envelope_scope_ref.get("scope_sha256"),
-        "scope_exclusion_policy": "FROZEN_CANONICAL_SUBJECT_PROJECTION.v2",
+        "out_of_scope_symbol_keyset_sha256": _sha256(
+            _canonical_json_bytes(excluded_symbols)
+        ),
+        "request_envelope_scope_ref_sha256": request_envelope_scope_ref.get(
+            "scope_sha256"
+        ),
+        "scope_exclusion_policy": (
+            "FROZEN_CANONICAL_SUBJECT_PROJECTION.v3_"
+            "EXACT_PROVIDER_EXTERNAL_EVIDENCE_ONLY"
+        ),
         "subject_symbol_keyset_sha256": subject_symbols_sha256,
     }
     for field in (
@@ -953,6 +1401,139 @@ def _scope_partition_identity(
         _hex_sha256(identity[field], label=field)
     identity["scope_partition_sha256"] = _sha256(_canonical_json_bytes(identity))
     return identity
+
+
+def _classification_partition(
+    *,
+    table: str,
+    normalized_rows: Sequence[Mapping[str, Any]],
+    subject_symbols: frozenset[str],
+    opaque_evidence: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Seal an exhaustive, mutually-exclusive raw-observation partition."""
+
+    fields = _output_fields(table)
+    deferred_keys = {
+        tuple(value) for value in opaque_evidence["deferred_business_keys"]
+    }
+    equivalent_keys = {
+        tuple(value)
+        for value in opaque_evidence["opaque_equivalent_business_keys"]
+    }
+    names = (
+        "out_of_scope_excluded",
+        "authoritative_supported",
+        "opaque_equivalent",
+        "tainted_deferred",
+        "source_blocking",
+    )
+    buckets: dict[str, list[list[dict[str, Any]]]] = {
+        name: [] for name in names
+    }
+    for row in normalized_rows:
+        encoded = _typed_row(row, fields, logical=False)
+        if str(row["ts_code"]) not in subject_symbols:
+            bucket = "out_of_scope_excluded"
+        elif (
+            table == "balancesheet"
+            and str(row.get("comp_type") or "")
+            == _OPAQUE_BALANCESHEET_COMP_TYPE
+        ):
+            key = _business_key(table, row)
+            if key in deferred_keys:
+                bucket = "tainted_deferred"
+            elif key in equivalent_keys:
+                bucket = "opaque_equivalent"
+            else:
+                _fail("SUCCESSOR_OBSERVATION_CLASSIFICATION_UNCLOSED")
+        else:
+            bucket = "authoritative_supported"
+        buckets[bucket].append(encoded)
+    for values in buckets.values():
+        values.sort(key=_canonical_json_bytes)
+    all_rows = sorted(
+        (_typed_row(row, fields, logical=False) for row in normalized_rows),
+        key=_canonical_json_bytes,
+    )
+    classified = sorted(
+        (row for values in buckets.values() for row in values),
+        key=_canonical_json_bytes,
+    )
+    if _canonical_json_bytes(classified) != _canonical_json_bytes(all_rows):
+        _fail("SUCCESSOR_OBSERVATION_CLASSIFICATION_UNCLOSED")
+    body = {
+        "schema_version": FUNDAMENTAL_SUCCESSOR_CLASSIFICATION_PARTITION_SCHEMA,
+        "table": table,
+        "raw_observation_count": len(all_rows),
+        "raw_observation_multiset_sha256": _sha256(
+            _canonical_json_bytes({"fields": list(fields), "rows": all_rows})
+        ),
+        "classification_counts": {
+            name: len(buckets[name]) for name in names
+        },
+        "classification_multiset_sha256": {
+            name: _sha256(
+                _canonical_json_bytes(
+                    {"fields": list(fields), "rows": buckets[name]}
+                )
+            )
+            for name in names
+        },
+        "partition_mutually_exclusive": True,
+        "partition_union_complete": True,
+    }
+    return _sealed(body, identity_field="partition_sha256")
+
+
+def _validate_classification_partition(
+    value: Mapping[str, Any],
+) -> dict[str, Any]:
+    partition = _validate_seal(value, identity_field="partition_sha256")
+    names = {
+        "out_of_scope_excluded",
+        "authoritative_supported",
+        "opaque_equivalent",
+        "tainted_deferred",
+        "source_blocking",
+    }
+    if (
+        set(partition)
+        != {
+            "classification_counts",
+            "classification_multiset_sha256",
+            "partition_mutually_exclusive",
+            "partition_sha256",
+            "partition_union_complete",
+            "raw_observation_count",
+            "raw_observation_multiset_sha256",
+            "schema_version",
+            "table",
+        }
+        or partition["schema_version"]
+        != FUNDAMENTAL_SUCCESSOR_CLASSIFICATION_PARTITION_SCHEMA
+        or partition["table"] not in _TABLES
+        or type(partition["classification_counts"]) is not dict
+        or set(partition["classification_counts"]) != names
+        or type(partition["classification_multiset_sha256"]) is not dict
+        or set(partition["classification_multiset_sha256"]) != names
+        or any(
+            type(count) is not int or count < 0
+            for count in partition["classification_counts"].values()
+        )
+        or partition["classification_counts"]["source_blocking"] != 0
+        or sum(partition["classification_counts"].values())
+        != partition["raw_observation_count"]
+        or partition["partition_mutually_exclusive"] is not True
+        or partition["partition_union_complete"] is not True
+    ):
+        _fail("SUCCESSOR_OBSERVATION_CLASSIFICATION_INVALID")
+    _hex_sha256(
+        partition["raw_observation_multiset_sha256"],
+        label="raw_observation_multiset_sha256",
+    )
+    for digest in partition["classification_multiset_sha256"].values():
+        _hex_sha256(digest, label="classification_multiset_sha256")
+    return partition
 
 
 def _stored_response_identities(
@@ -1033,6 +1614,30 @@ def _error_code(error: BaseException) -> str:
     return "SUCCESSOR_PROVIDER_CALL_FAILED"
 
 
+def _validate_provider_response_envelope(
+    response: TushareResponse,
+    *,
+    request: Mapping[str, Any],
+) -> None:
+    fields = tuple(request["expected_fields"])
+    if (
+        response.api_name != request["endpoint"]
+        or response.fields != fields
+        or type(response.provider_reported_count) is not int
+        or type(response.item_count) is not int
+        or response.item_count != len(response.rows)
+        or response.provider_reported_count not in {0, response.item_count}
+        or type(response.has_more) is not bool
+        or type(response.request_id) is not str
+        or not response.request_id
+    ):
+        _fail("SUCCESSOR_PROVIDER_SCHEMA_MISMATCH")
+    if response.has_more:
+        _fail("SUCCESSOR_PROVIDER_HAS_MORE")
+    if len(response.rows) >= request["row_ceiling"]:
+        _fail("SUCCESSOR_PROVIDER_ROW_CEILING_HIT")
+
+
 def _receipt(
     *,
     plan: Mapping[str, Any],
@@ -1046,6 +1651,7 @@ def _receipt(
     attempts: int,
     retry_error_codes: Sequence[str],
     counters: Mapping[str, int],
+    opaque_comp_type_evidence: Mapping[str, Any],
 ) -> dict[str, Any]:
     observation_sha256, payload_sha256, logical_sha256 = _response_identities(
         request=request,
@@ -1061,16 +1667,24 @@ def _receipt(
         request_envelope_scope_ref=plan["request_envelope_scope_ref"],
         canonical_subject_scope_ref=plan["canonical_subject_scope_ref"],
     )
+    classification = _classification_partition(
+        table=request["table"],
+        normalized_rows=normalized_rows,
+        subject_symbols=frozenset(plan["subject_symbols"]),
+        opaque_evidence=opaque_comp_type_evidence,
+    )
     body = {
         "accepted_count": len(logical_rows),
         "attempts": attempts,
         "blocker_codes": [],
         "canonicalization_counters": dict(counters),
+        "classification_partition": classification,
         "endpoint": request["endpoint"],
         "has_more": False,
         "item_count": response.item_count,
         "logical_sha256": logical_sha256,
         "observation_sha256": observation_sha256,
+        "opaque_comp_type_evidence": dict(opaque_comp_type_evidence),
         "ordinal": request["ordinal"],
         "payload_sha256": payload_sha256,
         "plan_sha256": plan["plan_sha256"],
@@ -1142,37 +1756,45 @@ def _fetch_request(
     if type(raw_response_bytes) is not bytes or not raw_response_bytes:
         _fail("SUCCESSOR_PROVIDER_RAW_RESPONSE_MISSING")
     fields = tuple(request["expected_fields"])
-    if (
-        response.api_name != request["endpoint"]
-        or response.fields != fields
-        or type(response.provider_reported_count) is not int
-        or type(response.item_count) is not int
-        or response.item_count != len(response.rows)
-        or response.provider_reported_count not in {0, response.item_count}
-        or type(response.has_more) is not bool
-        or type(response.request_id) is not str
-        or not response.request_id
-    ):
-        _fail("SUCCESSOR_PROVIDER_SCHEMA_MISMATCH")
-    if response.has_more:
-        _fail("SUCCESSOR_PROVIDER_HAS_MORE")
-    if len(response.rows) >= request["row_ceiling"]:
-        _fail("SUCCESSOR_PROVIDER_ROW_CEILING_HIT")
-    normalized = [
-        _normalize_response_row(
-            table=request["table"],
-            request=request,
-            fields=fields,
-            values=row,
-            symbols=symbols,
-            target_date=plan["target_date"],
-            enforce_subject_scope=False,
+    _validate_provider_response_envelope(response, request=request)
+    try:
+        normalized = [
+            _normalize_response_row(
+                table=request["table"],
+                request=request,
+                fields=fields,
+                values=row,
+                symbols=symbols,
+                target_date=plan["target_date"],
+                enforce_subject_scope=False,
+            )
+            for row in response.rows
+        ]
+        in_scope = [
+            row for row in normalized if str(row["ts_code"]) in symbols
+        ]
+        scope_excluded = [
+            row for row in normalized if str(row["ts_code"]) not in symbols
+        ]
+        opaque_comp_type_evidence = _opaque_comp_type_evidence(
+            request["table"], in_scope
         )
-        for row in response.rows
-    ]
-    in_scope = [row for row in normalized if str(row["ts_code"]) in symbols]
-    scope_excluded = [row for row in normalized if str(row["ts_code"]) not in symbols]
-    logical, counters = _canonicalize_rows(request["table"], in_scope)
+        logical, counters = _canonicalize_rows(request["table"], in_scope)
+    except FundamentalSuccessorSourceError as exc:
+        raise FundamentalSuccessorSourceError(
+            exc.code,
+            response_evidence={
+                "api_name": response.api_name,
+                "fields": list(response.fields),
+                "has_more": response.has_more,
+                "item_count": response.item_count,
+                "provider_reported_count": response.provider_reported_count,
+                "request_id": response.request_id,
+                "raw_response_byte_length": len(raw_response_bytes),
+                "raw_response_sha256": _sha256(raw_response_bytes),
+            },
+            raw_response_bytes=raw_response_bytes,
+        ) from None
     receipt = _receipt(
         plan=plan,
         request=request,
@@ -1185,6 +1807,7 @@ def _fetch_request(
         attempts=attempt,
         retry_error_codes=retry_errors,
         counters=counters,
+        opaque_comp_type_evidence=opaque_comp_type_evidence,
     )
     return receipt, normalized, logical, raw_response_bytes
 
@@ -1337,6 +1960,55 @@ def _regular_bytes(path: Path) -> bytes:
     return payload
 
 
+def _regular_file_identity(path: Path) -> tuple[str, int]:
+    """Hash one private regular file without materialising it in memory."""
+
+    try:
+        before = os.lstat(path)
+    except OSError:
+        _fail("SUCCESSOR_EVIDENCE_FILE_MISSING")
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or stat.S_ISLNK(before.st_mode)
+        or before.st_uid != os.geteuid()
+        or stat.S_IMODE(before.st_mode) & 0o077
+    ):
+        _fail("SUCCESSOR_EVIDENCE_FILE_INVALID")
+    digest = hashlib.sha256()
+    observed = 0
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(descriptor, "rb", closefd=True) as handle:
+            descriptor = -1
+            opened = os.fstat(handle.fileno())
+            while True:
+                chunk = handle.read(1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+                observed += len(chunk)
+    except OSError:
+        _fail("SUCCESSOR_EVIDENCE_FILE_INVALID")
+    finally:
+        if "descriptor" in locals() and descriptor >= 0:
+            os.close(descriptor)
+    try:
+        after = os.lstat(path)
+    except OSError:
+        _fail("SUCCESSOR_EVIDENCE_FILE_CHANGED")
+    identity = lambda value: (
+        value.st_dev,
+        value.st_ino,
+        value.st_size,
+        value.st_mtime_ns,
+    )
+    if identity(before) != identity(opened) or identity(before) != identity(after):
+        _fail("SUCCESSOR_EVIDENCE_FILE_CHANGED")
+    if observed != int(before.st_size):
+        _fail("SUCCESSOR_EVIDENCE_FILE_CHANGED")
+    return digest.hexdigest(), observed
+
+
 def _canonical_file_mapping(path: Path) -> dict[str, Any]:
     payload = _regular_bytes(path)
     try:
@@ -1386,6 +2058,200 @@ def _atomic_write(path: Path, payload: bytes) -> None:
         _fail("SUCCESSOR_ATOMIC_WRITE_READBACK_FAILED")
 
 
+def _persist_failure_evidence(
+    *,
+    root: Path,
+    binding: Mapping[str, Any],
+    request: Mapping[str, Any],
+    error: FundamentalSuccessorSourceError,
+    maximum_record_bytes: int,
+) -> None:
+    raw_response_bytes = error.raw_response_bytes
+    response_evidence = error.response_evidence
+    if raw_response_bytes is None or response_evidence is None:
+        return
+    if not raw_response_bytes or len(raw_response_bytes) > maximum_record_bytes:
+        _fail("SUCCESSOR_FAILURE_EVIDENCE_RESOURCE_LIMIT_EXCEEDED")
+    ordinal = int(request["ordinal"])
+    failure_root = _private_root(
+        root.parent / f"{root.name}-failures",
+        create=True,
+    )
+    raw_name = f"{ordinal:06d}.raw.json"
+    raw_path = failure_root / raw_name
+    _atomic_write(raw_path, raw_response_bytes)
+    raw_readback = _regular_bytes(raw_path)
+    failure = _sealed(
+        {
+            "schema_version": FUNDAMENTAL_SUCCESSOR_FAILURE_EVIDENCE_SCHEMA,
+            "status": "BLOCKED",
+            "error_code": error.code,
+            "binding_sha256": binding["binding_sha256"],
+            "request": dict(request),
+            "response_evidence": dict(response_evidence),
+            "raw_response_ref": {
+                "path": raw_name,
+                "byte_length": len(raw_readback),
+                "sha256": _sha256(raw_readback),
+            },
+        },
+        identity_field="failure_sha256",
+    )
+    _assert_no_secret_keys(failure)
+    _atomic_write(
+        failure_root / f"{ordinal:06d}.failure.json",
+        _canonical_json_bytes(failure),
+    )
+    validate_successor_failure_evidence(failure_root, ordinal=ordinal)
+
+
+def validate_successor_failure_evidence(
+    failure_root: str | Path,
+    *,
+    ordinal: int,
+) -> dict[str, Any]:
+    """Validate one blocked provider response without making it resumable."""
+
+    if type(ordinal) is not int or ordinal < 0:
+        _fail("SUCCESSOR_FAILURE_EVIDENCE_ORDINAL_INVALID")
+    root = _private_root(failure_root, create=False)
+    failure = _validate_seal(
+        _canonical_file_mapping(root / f"{ordinal:06d}.failure.json"),
+        identity_field="failure_sha256",
+    )
+    required = {
+        "binding_sha256",
+        "error_code",
+        "failure_sha256",
+        "raw_response_ref",
+        "request",
+        "response_evidence",
+        "schema_version",
+        "status",
+    }
+    if (
+        set(failure) != required
+        or failure["schema_version"]
+        != FUNDAMENTAL_SUCCESSOR_FAILURE_EVIDENCE_SCHEMA
+        or failure["status"] != "BLOCKED"
+        or type(failure["error_code"]) is not str
+        or re.fullmatch(r"[A-Z][A-Z0-9_]{0,79}", failure["error_code"])
+        is None
+    ):
+        _fail("SUCCESSOR_FAILURE_EVIDENCE_INVALID")
+    _hex_sha256(failure["binding_sha256"], label="binding_sha256")
+    request = failure["request"]
+    response_evidence = failure["response_evidence"]
+    raw_ref = failure["raw_response_ref"]
+    if (
+        not isinstance(request, Mapping)
+        or request.get("ordinal") != ordinal
+        or not isinstance(response_evidence, Mapping)
+        or type(raw_ref) is not dict
+        or set(raw_ref) != {"byte_length", "path", "sha256"}
+        or raw_ref["path"] != f"{ordinal:06d}.raw.json"
+    ):
+        _fail("SUCCESSOR_FAILURE_EVIDENCE_INVALID")
+    if not root.name.endswith("-failures"):
+        _fail("SUCCESSOR_FAILURE_EVIDENCE_INVALID")
+    fileset_name = root.name.removesuffix("-failures")
+    if not fileset_name:
+        _fail("SUCCESSOR_FAILURE_EVIDENCE_INVALID")
+    try:
+        fileset_root = _private_root(
+            root.parent / fileset_name,
+            create=False,
+        )
+        binding = _validate_binding(
+            _canonical_file_mapping(fileset_root / "binding.json")
+        )
+        planned_requests = replay_successor_support_requests(binding["plan"])
+    except FundamentalSuccessorSourceError:
+        _fail("SUCCESSOR_FAILURE_EVIDENCE_INVALID")
+    if (
+        ordinal >= len(planned_requests)
+        or failure["binding_sha256"] != binding["binding_sha256"]
+        or _canonical_json_bytes(request)
+        != _canonical_json_bytes(planned_requests[ordinal])
+    ):
+        _fail("SUCCESSOR_FAILURE_EVIDENCE_INVALID")
+    raw_bytes = _regular_bytes(root / raw_ref["path"])
+    if (
+        type(raw_ref["byte_length"]) is not int
+        or raw_ref["byte_length"] != len(raw_bytes)
+        or _hex_sha256(raw_ref["sha256"], label="raw_response_sha256")
+        != _sha256(raw_bytes)
+    ):
+        _fail("SUCCESSOR_FAILURE_EVIDENCE_INVALID")
+    expected_response_fields = {
+        "api_name",
+        "fields",
+        "has_more",
+        "item_count",
+        "provider_reported_count",
+        "request_id",
+        "raw_response_byte_length",
+        "raw_response_sha256",
+    }
+    if set(response_evidence) != expected_response_fields:
+        _fail("SUCCESSOR_FAILURE_EVIDENCE_INVALID")
+    try:
+        replayed = replay_tushare_response_bytes(
+            raw_bytes,
+            api_name=request["endpoint"],
+            expected_fields=request["expected_fields"],
+            strict_decimal_decode=True,
+            max_response_items=request["row_ceiling"],
+        )
+    except (KeyError, TypeError, TushareHttpsError):
+        _fail("SUCCESSOR_FAILURE_EVIDENCE_INVALID")
+    try:
+        _validate_provider_response_envelope(replayed, request=request)
+    except FundamentalSuccessorSourceError:
+        _fail("SUCCESSOR_FAILURE_EVIDENCE_INVALID")
+    expected_response = {
+        "api_name": replayed.api_name,
+        "fields": list(replayed.fields),
+        "has_more": replayed.has_more,
+        "item_count": replayed.item_count,
+        "provider_reported_count": replayed.provider_reported_count,
+        "request_id": replayed.request_id,
+        "raw_response_byte_length": len(raw_bytes),
+        "raw_response_sha256": _sha256(raw_bytes),
+    }
+    if _canonical_json_bytes(response_evidence) != _canonical_json_bytes(
+        expected_response
+    ):
+        _fail("SUCCESSOR_FAILURE_EVIDENCE_INVALID")
+    subject_symbols = frozenset(binding["plan"]["subject_symbols"])
+    try:
+        normalized = [
+            _normalize_response_row(
+                table=request["table"],
+                request=request,
+                fields=request["expected_fields"],
+                values=row,
+                symbols=subject_symbols,
+                target_date=binding["plan"]["target_date"],
+                enforce_subject_scope=False,
+            )
+            for row in replayed.rows
+        ]
+        in_scope = [
+            row
+            for row in normalized
+            if str(row["ts_code"]) in subject_symbols
+        ]
+        _opaque_comp_type_evidence(request["table"], in_scope)
+        _canonicalize_rows(request["table"], in_scope)
+    except FundamentalSuccessorSourceError as replay_error:
+        if replay_error.code != failure["error_code"]:
+            _fail("SUCCESSOR_FAILURE_EVIDENCE_INVALID")
+    else:
+        _fail("SUCCESSOR_FAILURE_EVIDENCE_INVALID")
+    return failure
+
+
 def _physical_memory_bytes() -> int:
     try:
         page_size = int(os.sysconf("SC_PAGE_SIZE"))
@@ -1398,60 +2264,162 @@ def _physical_memory_bytes() -> int:
     return total
 
 
+def _available_memory_bytes() -> int:
+    """Return currently available memory without treating total RAM as headroom."""
+
+    if sys.platform.startswith("linux"):
+        try:
+            for line in Path("/proc/meminfo").read_text(encoding="ascii").splitlines():
+                if line.startswith("MemAvailable:"):
+                    value = int(line.split()[1]) * 1024
+                    if value > 0:
+                        return value
+        except (OSError, UnicodeError, ValueError, IndexError):
+            pass
+    if sys.platform == "darwin":
+        try:
+            completed = subprocess.run(
+                ["/usr/bin/vm_stat"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=5.0,
+            )
+            first, *lines = completed.stdout.splitlines()
+            match = re.search(r"page size of ([0-9]+) bytes", first)
+            if match is None:
+                _fail("SUCCESSOR_AVAILABLE_MEMORY_UNAVAILABLE")
+            page_size = int(match.group(1))
+            counts: dict[str, int] = {}
+            for line in lines:
+                if ":" not in line:
+                    continue
+                name, raw = line.split(":", 1)
+                value = raw.strip().rstrip(".")
+                if value.isdigit():
+                    counts[name] = int(value)
+            pages = sum(
+                counts.get(name, 0)
+                for name in (
+                    "Pages free",
+                    "Pages inactive",
+                    "Pages speculative",
+                    "Pages purgeable",
+                )
+            )
+            available = pages * page_size
+            if available > 0:
+                return available
+        except FundamentalSuccessorSourceError:
+            raise
+        except (OSError, subprocess.SubprocessError, ValueError):
+            pass
+    _fail("SUCCESSOR_AVAILABLE_MEMORY_UNAVAILABLE")
+
+
+def _resident_memory_bytes() -> int:
+    try:
+        usage = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+    except (OSError, ValueError):
+        _fail("SUCCESSOR_RESIDENT_MEMORY_UNAVAILABLE")
+    if usage < 0:
+        _fail("SUCCESSOR_RESIDENT_MEMORY_UNAVAILABLE")
+    return usage if sys.platform == "darwin" else usage * 1024
+
+
+def _rlimit_headroom_bytes(*, resident_memory_bytes: int) -> int:
+    candidates: list[int] = []
+    for limit_name in ("RLIMIT_AS", "RLIMIT_DATA"):
+        limit_id = getattr(resource, limit_name, None)
+        if limit_id is None:
+            continue
+        try:
+            soft, _hard = resource.getrlimit(limit_id)
+        except (OSError, ValueError):
+            _fail("SUCCESSOR_MEMORY_RLIMIT_UNAVAILABLE")
+        if soft not in {resource.RLIM_INFINITY, -1}:
+            candidates.append(max(0, int(soft) - resident_memory_bytes))
+    return min(candidates) if candidates else 2**63 - 1
+
+
 def _resource_policy(
     *,
     physical_memory_bytes: int,
+    available_memory_bytes: int,
+    rlimit_headroom_bytes: int,
     table_memory_limit_bytes: int,
     minimum_free_disk_bytes: int,
     maximum_record_bytes: int,
 ) -> dict[str, Any]:
     values = (
         physical_memory_bytes,
+        available_memory_bytes,
+        rlimit_headroom_bytes,
         table_memory_limit_bytes,
         minimum_free_disk_bytes,
         maximum_record_bytes,
     )
     if any(type(value) is not int or value < 1 for value in values):
         _fail("SUCCESSOR_RESOURCE_POLICY_INVALID")
-    maximum_table_memory = int(Decimal(physical_memory_bytes) * _MAX_TABLE_MEMORY_FRACTION)
+    effective_headroom = min(
+        physical_memory_bytes,
+        available_memory_bytes,
+        rlimit_headroom_bytes,
+    )
+    maximum_table_memory = int(Decimal(effective_headroom) * _MAX_TABLE_MEMORY_FRACTION)
     if (
-        table_memory_limit_bytes > maximum_table_memory
-        or maximum_record_bytes > table_memory_limit_bytes
+        effective_headroom < 2 * _MAX_STREAM_BATCH_BYTES
+        or table_memory_limit_bytes > maximum_table_memory
+        or maximum_record_bytes > min(table_memory_limit_bytes, _MAX_STREAM_BATCH_BYTES * 2)
         or minimum_free_disk_bytes < 64 * 1024 * 1024
     ):
         _fail("SUCCESSOR_RESOURCE_POLICY_INVALID")
     return {
-        "aggregate_table_memory_limit_bytes": int(Decimal(physical_memory_bytes) * Decimal("0.75")),
+        "available_memory_bytes": available_memory_bytes,
+        "effective_memory_headroom_bytes": effective_headroom,
+        "maximum_stream_batch_bytes": _MAX_STREAM_BATCH_BYTES,
+        "maximum_stream_batch_rows": _MAX_STREAM_BATCH_ROWS,
         "decode_estimated_bytes_per_cell": _DECODE_ESTIMATED_BYTES_PER_CELL,
         "maximum_record_bytes": maximum_record_bytes,
         "minimum_free_disk_bytes": minimum_free_disk_bytes,
+        "parquet_row_group_rows": _PARQUET_ROW_GROUP_ROWS,
         "physical_memory_bytes": physical_memory_bytes,
-        "schema_version": "myquant-fundamental-successor-resource-policy.v1",
+        "rlimit_headroom_bytes": rlimit_headroom_bytes,
+        "schema_version": "myquant-fundamental-successor-resource-policy.v2",
         "table_memory_limit_bytes": table_memory_limit_bytes,
     }
 
 
 def _validate_resource_policy(value: Any) -> dict[str, Any]:
     if type(value) is not dict or set(value) != {
-        "aggregate_table_memory_limit_bytes",
+        "available_memory_bytes",
+        "effective_memory_headroom_bytes",
+        "maximum_stream_batch_bytes",
+        "maximum_stream_batch_rows",
         "decode_estimated_bytes_per_cell",
         "maximum_record_bytes",
         "minimum_free_disk_bytes",
+        "parquet_row_group_rows",
         "physical_memory_bytes",
+        "rlimit_headroom_bytes",
         "schema_version",
         "table_memory_limit_bytes",
     }:
         _fail("SUCCESSOR_RESOURCE_POLICY_INVALID")
     if (
-        value["schema_version"] != "myquant-fundamental-successor-resource-policy.v1"
-        or value["decode_estimated_bytes_per_cell"] != _DECODE_ESTIMATED_BYTES_PER_CELL
-        or type(value["aggregate_table_memory_limit_bytes"]) is not int
-        or value["aggregate_table_memory_limit_bytes"]
-        != int(Decimal(value["physical_memory_bytes"]) * Decimal("0.75"))
+        value["schema_version"]
+        != "myquant-fundamental-successor-resource-policy.v2"
+        or value["decode_estimated_bytes_per_cell"]
+        != _DECODE_ESTIMATED_BYTES_PER_CELL
+        or value["maximum_stream_batch_rows"] != _MAX_STREAM_BATCH_ROWS
+        or value["maximum_stream_batch_bytes"] != _MAX_STREAM_BATCH_BYTES
+        or value["parquet_row_group_rows"] != _PARQUET_ROW_GROUP_ROWS
     ):
         _fail("SUCCESSOR_RESOURCE_POLICY_INVALID")
     expected = _resource_policy(
         physical_memory_bytes=value["physical_memory_bytes"],
+        available_memory_bytes=value["available_memory_bytes"],
+        rlimit_headroom_bytes=value["rlimit_headroom_bytes"],
         table_memory_limit_bytes=value["table_memory_limit_bytes"],
         minimum_free_disk_bytes=value["minimum_free_disk_bytes"],
         maximum_record_bytes=value["maximum_record_bytes"],
@@ -1459,6 +2427,36 @@ def _validate_resource_policy(value: Any) -> dict[str, Any]:
     if expected != value:
         _fail("SUCCESSOR_RESOURCE_POLICY_INVALID")
     return expected
+
+
+def _resume_binding_matches(
+    installed: Mapping[str, Any],
+    current: Mapping[str, Any],
+) -> bool:
+    def static(value: Mapping[str, Any]) -> dict[str, Any]:
+        body = dict(value)
+        body.pop("binding_sha256", None)
+        policy = dict(body.pop("resource_policy", {}) or {})
+        return {
+            "binding": body,
+            "resource_policy": {
+                key: policy.get(key)
+                for key in (
+                    "decode_estimated_bytes_per_cell",
+                    "maximum_record_bytes",
+                    "maximum_stream_batch_bytes",
+                    "maximum_stream_batch_rows",
+                    "minimum_free_disk_bytes",
+                    "parquet_row_group_rows",
+                    "physical_memory_bytes",
+                    "schema_version",
+                )
+            },
+        }
+
+    return _canonical_json_bytes(static(installed)) == _canonical_json_bytes(
+        static(current)
+    )
 
 
 def _require_disk_reserve(
@@ -1479,6 +2477,67 @@ def _require_disk_reserve(
     required = minimum_free_disk_bytes + pending_bytes * 2
     if free < required:
         _fail("SUCCESSOR_DISK_RESERVE_EXHAUSTED")
+    return free
+
+
+def _external_sort_budget(
+    *,
+    record_bytes: int,
+    accepted_rows: int,
+) -> dict[str, int]:
+    if (
+        type(record_bytes) is not int
+        or record_bytes < 0
+        or type(accepted_rows) is not int
+        or accepted_rows < 0
+    ):
+        _fail("SUCCESSOR_EXTERNAL_SORT_BUDGET_INVALID")
+    sqlite_store = max(
+        8 * 1024 * 1024,
+        record_bytes * 6 + accepted_rows * 512,
+    )
+    sqlite_indexes = max(8 * 1024 * 1024, sqlite_store * 2)
+    sqlite_journal = max(8 * 1024 * 1024, sqlite_store)
+    parquet_temp = max(8 * 1024 * 1024, record_bytes * 2 + accepted_rows * 256)
+    fsync_reserve = 64 * 1024 * 1024
+    subtotal = (
+        sqlite_store
+        + sqlite_indexes
+        + sqlite_journal
+        + parquet_temp
+        + fsync_reserve
+    )
+    margin = (subtotal + 3) // 4
+    return {
+        "fsync_reserve_bytes": fsync_reserve,
+        "margin_25_percent_bytes": margin,
+        "parquet_temp_bytes": parquet_temp,
+        "sqlite_index_bytes": sqlite_indexes,
+        "sqlite_journal_bytes": sqlite_journal,
+        "sqlite_store_bytes": sqlite_store,
+        "total_bytes": subtotal + margin,
+    }
+
+
+def _require_external_sort_reserve(
+    root: Path,
+    *,
+    minimum_free_disk_bytes: int,
+    required_working_bytes: int,
+) -> int:
+    if (
+        type(minimum_free_disk_bytes) is not int
+        or minimum_free_disk_bytes < 1
+        or type(required_working_bytes) is not int
+        or required_working_bytes < 0
+    ):
+        _fail("SUCCESSOR_EXTERNAL_SORT_BUDGET_INVALID")
+    try:
+        free = int(shutil.disk_usage(root).free)
+    except OSError:
+        _fail("SUCCESSOR_DISK_PREFLIGHT_FAILED")
+    if free < minimum_free_disk_bytes + required_working_bytes:
+        _fail("SUCCESSOR_EXTERNAL_SORT_DISK_RESERVE_EXHAUSTED")
     return free
 
 
@@ -1732,8 +2791,15 @@ def _decode_record(
     if _canonical_json_bytes(replayed_observed) != _canonical_json_bytes(record["observed_rows"]):
         _fail("SUCCESSOR_RECORD_RAW_ROWS_MISMATCH")
     subject_symbols = frozenset(binding["plan"]["subject_symbols"])
-    in_scope_rows = [row for row in observed_rows if str(row["ts_code"]) in subject_symbols]
-    out_of_scope_rows = [row for row in observed_rows if str(row["ts_code"]) not in subject_symbols]
+    in_scope_rows = [
+        row for row in observed_rows if str(row["ts_code"]) in subject_symbols
+    ]
+    out_of_scope_rows = [
+        row for row in observed_rows if str(row["ts_code"]) not in subject_symbols
+    ]
+    opaque_comp_type_evidence = _opaque_comp_type_evidence(
+        record["table"], in_scope_rows
+    )
     canonical_rows, counters = _canonicalize_rows(record["table"], in_scope_rows)
     if _canonical_json_bytes(
         [_typed_row(row, fields, logical=False) for row in canonical_rows]
@@ -1745,6 +2811,7 @@ def _decode_record(
         "attempts",
         "blocker_codes",
         "canonicalization_counters",
+        "classification_partition",
         "canonical_subject_scope_ref_sha256",
         "endpoint",
         "full_response_observation_count",
@@ -1756,6 +2823,7 @@ def _decode_record(
         "item_count",
         "logical_sha256",
         "observation_sha256",
+        "opaque_comp_type_evidence",
         "ordinal",
         "out_of_scope_canonical_payload_multiset_sha256",
         "out_of_scope_observation_count",
@@ -1816,6 +2884,8 @@ def _decode_record(
         or receipt["raw_response_byte_length"] != len(raw_response_bytes)
         or receipt["raw_response_sha256"] != _sha256(raw_response_bytes)
         or receipt["canonicalization_counters"] != counters
+        or _canonical_json_bytes(receipt["opaque_comp_type_evidence"])
+        != _canonical_json_bytes(opaque_comp_type_evidence)
         or receipt["endpoint"] != expected_request["endpoint"]
         or receipt["table"] != expected_request["table"]
         or receipt["accepted_count"] != len(rows)
@@ -1824,6 +2894,20 @@ def _decode_record(
         or receipt["blocker_codes"] != []
     ):
         _fail("SUCCESSOR_RECEIPT_INVALID")
+    _validate_opaque_comp_type_evidence(
+        receipt["opaque_comp_type_evidence"]
+    )
+    expected_classification = _classification_partition(
+        table=record["table"],
+        normalized_rows=observed_rows,
+        subject_symbols=subject_symbols,
+        opaque_evidence=opaque_comp_type_evidence,
+    )
+    if _canonical_json_bytes(receipt["classification_partition"]) != (
+        _canonical_json_bytes(expected_classification)
+    ):
+        _fail("SUCCESSOR_RECEIPT_CLASSIFICATION_MISMATCH")
+    _validate_classification_partition(receipt["classification_partition"])
     expected_scope_identity = _scope_partition_identity(
         table=record["table"],
         normalized_rows=observed_rows,
@@ -1862,27 +2946,443 @@ def _decode_record(
     return receipt, observed_rows, rows
 
 
-def _table_artifact(table: str, rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    fields = _output_fields(table)
-    canonical_rows, counters = _canonicalize_rows(table, rows)
-    encoded = [_typed_row(row, fields, logical=False) for row in canonical_rows]
-    body = {
-        "canonicalization_counters": counters,
-        "fields": list(fields),
-        "fingerprint_sha256": _sha256(
-            _canonical_json_bytes(
-                {
-                    "fields": list(fields),
-                    "rows": [_typed_row(row, fields, logical=True) for row in canonical_rows],
-                }
+def _frame_scalar_token(value: Any) -> tuple[str, str]:
+    if value is None:
+        return ("null", "")
+    if type(value) is bool:
+        return ("boolean", "true" if value else "false")
+    if type(value) is int:
+        return ("integer", str(value))
+    if type(value) is Decimal:
+        if not value.is_finite():
+            _fail("SUCCESSOR_TABLE_SCALAR_INVALID")
+        return ("decimal", value.normalize().to_eng_string())
+    if type(value) is str:
+        return ("string", value)
+    _fail("SUCCESSOR_TABLE_SCALAR_INVALID")
+
+
+def _decode_row_token(token: bytes, *, fields: Sequence[str]) -> dict[str, Any]:
+    try:
+        encoded = json.loads(token.decode("utf-8"))
+    except (UnicodeError, ValueError, json.JSONDecodeError):
+        _fail("SUCCESSOR_TABLE_ROW_TOKEN_INVALID")
+    if type(encoded) is not list or len(encoded) != len(fields):
+        _fail("SUCCESSOR_TABLE_ROW_TOKEN_INVALID")
+    return dict(
+        zip(
+            fields,
+            (_decode_typed_scalar(value) for value in encoded),
+            strict=True,
+        )
+    )
+
+
+def _accepted_sql() -> str:
+    return """
+        WITH survivors AS (
+            SELECT row_token, business_key, projection_token, sort_token,
+                   ts_code, sort_date, end_date
+            FROM source_rows AS candidate
+            WHERE update_rank = (
+                SELECT MAX(peer.update_rank)
+                FROM source_rows AS peer
+                WHERE peer.physical_key = candidate.physical_key
             )
-        ),
-        "row_count": len(canonical_rows),
-        "rows": encoded,
-        "schema_version": FUNDAMENTAL_SUCCESSOR_TABLE_SCHEMA,
-        "table": table,
+        ), ranked AS (
+            SELECT row_token, business_key, projection_token, sort_token,
+                   ts_code, sort_date, end_date,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY business_key ORDER BY sort_token, row_token
+                   ) AS ordinal
+            FROM survivors
+        )
+        SELECT row_token, ts_code, sort_date, end_date
+        FROM ranked
+        WHERE ordinal = 1
+        ORDER BY sort_token, row_token
+    """
+
+
+def _insert_external_rows(
+    connection: sqlite3.Connection,
+    *,
+    table: str,
+    rows: Sequence[Mapping[str, Any]],
+) -> tuple[int, int]:
+    fields = _output_fields(table)
+    attempted = 0
+    inserted = 0
+    for value in rows:
+        attempted += 1
+        row = dict(value)
+        row_token = _canonical_json_bytes(_typed_row(row, fields, logical=False))
+        business_key = _canonical_json_bytes(list(_business_key(table, row)))
+        physical_key = _canonical_json_bytes(
+            [*_business_key(table, row), *_physical_update_identity(table, row)]
+        )
+        projection_token = _canonical_json_bytes(
+            _typed_row(row, _projection_fields(table), logical=True)
+        )
+        sort_token = _row_sort_key(row, fields)
+        sort_date = str(
+            row["trade_date"] if table == "daily_basic" else row["availability_date"]
+        )
+        end_date = "" if table == "daily_basic" else str(row["end_date"])
+        cursor = connection.execute(
+            """
+            INSERT OR IGNORE INTO source_rows (
+                row_token, business_key, physical_key, projection_token,
+                update_rank, sort_token, ts_code, sort_date, end_date
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                row_token,
+                business_key,
+                physical_key,
+                projection_token,
+                _update_rank(table, row),
+                sort_token,
+                str(row["ts_code"]),
+                sort_date,
+                end_date,
+            ),
+        )
+        inserted += max(0, int(cursor.rowcount))
+    connection.commit()
+    return attempted, inserted
+
+
+def _table_frame_schema(
+    connection: sqlite3.Connection,
+    *,
+    fields: Sequence[str],
+) -> tuple[int, list[dict[str, Any]]]:
+    types = [set() for _field in fields]
+    nullable = [False for _field in fields]
+    rows = 0
+    for (row_token, _symbol, _sort_date, _end_date) in connection.execute(
+        _accepted_sql()
+    ):
+        row = _decode_row_token(bytes(row_token), fields=fields)
+        rows += 1
+        for position, field in enumerate(fields):
+            kind, _payload = _frame_scalar_token(row[field])
+            if kind == "null":
+                nullable[position] = True
+            else:
+                types[position].add(kind)
+    schema = [
+        {
+            "position": position,
+            "name": ["string", field],
+            "logical_scalar_types": sorted(types[position]),
+            "nullable": nullable[position],
+        }
+        for position, field in enumerate(fields)
+    ]
+    return rows, schema
+
+
+def _flush_parquet_rows(
+    writer: pq.ParquetWriter,
+    rows: list[tuple[str, str, str, bytes]],
+) -> tuple[int, int]:
+    if not rows:
+        return 0, 0
+    table = pa.Table.from_pydict(
+        {
+            "ts_code": [row[0] for row in rows],
+            "sort_date": [row[1] for row in rows],
+            "end_date": [row[2] for row in rows],
+            "row_json": [row[3] for row in rows],
+        },
+        schema=_PARQUET_SCHEMA,
+    )
+    if len(table) > _MAX_STREAM_BATCH_ROWS or table.nbytes > _MAX_STREAM_BATCH_BYTES:
+        _fail("SUCCESSOR_STREAM_BATCH_LIMIT_EXCEEDED")
+    writer.write_table(table, row_group_size=len(table))
+    return len(table), int(table.nbytes)
+
+
+def _install_streamed_file(temporary: Path, destination: Path) -> tuple[str, int]:
+    try:
+        os.chmod(temporary, 0o600)
+        descriptor = os.open(temporary, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        temporary_sha, temporary_size = _regular_file_identity(temporary)
+        if destination.exists():
+            installed_sha, installed_size = _regular_file_identity(destination)
+            if (installed_sha, installed_size) != (temporary_sha, temporary_size):
+                _fail("SUCCESSOR_IMMUTABLE_FILE_CONFLICT")
+            os.unlink(temporary)
+        else:
+            os.replace(temporary, destination)
+            directory_fd = os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        if _regular_file_identity(destination) != (temporary_sha, temporary_size):
+            _fail("SUCCESSOR_ATOMIC_WRITE_READBACK_FAILED")
+        return temporary_sha, temporary_size
+    finally:
+        if temporary.exists():
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+
+
+def _build_streamed_table(
+    *,
+    table: str,
+    row_batches: Iterator[Sequence[Mapping[str, Any]]],
+    destination: Path,
+    minimum_free_disk_bytes: int,
+    external_sort_budget: Mapping[str, int],
+) -> dict[str, Any]:
+    budget = dict(external_sort_budget)
+    required_budget_fields = {
+        "fsync_reserve_bytes",
+        "margin_25_percent_bytes",
+        "parquet_temp_bytes",
+        "sqlite_index_bytes",
+        "sqlite_journal_bytes",
+        "sqlite_store_bytes",
+        "total_bytes",
     }
-    return _sealed(body, identity_field="table_sha256")
+    if (
+        set(budget) != required_budget_fields
+        or any(type(value) is not int or value < 0 for value in budget.values())
+        or budget["total_bytes"]
+        != sum(
+            budget[field]
+            for field in required_budget_fields
+            if field not in {"total_bytes"}
+        )
+    ):
+        _fail("SUCCESSOR_EXTERNAL_SORT_BUDGET_INVALID")
+    _require_external_sort_reserve(
+        destination.parent,
+        minimum_free_disk_bytes=minimum_free_disk_bytes,
+        required_working_bytes=budget["total_bytes"],
+    )
+    database_fd, database_name = tempfile.mkstemp(
+        prefix=f".{table}.sort.",
+        suffix=".sqlite3",
+        dir=destination.parent,
+    )
+    os.close(database_fd)
+    database = Path(database_name)
+    parquet_fd, parquet_name = tempfile.mkstemp(
+        prefix=f".{table}.",
+        suffix=".parquet",
+        dir=destination.parent,
+    )
+    os.close(parquet_fd)
+    temporary = Path(parquet_name)
+    connection: sqlite3.Connection | None = None
+    try:
+        os.chmod(database, 0o600)
+        os.chmod(temporary, 0o600)
+        connection = sqlite3.connect(database)
+        connection.execute("PRAGMA journal_mode=DELETE")
+        connection.execute("PRAGMA synchronous=FULL")
+        connection.execute("PRAGMA temp_store=FILE")
+        connection.execute(
+            """
+            CREATE TABLE source_rows (
+                row_token BLOB PRIMARY KEY,
+                business_key BLOB NOT NULL,
+                physical_key BLOB NOT NULL,
+                projection_token BLOB NOT NULL,
+                update_rank INTEGER NOT NULL,
+                sort_token BLOB NOT NULL,
+                ts_code TEXT NOT NULL,
+                sort_date TEXT NOT NULL,
+                end_date TEXT NOT NULL
+            ) WITHOUT ROWID
+            """
+        )
+        attempted = 0
+        inserted = 0
+        for batch in row_batches:
+            if len(batch) > _MAX_STREAM_BATCH_ROWS:
+                _fail("SUCCESSOR_SOURCE_BATCH_ROW_LIMIT_EXCEEDED")
+            batch_bytes = sum(
+                len(_canonical_json_bytes(_typed_row(dict(row), _output_fields(table), logical=False)))
+                for row in batch
+            )
+            if batch_bytes > _MAX_STREAM_BATCH_BYTES:
+                _fail("SUCCESSOR_SOURCE_BATCH_BYTE_LIMIT_EXCEEDED")
+            current_attempted, current_inserted = _insert_external_rows(
+                connection,
+                table=table,
+                rows=batch,
+            )
+            attempted += current_attempted
+            inserted += current_inserted
+        _require_external_sort_reserve(
+            destination.parent,
+            minimum_free_disk_bytes=minimum_free_disk_bytes,
+            required_working_bytes=(
+                budget["sqlite_index_bytes"]
+                + budget["sqlite_journal_bytes"]
+                + budget["parquet_temp_bytes"]
+                + budget["fsync_reserve_bytes"]
+                + budget["margin_25_percent_bytes"]
+            ),
+        )
+        connection.execute(
+            "CREATE INDEX source_rows_physical ON source_rows (physical_key, update_rank)"
+        )
+        connection.execute(
+            "CREATE INDEX source_rows_business ON source_rows (business_key, projection_token)"
+        )
+        connection.commit()
+        survivors = int(
+            connection.execute(
+                """
+                SELECT COUNT(*) FROM source_rows AS candidate
+                WHERE update_rank = (
+                    SELECT MAX(peer.update_rank) FROM source_rows AS peer
+                    WHERE peer.physical_key = candidate.physical_key
+                )
+                """
+            ).fetchone()[0]
+        )
+        conflict = connection.execute(
+            """
+            WITH survivors AS (
+                SELECT business_key, projection_token
+                FROM source_rows AS candidate
+                WHERE update_rank = (
+                    SELECT MAX(peer.update_rank) FROM source_rows AS peer
+                    WHERE peer.physical_key = candidate.physical_key
+                )
+            )
+            SELECT business_key FROM survivors
+            GROUP BY business_key
+            HAVING COUNT(DISTINCT projection_token) > 1
+            LIMIT 1
+            """
+        ).fetchone()
+        if conflict is not None:
+            _fail("SUCCESSOR_MATERIAL_DUPLICATE_CONFLICT")
+        fields = _output_fields(table)
+        row_count, logical_schema = _table_frame_schema(connection, fields=fields)
+        _require_external_sort_reserve(
+            destination.parent,
+            minimum_free_disk_bytes=minimum_free_disk_bytes,
+            required_working_bytes=(
+                budget["parquet_temp_bytes"]
+                + budget["fsync_reserve_bytes"]
+                + budget["margin_25_percent_bytes"]
+            ),
+        )
+        digest = hashlib.sha256()
+        digest.update(
+            json.dumps(
+                {"rows": row_count, "schema": logical_schema},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+        writer = pq.ParquetWriter(
+            temporary,
+            _PARQUET_SCHEMA,
+            compression="zstd",
+            compression_level=9,
+            use_dictionary=False,
+            write_statistics=False,
+            version="2.6",
+        )
+        buffered: list[tuple[str, str, str, bytes]] = []
+        buffered_bytes = 0
+        observed_rows = 0
+        high_rows = 0
+        high_bytes = 0
+        try:
+            for row_token, symbol, sort_date, end_date in connection.execute(
+                _accepted_sql()
+            ):
+                token = bytes(row_token)
+                row = _decode_row_token(token, fields=fields)
+                frame_tokens = [list(_frame_scalar_token(row[field])) for field in fields]
+                digest.update(b"\x00")
+                digest.update(
+                    json.dumps(
+                        frame_tokens,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                )
+                estimate = len(token) + len(symbol) + len(sort_date) + len(end_date) + 64
+                if buffered and (
+                    len(buffered) >= _PARQUET_ROW_GROUP_ROWS
+                    or buffered_bytes + estimate > _MAX_STREAM_BATCH_BYTES // 2
+                ):
+                    written, byte_count = _flush_parquet_rows(writer, buffered)
+                    observed_rows += written
+                    high_rows = max(high_rows, written)
+                    high_bytes = max(high_bytes, byte_count)
+                    buffered = []
+                    buffered_bytes = 0
+                if estimate > _MAX_STREAM_BATCH_BYTES // 2:
+                    _fail("SUCCESSOR_STREAM_ROW_BYTE_LIMIT_EXCEEDED")
+                buffered.append((str(symbol), str(sort_date), str(end_date), token))
+                buffered_bytes += estimate
+            written, byte_count = _flush_parquet_rows(writer, buffered)
+            observed_rows += written
+            high_rows = max(high_rows, written)
+            high_bytes = max(high_bytes, byte_count)
+        finally:
+            writer.close()
+        if observed_rows != row_count:
+            _fail("SUCCESSOR_STREAMED_TABLE_ROWCOUNT_MISMATCH")
+        table_sha, byte_length = _install_streamed_file(temporary, destination)
+        metadata: dict[str, Any] = {
+            "canonicalization_counters": {
+                "exact_duplicates_collapsed": attempted - inserted,
+                "projection_equivalent_duplicates_collapsed": survivors - row_count,
+                "superseded_updates_discarded": inserted - survivors,
+            },
+            "fields": list(fields),
+            "external_sort_budget": budget,
+            "external_sort_reserve_checks": [
+                "PRE_POPULATE",
+                "PRE_INDEX",
+                "PRE_PARQUET",
+            ],
+            "file_format": "PARQUET",
+            "fingerprint_sha256": digest.hexdigest(),
+            "layout": "canonical_typed_row.v1",
+            "maximum_batch_bytes": _MAX_STREAM_BATCH_BYTES,
+            "maximum_batch_rows": _MAX_STREAM_BATCH_ROWS,
+            "observed_maximum_batch_bytes": high_bytes,
+            "observed_maximum_batch_rows": high_rows,
+            "parquet_row_group_rows": _PARQUET_ROW_GROUP_ROWS,
+            "row_count": row_count,
+            "schema_version": FUNDAMENTAL_SUCCESSOR_TABLE_SCHEMA,
+            "table": table,
+            "table_sha256": table_sha,
+            "byte_length": byte_length,
+        }
+        return _sealed(metadata, identity_field="metadata_sha256")
+    finally:
+        if connection is not None:
+            connection.close()
+        for path in (database, Path(f"{database}-journal"), temporary):
+            if path.exists():
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
 
 
 def _scope_projection_manifest(
@@ -1921,45 +3421,188 @@ def _scope_projection_manifest(
     return _sealed(body, identity_field="projection_sha256")
 
 
-def _decode_table_artifact(value: Mapping[str, Any], *, table: str) -> list[dict[str, Any]]:
-    artifact = _validate_seal(value, identity_field="table_sha256")
+def _iter_parquet_rows(
+    path: Path,
+    *,
+    table: str,
+    maximum_batch_rows: int = _MAX_STREAM_BATCH_ROWS,
+    maximum_batch_bytes: int = _MAX_STREAM_BATCH_BYTES,
+) -> Iterator[list[dict[str, Any]]]:
+    fields = _output_fields(table)
+    try:
+        parquet = pq.ParquetFile(path)
+    except (OSError, pa.ArrowException):
+        _fail("SUCCESSOR_TABLE_PARQUET_INVALID")
+    if parquet.schema_arrow != _PARQUET_SCHEMA:
+        _fail("SUCCESSOR_TABLE_PARQUET_SCHEMA_MISMATCH")
+    for group in range(parquet.num_row_groups):
+        if parquet.metadata.row_group(group).num_rows > _PARQUET_ROW_GROUP_ROWS:
+            _fail("SUCCESSOR_TABLE_ROW_GROUP_LIMIT_EXCEEDED")
+    previous_sort_token: bytes | None = None
+    try:
+        batches = parquet.iter_batches(batch_size=maximum_batch_rows)
+        for batch in batches:
+            if len(batch) > maximum_batch_rows or batch.nbytes > maximum_batch_bytes:
+                _fail("SUCCESSOR_STREAM_BATCH_LIMIT_EXCEEDED")
+            frame = batch.to_pydict()
+            rows: list[dict[str, Any]] = []
+            for symbol, sort_date, end_date, raw_token in zip(
+                frame["ts_code"],
+                frame["sort_date"],
+                frame["end_date"],
+                frame["row_json"],
+                strict=True,
+            ):
+                token = bytes(raw_token)
+                row = _decode_row_token(token, fields=fields)
+                sort_token = _row_sort_key(row, fields)
+                if previous_sort_token is not None and sort_token < previous_sort_token:
+                    _fail("SUCCESSOR_TABLE_SORT_ORDER_INVALID")
+                previous_sort_token = sort_token
+                expected_sort_date = str(
+                    row["trade_date"]
+                    if table == "daily_basic"
+                    else row["availability_date"]
+                )
+                expected_end_date = "" if table == "daily_basic" else str(row["end_date"])
+                if (
+                    str(row["ts_code"]) != symbol
+                    or expected_sort_date != sort_date
+                    or expected_end_date != end_date
+                ):
+                    _fail("SUCCESSOR_TABLE_INDEX_COLUMN_MISMATCH")
+                rows.append(row)
+            yield rows
+    except (OSError, pa.ArrowException):
+        _fail("SUCCESSOR_TABLE_PARQUET_INVALID")
+
+
+def _validate_streamed_table(
+    path: Path,
+    *,
+    table: str,
+    metadata: Mapping[str, Any],
+) -> dict[str, Any]:
+    value = _validate_seal(metadata, identity_field="metadata_sha256")
     required = {
+        "byte_length",
         "canonicalization_counters",
+        "external_sort_budget",
+        "external_sort_reserve_checks",
         "fields",
+        "file_format",
         "fingerprint_sha256",
+        "layout",
+        "maximum_batch_bytes",
+        "maximum_batch_rows",
+        "metadata_sha256",
+        "observed_maximum_batch_bytes",
+        "observed_maximum_batch_rows",
+        "parquet_row_group_rows",
         "row_count",
-        "rows",
         "schema_version",
         "table",
         "table_sha256",
     }
     fields = _output_fields(table)
     if (
-        set(artifact) != required
-        or artifact["schema_version"] != FUNDAMENTAL_SUCCESSOR_TABLE_SCHEMA
-        or artifact["table"] != table
-        or artifact["fields"] != list(fields)
-        or type(artifact["rows"]) is not list
-        or artifact["row_count"] != len(artifact["rows"])
+        set(value) != required
+        or value["schema_version"] != FUNDAMENTAL_SUCCESSOR_TABLE_SCHEMA
+        or value["table"] != table
+        or value["fields"] != list(fields)
+        or value["file_format"] != "PARQUET"
+        or value["layout"] != "canonical_typed_row.v1"
+        or value["external_sort_reserve_checks"]
+        != ["PRE_POPULATE", "PRE_INDEX", "PRE_PARQUET"]
+        or value["maximum_batch_rows"] != _MAX_STREAM_BATCH_ROWS
+        or value["maximum_batch_bytes"] != _MAX_STREAM_BATCH_BYTES
+        or value["parquet_row_group_rows"] != _PARQUET_ROW_GROUP_ROWS
     ):
         _fail("SUCCESSOR_TABLE_ARTIFACT_INVALID")
-    rows: list[dict[str, Any]] = []
-    for encoded in artifact["rows"]:
-        if type(encoded) is not list or len(encoded) != len(fields):
-            _fail("SUCCESSOR_TABLE_ARTIFACT_INVALID")
-        rows.append(
-            dict(
-                zip(
-                    fields,
-                    (_decode_typed_scalar(value) for value in encoded),
-                    strict=True,
-                )
-            )
+    budget = value["external_sort_budget"]
+    if not isinstance(budget, Mapping):
+        _fail("SUCCESSOR_TABLE_ARTIFACT_INVALID")
+    budget_values = dict(budget)
+    if (
+        set(budget_values)
+        != {
+            "fsync_reserve_bytes",
+            "margin_25_percent_bytes",
+            "parquet_temp_bytes",
+            "sqlite_index_bytes",
+            "sqlite_journal_bytes",
+            "sqlite_store_bytes",
+            "total_bytes",
+        }
+        or budget_values["total_bytes"]
+        != sum(
+            item
+            for key, item in budget_values.items()
+            if key != "total_bytes"
         )
-    expected = _table_artifact(table, rows)
-    if _canonical_json_bytes(expected) != _canonical_json_bytes(artifact):
+    ):
+        _fail("SUCCESSOR_TABLE_ARTIFACT_INVALID")
+    sha, size = _regular_file_identity(path)
+    if sha != value["table_sha256"] or size != value["byte_length"]:
         _fail("SUCCESSOR_TABLE_ARTIFACT_MISMATCH")
-    return rows
+    types = [set() for _field in fields]
+    nullable = [False for _field in fields]
+    row_count = 0
+    observed_rows = 0
+    observed_bytes = 0
+    for rows in _iter_parquet_rows(path, table=table):
+        observed_rows = max(observed_rows, len(rows))
+        encoded_bytes = sum(
+            len(_canonical_json_bytes(_typed_row(row, fields, logical=False)))
+            for row in rows
+        )
+        observed_bytes = max(observed_bytes, encoded_bytes)
+        for row in rows:
+            row_count += 1
+            for position, field in enumerate(fields):
+                kind, _payload = _frame_scalar_token(row[field])
+                if kind == "null":
+                    nullable[position] = True
+                else:
+                    types[position].add(kind)
+    logical_schema = [
+        {
+            "position": position,
+            "name": ["string", field],
+            "logical_scalar_types": sorted(types[position]),
+            "nullable": nullable[position],
+        }
+        for position, field in enumerate(fields)
+    ]
+    digest = hashlib.sha256()
+    digest.update(
+        json.dumps(
+            {"rows": row_count, "schema": logical_schema},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+    for rows in _iter_parquet_rows(path, table=table):
+        for row in rows:
+            digest.update(b"\x00")
+            digest.update(
+                json.dumps(
+                    [list(_frame_scalar_token(row[field])) for field in fields],
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            )
+    if (
+        row_count != value["row_count"]
+        or digest.hexdigest() != value["fingerprint_sha256"]
+        or observed_rows > value["maximum_batch_rows"]
+        or observed_bytes > value["maximum_batch_bytes"]
+        or value["observed_maximum_batch_rows"] > value["maximum_batch_rows"]
+        or value["observed_maximum_batch_bytes"] > value["maximum_batch_bytes"]
+    ):
+        _fail("SUCCESSOR_TABLE_ARTIFACT_MISMATCH")
+    return value
 
 
 def _table_memory_estimates(
@@ -1992,19 +3635,20 @@ def _table_memory_estimates(
     estimates: dict[str, dict[str, int]] = {}
     for table in _TABLES:
         row_count = rows_by_table[table]
-        cell_count = row_count * len(_output_fields(table))
-        # The allowance covers decoded scalar objects, row dictionaries,
-        # canonical typed-row copies, JSON encoding, and one replayed record.
-        estimated = (
-            cell_count * _DECODE_ESTIMATED_BYTES_PER_CELL
-            + largest_record_by_table[table] * 4
-            + 16 * 1024 * 1024
-        )
+        # Cardinality is externalised to SQLite/Parquet.  The resident bound is
+        # one independently byte-capped request plus one Arrow batch and codec
+        # workspace; it does not grow with aggregate table row count.
+        estimated = min(
+            _DEFAULT_MAXIMUM_RECORD_BYTES,
+            largest_record_by_table[table],
+        ) + 2 * _MAX_STREAM_BATCH_BYTES
         estimates[table] = {
             "accepted_row_count": row_count,
             "estimated_peak_memory_bytes": estimated,
             "largest_record_bytes": largest_record_by_table[table],
             "record_bytes": record_bytes_by_table[table],
+            "stream_batch_bytes": _MAX_STREAM_BATCH_BYTES,
+            "stream_batch_rows": _MAX_STREAM_BATCH_ROWS,
         }
     return estimates
 
@@ -2028,10 +3672,11 @@ def _resource_accounting(
         (row["estimated_peak_memory_bytes"] for row in estimates.values()),
         default=0,
     )
-    aggregate = sum(row["estimated_peak_memory_bytes"] for row in estimates.values())
+    # Tables are replayed sequentially.  Aggregate cardinality is on disk, so
+    # simultaneous resident memory equals the maximum per-table bound.
+    aggregate = peak
     if (
         peak > policy["table_memory_limit_bytes"]
-        or aggregate > policy["aggregate_table_memory_limit_bytes"]
         or minimum_observed_free_disk_bytes < policy["minimum_free_disk_bytes"]
     ):
         _fail("SUCCESSOR_RESOURCE_PREFLIGHT_BLOCKED")
@@ -2042,7 +3687,7 @@ def _resource_accounting(
         "maximum_estimated_table_memory_bytes": peak,
         "minimum_observed_free_disk_bytes": minimum_observed_free_disk_bytes,
         "policy": policy,
-        "schema_version": "myquant-fundamental-successor-resource-accounting.v1",
+        "schema_version": "myquant-fundamental-successor-resource-accounting.v2",
         "source_payload_bytes": source_payload_bytes,
         "status": "PASS",
         "table_estimates": estimates,
@@ -2052,6 +3697,11 @@ def _resource_accounting(
 
 def _file_ref(path: str, payload: bytes) -> dict[str, Any]:
     return {"byte_length": len(payload), "path": path, "sha256": _sha256(payload)}
+
+
+def _path_ref(path: str, absolute: Path) -> dict[str, Any]:
+    digest, byte_length = _regular_file_identity(absolute)
+    return {"byte_length": byte_length, "path": path, "sha256": digest}
 
 
 def _validate_file_ref(root: Path, value: Any) -> bytes:
@@ -2081,6 +3731,308 @@ def _validate_file_ref(root: Path, value: Any) -> bytes:
     return payload
 
 
+def _validate_streamed_file_ref(root: Path, value: Any) -> Path:
+    required = {"byte_length", "path", "sha256"}
+    optional = {"metadata", "ordinal", "request_key", "row_count", "table_sha256"}
+    if (
+        type(value) is not dict
+        or not required.issubset(value)
+        or not set(value).issubset(required | optional)
+    ):
+        _fail("SUCCESSOR_FILE_REF_INVALID")
+    path_text = value["path"]
+    if (
+        type(path_text) is not str
+        or not path_text
+        or Path(path_text).is_absolute()
+        or ".." in Path(path_text).parts
+    ):
+        _fail("SUCCESSOR_FILE_REF_INVALID")
+    path = root / path_text
+    digest, byte_length = _regular_file_identity(path)
+    if (
+        type(value["byte_length"]) is not int
+        or value["byte_length"] != byte_length
+        or _hex_sha256(value["sha256"], label="file_sha256") != digest
+    ):
+        _fail("SUCCESSOR_FILE_REF_MISMATCH")
+    return path
+
+
+def _record_row_batches(
+    *,
+    table: str,
+    requests: Sequence[Mapping[str, Any]],
+    records_root: Path,
+    binding: Mapping[str, Any],
+) -> Iterator[Sequence[Mapping[str, Any]]]:
+    for request in requests:
+        if request["table"] != table:
+            continue
+        record_path = records_root / f"{request['ordinal']:06d}.json"
+        _receipt_value, _observed_rows, rows = _decode_record(
+            _canonical_file_mapping(record_path),
+            binding=binding,
+            expected_request=request,
+        )
+        if len(rows) >= int(request["row_ceiling"]):
+            _fail("SUCCESSOR_PROVIDER_ROW_CEILING_HIT")
+        fields = _output_fields(table)
+        batch: list[Mapping[str, Any]] = []
+        batch_bytes = 0
+        for row in rows:
+            row_bytes = len(
+                _canonical_json_bytes(_typed_row(dict(row), fields, logical=False))
+            )
+            if row_bytes > _MAX_STREAM_BATCH_BYTES:
+                _fail("SUCCESSOR_SOURCE_ROW_BYTE_LIMIT_EXCEEDED")
+            if batch and (
+                len(batch) >= _MAX_STREAM_BATCH_ROWS
+                or batch_bytes + row_bytes > _MAX_STREAM_BATCH_BYTES
+            ):
+                yield batch
+                batch = []
+                batch_bytes = 0
+            batch.append(row)
+            batch_bytes += row_bytes
+        if batch:
+            yield batch
+
+
+def _opaque_comp_type_accounting(
+    receipts: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    observation_components: list[dict[str, Any]] = []
+    peer_components: list[dict[str, Any]] = []
+    observation_count = 0
+    business_key_count = 0
+    deferred_observation_count = 0
+    unpaired_count = 0
+    material_conflict_count = 0
+    for receipt in receipts:
+        raw_evidence = receipt.get("opaque_comp_type_evidence")
+        if not isinstance(raw_evidence, Mapping):
+            _fail("SUCCESSOR_OPAQUE_COMP_TYPE_EVIDENCE_INVALID")
+        evidence = _validate_opaque_comp_type_evidence(raw_evidence)
+        ordinal = int(receipt["ordinal"])
+        observation_count += int(
+            evidence["opaque_comp_type_observation_count"]
+        )
+        business_key_count += int(
+            evidence["opaque_comp_type_business_key_count"]
+        )
+        unpaired_count += int(evidence["opaque_unpaired_count"])
+        deferred_observation_count += int(
+            evidence["opaque_deferred_observation_count"]
+        )
+        material_conflict_count += int(
+            evidence["opaque_material_conflict_count"]
+        )
+        if evidence["opaque_comp_type_observation_count"]:
+            observation_components.append(
+                {
+                    "ordinal": ordinal,
+                    "sha256": evidence[
+                        "opaque_comp_type_observation_multiset_sha256"
+                    ],
+                }
+            )
+            peer_components.append(
+                {
+                    "ordinal": ordinal,
+                    "sha256": evidence[
+                        "opaque_to_supported_peer_pair_keyset_sha256"
+                    ],
+                }
+            )
+    return _sealed(
+        {
+            "schema_version": (
+                FUNDAMENTAL_SUCCESSOR_OPAQUE_COMP_TYPE_ACCOUNTING_SCHEMA
+            ),
+            "opaque_comp_type_observation_count": observation_count,
+            "opaque_comp_type_business_key_count": business_key_count,
+            "opaque_deferred_observation_count": deferred_observation_count,
+            "opaque_comp_type_observation_multiset_sha256": _sha256(
+                _canonical_json_bytes(observation_components)
+            ),
+            "opaque_to_supported_peer_pair_keyset_sha256": _sha256(
+                _canonical_json_bytes(peer_components)
+            ),
+            "opaque_unpaired_count": unpaired_count,
+            "opaque_material_conflict_count": material_conflict_count,
+        },
+        identity_field="accounting_sha256",
+    )
+
+
+def _validate_opaque_comp_type_accounting(
+    value: Mapping[str, Any],
+) -> dict[str, Any]:
+    accounting = _validate_seal(value, identity_field="accounting_sha256")
+    required = {
+        "accounting_sha256",
+        "opaque_comp_type_business_key_count",
+        "opaque_comp_type_observation_count",
+        "opaque_deferred_observation_count",
+        "opaque_comp_type_observation_multiset_sha256",
+        "opaque_material_conflict_count",
+        "opaque_to_supported_peer_pair_keyset_sha256",
+        "opaque_unpaired_count",
+        "schema_version",
+    }
+    count_fields = {
+        "opaque_comp_type_business_key_count",
+        "opaque_comp_type_observation_count",
+        "opaque_deferred_observation_count",
+        "opaque_material_conflict_count",
+        "opaque_unpaired_count",
+    }
+    if (
+        set(accounting) != required
+        or accounting["schema_version"]
+        != FUNDAMENTAL_SUCCESSOR_OPAQUE_COMP_TYPE_ACCOUNTING_SCHEMA
+        or any(
+            type(accounting[field]) is not int or accounting[field] < 0
+            for field in count_fields
+        )
+        or accounting["opaque_material_conflict_count"] != 0
+    ):
+        _fail("SUCCESSOR_OPAQUE_COMP_TYPE_ACCOUNTING_INVALID")
+    for field in (
+        "accounting_sha256",
+        "opaque_comp_type_observation_multiset_sha256",
+        "opaque_to_supported_peer_pair_keyset_sha256",
+    ):
+        _hex_sha256(accounting[field], label=field)
+    return accounting
+
+
+def _unsupported_inventory(
+    receipts: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    entries: list[dict[str, Any]] = []
+    for receipt in receipts:
+        evidence = _validate_opaque_comp_type_evidence(
+            receipt["opaque_comp_type_evidence"]
+        )
+        for observation in evidence["deferred_observations"]:
+            entries.append(
+                {
+                    "business_key": list(observation["business_key"]),
+                    "classification": "TAINTED_PENDING_ANALYSIS",
+                    "ordinal": int(receipt["ordinal"]),
+                    "record_path": f"requests/{int(receipt['ordinal']):06d}.json",
+                    "request_key": str(receipt["request_key"]),
+                    "row_sha256": str(observation["row_sha256"]),
+                    "table": str(receipt["table"]),
+                    "typed_row": list(observation["typed_row"]),
+                }
+            )
+    entries.sort(key=_canonical_json_bytes)
+    keys = sorted(
+        {tuple(entry["business_key"]) for entry in entries},
+        key=lambda value: tuple(part.encode("utf-8") for part in value),
+    )
+    body = {
+        "schema_version": FUNDAMENTAL_SUCCESSOR_UNSUPPORTED_INVENTORY_SCHEMA,
+        "authority_state": _DEFERRED_AUTHORITY_STATE,
+        "deferred_observation_count": len(entries),
+        "deferred_business_key_count": len(keys),
+        "deferred_business_keyset_sha256": _sha256(
+            _canonical_json_bytes([list(value) for value in keys])
+        ),
+        "deferred_observation_multiset_sha256": _sha256(
+            _canonical_json_bytes(entries)
+        ),
+        "entries": entries,
+    }
+    return _sealed(body, identity_field="inventory_sha256")
+
+
+def _validate_unsupported_inventory(
+    value: Mapping[str, Any],
+) -> dict[str, Any]:
+    inventory = _validate_seal(value, identity_field="inventory_sha256")
+    if (
+        set(inventory)
+        != {
+            "authority_state",
+            "deferred_business_key_count",
+            "deferred_business_keyset_sha256",
+            "deferred_observation_count",
+            "deferred_observation_multiset_sha256",
+            "entries",
+            "inventory_sha256",
+            "schema_version",
+        }
+        or inventory["schema_version"]
+        != FUNDAMENTAL_SUCCESSOR_UNSUPPORTED_INVENTORY_SCHEMA
+        or inventory["authority_state"] != _DEFERRED_AUTHORITY_STATE
+        or type(inventory["entries"]) is not list
+        or type(inventory["deferred_observation_count"]) is not int
+        or inventory["deferred_observation_count"] != len(inventory["entries"])
+    ):
+        _fail("SUCCESSOR_UNSUPPORTED_INVENTORY_INVALID")
+    expected = _unsupported_inventory_from_entries(inventory["entries"])
+    if _canonical_json_bytes(expected) != _canonical_json_bytes(inventory):
+        _fail("SUCCESSOR_UNSUPPORTED_INVENTORY_INVALID")
+    return inventory
+
+
+def _unsupported_inventory_from_entries(
+    raw_entries: Sequence[Any],
+) -> dict[str, Any]:
+    entries: list[dict[str, Any]] = []
+    for raw in raw_entries:
+        if (
+            type(raw) is not dict
+            or set(raw)
+            != {
+                "business_key",
+                "classification",
+                "ordinal",
+                "record_path",
+                "request_key",
+                "row_sha256",
+                "table",
+                "typed_row",
+            }
+            or raw["classification"] != "TAINTED_PENDING_ANALYSIS"
+            or raw["table"] != "balancesheet"
+            or type(raw["ordinal"]) is not int
+            or raw["ordinal"] < 0
+            or raw["record_path"] != f"requests/{raw['ordinal']:06d}.json"
+            or type(raw["business_key"]) is not list
+            or len(raw["business_key"]) != 3
+            or any(type(part) is not str for part in raw["business_key"])
+            or type(raw["typed_row"]) is not list
+            or _sha256(_canonical_json_bytes(raw["typed_row"]))
+            != raw["row_sha256"]
+        ):
+            _fail("SUCCESSOR_UNSUPPORTED_INVENTORY_INVALID")
+        entries.append(dict(raw))
+    entries.sort(key=_canonical_json_bytes)
+    keys = sorted(
+        {tuple(entry["business_key"]) for entry in entries},
+        key=lambda value: tuple(part.encode("utf-8") for part in value),
+    )
+    body = {
+        "schema_version": FUNDAMENTAL_SUCCESSOR_UNSUPPORTED_INVENTORY_SCHEMA,
+        "authority_state": _DEFERRED_AUTHORITY_STATE,
+        "deferred_observation_count": len(entries),
+        "deferred_business_key_count": len(keys),
+        "deferred_business_keyset_sha256": _sha256(
+            _canonical_json_bytes([list(value) for value in keys])
+        ),
+        "deferred_observation_multiset_sha256": _sha256(
+            _canonical_json_bytes(entries)
+        ),
+        "entries": entries,
+    }
+    return _sealed(body, identity_field="inventory_sha256")
+
+
 def acquire_successor_support(
     *,
     plan: Mapping[str, Any],
@@ -2094,6 +4046,8 @@ def acquire_successor_support(
     retry_backoff_seconds: Sequence[float] = (0.5, 1.0),
     requests_per_second: float = 8.0,
     physical_memory_bytes: int | None = None,
+    available_memory_bytes: int | None = None,
+    rlimit_headroom_bytes: int | None = None,
     table_memory_limit_bytes: int | None = None,
     minimum_free_disk_bytes: int = _DEFAULT_MINIMUM_FREE_DISK_BYTES,
     maximum_record_bytes: int = _DEFAULT_MAXIMUM_RECORD_BYTES,
@@ -2115,13 +4069,30 @@ def acquire_successor_support(
     resolved_physical_memory = (
         _physical_memory_bytes() if physical_memory_bytes is None else physical_memory_bytes
     )
+    resolved_available_memory = (
+        _available_memory_bytes()
+        if available_memory_bytes is None
+        else available_memory_bytes
+    )
+    resolved_rlimit_headroom = (
+        _rlimit_headroom_bytes(resident_memory_bytes=_resident_memory_bytes())
+        if rlimit_headroom_bytes is None
+        else rlimit_headroom_bytes
+    )
+    effective_headroom = min(
+        resolved_physical_memory,
+        resolved_available_memory,
+        resolved_rlimit_headroom,
+    )
     resolved_table_memory_limit = (
-        int(Decimal(resolved_physical_memory) * _MAX_TABLE_MEMORY_FRACTION)
+        int(Decimal(effective_headroom) * _MAX_TABLE_MEMORY_FRACTION)
         if table_memory_limit_bytes is None
         else table_memory_limit_bytes
     )
     resource_policy = _resource_policy(
         physical_memory_bytes=resolved_physical_memory,
+        available_memory_bytes=resolved_available_memory,
+        rlimit_headroom_bytes=resolved_rlimit_headroom,
         table_memory_limit_bytes=resolved_table_memory_limit,
         minimum_free_disk_bytes=minimum_free_disk_bytes,
         maximum_record_bytes=maximum_record_bytes,
@@ -2143,14 +4114,14 @@ def acquire_successor_support(
     binding_path = root / "binding.json"
     manifest_path = root / "provider_manifest.json"
     if manifest_path.exists():
-        manifest = validate_successor_support_fileset(root)
-        installed_binding = _canonical_file_mapping(binding_path)
-        if _canonical_json_bytes(installed_binding) != _canonical_json_bytes(expected_binding):
+        manifest = validate_successor_capture_fileset(root)
+        installed_binding = _validate_binding(_canonical_file_mapping(binding_path))
+        if not _resume_binding_matches(installed_binding, expected_binding):
             _fail("SUCCESSOR_RESUME_BINDING_MISMATCH")
         return manifest
     if binding_path.exists():
         installed_binding = _validate_binding(_canonical_file_mapping(binding_path))
-        if _canonical_json_bytes(installed_binding) != _canonical_json_bytes(expected_binding):
+        if not _resume_binding_matches(installed_binding, expected_binding):
             _fail("SUCCESSOR_RESUME_BINDING_MISMATCH")
     else:
         _require_disk_reserve(
@@ -2181,16 +4152,28 @@ def acquire_successor_support(
                 expected_request=request,
             )
         else:
-            receipt, observed_rows, rows, raw_response_bytes = _fetch_request(
-                plan=plan,
-                request=request,
-                client=client,
-                symbols=symbols,
-                max_attempts=attempts,
-                retry_backoff_seconds=backoffs,
-                pacer=pacer,
-                sleeper=sleeper,
-            )
+            try:
+                receipt, observed_rows, rows, raw_response_bytes = _fetch_request(
+                    plan=plan,
+                    request=request,
+                    client=client,
+                    symbols=symbols,
+                    max_attempts=attempts,
+                    retry_backoff_seconds=backoffs,
+                    pacer=pacer,
+                    sleeper=sleeper,
+                )
+            except FundamentalSuccessorSourceError as error:
+                _persist_failure_evidence(
+                    root=root,
+                    binding=binding,
+                    request=request,
+                    error=error,
+                    maximum_record_bytes=resource_policy[
+                        "maximum_record_bytes"
+                    ],
+                )
+                raise
             record = _record(
                 binding_sha256=binding["binding_sha256"],
                 request=request,
@@ -2229,6 +4212,19 @@ def acquire_successor_support(
             }
         )
         record_refs.append(ref)
+    unsupported_root = root / "unsupported_observations"
+    if not unsupported_root.exists():
+        unsupported_root.mkdir(mode=0o700)
+    unsupported_inventory = _unsupported_inventory(receipts)
+    unsupported_inventory_path = unsupported_root / "inventory.json"
+    unsupported_inventory_payload = _canonical_json_bytes(
+        unsupported_inventory
+    )
+    _atomic_write(unsupported_inventory_path, unsupported_inventory_payload)
+    unsupported_inventory_ref = _file_ref(
+        "unsupported_observations/inventory.json",
+        _regular_bytes(unsupported_inventory_path),
+    )
     table_estimates = _table_memory_estimates(
         requests=requests,
         receipts=receipts,
@@ -2237,43 +4233,41 @@ def acquire_successor_support(
     if (
         max(row["estimated_peak_memory_bytes"] for row in table_estimates.values())
         > resource_policy["table_memory_limit_bytes"]
-        or sum(row["estimated_peak_memory_bytes"] for row in table_estimates.values())
-        > resource_policy["aggregate_table_memory_limit_bytes"]
     ):
         _fail("SUCCESSOR_RESOURCE_PREFLIGHT_BLOCKED")
     table_refs: dict[str, dict[str, Any]] = {}
     table_fingerprints: dict[str, str] = {}
     for table in _TABLES:
-        table_rows: list[dict[str, Any]] = []
-        for request in requests:
-            if request["table"] != table:
-                continue
-            record_path = records_root / f"{request['ordinal']:06d}.json"
-            _receipt_value, _observed_rows, rows = _decode_record(
-                _canonical_file_mapping(record_path),
+        path = tables_root / f"{table}.parquet"
+        external_sort_budget = _external_sort_budget(
+            record_bytes=table_estimates[table]["record_bytes"],
+            accepted_rows=table_estimates[table]["accepted_row_count"],
+        )
+        artifact = _build_streamed_table(
+            table=table,
+            row_batches=_record_row_batches(
+                table=table,
+                requests=requests,
+                records_root=records_root,
                 binding=binding,
-                expected_request=request,
-            )
-            table_rows.extend(rows)
-        artifact = _table_artifact(table, table_rows)
-        path = tables_root / f"{table}.json"
-        payload = _canonical_json_bytes(artifact)
-        if len(payload) > resource_policy["table_memory_limit_bytes"]:
-            _fail("SUCCESSOR_TABLE_RESOURCE_LIMIT_EXCEEDED")
+            ),
+            destination=path,
+            minimum_free_disk_bytes=resource_policy["minimum_free_disk_bytes"],
+            external_sort_budget=external_sort_budget,
+        )
         observed_free = _require_disk_reserve(
             root,
             minimum_free_disk_bytes=resource_policy["minimum_free_disk_bytes"],
-            pending_bytes=len(payload),
+            pending_bytes=int(artifact["byte_length"]),
         )
         minimum_observed_free_disk = min(minimum_observed_free_disk, observed_free)
-        _atomic_write(path, payload)
-        readback = _canonical_file_mapping(path)
-        _decode_table_artifact(readback, table=table)
-        table_refs[table] = _file_ref(f"tables/{table}.json", payload)
+        _validate_streamed_table(path, table=table, metadata=artifact)
+        table_refs[table] = _path_ref(f"tables/{table}.parquet", path)
         table_refs[table]["row_count"] = artifact["row_count"]
         table_refs[table]["table_sha256"] = artifact["table_sha256"]
+        table_refs[table]["metadata"] = artifact
         table_fingerprints[table] = artifact["fingerprint_sha256"]
-        del artifact, payload, table_rows
+        del artifact
     request_attempts = sum(int(receipt["attempts"]) for receipt in receipts)
     retry_failures = sum(len(receipt["retry_error_codes"]) for receipt in receipts)
     scope_projection = _scope_projection_manifest(
@@ -2289,7 +4283,16 @@ def acquire_successor_support(
         table_refs=table_refs,
         minimum_observed_free_disk_bytes=minimum_observed_free_disk,
     )
+    authoritative_source_ready = (
+        int(unsupported_inventory["deferred_observation_count"]) == 0
+    )
     body = {
+        "authority_state": (
+            _AUTHORITATIVE_AUTHORITY_STATE
+            if authoritative_source_ready
+            else _DEFERRED_AUTHORITY_STATE
+        ),
+        "authoritative_source_ready": authoritative_source_ready,
         "binding": binding,
         "binding_ref": _file_ref("binding.json", _regular_bytes(binding_path)),
         "captured_pointers": binding["captured_pointers"],
@@ -2306,7 +4309,10 @@ def acquire_successor_support(
                 int(row["in_scope_observation_count"]) for row in receipts
             ),
             "malformed_requests": 0,
-            "raw_response_bytes": sum(int(row["raw_response_byte_length"]) for row in receipts),
+            "opaque_comp_type": _opaque_comp_type_accounting(receipts),
+            "raw_response_bytes": sum(
+                int(row["raw_response_byte_length"]) for row in receipts
+            ),
             "request_attempts": request_attempts,
             "requests_empty": sum(row["status"] == "EMPTY" for row in receipts),
             "requests_failed": 0,
@@ -2328,19 +4334,34 @@ def acquire_successor_support(
         "resource_accounting": resource_accounting,
         "schema_version": FUNDAMENTAL_SUCCESSOR_PROVIDER_MANIFEST_SCHEMA,
         "scope_projection": scope_projection,
+        "staging_eligible": authoritative_source_ready,
         "status": "COMPLETE",
         "table_files": table_refs,
         "table_fingerprints": table_fingerprints,
+        "unsupported_inventory_ref": unsupported_inventory_ref,
+        "promotion_eligible": authoritative_source_ready,
+        "canonical_write_authorized": False,
+        "usable_for_investment_research": False,
     }
     manifest = _sealed(body, identity_field="manifest_sha256")
-    _atomic_write(manifest_path, _canonical_json_bytes(manifest))
-    validated = validate_successor_support_fileset(root)
+    manifest_payload = _canonical_json_bytes(manifest)
+    if len(manifest_payload) > resource_policy["table_memory_limit_bytes"]:
+        _fail("SUCCESSOR_MANIFEST_RESOURCE_LIMIT_EXCEEDED")
+    _require_disk_reserve(
+        root,
+        minimum_free_disk_bytes=resource_policy["minimum_free_disk_bytes"],
+        pending_bytes=len(manifest_payload),
+    )
+    _atomic_write(manifest_path, manifest_payload)
+    validated = validate_successor_capture_fileset(root)
     return validated
 
 
 def _validate_manifest_shape(value: Mapping[str, Any]) -> dict[str, Any]:
     manifest = _validate_seal(value, identity_field="manifest_sha256")
     required = {
+        "authority_state",
+        "authoritative_source_ready",
         "binding",
         "binding_ref",
         "captured_pointers",
@@ -2356,16 +4377,34 @@ def _validate_manifest_shape(value: Mapping[str, Any]) -> dict[str, Any]:
         "resource_accounting",
         "schema_version",
         "scope_projection",
+        "staging_eligible",
         "status",
         "table_files",
         "table_fingerprints",
+        "unsupported_inventory_ref",
+        "promotion_eligible",
+        "canonical_write_authorized",
+        "usable_for_investment_research",
     }
     if set(manifest) != required:
         _fail("SUCCESSOR_PROVIDER_MANIFEST_FIELDS_INVALID")
+    authority_tuple = (
+        manifest["authority_state"],
+        manifest["authoritative_source_ready"],
+        manifest["staging_eligible"],
+        manifest["promotion_eligible"],
+    )
     if (
         manifest["schema_version"] != FUNDAMENTAL_SUCCESSOR_PROVIDER_MANIFEST_SCHEMA
         or manifest["fileset_schema_version"] != FUNDAMENTAL_SUCCESSOR_SUPPORT_FILESET_SCHEMA
         or manifest["status"] != "COMPLETE"
+        or authority_tuple
+        not in {
+            (_DEFERRED_AUTHORITY_STATE, False, False, False),
+            (_AUTHORITATIVE_AUTHORITY_STATE, True, True, True),
+        }
+        or manifest["canonical_write_authorized"] is not False
+        or manifest["usable_for_investment_research"] is not False
     ):
         _fail("SUCCESSOR_PROVIDER_MANIFEST_CONTRACT_MISMATCH")
     accounting = manifest["provider_accounting"]
@@ -2374,6 +4413,7 @@ def _validate_manifest_shape(value: Mapping[str, Any]) -> dict[str, Any]:
         "has_more_requests",
         "in_scope_observation_rows",
         "malformed_requests",
+        "opaque_comp_type",
         "raw_response_bytes",
         "request_attempts",
         "requests_empty",
@@ -2387,8 +4427,16 @@ def _validate_manifest_shape(value: Mapping[str, Any]) -> dict[str, Any]:
         "scope_exclusion_requests",
     }:
         _fail("SUCCESSOR_PROVIDER_ACCOUNTING_INVALID")
-    if any(type(value) is not int or value < 0 for value in accounting.values()):
+    if any(
+        type(value) is not int or value < 0
+        for key, value in accounting.items()
+        if key != "opaque_comp_type"
+    ):
         _fail("SUCCESSOR_PROVIDER_ACCOUNTING_INVALID")
+    opaque_accounting = accounting["opaque_comp_type"]
+    if not isinstance(opaque_accounting, Mapping):
+        _fail("SUCCESSOR_PROVIDER_ACCOUNTING_INVALID")
+    _validate_opaque_comp_type_accounting(opaque_accounting)
     if any(
         accounting[field] != 0
         for field in (
@@ -2428,24 +4476,54 @@ def _validate_manifest_shape(value: Mapping[str, Any]) -> dict[str, Any]:
         "myquant-fundamental-successor-scope-projection.v1"
     ):
         _fail("SUCCESSOR_SCOPE_PROJECTION_INVALID")
+    resource = manifest["resource_accounting"]
+    if not isinstance(resource, Mapping):
+        _fail("SUCCESSOR_RESOURCE_ACCOUNTING_INVALID")
+    validated_resource = _validate_seal(
+        resource,
+        identity_field="resource_sha256",
+    )
+    if set(validated_resource) != {
+        "aggregate_estimated_memory_bytes",
+        "maximum_estimated_table_memory_bytes",
+        "minimum_observed_free_disk_bytes",
+        "policy",
+        "resource_sha256",
+        "schema_version",
+        "source_payload_bytes",
+        "status",
+        "table_estimates",
+    } or (
+        validated_resource["schema_version"]
+        != "myquant-fundamental-successor-resource-accounting.v2"
+        or validated_resource["status"] != "PASS"
+    ):
+        _fail("SUCCESSOR_RESOURCE_ACCOUNTING_INVALID")
+    _validate_resource_policy(validated_resource["policy"])
     return manifest
 
 
-def validate_successor_support_fileset(
+def validate_successor_capture_fileset(
     fileset_root: str | Path,
     *,
     expected_implementation_sha256: str | None = None,
 ) -> dict[str, Any]:
-    """Independently validate the complete fileset and exact byte closure."""
+    """Validate a complete, capture-only, promotion-ineligible fileset."""
 
     root = _private_root(fileset_root, create=False)
     records_root = _safe_directory(root, "requests", create=False)
     tables_root = _safe_directory(root, "tables", create=False)
+    unsupported_root = _safe_directory(
+        root,
+        "unsupported_observations",
+        create=False,
+    )
     if {entry.name for entry in root.iterdir()} != {
         "binding.json",
         "provider_manifest.json",
         "requests",
         "tables",
+        "unsupported_observations",
     }:
         _fail("SUCCESSOR_FILESET_ENTRY_SET_INVALID")
     manifest_path = root / "provider_manifest.json"
@@ -2481,7 +4559,6 @@ def validate_successor_support_fileset(
     expected_record_names = {f"{request['ordinal']:06d}.json" for request in requests}
     if {entry.name for entry in records_root.iterdir()} != expected_record_names:
         _fail("SUCCESSOR_MANIFEST_RECORD_SET_INVALID")
-    rows_by_table: dict[str, list[dict[str, Any]]] = {table: [] for table in _TABLES}
     validated_receipts: list[dict[str, Any]] = []
     for request, ref, manifest_receipt in zip(requests, record_refs, receipts, strict=True):
         payload = _validate_file_ref(root, ref)
@@ -2495,7 +4572,7 @@ def validate_successor_support_fileset(
             value = json.loads(payload.decode("utf-8"))
         except (UnicodeError, ValueError, json.JSONDecodeError):
             _fail("SUCCESSOR_EVIDENCE_JSON_INVALID")
-        receipt, _observed_rows, rows = _decode_record(
+        receipt, _observed_rows, _rows = _decode_record(
             value,
             binding=binding,
             expected_request=request,
@@ -2503,31 +4580,126 @@ def validate_successor_support_fileset(
         if _canonical_json_bytes(receipt) != _canonical_json_bytes(manifest_receipt):
             _fail("SUCCESSOR_MANIFEST_RECEIPT_MISMATCH")
         validated_receipts.append(receipt)
-        rows_by_table[request["table"]].extend(rows)
+    if {entry.name for entry in unsupported_root.iterdir()} != {"inventory.json"}:
+        _fail("SUCCESSOR_UNSUPPORTED_INVENTORY_SET_INVALID")
+    inventory_payload = _validate_file_ref(
+        root,
+        manifest["unsupported_inventory_ref"],
+    )
+    try:
+        inventory_value = json.loads(inventory_payload.decode("utf-8"))
+    except (UnicodeError, ValueError, json.JSONDecodeError):
+        _fail("SUCCESSOR_UNSUPPORTED_INVENTORY_INVALID")
+    inventory = _validate_unsupported_inventory(inventory_value)
+    expected_inventory = _unsupported_inventory(validated_receipts)
+    if _canonical_json_bytes(inventory) != _canonical_json_bytes(
+        expected_inventory
+    ):
+        _fail("SUCCESSOR_UNSUPPORTED_INVENTORY_RECORD_CLOSURE_MISMATCH")
+    expected_authoritative = inventory["deferred_observation_count"] == 0
+    if (
+        manifest["authoritative_source_ready"] is not expected_authoritative
+        or manifest["staging_eligible"] is not expected_authoritative
+        or manifest["promotion_eligible"] is not expected_authoritative
+        or manifest["authority_state"]
+        != (
+            _AUTHORITATIVE_AUTHORITY_STATE
+            if expected_authoritative
+            else _DEFERRED_AUTHORITY_STATE
+        )
+    ):
+        _fail("SUCCESSOR_SOURCE_AUTHORITY_STATE_MISMATCH")
     if set(manifest["table_files"]) != set(_TABLES):
         _fail("SUCCESSOR_MANIFEST_TABLE_SET_INVALID")
-    if {entry.name for entry in tables_root.iterdir()} != {f"{table}.json" for table in _TABLES}:
+    if {entry.name for entry in tables_root.iterdir()} != {
+        f"{table}.parquet" for table in _TABLES
+    }:
         _fail("SUCCESSOR_MANIFEST_TABLE_SET_INVALID")
-    for table in _TABLES:
-        ref = manifest["table_files"][table]
-        payload = _validate_file_ref(root, ref)
-        if ref.get("path") != f"tables/{table}.json":
-            _fail("SUCCESSOR_MANIFEST_TABLE_REF_INVALID")
+    validation_estimates = _table_memory_estimates(
+        requests=requests,
+        receipts=validated_receipts,
+        record_refs=record_refs,
+    )
+    validation_budgets = {
+        table: _external_sort_budget(
+            record_bytes=validation_estimates[table]["record_bytes"],
+            accepted_rows=validation_estimates[table]["accepted_row_count"],
+        )
+        for table in _TABLES
+    }
+    validation_parent = root.parent
+    if os.stat(validation_parent).st_dev != os.stat(root).st_dev:
+        _fail("SUCCESSOR_VALIDATION_DEVICE_MISMATCH")
+    _require_external_sort_reserve(
+        validation_parent,
+        minimum_free_disk_bytes=binding["resource_policy"]["minimum_free_disk_bytes"],
+        required_working_bytes=max(
+            budget["total_bytes"] for budget in validation_budgets.values()
+        ),
+    )
+    validation_directory = Path(
+        tempfile.mkdtemp(
+            prefix=f".{root.name}.validation-",
+            dir=validation_parent,
+        )
+    )
+    os.chmod(validation_directory, 0o700)
+    try:
+        for table in _TABLES:
+            ref = manifest["table_files"][table]
+            if ref.get("path") != f"tables/{table}.parquet":
+                _fail("SUCCESSOR_MANIFEST_TABLE_REF_INVALID")
+            path = _validate_streamed_file_ref(root, ref)
+            metadata = ref.get("metadata")
+            if not isinstance(metadata, Mapping):
+                _fail("SUCCESSOR_MANIFEST_TABLE_REF_INVALID")
+            validated_metadata = _validate_streamed_table(
+                path,
+                table=table,
+                metadata=metadata,
+            )
+            expected_path = validation_directory / f"{table}.parquet"
+            expected_metadata = _build_streamed_table(
+                table=table,
+                row_batches=_record_row_batches(
+                    table=table,
+                    requests=requests,
+                    records_root=records_root,
+                    binding=binding,
+                ),
+                destination=expected_path,
+                minimum_free_disk_bytes=binding["resource_policy"][
+                    "minimum_free_disk_bytes"
+                ],
+                external_sort_budget=validation_budgets[table],
+            )
+            if (
+                _canonical_json_bytes(validated_metadata)
+                != _canonical_json_bytes(expected_metadata)
+                or _regular_file_identity(path)
+                != _regular_file_identity(expected_path)
+            ):
+                _fail("SUCCESSOR_TABLE_RECORD_CLOSURE_MISMATCH")
+            if (
+                ref.get("row_count") != validated_metadata["row_count"]
+                or ref.get("table_sha256") != validated_metadata["table_sha256"]
+                or manifest["table_fingerprints"].get(table)
+                != validated_metadata["fingerprint_sha256"]
+            ):
+                _fail("SUCCESSOR_MANIFEST_TABLE_REF_INVALID")
+            os.unlink(expected_path)
+    finally:
+        for table in _TABLES:
+            expected_path = validation_directory / f"{table}.parquet"
+            if expected_path.exists():
+                try:
+                    os.unlink(expected_path)
+                except OSError:
+                    pass
         try:
-            value = json.loads(payload.decode("utf-8"))
-        except (UnicodeError, ValueError, json.JSONDecodeError):
-            _fail("SUCCESSOR_EVIDENCE_JSON_INVALID")
-        table_rows = _decode_table_artifact(value, table=table)
-        expected_artifact = _table_artifact(table, rows_by_table[table])
-        if _canonical_json_bytes(value) != _canonical_json_bytes(expected_artifact):
-            _fail("SUCCESSOR_TABLE_RECORD_CLOSURE_MISMATCH")
-        if (
-            ref.get("row_count") != value["row_count"]
-            or ref.get("table_sha256") != value["table_sha256"]
-            or manifest["table_fingerprints"].get(table) != value["fingerprint_sha256"]
-            or len(table_rows) != value["row_count"]
-        ):
-            _fail("SUCCESSOR_MANIFEST_TABLE_REF_INVALID")
+            os.rmdir(validation_directory)
+        except OSError:
+            pass
     accounting = manifest["provider_accounting"]
     expected_scope_projection = _scope_projection_manifest(
         plan=plan,
@@ -2554,25 +4726,281 @@ def validate_successor_support_fileset(
         != sum(receipt["out_of_scope_observation_count"] > 0 for receipt in validated_receipts)
         or accounting["raw_response_bytes"]
         != sum(receipt["raw_response_byte_length"] for receipt in validated_receipts)
+        or _canonical_json_bytes(accounting["opaque_comp_type"])
+        != _canonical_json_bytes(
+            _opaque_comp_type_accounting(validated_receipts)
+        )
         or _canonical_json_bytes(manifest["scope_projection"])
         != _canonical_json_bytes(expected_scope_projection)
     ):
         _fail("SUCCESSOR_PROVIDER_ACCOUNTING_NOT_RECONCILED")
+    expected_resource = _resource_accounting(
+        resource_policy=binding["resource_policy"],
+        requests=requests,
+        receipts=validated_receipts,
+        record_refs=record_refs,
+        table_refs=manifest["table_files"],
+        minimum_observed_free_disk_bytes=manifest["resource_accounting"][
+            "minimum_observed_free_disk_bytes"
+        ],
+    )
+    if _canonical_json_bytes(expected_resource) != _canonical_json_bytes(
+        manifest["resource_accounting"]
+    ):
+        _fail("SUCCESSOR_RESOURCE_ACCOUNTING_INVALID")
     return manifest
 
 
-def load_support_tables(fileset_root: str | Path) -> dict[str, pd.DataFrame]:
-    """Return validated canonical support tables as independent DataFrames."""
+def validate_successor_support_fileset(
+    fileset_root: str | Path,
+    *,
+    expected_implementation_sha256: str | None = None,
+) -> dict[str, Any]:
+    """Reject deferred capture evidence at the authoritative source boundary."""
 
-    manifest = validate_successor_support_fileset(fileset_root)
+    manifest = validate_successor_capture_fileset(
+        fileset_root,
+        expected_implementation_sha256=expected_implementation_sha256,
+    )
+    if (
+        manifest.get("authority_state") != _AUTHORITATIVE_AUTHORITY_STATE
+        or manifest.get("authoritative_source_ready") is not True
+        or manifest.get("staging_eligible") is not True
+        or manifest.get("promotion_eligible") is not True
+    ):
+        _fail("SUCCESSOR_DEFERRED_CAPTURE_NOT_AUTHORITATIVE")
+    return manifest
+
+
+class _LazySupportTables(Mapping[str, object]):
+    """Validated path-backed store; aggregate frame access is forbidden."""
+
+    def __init__(
+        self,
+        fileset_root: str | Path,
+        *,
+        capture_only: bool = False,
+    ) -> None:
+        validator = (
+            validate_successor_capture_fileset
+            if capture_only
+            else validate_successor_support_fileset
+        )
+        self._manifest = validator(fileset_root)
+        self._root = _private_root(fileset_root, create=False)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(_TABLES)
+
+    def __len__(self) -> int:
+        return len(_TABLES)
+
+    def __getitem__(self, table: str) -> object:
+        if table not in _TABLES:
+            raise KeyError(table)
+        _fail("SUCCESSOR_FULL_TABLE_ACCESS_FORBIDDEN")
+
+    @property
+    def table_fingerprints(self) -> Mapping[str, str]:
+        return MappingProxyType(dict(self._manifest["table_fingerprints"]))
+
+    def table_metadata(self, table: str) -> Mapping[str, Any]:
+        if table not in _TABLES:
+            raise KeyError(table)
+        metadata = dict(self._manifest["table_files"][table].get("metadata", {}) or {})
+        _validate_streamed_table(
+            _validate_streamed_file_ref(
+                self._root,
+                self._manifest["table_files"][table],
+            ),
+            table=table,
+            metadata=metadata,
+        )
+        return MappingProxyType(metadata)
+
+    def iter_batches(
+        self,
+        table: str,
+        *,
+        batch_rows: int = _MAX_STREAM_BATCH_ROWS,
+        batch_bytes: int = _MAX_STREAM_BATCH_BYTES,
+    ) -> Iterator[pd.DataFrame]:
+        if table not in _TABLES:
+            raise KeyError(table)
+        if (
+            type(batch_rows) is not int
+            or not 0 < batch_rows <= _MAX_STREAM_BATCH_ROWS
+            or type(batch_bytes) is not int
+            or not 0 < batch_bytes <= _MAX_STREAM_BATCH_BYTES
+        ):
+            _fail("SUCCESSOR_STREAM_BATCH_POLICY_INVALID")
+        path = _validate_streamed_file_ref(
+            self._root,
+            self._manifest["table_files"][table],
+        )
+        for rows in _iter_parquet_rows(
+            path,
+            table=table,
+            maximum_batch_rows=batch_rows,
+            maximum_batch_bytes=batch_bytes,
+        ):
+            yield pd.DataFrame(rows, columns=_output_fields(table))
+
+    def iter_rows(self, table: str) -> Iterator[dict[str, Any]]:
+        for batch in self.iter_batches(table):
+            yield from batch.to_dict("records")
+
+    def materialize_table(self, table: str) -> pd.DataFrame:
+        frames = list(self.iter_batches(table))
+        if not frames:
+            return pd.DataFrame(columns=_output_fields(table))
+        return pd.concat(frames, ignore_index=True, sort=False)
+
+
+def open_support_tables(fileset_root: str | Path) -> Mapping[str, object]:
+    """Open a validated streaming store with no aggregate ``__getitem__``."""
+
+    return _LazySupportTables(fileset_root)
+
+
+def open_capture_support_tables(fileset_root: str | Path) -> Mapping[str, object]:
+    """Open accepted-only tables for diagnostic taint replay only."""
+
+    return _LazySupportTables(fileset_root, capture_only=True)
+
+
+def load_support_tables(fileset_root: str | Path) -> dict[str, pd.DataFrame]:
+    """Test-only compatibility helper that materialises all support tables."""
+
+    tables = open_support_tables(fileset_root)
+    if not isinstance(tables, _LazySupportTables):  # pragma: no cover
+        _fail("SUCCESSOR_SUPPORT_STORE_INVALID")
+    return {table: tables.materialize_table(table) for table in _TABLES}
+
+
+def load_capture_support_tables(
+    fileset_root: str | Path,
+) -> dict[str, pd.DataFrame]:
+    """Test helper for a validated capture-only table store."""
+
+    tables = open_capture_support_tables(fileset_root)
+    if not isinstance(tables, _LazySupportTables):  # pragma: no cover
+        _fail("SUCCESSOR_CAPTURE_STORE_INVALID")
+    return {table: tables.materialize_table(table) for table in _TABLES}
+
+
+def load_capture_symbol_rows(
+    fileset_root: str | Path,
+    *,
+    table: str,
+    symbol: str,
+    maximum_rows: int = 100_000,
+    maximum_bytes: int = 64 * 1024 * 1024,
+) -> list[dict[str, Any]]:
+    """Decode one symbol from a validated capture without a full-table load."""
+
+    if (
+        table not in _TABLES
+        or _TS_CODE_RE.fullmatch(symbol) is None
+        or type(maximum_rows) is not int
+        or maximum_rows < 1
+        or type(maximum_bytes) is not int
+        or maximum_bytes < 1
+    ):
+        _fail("SUCCESSOR_CAPTURE_SYMBOL_QUERY_INVALID")
+    manifest = validate_successor_capture_fileset(fileset_root)
     root = _private_root(fileset_root, create=False)
-    result: dict[str, pd.DataFrame] = {}
-    for table in _TABLES:
-        payload = _validate_file_ref(root, manifest["table_files"][table])
+    path = _validate_streamed_file_ref(root, manifest["table_files"][table])
+    try:
+        physical = pq.read_table(path, filters=[("ts_code", "=", symbol)])
+    except (OSError, pa.ArrowException):
+        _fail("SUCCESSOR_CAPTURE_SYMBOL_QUERY_FAILED")
+    if physical.num_rows > maximum_rows or physical.nbytes > maximum_bytes:
+        _fail("SUCCESSOR_CAPTURE_SYMBOL_RESOURCE_LIMIT")
+    fields = _output_fields(table)
+    rows: list[dict[str, Any]] = []
+    values = physical.to_pydict()
+    for observed_symbol, sort_date, end_date, raw_token in zip(
+        values["ts_code"],
+        values["sort_date"],
+        values["end_date"],
+        values["row_json"],
+        strict=True,
+    ):
+        row = _decode_row_token(bytes(raw_token), fields=fields)
+        expected_sort = str(
+            row["trade_date"]
+            if table == "daily_basic"
+            else row["availability_date"]
+        )
+        expected_end = "" if table == "daily_basic" else str(row["end_date"])
+        if (
+            observed_symbol != symbol
+            or row["ts_code"] != symbol
+            or sort_date != expected_sort
+            or end_date != expected_end
+        ):
+            _fail("SUCCESSOR_TABLE_INDEX_COLUMN_MISMATCH")
+        rows.append(row)
+    rows.sort(key=lambda value: _row_sort_key(value, fields))
+    return rows
+
+
+def load_unsupported_inventory(
+    fileset_root: str | Path,
+) -> dict[str, Any]:
+    """Read the independently validated deferred-observation inventory."""
+
+    manifest = validate_successor_capture_fileset(fileset_root)
+    root = _private_root(fileset_root, create=False)
+    payload = _validate_file_ref(root, manifest["unsupported_inventory_ref"])
+    try:
         value = json.loads(payload.decode("utf-8"))
-        rows = _decode_table_artifact(value, table=table)
-        result[table] = pd.DataFrame(rows, columns=_output_fields(table))
-    return result
+    except (UnicodeError, ValueError, json.JSONDecodeError):
+        _fail("SUCCESSOR_UNSUPPORTED_INVENTORY_INVALID")
+    return _validate_unsupported_inventory(value)
+
+
+def iter_unsupported_observations(
+    fileset_root: str | Path,
+) -> Iterator[dict[str, Any]]:
+    """Yield decoded deferred winners without materialising provider tables."""
+
+    inventory = load_unsupported_inventory(fileset_root)
+    fields = _output_fields("balancesheet")
+    for entry in inventory["entries"]:
+        typed = entry["typed_row"]
+        if len(typed) != len(fields):
+            _fail("SUCCESSOR_UNSUPPORTED_INVENTORY_INVALID")
+        row = dict(
+            zip(
+                fields,
+                (_decode_typed_scalar(value) for value in typed),
+                strict=True,
+            )
+        )
+        yield {**dict(entry), "row": row}
+
+
+def successor_support_evidence_paths(
+    fileset_root: str | Path,
+) -> dict[str, Path]:
+    """Return validated absolute evidence paths without loading their bytes."""
+
+    manifest = validate_successor_capture_fileset(fileset_root)
+    root = _private_root(fileset_root, create=False)
+    paths: dict[str, Path] = {"binding.json": root / "binding.json"}
+    for ref in manifest["record_files"]:
+        paths[str(ref["path"])] = root / str(ref["path"])
+    for table in _TABLES:
+        ref = manifest["table_files"][table]
+        paths[str(ref["path"])] = root / str(ref["path"])
+    unsupported_ref = manifest["unsupported_inventory_ref"]
+    paths[str(unsupported_ref["path"])] = root / str(
+        unsupported_ref["path"]
+    )
+    paths["provider_manifest.json"] = root / "provider_manifest.json"
+    return paths
 
 
 def iter_successor_support_evidence(
@@ -2587,7 +5015,8 @@ def iter_successor_support_evidence(
         yield ref["path"], _validate_file_ref(root, ref)
     for table in _TABLES:
         ref = manifest["table_files"][table]
-        yield ref["path"], _validate_file_ref(root, ref)
+        path = _validate_streamed_file_ref(root, ref)
+        yield ref["path"], _regular_bytes(path)
     manifest_bytes = _regular_bytes(root / "provider_manifest.json")
     if _canonical_json_bytes(manifest) != manifest_bytes:
         _fail("SUCCESSOR_PROVIDER_MANIFEST_CHANGED")
@@ -2604,6 +5033,7 @@ def capture_successor_support_evidence(
 
 __all__ = [
     "FUNDAMENTAL_SUCCESSOR_BINDING_SCHEMA",
+    "FUNDAMENTAL_SUCCESSOR_CLASSIFICATION_PARTITION_SCHEMA",
     "FUNDAMENTAL_SUCCESSOR_CANONICALIZATION_POLICY",
     "FUNDAMENTAL_SUCCESSOR_PROVIDER_MANIFEST_SCHEMA",
     "FUNDAMENTAL_SUCCESSOR_RECORD_SCHEMA",
@@ -2611,6 +5041,7 @@ __all__ = [
     "FUNDAMENTAL_SUCCESSOR_SUPPORT_FILESET_SCHEMA",
     "FUNDAMENTAL_SUCCESSOR_SUPPORT_PLAN_SCHEMA",
     "FUNDAMENTAL_SUCCESSOR_TABLE_SCHEMA",
+    "FUNDAMENTAL_SUCCESSOR_UNSUPPORTED_INVENTORY_SCHEMA",
     "FundamentalSuccessorSourceError",
     "SUCCESSOR_ENDPOINT_CAPABILITIES",
     "SUCCESSOR_SUPPORT_CANONICALIZATION_VERSION",
@@ -2623,7 +5054,16 @@ __all__ = [
     "build_successor_support_plan",
     "capture_successor_support_evidence",
     "iter_successor_support_evidence",
+    "iter_unsupported_observations",
+    "load_capture_support_tables",
+    "load_capture_symbol_rows",
     "load_support_tables",
+    "load_unsupported_inventory",
+    "open_capture_support_tables",
+    "open_support_tables",
     "replay_successor_support_requests",
+    "successor_support_evidence_paths",
+    "validate_successor_failure_evidence",
+    "validate_successor_capture_fileset",
     "validate_successor_support_fileset",
 ]

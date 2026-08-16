@@ -984,6 +984,36 @@ _MIGRATION_SPECS: Final = {
             "readback_rows",
         },
     ),
+    "system.main_checkout_adoption": (
+        "adoption_id",
+        {
+            "adoption_id",
+            "state",
+            "task_name",
+            "thread_id",
+            "source_task_outcome",
+            "handoff_type",
+            "accepted_baseline_commit",
+            "accepted_baseline_tree",
+            "adoption_commit",
+            "adoption_tree",
+            "adoption_parent",
+            "path_rows",
+            "task_origin_paths",
+            "orphan_paths",
+            "disposition_rows",
+            "focused_test_rows",
+            "full_gate_refs",
+            "source_task_completion",
+            "writer_ended",
+            "main_clean",
+            "readback_rows",
+            "user_authorization_basis",
+            "task_authorship_claimed",
+            "human_signature_claimed",
+            "history_rewritten",
+        },
+    ),
     "system.legacy_source_disposition": (
         "disposition_id",
         {
@@ -1003,6 +1033,7 @@ _MIGRATION_SPECS: Final = {
             "historical_integration_commit",
             "historical_dirty_evidence_ref",
             "concurrent_task_handoff_ref",
+            "main_checkout_adoption_ref",
             "legacy_disposition_ref",
             "deployed_release_ref",
             "release_commit",
@@ -1342,6 +1373,10 @@ SYSTEM_EXCHANGE_CALENDAR_DECODER_ADMISSION_FIELDS: Final = frozenset(
         "endpoint_scheme",
         "endpoint_host",
         "endpoint_path_query_template",
+        "fixture_request_url",
+        "fixture_effective_url",
+        "fixture_redirect_chain",
+        "fixture_tls_verified",
         "redirect_policy",
         "http_status",
         "raw_media_type",
@@ -1359,6 +1394,60 @@ SYSTEM_EXCHANGE_CALENDAR_DECODER_ADMISSION_CONTRACT: Final = _exact_contract(
     "system.exchange_calendar_decoder_admission",
     "decoder_admission_id",
     SYSTEM_EXCHANGE_CALENDAR_DECODER_ADMISSION_FIELDS,
+)
+SYSTEM_EXCHANGE_CALENDAR_INDEX_CLOSURE_FIELDS: Final = frozenset(
+    {
+        "index_closure_id",
+        "state",
+        "exchange_id",
+        "issuer",
+        "category",
+        "root_capture_ref",
+        "page_capture_refs",
+        "reported_page_count",
+        "reported_item_count",
+        "observed_item_count",
+        "earliest_publish_date",
+        "latest_publish_date",
+        "entry_rows",
+        "body_capture_refs",
+        "pagination_complete",
+        "date_window_complete",
+        "unknown_relevant_count",
+    }
+)
+SYSTEM_EXCHANGE_CALENDAR_INDEX_CLOSURE_CONTRACT: Final = _exact_contract(
+    "system.exchange_calendar_index_closure",
+    "index_closure_id",
+    SYSTEM_EXCHANGE_CALENDAR_INDEX_CLOSURE_FIELDS,
+)
+SYSTEM_EXCHANGE_CALENDAR_COMPILATION_FIELDS: Final = frozenset(
+    {
+        "compilation_id",
+        "state",
+        "coverage_start_date",
+        "cutoff_date",
+        "timezone",
+        "compiler_relative_path",
+        "compiler_code_sha256",
+        "compiler_ast_sha256",
+        "release_ref",
+        "source_exchange_rows",
+        "source_capture_refs",
+        "decoder_admission_refs",
+        "index_closure_refs",
+        "precedence_rules",
+        "exchange_rows",
+        "runtime_projection",
+        "calendar_json_file_ref",
+        "calendar_parquet_file_ref",
+        "contradiction_rows",
+    }
+)
+SYSTEM_EXCHANGE_CALENDAR_COMPILATION_CONTRACT: Final = _exact_contract(
+    "system.exchange_calendar_compilation",
+    "compilation_id",
+    SYSTEM_EXCHANGE_CALENDAR_COMPILATION_FIELDS,
 )
 SYSTEM_READINESS_CONTRACT: Final = _exact_contract(
     "system.readiness", "readiness_id", READINESS_FIELDS

@@ -11,14 +11,19 @@ the separate successor-promotion capability.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import resource
+import shutil
 import stat
-from typing import Any, Iterator, Mapping, Sequence
+import subprocess
+import sys
+import tempfile
+from typing import Any, Iterator, Mapping, NoReturn, Sequence
 
 import pyarrow.parquet as pq
 
@@ -28,27 +33,39 @@ from .fundamental_generation import (
     load_fundamental_pointer,
 )
 from .fundamental_incremental import (
+    SUCCESSOR_APPEND_FIRST_MODE,
+    SUCCESSOR_FINANCIAL_DEPENDENCY_CONTRACT_SHA256,
     assemble_safe_successor,
+    build_successor_chain,
     build_keyset_closure,
     capture_parent_closure,
     seal_successor_provider_manifest,
     seal_support_plan,
     stage_successor_generation,
 )
+from .fundamental_historical_taint import (
+    build_historical_taint_registry,
+)
 from .fundamental_provider_contract import canonical_json_sha256
 from .fundamental_successor_source import (
     acquire_successor_support,
     build_successor_support_plan,
-    capture_successor_support_evidence,
-    load_support_tables,
+    open_support_tables,
+    successor_support_evidence_paths,
+    validate_successor_capture_fileset,
     validate_successor_support_fileset,
 )
+from .fundamental_taint import analyze_deferred_fundamental_taints
 
 
 SAFE_SUCCESSOR_MAINTENANCE_SCHEMA = (
     "cn-fundamental-safe-successor-maintenance.v1"
 )
 EXPECTED_HISTORY_AUDIT_SCHEMA = "myquant-cn-history-audit.v4"
+SAFE_SUCCESSOR_RESOURCE_PREFLIGHT_SCHEMA = (
+    "cn-fundamental-safe-successor-resource-preflight.v2"
+)
+TAINT_DRY_RUN_EXECUTION_SCHEMA = "cn-fundamental-taint-dry-run-execution.v1"
 _TS_CODE_RE = re.compile(r"^[0-9]{6}\.(?:BJ|SH|SZ)$", re.ASCII)
 
 
@@ -60,7 +77,7 @@ class FundamentalSuccessorMaintenanceError(RuntimeError):
         super().__init__(f"{self.code}: {message}" if message else self.code)
 
 
-def _fail(code: str, message: str = "") -> None:
+def _fail(code: str, message: str = "") -> NoReturn:
     raise FundamentalSuccessorMaintenanceError(code, message)
 
 
@@ -79,6 +96,126 @@ def _canonical_json_bytes(value: Any) -> bytes:
         )
         + "\n"
     ).encode("utf-8")
+
+
+def _sealed(value: Mapping[str, Any], *, field: str) -> dict[str, Any]:
+    body = dict(value)
+    if field in body:
+        _fail("RECEIPT_FIELD_COLLISION", field)
+    body[field] = _sha256(_canonical_json_bytes(body))
+    return body
+
+
+def _private_audit_root(path: str | Path, *, workspace_root: Path) -> Path:
+    root = Path(path).expanduser()
+    if not root.is_absolute():
+        _fail("TAINT_AUDIT_ROOT_MUST_BE_ABSOLUTE")
+    root = root.absolute()
+    if root == workspace_root or workspace_root in root.parents:
+        _fail("TAINT_AUDIT_ROOT_MUST_BE_ISOLATED")
+    if root.exists():
+        metadata = os.lstat(root)
+        if (
+            stat.S_ISLNK(metadata.st_mode)
+            or not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or stat.S_IMODE(metadata.st_mode) != 0o700
+            or metadata.st_nlink < 2
+        ):
+            _fail("TAINT_AUDIT_ROOT_UNSAFE")
+        allowed = {
+            "analysis",
+            "capture",
+            "execution_receipt.json",
+            "frozen_state.json",
+        }
+        if not {entry.name for entry in root.iterdir()}.issubset(allowed):
+            _fail("TAINT_AUDIT_ROOT_ENTRY_SET_INVALID")
+        receipt = root / "execution_receipt.json"
+        if receipt.exists():
+            payload = _json_object(
+                _stable_regular_bytes(receipt, label="taint terminal receipt"),
+                label="taint terminal receipt",
+            )
+            if payload.get("taint_analysis_status") != "PASS":
+                _fail("TAINT_BLOCKED_RUN_NOT_RESUMABLE")
+            _fail("TAINT_TERMINAL_RUN_ID_REUSED")
+    else:
+        if not root.parent.exists() or not root.parent.is_dir():
+            _fail("TAINT_AUDIT_PARENT_MISSING")
+        root.mkdir(mode=0o700)
+    os.chmod(root, 0o700)
+    return root
+
+
+def _atomic_private_json(path: Path, value: Mapping[str, Any]) -> None:
+    payload = _canonical_json_bytes(value)
+    if path.exists():
+        if _stable_regular_bytes(path, label=f"audit {path.name}") != payload:
+            _fail("TAINT_AUDIT_IMMUTABLE_CONFLICT", path.name)
+        return
+    descriptor = -1
+    temporary = ""
+    try:
+        descriptor, temporary = tempfile.mkstemp(
+            prefix=f".{path.name}.",
+            dir=path.parent,
+        )
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "wb", closefd=True) as handle:
+            descriptor = -1
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        temporary = ""
+        directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if temporary:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+    readback = _stable_regular_bytes(path, label=f"audit {path.name}")
+    if readback != payload:
+        _fail("TAINT_AUDIT_READBACK_MISMATCH", path.name)
+
+
+def _verify_authority_freeze(
+    values: Mapping[Path, bytes],
+    *,
+    phase: str,
+) -> dict[str, str]:
+    identities: dict[str, str] = {}
+    for path, expected in values.items():
+        observed = _stable_regular_bytes(path, label=f"{phase} {path.name}")
+        if observed != expected:
+            _fail("BLOCKED_AUTHORITY_DRIFT", f"{phase}:{path}")
+        identities[str(path)] = _sha256(observed)
+    return identities
+
+
+def _verify_file_freeze(
+    values: Mapping[Path, tuple[str, int]],
+    *,
+    phase: str,
+) -> dict[str, str]:
+    identities: dict[str, str] = {}
+    for path, expected in values.items():
+        observed = _stable_regular_file_sha256(
+            path,
+            label=f"{phase} {path.name}",
+        )
+        if observed != expected:
+            _fail("BLOCKED_AUTHORITY_DRIFT", f"{phase}:{path}")
+        identities[str(path)] = observed[0]
+    return identities
 
 
 def _canonical_symbol(value: Any, *, label: str) -> str:
@@ -129,6 +266,41 @@ def _stable_regular_bytes(path: str | Path, *, label: str) -> bytes:
         ):
             _fail("AUTHORITY_CHANGED_DURING_READ", label)
         return payload
+    finally:
+        os.close(descriptor)
+
+
+def _stable_regular_file_sha256(path: str | Path, *, label: str) -> tuple[str, int]:
+    candidate = Path(path).expanduser()
+    lexical = Path(
+        os.path.abspath(
+            os.fspath(candidate if candidate.is_absolute() else Path.cwd() / candidate)
+        )
+    )
+    before = os.lstat(lexical)
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+        _fail("UNSAFE_AUTHORITY_FILE", label)
+    descriptor = os.open(lexical, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        opened = os.fstat(descriptor)
+        if _file_signature(opened) != _file_signature(before):
+            _fail("AUTHORITY_CHANGED_DURING_OPEN", label)
+        digest = hashlib.sha256()
+        observed = 0
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            while True:
+                chunk = handle.read(1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+                observed += len(chunk)
+        after = os.lstat(lexical)
+        if (
+            _file_signature(after) != _file_signature(before)
+            or observed != before.st_size
+        ):
+            _fail("AUTHORITY_CHANGED_DURING_READ", label)
+        return digest.hexdigest(), observed
     finally:
         os.close(descriptor)
 
@@ -646,7 +818,7 @@ def _private_fileset_root(path: str | Path, *, workspace_root: Path) -> Path:
 
 
 def _relative_support_refs(
-    evidence: Mapping[str, bytes],
+    evidence_sha256: Mapping[str, str],
 ) -> dict[str, dict[str, Any]]:
     wanted = {
         "predecessor_pointer": "authority/predecessor_pointer.json",
@@ -658,14 +830,379 @@ def _relative_support_refs(
     }
     refs: dict[str, dict[str, Any]] = {}
     for name, relative in wanted.items():
-        payload = evidence.get(relative)
-        if payload is None:
+        digest = evidence_sha256.get(relative)
+        if digest is None:
             _fail("PERMANENT_SUPPORT_EVIDENCE_MISSING", relative)
         refs[name] = {
             "path": relative,
-            "sha256": _sha256(payload),
+            "sha256": digest,
         }
     return refs
+
+
+def _physical_memory_bytes() -> int:
+    try:
+        page_size = int(os.sysconf("SC_PAGE_SIZE"))
+        page_count = int(os.sysconf("SC_PHYS_PAGES"))
+    except (OSError, TypeError, ValueError):
+        _fail("PHYSICAL_MEMORY_PREFLIGHT_FAILED")
+    total = page_size * page_count
+    if page_size < 1 or page_count < 1 or total < 1024 * 1024 * 1024:
+        _fail("PHYSICAL_MEMORY_PREFLIGHT_FAILED")
+    return total
+
+
+def _available_memory_bytes() -> int:
+    if sys.platform.startswith("linux"):
+        try:
+            for line in Path("/proc/meminfo").read_text(encoding="ascii").splitlines():
+                if line.startswith("MemAvailable:"):
+                    value = int(line.split()[1]) * 1024
+                    if value > 0:
+                        return value
+        except (OSError, UnicodeError, ValueError, IndexError):
+            pass
+    if sys.platform == "darwin":
+        try:
+            completed = subprocess.run(
+                ["/usr/bin/vm_stat"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=5.0,
+            )
+            first, *lines = completed.stdout.splitlines()
+            match = re.search(r"page size of ([0-9]+) bytes", first)
+            if match is None:
+                _fail("AVAILABLE_MEMORY_PREFLIGHT_FAILED")
+            counts: dict[str, int] = {}
+            for line in lines:
+                if ":" not in line:
+                    continue
+                name, raw = line.split(":", 1)
+                value = raw.strip().rstrip(".")
+                if value.isdigit():
+                    counts[name] = int(value)
+            pages = sum(
+                counts.get(name, 0)
+                for name in (
+                    "Pages free",
+                    "Pages inactive",
+                    "Pages speculative",
+                    "Pages purgeable",
+                )
+            )
+            available = pages * int(match.group(1))
+            if available > 0:
+                return available
+        except FundamentalSuccessorMaintenanceError:
+            raise
+        except (OSError, subprocess.SubprocessError, ValueError):
+            pass
+    _fail("AVAILABLE_MEMORY_PREFLIGHT_FAILED")
+
+
+def _resident_memory_bytes() -> int:
+    try:
+        value = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+    except (OSError, ValueError):
+        _fail("RESIDENT_MEMORY_PREFLIGHT_FAILED")
+    return value if sys.platform == "darwin" else value * 1024
+
+
+def _rlimit_headroom_bytes(*, resident_memory_bytes: int) -> int:
+    candidates: list[int] = []
+    for name in ("RLIMIT_AS", "RLIMIT_DATA"):
+        identifier = getattr(resource, name, None)
+        if identifier is None:
+            continue
+        try:
+            soft, _hard = resource.getrlimit(identifier)
+        except (OSError, ValueError):
+            _fail("MEMORY_RLIMIT_PREFLIGHT_FAILED")
+        if soft not in {resource.RLIM_INFINITY, -1}:
+            candidates.append(max(0, int(soft) - resident_memory_bytes))
+    return min(candidates) if candidates else 2**63 - 1
+
+
+def _existing_ancestor(path: Path) -> Path:
+    current = path
+    while not current.exists() and current != current.parent:
+        current = current.parent
+    if not current.exists():
+        _fail("RESOURCE_PATH_UNAVAILABLE", str(path))
+    return current
+
+
+def _resource_preflight_receipt(
+    *,
+    phase: str,
+    source_root: Path,
+    staging_root: Path,
+    canonical_root: Path,
+    parent_storage_bytes: int,
+    planned_request_count: int,
+    source_storage_bytes: int | None = None,
+    source_table_bytes: int | None = None,
+    predecessor_receipt_sha256: str | None = None,
+) -> dict[str, Any]:
+    if (
+        phase not in {"PRE_PROVIDER", "POST_CAPTURE"}
+        or type(parent_storage_bytes) is not int
+        or parent_storage_bytes < 1
+        or type(planned_request_count) is not int
+        or planned_request_count < 1
+    ):
+        _fail("RESOURCE_PREFLIGHT_INPUT_INVALID")
+    if phase == "POST_CAPTURE" and (
+        type(source_storage_bytes) is not int
+        or source_storage_bytes < 1
+        or type(source_table_bytes) is not int
+        or source_table_bytes < 1
+        or type(predecessor_receipt_sha256) is not str
+        or re.fullmatch(r"[0-9a-f]{64}", predecessor_receipt_sha256) is None
+    ):
+        _fail("RESOURCE_PREFLIGHT_INPUT_INVALID")
+    physical_memory = _physical_memory_bytes()
+    available_memory = _available_memory_bytes()
+    resident_memory = _resident_memory_bytes()
+    rlimit_headroom = _rlimit_headroom_bytes(
+        resident_memory_bytes=resident_memory
+    )
+    effective_memory = min(physical_memory, available_memory, rlimit_headroom)
+    if phase == "PRE_PROVIDER":
+        source_estimate = max(
+            1024 * 1024 * 1024,
+            planned_request_count * 128 * 1024,
+        )
+        suffix_estimate = planned_request_count * 64 * 1024
+    else:
+        assert source_storage_bytes is not None
+        assert source_table_bytes is not None
+        source_estimate = source_storage_bytes
+        suffix_estimate = source_table_bytes * 4
+    candidate_estimate = parent_storage_bytes + suffix_estimate
+    generation_with_evidence = candidate_estimate + source_estimate
+    category_values = {
+        "canonical_final": generation_with_evidence,
+        "canonical_orphan": generation_with_evidence,
+        "canonical_temp": generation_with_evidence,
+        "fsync_reserve": 64 * 1024 * 1024,
+        "rollback_reserve": parent_storage_bytes,
+        "source_capture": source_estimate,
+        "staging_temp": generation_with_evidence,
+    }
+    category_locations = {
+        "source_capture": source_root,
+        "staging_temp": staging_root,
+        "canonical_temp": canonical_root,
+        "canonical_final": canonical_root,
+        "canonical_orphan": canonical_root,
+        "rollback_reserve": canonical_root,
+        "fsync_reserve": canonical_root,
+    }
+    devices: dict[str, dict[str, Any]] = {}
+    categories: dict[str, dict[str, Any]] = {}
+    for name, required_bytes in category_values.items():
+        path = category_locations[name]
+        ancestor = _existing_ancestor(path)
+        device = str(os.stat(ancestor).st_dev)
+        free = int(shutil.disk_usage(ancestor).free)
+        categories[name] = {
+            "device": device,
+            "path": str(path),
+            "required_bytes": required_bytes,
+        }
+        row = devices.setdefault(
+            device,
+            {
+                "free_bytes": free,
+                "required_before_margin_bytes": 0,
+                "roles": [],
+            },
+        )
+        row["free_bytes"] = min(int(row["free_bytes"]), free)
+        row["required_before_margin_bytes"] += required_bytes
+        row["roles"].append(name)
+    blockers: list[str] = []
+    for device, row in devices.items():
+        subtotal = int(row["required_before_margin_bytes"])
+        margin = (subtotal + 3) // 4
+        required = subtotal + margin
+        row["margin_25_percent_bytes"] = margin
+        row["required_with_margin_bytes"] = required
+        row["roles"] = sorted(row["roles"])
+        if int(row["free_bytes"]) < required:
+            blockers.append(f"INSUFFICIENT_DISK_DEVICE_{device}")
+    source_device = categories["source_capture"]["device"]
+    source_device_row = devices[source_device]
+    non_source_reserve = (
+        int(source_device_row["required_with_margin_bytes"])
+        - int(categories["source_capture"]["required_bytes"])
+    )
+    table_memory_limit = effective_memory // 2
+    maximum_record_bytes = min(32 * 1024 * 1024, table_memory_limit // 4)
+    if effective_memory < 128 * 1024 * 1024:
+        blockers.append("INSUFFICIENT_AVAILABLE_MEMORY_OR_RLIMIT")
+    body: dict[str, Any] = {
+        "blockers": blockers,
+        "categories": categories,
+        "devices": devices,
+        "maximum_record_bytes": maximum_record_bytes,
+        "minimum_source_free_disk_bytes": max(
+            256 * 1024 * 1024,
+            non_source_reserve,
+        ),
+        "parent_storage_bytes": parent_storage_bytes,
+        "phase": phase,
+        "physical_memory_bytes": physical_memory,
+        "available_memory_bytes": available_memory,
+        "resident_memory_bytes": resident_memory,
+        "rlimit_headroom_bytes": rlimit_headroom,
+        "effective_memory_headroom_bytes": effective_memory,
+        "stream_batch_rows": 2_048,
+        "stream_batch_bytes": 16 * 1024 * 1024,
+        "planned_request_count": planned_request_count,
+        "predecessor_receipt_sha256": predecessor_receipt_sha256,
+        "schema_version": SAFE_SUCCESSOR_RESOURCE_PREFLIGHT_SCHEMA,
+        "source_storage_bytes": source_storage_bytes,
+        "source_table_bytes": source_table_bytes,
+        "status": "PASS" if not blockers else "BLOCKED",
+        "table_memory_limit_bytes": table_memory_limit,
+    }
+    body["receipt_sha256"] = canonical_json_sha256(body)
+    if blockers:
+        _fail("RESOURCE_PREFLIGHT_BLOCKED", ",".join(blockers))
+    return body
+
+
+def _derivation_resource_budget(
+    *,
+    post_capture_receipt: Mapping[str, Any],
+    source_manifest: Mapping[str, Any],
+    keyset: Mapping[str, Any],
+) -> dict[str, Any]:
+    if (
+        post_capture_receipt.get("phase") != "POST_CAPTURE"
+        or post_capture_receipt.get("status") != "PASS"
+    ):
+        _fail("DERIVATION_RESOURCE_BUDGET_INPUT_INVALID")
+    table_files = dict(source_manifest.get("table_files", {}) or {})
+    required_tables = {
+        "balancesheet",
+        "cashflow",
+        "daily_basic",
+        "fina_indicator",
+        "forecast",
+        "income",
+    }
+    if set(table_files) != required_tables:
+        _fail("DERIVATION_RESOURCE_BUDGET_INPUT_INVALID")
+    row_counts: dict[str, int] = {}
+    for table, reference in table_files.items():
+        if not isinstance(reference, Mapping):
+            _fail("DERIVATION_RESOURCE_BUDGET_INPUT_INVALID")
+        row_count = reference.get("row_count")
+        if type(row_count) is not int or row_count < 0:
+            _fail("DERIVATION_RESOURCE_BUDGET_INPUT_INVALID")
+        row_counts[table] = row_count
+    daily_keys = list(keyset.get("daily_basic_keys", []) or [])
+    expected_keys = list(keyset.get("expected_scope_keys", []) or [])
+    symbols = {
+        str(value).split("|", 1)[0]
+        for value in expected_keys
+        if type(value) is str and "|" in value
+    }
+    if not symbols or len(daily_keys) != row_counts["daily_basic"]:
+        _fail("DERIVATION_RESOURCE_BUDGET_INPUT_INVALID")
+    effective = post_capture_receipt.get("effective_memory_headroom_bytes")
+    source_table_bytes = post_capture_receipt.get("source_table_bytes")
+    if (
+        type(effective) is not int
+        or effective < 128 * 1024 * 1024
+        or type(source_table_bytes) is not int
+        or source_table_bytes < 1
+    ):
+        _fail("DERIVATION_RESOURCE_BUDGET_INPUT_INVALID")
+    body: dict[str, Any] = {
+        "schema_version": (
+            "cn-fundamental-successor-derivation-accumulator-budget.v1"
+        ),
+        "status": "PASS",
+        "period_anchor_row_limit": len(symbols),
+        "forecast_anchor_row_limit": len(symbols),
+        "period_delta_row_limit": sum(
+            row_counts[table]
+            for table in ("fina_indicator", "income", "balancesheet", "cashflow")
+        ),
+        "period_lineage_row_limit": sum(
+            row_counts[table]
+            for table in ("fina_indicator", "income", "balancesheet", "cashflow")
+        ),
+        "forecast_delta_row_limit": row_counts["forecast"],
+        "daily_basic_row_limit": len(daily_keys),
+        "total_accumulator_byte_limit": min(
+            effective // 4,
+            max(64 * 1024 * 1024, source_table_bytes * 8),
+        ),
+        "effective_memory_headroom_bytes": effective,
+        "post_capture_receipt_sha256": post_capture_receipt["receipt_sha256"],
+    }
+    body["binding_sha256"] = canonical_json_sha256(body)
+    return body
+
+
+def _financial_support_closure(
+    *,
+    source_plan: Mapping[str, Any],
+    source_manifest: Mapping[str, Any],
+    target_cutoff: str,
+) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
+    requests = list(source_plan.get("requests", []) or [])
+    receipts = list(source_manifest.get("request_receipts", []) or [])
+    if len(requests) != len(receipts):
+        _fail("INCOME_SUPPORT_RECEIPT_SET_MISMATCH")
+    captured: list[dict[str, str]] = []
+    absences: list[dict[str, Any]] = []
+    requested: set[tuple[str, str, str]] = set()
+    closed: set[tuple[str, str, str]] = set()
+    for request, receipt in zip(requests, receipts, strict=True):
+        if request.get("partition_type") != "EXACT_SYMBOL_REPORT_PERIOD_SUPPORT":
+            continue
+        params = dict(request.get("params", {}) or {})
+        key = (
+            str(request.get("table") or ""),
+            str(params.get("ts_code") or ""),
+            str(params.get("period") or ""),
+        )
+        requested.add(key)
+        accepted = receipt.get("accepted_count")
+        status = receipt.get("status")
+        if type(accepted) is not int or accepted < 0:
+            _fail("INCOME_SUPPORT_RECEIPT_INVALID")
+        if accepted > 0 and status == "AVAILABLE":
+            captured.append(
+                {"table": key[0], "ts_code": key[1], "end_date": key[2]}
+            )
+        elif accepted == 0 and status == "EMPTY":
+            absences.append(
+                {
+                    "status": "PROVEN_ABSENT",
+                    "table": key[0],
+                    "symbol": key[1],
+                    "end_date": key[2],
+                    "available_through": target_cutoff,
+                    "evidence_sha256": str(receipt.get("receipt_sha256") or ""),
+                }
+            )
+        else:
+            _fail("INCOME_SUPPORT_RECEIPT_INVALID")
+        closed.add(key)
+    if closed != requested:
+        _fail("INCOME_SUPPORT_RECEIPT_SET_MISMATCH")
+    captured.sort(key=lambda row: (row["table"], row["ts_code"], row["end_date"]))
+    absences.sort(key=lambda row: (row["table"], row["symbol"], row["end_date"]))
+    return captured, absences
 
 
 def _aggregate_implementation_sha256() -> str:
@@ -675,6 +1212,7 @@ def _aggregate_implementation_sha256() -> str:
         (
             Path(__file__),
             Path(__file__).with_name("fundamental_incremental.py"),
+            Path(__file__).with_name("fundamental_historical_taint.py"),
             Path(__file__).with_name("fundamental_successor_source.py"),
             Path(__file__).with_name("tushare_transport.py"),
         ),
@@ -708,8 +1246,14 @@ def run_cn_fundamental_safe_successor(
     retry_backoff_seconds: Sequence[float] = (0.5, 1.0),
     requests_per_second: float = 8.0,
     client: Any | None = None,
+    taint_analysis_dry_run: bool = False,
+    audit_run_root: str | Path | None = None,
+    append_first: bool = False,
+    historical_taint_evidence: Sequence[Mapping[str, Any]] = (),
+    income_support_dependencies: Sequence[Mapping[str, Any]] = (),
+    financial_support_dependencies: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
-    """Build one isolated, promotion-ready safe successor."""
+    """Build a successor, or run a promotion-ineligible taint diagnostic."""
 
     if not allow_live:
         _fail("SAFE_SUCCESSOR_REQUIRES_ALLOW_LIVE")
@@ -720,18 +1264,42 @@ def run_cn_fundamental_safe_successor(
     )
     if universe_list != ["full_a"]:
         _fail("SAFE_SUCCESSOR_REQUIRES_FULL_A")
+    if append_first and taint_analysis_dry_run:
+        _fail("APPEND_FIRST_TAINT_DRY_RUN_CONFLICT")
+    if append_first and not historical_taint_evidence:
+        _fail("APPEND_FIRST_HISTORICAL_TAINT_EVIDENCE_REQUIRED")
+    if not append_first and historical_taint_evidence:
+        _fail("HISTORICAL_TAINT_EVIDENCE_WITHOUT_APPEND_FIRST")
+    if (income_support_dependencies or financial_support_dependencies) and not append_first:
+        _fail("FINANCIAL_SUPPORT_DEPENDENCY_WITHOUT_APPEND_FIRST")
     target = _exact_date(as_of, label="target cutoff")
     generation_id = str(run_id or "").strip()
     if not generation_id:
         _fail("SAFE_SUCCESSOR_RUN_ID_REQUIRED")
     workspace_root = Path.cwd().resolve(strict=True)
     canonical = _resolve_workspace_path(canonical_root, workspace_root=workspace_root)
-    staging = Path(staging_root).expanduser()
-    if not staging.is_absolute():
-        staging = workspace_root / staging
-    staging = staging.absolute()
-    if staging.exists():
-        _fail("STAGING_ROOT_EXISTS")
+    audit_root: Path | None = None
+    if taint_analysis_dry_run:
+        if audit_run_root is None:
+            _fail("TAINT_AUDIT_ROOT_REQUIRED")
+        audit_root = _private_audit_root(
+            audit_run_root,
+            workspace_root=workspace_root,
+        )
+        staging = audit_root / "_staging_forbidden"
+        expected_capture_root = audit_root / "capture"
+        supplied_capture_root = Path(support_fileset_root).expanduser().absolute()
+        if supplied_capture_root != expected_capture_root:
+            _fail("TAINT_CAPTURE_ROOT_OUTSIDE_AUDIT_ROOT")
+    else:
+        if audit_run_root is not None:
+            _fail("TAINT_AUDIT_ROOT_WITHOUT_DRY_RUN")
+        staging = Path(staging_root).expanduser()
+        if not staging.is_absolute():
+            staging = workspace_root / staging
+        staging = staging.absolute()
+        if staging.exists():
+            _fail("STAGING_ROOT_EXISTS")
     (
         parent_pointer,
         parent_manifest,
@@ -914,9 +1482,16 @@ def run_cn_fundamental_safe_successor(
     ):
         _fail("TARGET_CLASSIFICATION_COUNT_MISMATCH")
 
-    support_start = _financial_support_start(
-        parent_manifest,
-        parent_cutoff=parent_cutoff,
+    support_start = (
+        (
+            datetime.strptime(parent_cutoff, "%Y%m%d").date()
+            + timedelta(days=1)
+        ).strftime("%Y%m%d")
+        if append_first
+        else _financial_support_start(
+            parent_manifest,
+            parent_cutoff=parent_cutoff,
+        )
     )
     source_plan = build_successor_support_plan(
         support_start=support_start,
@@ -926,11 +1501,22 @@ def run_cn_fundamental_safe_successor(
         canonical_subject_scope_authority_sha256=subject_scope_closure[
             "closure_sha256"
         ],
+        income_support_dependencies=income_support_dependencies,
+        financial_support_dependencies=financial_support_dependencies,
     )
     implementation_sha256 = _aggregate_implementation_sha256()
     source_root = _private_fileset_root(
         support_fileset_root,
         workspace_root=workspace_root,
+    )
+    parent_storage_bytes = sum(path.stat().st_size for path in parent_tables.values())
+    pre_provider_resource = _resource_preflight_receipt(
+        phase="PRE_PROVIDER",
+        source_root=source_root,
+        staging_root=staging,
+        canonical_root=canonical,
+        parent_storage_bytes=parent_storage_bytes,
+        planned_request_count=int(source_plan["planned_request_count"]),
     )
     immutable_refs = {
         "predecessor": {
@@ -979,7 +1565,60 @@ def run_cn_fundamental_safe_successor(
             "market": str(market_pointer_path),
             "pit": str(pit_pointer_path),
         },
+        "resource_preflight": pre_provider_resource,
     }
+    parent_manifest_path = _resolve_pointer_reference(
+        str(parent_pointer.get("manifest_path") or ""),
+        workspace_root=workspace_root,
+        pointer_parent=canonical,
+    )
+    authority_freeze = {
+        canonical / FUNDAMENTAL_POINTER_FILENAME: parent_pointer_bytes,
+        parent_manifest_path: parent_manifest_bytes,
+        market_pointer_path: market_pointer_bytes,
+        market_manifest_path: market_manifest_bytes,
+        pit_pointer_path: pit_pointer_bytes,
+        pit_manifest_path: pit_manifest_bytes,
+        membership_path: membership_bytes,
+        scope_path: scope_bytes,
+        history_path: history_bytes,
+    }
+    parent_table_freeze = {
+        path: _stable_regular_file_sha256(
+            path,
+            label=f"parent table {name}",
+        )
+        for name, path in parent_tables.items()
+    }
+    if taint_analysis_dry_run:
+        assert audit_root is not None
+        frozen_state = _sealed(
+            {
+                "schema_version": "cn-fundamental-taint-frozen-state.v1",
+                "run_id": generation_id,
+                "parent_cutoff": parent_cutoff,
+                "target_cutoff": target,
+                "open_sessions": sessions,
+                "dependency_contract_sha256": (
+                    SUCCESSOR_FINANCIAL_DEPENDENCY_CONTRACT_SHA256
+                ),
+                "implementation_sha256": implementation_sha256,
+                "authority_sha256": {
+                    str(path): _sha256(payload)
+                    for path, payload in authority_freeze.items()
+                }
+                | {
+                    str(path): digest
+                    for path, (digest, _size) in parent_table_freeze.items()
+                },
+                "live_provider_capture": True,
+                "canonical_write": False,
+                "staging_write": False,
+                "promotion_authorized": False,
+            },
+            field="frozen_state_sha256",
+        )
+        _atomic_private_json(audit_root / "frozen_state.json", frozen_state)
     if client is None:
         from quant_investor.market.tushare_transport import (
             OfficialTushareHttpsClient,
@@ -1007,15 +1646,214 @@ def run_cn_fundamental_safe_successor(
             max_attempts=int(max_attempts),
             retry_backoff_seconds=tuple(float(value) for value in retry_backoff_seconds),
             requests_per_second=float(requests_per_second),
+            physical_memory_bytes=pre_provider_resource["physical_memory_bytes"],
+            available_memory_bytes=pre_provider_resource[
+                "available_memory_bytes"
+            ],
+            rlimit_headroom_bytes=pre_provider_resource[
+                "rlimit_headroom_bytes"
+            ],
+            table_memory_limit_bytes=pre_provider_resource[
+                "table_memory_limit_bytes"
+            ],
+            minimum_free_disk_bytes=pre_provider_resource[
+                "minimum_source_free_disk_bytes"
+            ],
+            maximum_record_bytes=pre_provider_resource["maximum_record_bytes"],
         )
-    source_manifest = validate_successor_support_fileset(
+    source_validator = (
+        validate_successor_capture_fileset
+        if taint_analysis_dry_run
+        else validate_successor_support_fileset
+    )
+    source_manifest = source_validator(
         source_root,
         expected_implementation_sha256=implementation_sha256,
     )
-    raw_tables = load_support_tables(source_root)
-    source_evidence = {
-        f"source/{name}": payload
-        for name, payload in capture_successor_support_evidence(source_root).items()
+    if taint_analysis_dry_run:
+        _verify_authority_freeze(authority_freeze, phase="POST_CAPTURE")
+        _verify_file_freeze(parent_table_freeze, phase="POST_CAPTURE")
+    source_paths = successor_support_evidence_paths(source_root)
+    source_storage_bytes = sum(path.stat().st_size for path in source_paths.values())
+    source_table_bytes = sum(
+        int(dict(ref)["byte_length"])
+        for ref in dict(source_manifest["table_files"]).values()
+    )
+    post_capture_resource = _resource_preflight_receipt(
+        phase="POST_CAPTURE",
+        source_root=source_root,
+        staging_root=staging,
+        canonical_root=canonical,
+        parent_storage_bytes=parent_storage_bytes,
+        planned_request_count=int(source_plan["planned_request_count"]),
+        source_storage_bytes=source_storage_bytes,
+        source_table_bytes=source_table_bytes,
+        predecessor_receipt_sha256=pre_provider_resource["receipt_sha256"],
+    )
+    if taint_analysis_dry_run:
+        assert audit_root is not None
+        authority_bindings = {
+            "predecessor_pointer": {
+                "path": str(canonical / FUNDAMENTAL_POINTER_FILENAME),
+                "sha256": _sha256(parent_pointer_bytes),
+            },
+            "predecessor_manifest": {
+                "path": str(parent_manifest_path),
+                "sha256": _sha256(parent_manifest_bytes),
+            },
+            "market_pointer": {
+                "path": str(market_pointer_path),
+                "sha256": _sha256(market_pointer_bytes),
+            },
+            "pit_pointer": {
+                "path": str(pit_pointer_path),
+                "sha256": _sha256(pit_pointer_bytes),
+            },
+            "pit_membership": {
+                "path": str(membership_path),
+                "sha256": _sha256(membership_bytes),
+            },
+            "target_scope": {
+                "path": str(scope_path),
+                "sha256": _sha256(scope_bytes),
+            },
+            "history_audit": {
+                "path": str(history_path),
+                "sha256": _sha256(history_bytes),
+            },
+        }
+        analysis = analyze_deferred_fundamental_taints(
+            fileset_root=source_root,
+            parent_period_path=parent_tables["fundamental_period"],
+            parent_daily_path=parent_tables["fundamental_daily"],
+            membership_path=membership_path,
+            parent_cutoff=parent_cutoff,
+            target_cutoff=target,
+            support_start=support_start,
+            authority_bindings=authority_bindings,
+        )
+        analysis_root = audit_root / "analysis"
+        if not analysis_root.exists():
+            analysis_root.mkdir(mode=0o700)
+        os.chmod(analysis_root, 0o700)
+        _atomic_private_json(
+            analysis_root / "non_reachability_report.json",
+            analysis["report"],
+        )
+        _atomic_private_json(
+            analysis_root / "source_analysis_closure.json",
+            analysis["source_analysis_closure"],
+        )
+        final_authority = _verify_authority_freeze(
+            authority_freeze,
+            phase="FINAL_RECEIPT",
+        )
+        final_authority.update(
+            _verify_file_freeze(
+                parent_table_freeze,
+                phase="FINAL_RECEIPT",
+            )
+        )
+        report = dict(analysis["report"])
+        closure = dict(analysis["source_analysis_closure"])
+        status = str(report["taint_analysis_status"])
+        receipt = _sealed(
+            {
+                "schema_version": TAINT_DRY_RUN_EXECUTION_SCHEMA,
+                "taint_analysis_status": status,
+                "maintenance_status": (
+                    "diagnostic_pass" if status == "PASS" else "blocked"
+                ),
+                "run_id": generation_id,
+                "parent_generation_id": parent_pointer.get("generation_id"),
+                "parent_cutoff": parent_cutoff,
+                "target_cutoff": target,
+                "open_sessions": sessions,
+                "support_start": support_start,
+                "live_provider_capture": True,
+                "canonical_write": False,
+                "canonical_pointer_unchanged": True,
+                "staging_written": False,
+                "promotion_authorized": False,
+                "factor_or_mainline_changed": False,
+                "authoritative_source_ready": False,
+                "staging_eligible": False,
+                "promotion_eligible": False,
+                "canonical_write_authorized": False,
+                "usable_for_investment_research": False,
+                "source_fileset_manifest_sha256": source_manifest[
+                    "manifest_sha256"
+                ],
+                "taint_report_sha256": report["report_sha256"],
+                "source_analysis_closure_sha256": closure[
+                    "closure_sha256"
+                ],
+                "deferred_observation_count": report[
+                    "deferred_observation_count"
+                ],
+                "tainted_non_reachable_count": report[
+                    "tainted_non_reachable_count"
+                ],
+                "blocking_unknown_count": report[
+                    "blocking_unknown_count"
+                ],
+                "provider_accounting": dict(
+                    source_manifest["provider_accounting"]
+                ),
+                "planned_request_count": int(
+                    source_plan["planned_request_count"]
+                ),
+                "dependency_contract_sha256": (
+                    SUCCESSOR_FINANCIAL_DEPENDENCY_CONTRACT_SHA256
+                ),
+                "implementation_sha256": implementation_sha256,
+                "final_authority_sha256": final_authority,
+                "pre_provider_resource_preflight_sha256": (
+                    pre_provider_resource["receipt_sha256"]
+                ),
+                "post_capture_resource_preflight_sha256": (
+                    post_capture_resource["receipt_sha256"]
+                ),
+                "audit_run_root": str(audit_root),
+                "write_set": [
+                    str(audit_root / "frozen_state.json"),
+                    str(source_root),
+                    str(analysis_root / "non_reachability_report.json"),
+                    str(analysis_root / "source_analysis_closure.json"),
+                    str(audit_root / "execution_receipt.json"),
+                ],
+                "write_boundaries": {
+                    "analysis": False,
+                    "candidates": False,
+                    "portfolio": False,
+                    "factor_or_mainline": False,
+                    "dashboard": False,
+                    "paper": False,
+                    "broker": False,
+                    "orders": False,
+                    "trades": False,
+                },
+            },
+            field="execution_receipt_sha256",
+        )
+        _atomic_private_json(
+            audit_root / "execution_receipt.json",
+            receipt,
+        )
+        return receipt
+    derivation_resource_budget = _derivation_resource_budget(
+        post_capture_receipt=post_capture_resource,
+        source_manifest=source_manifest,
+        keyset=keyset,
+    )
+    captured_financial_support, financial_absence_proofs = _financial_support_closure(
+        source_plan=source_plan,
+        source_manifest=source_manifest,
+        target_cutoff=target,
+    )
+    raw_tables = open_support_tables(source_root)
+    source_evidence: dict[str, bytes | Path] = {
+        f"source/{name}": path for name, path in source_paths.items()
     }
     authority_evidence = {
         "authority/predecessor_pointer.json": parent_pointer_bytes,
@@ -1028,14 +1866,73 @@ def run_cn_fundamental_safe_successor(
         "authority/expected_scope.json": scope_bytes,
         "authority/canonical_subject_scope.json": subject_scope_bytes,
         "authority/history_audit.json": history_bytes,
+        "authority/pre_provider_resource_preflight.json": _canonical_json_bytes(
+            pre_provider_resource
+        ),
+        "authority/post_capture_resource_preflight.json": _canonical_json_bytes(
+            post_capture_resource
+        ),
+        "authority/derivation_resource_budget.json": _canonical_json_bytes(
+            derivation_resource_budget
+        ),
     }
-    evidence = {**source_evidence, **authority_evidence}
-    permanent_refs = _relative_support_refs(evidence)
+    historical_taint_registry: dict[str, Any] | None = None
+    historical_taint_evidence_files: dict[str, bytes | Path] = {}
+    if append_first:
+        predecessor_reference = dict(
+            build_successor_chain(
+                parent_closure,
+                parent_cutoff=parent_cutoff,
+                target_cutoff=target,
+                generation_id=generation_id,
+            )["immediate_predecessor"]
+        )
+        (
+            historical_taint_registry,
+            historical_paths,
+        ) = build_historical_taint_registry(
+            failure_evidence=historical_taint_evidence,
+            predecessor=predecessor_reference,
+            parent_cutoff=parent_cutoff,
+            target_cutoff=target,
+            delta_fileset_root=source_root,
+        )
+        historical_taint_evidence_files = {
+            name: path for name, path in historical_paths.items()
+        }
+        historical_taint_evidence_files[
+            "historical_taint/registry.json"
+        ] = _canonical_json_bytes(historical_taint_registry)
+    evidence = {
+        **source_evidence,
+        **authority_evidence,
+        **historical_taint_evidence_files,
+    }
+    evidence_sha: dict[str, str] = {}
+    for name, value in evidence.items():
+        if isinstance(value, bytes):
+            evidence_sha[name] = _sha256(value)
+        else:
+            evidence_sha[name], _size = _stable_regular_file_sha256(
+                value,
+                label=f"provider evidence {name}",
+            )
+    permanent_refs = _relative_support_refs(evidence_sha)
     plan_metadata = seal_support_plan(
         raw_tables,
         parent_cutoff=parent_cutoff,
         target_cutoff=target,
         permanent_support_refs=permanent_refs,
+        support_prefix_mode=(
+            SUCCESSOR_APPEND_FIRST_MODE if append_first else "validation_only"
+        ),
+        absence_proofs=financial_absence_proofs,
+        historical_taint_registry_sha256=(
+            str(historical_taint_registry["registry_sha256"])
+            if historical_taint_registry is not None
+            else ""
+        ),
+        append_first_financial_dependencies=captured_financial_support,
         extra={
             "support_provider_contract": str(source_manifest.get("schema_version") or ""),
             "source_fileset_manifest_sha256": str(
@@ -1044,6 +1941,14 @@ def run_cn_fundamental_safe_successor(
             "source_plan_sha256": str(source_plan.get("plan_sha256") or ""),
             "support_start": support_start,
             "implementation_sha256": implementation_sha256,
+            "pre_provider_resource_preflight_sha256": pre_provider_resource[
+                "receipt_sha256"
+            ],
+            "post_capture_resource_preflight_sha256": post_capture_resource[
+                "receipt_sha256"
+            ],
+            "derivation_resource_budget": derivation_resource_budget,
+            "append_first": append_first,
         },
     )
     bundle = assemble_safe_successor(
@@ -1057,7 +1962,6 @@ def run_cn_fundamental_safe_successor(
         run_id=generation_id,
         staging_parent=staging.parent,
     )
-    evidence_sha = {name: _sha256(payload) for name, payload in evidence.items()}
     request_receipts_sha256 = canonical_json_sha256(
         {"request_receipts": list(source_manifest.get("request_receipts", []) or [])}
     )
@@ -1079,11 +1983,22 @@ def run_cn_fundamental_safe_successor(
                 source_manifest.get("provider_accounting", {}) or {}
             ),
             "implementation_sha256": implementation_sha256,
+            "pre_provider_resource_preflight": pre_provider_resource,
+            "post_capture_resource_preflight": post_capture_resource,
             "captured_pointer_sha256": {
                 "predecessor": _sha256(parent_pointer_bytes),
                 "market": _sha256(market_pointer_bytes),
                 "pit": _sha256(pit_pointer_bytes),
             },
+            "append_first": append_first,
+            "historical_taint_registry_sha256": (
+                str(historical_taint_registry["registry_sha256"])
+                if historical_taint_registry is not None
+                else ""
+            ),
+            "historical_taint_registry_file_sha256": (
+                evidence_sha.get("historical_taint/registry.json", "")
+            ),
         },
     )
     target_bindings = {
@@ -1132,6 +2047,13 @@ def run_cn_fundamental_safe_successor(
                 "closure_sha256"
             ],
             "support_fileset_root": str(source_root),
+            "pre_provider_resource_preflight_sha256": pre_provider_resource[
+                "receipt_sha256"
+            ],
+            "post_capture_resource_preflight_sha256": post_capture_resource[
+                "receipt_sha256"
+            ],
+            "append_first": append_first,
         },
     )
     accounting = dict(source_manifest.get("provider_accounting", {}) or {})
@@ -1149,9 +2071,37 @@ def run_cn_fundamental_safe_successor(
         ),
         "open_sessions": sessions,
         "support_start": support_start,
+        "append_first": append_first,
+        "historical_taint_registry_sha256": (
+            str(historical_taint_registry["registry_sha256"])
+            if historical_taint_registry is not None
+            else ""
+        ),
+        "historical_taint_count": (
+            int(historical_taint_registry["historical_conflict_count"])
+            if historical_taint_registry is not None
+            else 0
+        ),
+        "income_support_dependency_count": len(
+            [
+                value
+                for value in list(
+                    source_plan.get("financial_support_dependencies", []) or []
+                )
+                if value.get("table") == "income"
+            ]
+        ),
+        "financial_support_dependency_count": len(
+            list(source_plan.get("financial_support_dependencies", []) or [])
+        ),
+        "financial_support_row_dependency_count": len(captured_financial_support),
+        "financial_support_absence_proof_count": len(financial_absence_proofs),
         "provider_accounting": accounting,
         "planned_request_count": int(source_plan.get("planned_request_count", 0)),
-        "raw_row_counts": {name: len(frame) for name, frame in raw_tables.items()},
+        "raw_row_counts": {
+            name: int(dict(ref)["row_count"])
+            for name, ref in dict(source_manifest["table_files"]).items()
+        },
         "suffix_rows": {
             "fundamental_period": len(bundle.period_suffix),
             "fundamental_daily": len(bundle.daily_suffix),
@@ -1177,6 +2127,8 @@ def run_cn_fundamental_safe_successor(
         "source_fileset_manifest_sha256": str(
             source_manifest.get("manifest_sha256") or ""
         ),
+        "pre_provider_resource_preflight": pre_provider_resource,
+        "post_capture_resource_preflight": post_capture_resource,
         "gate2_contract": str(bundle.readiness.get("schema_version") or ""),
         "gate2_passed": bundle.readiness.get("gate2_passed") is True,
         "machine_states": {
@@ -1199,8 +2151,101 @@ def run_cn_fundamental_safe_successor(
     }
 
 
+def run_cn_fundamental_taint_dry_run(
+    *,
+    as_of: str,
+    run_id: str,
+    audit_run_root: str | Path,
+    canonical_root: str | Path,
+    expected_pointer_sha256: str,
+    canonical_market_pointer_path: str | Path,
+    canonical_pit_pointer_path: str | Path,
+    canonical_membership_path: str | Path,
+    canonical_scope_path: str | Path,
+    history_audit_path: str | Path,
+    expected_history_audit_sha256: str,
+    allow_live: bool,
+    universes: Sequence[str] | str,
+    max_attempts: int = 3,
+    retry_backoff_seconds: Sequence[float] = (0.5, 1.0),
+    requests_per_second: float = 8.0,
+    client: Any | None = None,
+) -> dict[str, Any]:
+    """Run the exclusive live-capture, zero-staging taint diagnostic."""
+
+    audit = Path(audit_run_root).expanduser()
+    if not audit.is_absolute():
+        _fail("TAINT_AUDIT_ROOT_MUST_BE_ABSOLUTE")
+    try:
+        return run_cn_fundamental_safe_successor(
+            as_of=as_of,
+            run_id=run_id,
+            staging_root=audit / "_staging_forbidden",
+            canonical_root=canonical_root,
+            expected_pointer_sha256=expected_pointer_sha256,
+            canonical_market_pointer_path=canonical_market_pointer_path,
+            canonical_pit_pointer_path=canonical_pit_pointer_path,
+            canonical_membership_path=canonical_membership_path,
+            canonical_scope_path=canonical_scope_path,
+            history_audit_path=history_audit_path,
+            expected_history_audit_sha256=expected_history_audit_sha256,
+            support_fileset_root=audit / "capture",
+            allow_live=allow_live,
+            universes=universes,
+            max_attempts=max_attempts,
+            retry_backoff_seconds=retry_backoff_seconds,
+            requests_per_second=requests_per_second,
+            client=client,
+            taint_analysis_dry_run=True,
+            audit_run_root=audit,
+        )
+    except Exception as exc:
+        if not audit.exists() or not audit.is_dir():
+            raise
+        code = str(getattr(exc, "code", "TAINT_DRY_RUN_FAILED"))
+        pointer_path = Path(canonical_root) / FUNDAMENTAL_POINTER_FILENAME
+        pointer_unchanged = False
+        try:
+            pointer_unchanged = _sha256(
+                _stable_regular_bytes(
+                    pointer_path,
+                    label="blocked receipt Fundamental pointer",
+                )
+            ) == str(expected_pointer_sha256).strip().lower()
+        except Exception:
+            pointer_unchanged = False
+        receipt = _sealed(
+            {
+                "schema_version": TAINT_DRY_RUN_EXECUTION_SCHEMA,
+                "taint_analysis_status": "BLOCKED",
+                "maintenance_status": "blocked",
+                "blocker_codes": [code],
+                "run_id": str(run_id),
+                "target_cutoff": str(as_of),
+                "live_provider_capture": True,
+                "canonical_pointer_unchanged": pointer_unchanged,
+                "canonical_write": False,
+                "staging_written": False,
+                "promotion_authorized": False,
+                "factor_or_mainline_changed": False,
+                "authoritative_source_ready": False,
+                "staging_eligible": False,
+                "promotion_eligible": False,
+                "canonical_write_authorized": False,
+                "usable_for_investment_research": False,
+                "audit_run_root": str(audit),
+                "write_set": [str(audit)],
+            },
+            field="execution_receipt_sha256",
+        )
+        _atomic_private_json(audit / "execution_receipt.json", receipt)
+        return receipt
+
+
 __all__ = [
     "FundamentalSuccessorMaintenanceError",
     "SAFE_SUCCESSOR_MAINTENANCE_SCHEMA",
+    "TAINT_DRY_RUN_EXECUTION_SCHEMA",
     "run_cn_fundamental_safe_successor",
+    "run_cn_fundamental_taint_dry_run",
 ]

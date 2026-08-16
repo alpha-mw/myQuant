@@ -56,6 +56,7 @@ SUCCESSOR_PROMOTION_PLAN_SCHEMA = "cn-fundamental-successor-promotion-plan.v1"
 DEFAULT_LOCK_TIMEOUT_SECONDS = 120.0
 _COPY_CHUNK_SIZE = 1024 * 1024
 _MAX_JSON_BYTES = 64 * 1024 * 1024
+_MAX_PREDECESSOR_MANIFEST_JSON_BYTES = 128 * 1024 * 1024
 _MAX_CHAIN_DEPTH = 4096
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,191}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -177,8 +178,15 @@ def _canonical_sha256(payload: Mapping[str, Any]) -> str:
     return _sha256_bytes(_canonical_json_bytes(payload))
 
 
-def _json_object(payload: bytes, *, label: str) -> dict[str, Any]:
-    if len(payload) > _MAX_JSON_BYTES:
+def _json_object(
+    payload: bytes,
+    *,
+    label: str,
+    maximum_bytes: int = _MAX_JSON_BYTES,
+) -> dict[str, Any]:
+    if type(maximum_bytes) is not int or maximum_bytes < 1:
+        raise SuccessorPromotionError(f"{label} JSON limit is invalid")
+    if len(payload) > maximum_bytes:
         raise SuccessorPromotionError(f"{label} JSON is unreasonably large")
     try:
         parsed = json.loads(payload.decode("utf-8"))
@@ -320,9 +328,16 @@ def _stable_file_hash(path: Path, *, label: str) -> _FileIdentity:
         os.close(descriptor)
 
 
-def _stable_small_bytes(path: Path, *, label: str) -> tuple[bytes, _FileIdentity]:
+def _stable_small_bytes(
+    path: Path,
+    *,
+    label: str,
+    maximum_bytes: int = _MAX_JSON_BYTES,
+) -> tuple[bytes, _FileIdentity]:
+    if type(maximum_bytes) is not int or maximum_bytes < 1:
+        raise SuccessorPromotionError(f"{label} size limit is invalid")
     identity = _stable_file_hash(path, label=label)
-    if identity.size > _MAX_JSON_BYTES:
+    if identity.size > maximum_bytes:
         raise SuccessorPromotionError(f"{label} is unreasonably large")
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(
         os, "O_CLOEXEC", 0
@@ -333,7 +348,7 @@ def _stable_small_bytes(path: Path, *, label: str) -> tuple[bytes, _FileIdentity
             raise SuccessorPromotionError(f"{label} changed before readback")
         chunks: list[bytes] = []
         while True:
-            chunk = os.read(descriptor, min(_COPY_CHUNK_SIZE, _MAX_JSON_BYTES))
+            chunk = os.read(descriptor, min(_COPY_CHUNK_SIZE, maximum_bytes))
             if not chunk:
                 break
             chunks.append(chunk)
@@ -1398,6 +1413,7 @@ def _validate_pointer_references(
     *,
     expected_pointer_sha256: str,
     expected_manifest_sha256: str | None = None,
+    manifest_maximum_bytes: int = _MAX_JSON_BYTES,
 ) -> dict[str, Any]:
     if _sha256_bytes(pointer_bytes) != expected_pointer_sha256:
         raise SuccessorPromotionError("Fundamental pointer SHA256 mismatch")
@@ -1416,12 +1432,17 @@ def _validate_pointer_references(
     manifest_bytes, manifest_identity = _stable_small_bytes(
         manifest_path,
         label="Fundamental manifest",
+        maximum_bytes=manifest_maximum_bytes,
     )
     if expected_manifest_sha256 and manifest_identity.sha256 != _valid_sha256(
         expected_manifest_sha256
     ):
         raise SuccessorPromotionError("Fundamental manifest SHA256 mismatch")
-    manifest = _json_object(manifest_bytes, label="Fundamental manifest")
+    manifest = _json_object(
+        manifest_bytes,
+        label="Fundamental manifest",
+        maximum_bytes=manifest_maximum_bytes,
+    )
     if (
         manifest.get("schema_version") != "cn-fundamental-generation.v1"
         or manifest.get("status") != "OK"
@@ -1489,6 +1510,7 @@ def _validate_current_predecessor(
             capture.predecessor.get("manifest_sha256") or ""
         )
         or None,
+        manifest_maximum_bytes=_MAX_PREDECESSOR_MANIFEST_JSON_BYTES,
     )
     if str(validated["pointer"].get("generation_id") or "") != str(
         capture.predecessor.get("generation_id") or ""
@@ -2491,6 +2513,9 @@ def promote_successor_generation(
                         expected_manifest_sha256=_valid_sha256(
                             capture.predecessor.get("manifest_sha256")
                         ),
+                        manifest_maximum_bytes=(
+                            _MAX_PREDECESSOR_MANIFEST_JSON_BYTES
+                        ),
                     )
                 except Exception as rollback_ref_exc:
                     journal.append(
@@ -2935,6 +2960,9 @@ def recover_successor_promotion(
                         expected_pointer_sha256=predecessor_sha,
                         expected_manifest_sha256=_valid_sha256(
                             intent.get("predecessor_manifest_sha256")
+                        ),
+                        manifest_maximum_bytes=(
+                            _MAX_PREDECESSOR_MANIFEST_JSON_BYTES
                         ),
                     )
                 except Exception:

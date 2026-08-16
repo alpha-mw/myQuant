@@ -13,9 +13,9 @@ from quant_investor.migration.authority import (
     _GATE_SPECS,
     _seal_cutover_gate_evidence,
     REQUIRED_FINAL_PREFLIGHT_GATES,
-    build_concurrent_task_handoff,
     build_final_cutover_authorization,
     build_legacy_source_disposition,
+    build_main_checkout_adoption,
 )
 from quant_investor.migration.custody import build_authority_archive_plan
 from quant_investor.migration.migration import (
@@ -74,61 +74,24 @@ def _test_final_authorization(
             runner.relative_to(root).as_posix(),
             assembler.relative_to(root).as_posix(),
         )
-        _git(root, "commit", "-q", "-m", "authority test anchor")
+        _git(root, "commit", "-q", "-m", "authority test baseline")
+        for index in range(22):
+            adopted = root / "adopted" / f"path-{index:02d}.txt"
+            adopted.parent.mkdir(parents=True, exist_ok=True)
+            adopted.write_bytes(f"adopted-{index:02d}\n".encode("ascii"))
+        _git(root, "add", "-f", "adopted")
+        _git(root, "commit", "-q", "-m", "prospective adoption fixture")
     commit = _git(root, "rev-parse", "HEAD^{commit}").decode().strip()
     tree = _git(root, "rev-parse", "HEAD^{tree}").decode().strip()
+    baseline_commit = _git(root, "rev-parse", "HEAD^").decode().strip()
+    baseline_tree = _git(root, "rev-parse", f"{baseline_commit}^{{tree}}").decode().strip()
     ls_tree = _git(root, "ls-tree", "HEAD", "--", ".authority-anchor").decode().strip()
     mode, _kind, blob_and_path = ls_tree.split(" ", 2)
     blob, path = blob_and_path.split("\t", 1)
     anchor_raw = _git(root, "cat-file", "blob", blob)
-    handoff = build_concurrent_task_handoff(
-        handoff_id="test-clean-handoff",
-        task_name="A股 V17 日度数据更新（仅数据维护）",
-        thread_id="01a00138-7152-7722-8dbd-8c9bd184273d",
-        accepted_baseline_commit=commit,
-        task_commit=commit,
-        task_tree=tree,
-        path_rows=[
-            {
-                "path": path,
-                "status": "PRESENT",
-                "mode": mode,
-                "size": len(anchor_raw),
-                "git_blob_oid": blob,
-                "byte_sha256": hashlib.sha256(anchor_raw).hexdigest(),
-            }
-        ],
-        focused_test_rows=[
-            {
-                "command": "pytest test authority fixture",
-                "exit_code": 0,
-                "stdout_sha256": hashlib.sha256(b"passed").hexdigest(),
-                "status": "PASS",
-            }
-        ],
-        readback_rows=[
-            {
-                "commit": commit,
-                "tree": tree,
-                "status_porcelain_sha256": hashlib.sha256(b"").hexdigest(),
-                "path_inventory_sha256": "0" * 64,
-                "observed_at": created_at,
-            },
-            {
-                "commit": commit,
-                "tree": tree,
-                "status_porcelain_sha256": hashlib.sha256(b"").hexdigest(),
-                "path_inventory_sha256": "0" * 64,
-                "observed_at": "2026-08-14T00:00:01Z",
-            },
-        ],
-        writer_ended=True,
-        main_clean=True,
-        created_at=created_at,
-    )
     disposition = build_legacy_source_disposition(
         disposition_id="test-legacy-custody",
-        source_commit=commit,
+        source_commit=baseline_commit,
         rows=[
             {
                 "source_path": path,
@@ -142,7 +105,6 @@ def _test_final_authorization(
         ],
         created_at=created_at,
     )
-    handoff_ref = store.put_object(handoff)
     disposition_ref = store.put_object(disposition)
     runner_ls_tree = (
         _git(root, "ls-tree", "HEAD", "--", "quant_investor/migration/authority.py")
@@ -164,22 +126,21 @@ def _test_final_authorization(
     )
     assembler_mode, _assembler_kind, assembler_blob_and_path = assembler_ls_tree.split(" ", 2)
     assembler_blob, assembler_path = assembler_blob_and_path.split("\t", 1)
-    inventory_rows = sorted(
-        [
-            {"path": path, "mode": mode, "git_blob_oid": blob},
+    inventory_rows: list[dict[str, str]] = []
+    for raw_entry in _git(root, "ls-tree", "-rz", "--full-tree", commit).split(b"\0"):
+        if not raw_entry:
+            continue
+        header, path_raw = raw_entry.split(b"\t", 1)
+        entry_mode, entry_kind, entry_oid = header.split(b" ", 2)
+        if entry_kind != b"blob":
+            continue
+        inventory_rows.append(
             {
-                "path": runner_path,
-                "mode": runner_mode,
-                "git_blob_oid": runner_blob,
-            },
-            {
-                "path": assembler_path,
-                "mode": assembler_mode,
-                "git_blob_oid": assembler_blob,
-            },
-        ],
-        key=lambda row: row["path"],
-    )
+                "path": path_raw.decode("utf-8"),
+                "mode": entry_mode.decode("ascii"),
+                "git_blob_oid": entry_oid.decode("ascii"),
+            }
+        )
     inventory_sha = hashlib.sha256(canonical_json_bytes(inventory_rows)).hexdigest()
     gate_evidence: list[dict[str, Any]] = []
     runner_raw = _git(root, "show", f"{commit}:quant_investor/migration/authority.py")
@@ -299,19 +260,100 @@ def _test_final_authorization(
             "observed_at": "2026-08-14T00:00:01Z",
         },
     ]
+    adopted_rows: list[dict[str, Any]] = []
+    disposition_rows: list[dict[str, Any]] = []
+    for index in range(22):
+        adopted_path = f"adopted/path-{index:02d}.txt"
+        adopted_ls_tree = _git(root, "ls-tree", "HEAD", "--", adopted_path).decode().strip()
+        adopted_mode, _adopted_kind, adopted_blob_and_path = adopted_ls_tree.split(" ", 2)
+        adopted_blob, observed_path = adopted_blob_and_path.split("\t", 1)
+        adopted_raw = _git(root, "cat-file", "blob", adopted_blob)
+        adopted_rows.append(
+            {
+                "path": observed_path,
+                "status": "ADDED",
+                "mode": adopted_mode,
+                "size": len(adopted_raw),
+                "git_blob_oid": adopted_blob,
+                "byte_sha256": hashlib.sha256(adopted_raw).hexdigest(),
+            }
+        )
+        disposition_rows.append(
+            {
+                "path": observed_path,
+                "partition": "TASK_ORIGIN" if index < 17 else "ORPHAN",
+                "decision": "EXACT_PRESERVED",
+                "target_path": observed_path,
+                "target_blob_oid": adopted_blob,
+                "behavior_test_selector": f"test_adopted_path_{index:02d}",
+                "reason": "test adoption path is exactly preserved in the frozen tree",
+            }
+        )
+    gate_refs = sorted(
+        (
+            {
+                "gate_id": evidence["payload"]["gate_id"],
+                "evidence_ref": store.put_object(evidence),
+            }
+            for evidence in gate_evidence
+        ),
+        key=lambda row: row["gate_id"],
+    )
+    adoption = build_main_checkout_adoption(
+        adoption_id="test-main-checkout-adoption",
+        task_name="A股 V17 日度数据更新（仅数据维护）",
+        thread_id="01a00138-7152-7722-8dbd-8c9bd184273d",
+        accepted_baseline_commit=baseline_commit,
+        accepted_baseline_tree=baseline_tree,
+        adoption_commit=commit,
+        adoption_tree=tree,
+        adoption_parent=baseline_commit,
+        path_rows=adopted_rows,
+        task_origin_paths=[row["path"] for row in adopted_rows[:17]],
+        orphan_paths=[row["path"] for row in adopted_rows[17:]],
+        disposition_rows=disposition_rows,
+        focused_test_rows=[
+            {
+                "command": "pytest test authority fixture",
+                "exit_code": 0,
+                "stdout_sha256": hashlib.sha256(b"passed").hexdigest(),
+                "status": "PASS",
+            }
+        ],
+        full_gate_refs=gate_refs,
+        source_task_completion={
+            "status": "COMPLETED_WITHOUT_COMMIT",
+            "latest_turn_id": "01a0086f-f4f5-7bd2-873e-4e874369c021",
+            "completed_at": created_at,
+            "final_message_sha256": hashlib.sha256(b"test task final").hexdigest(),
+        },
+        readback_rows=readbacks,
+        user_authorization_basis="explicit test prospective-adoption authorization",
+        writer_ended=True,
+        main_clean=True,
+        created_at=created_at,
+    )
+    adoption_ref = store.put_object(adoption)
     final_authorization = build_final_cutover_authorization(
         final_authorization_id="test-final-cutover",
-        accepted_baseline_commit=commit,
-        historical_integration_commit=commit,
+        accepted_baseline_commit=baseline_commit,
+        historical_integration_commit=baseline_commit,
         historical_dirty_evidence_ref=release_ref,
-        concurrent_task_handoff_ref=handoff_ref,
+        concurrent_task_handoff_ref=None,
+        main_checkout_adoption_ref=adoption_ref,
         legacy_disposition_ref=disposition_ref,
         deployed_release_ref=release_ref,
         release_commit=commit,
         release_tree=tree,
         final_integration_commit=commit,
         final_integration_tree=tree,
-        ancestry_rows=[{"ancestor": commit, "descendant": commit, "proved": True}],
+        ancestry_rows=sorted(
+            [
+                {"ancestor": baseline_commit, "descendant": commit, "proved": True},
+                {"ancestor": commit, "descendant": commit, "proved": True},
+            ],
+            key=lambda row: (row["ancestor"], row["descendant"]),
+        ),
         excluded_commit_rows=[],
         final_worktree_inventory_sha256=inventory_sha,
         clean_checkout_readback_rows=readbacks,

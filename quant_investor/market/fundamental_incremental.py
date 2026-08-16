@@ -23,8 +23,9 @@ import shutil
 import stat
 import tempfile
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
+from itertools import groupby
 from pathlib import Path
 from typing import Any, BinaryIO, Iterable, Iterator, Mapping, Sequence
 
@@ -51,6 +52,54 @@ SUCCESSOR_CHAIN_SCHEMA = "cn-fundamental-successor-chain.v1"
 SUCCESSOR_KEYSET_SCHEMA = "cn-fundamental-successor-keyset-closure.v1"
 SUCCESSOR_RESOURCE_SCHEMA = "cn-fundamental-successor-resource-preflight.v1"
 SUCCESSOR_PROVIDER_MANIFEST_SCHEMA = "cn-fundamental-safe-successor-provider.v1"
+SUCCESSOR_SUPPORT_PREFIX_VALIDATION_MODE = "validation_only"
+SUCCESSOR_APPEND_FIRST_MODE = "immutable_predecessor_append_first"
+SUCCESSOR_FINANCIAL_DEPENDENCY_CONTRACT_SCHEMA = (
+    "cn-fundamental-successor-financial-dependency.v1"
+)
+SUCCESSOR_FINANCIAL_DEPENDENCY_CONTRACT = {
+    "schema_version": SUCCESSOR_FINANCIAL_DEPENDENCY_CONTRACT_SCHEMA,
+    "state_key": ["table", "ts_code", "end_date"],
+    "physical_update_policy": (
+        "exact-collapse; highest update_flag per physical class; "
+        "material winner ties block"
+    ),
+    "event_order": ["availability_date", "ts_code"],
+    "atomic_batch_key": ["ts_code", "availability_date"],
+    "atomic_batch_update_order": ["table", "end_date"],
+    "event_trigger": (
+        "any fina_indicator/income/balancesheet/cashflow row derives each "
+        "affected ts_code+end_date after the whole availability batch is visible"
+    ),
+    "period_read_set": {
+        "same_period": [
+            "fina_indicator",
+            "income",
+            "balancesheet",
+            "cashflow",
+        ],
+        "fallback": "income at end_date minus one calendar year",
+    },
+    "period_winner": ["availability_date", "end_date"],
+    "daily_period_carry": (
+        "latest period winner available on or before trade_date"
+    ),
+    "forecast_winner": ["availability_date", "forecast_end_date"],
+    "daily_forecast_merge": (
+        "latest forecast winner available on or before trade_date"
+    ),
+    "daily_basic_and_size": (
+        "target-session daily_basic exact bar keyset; size rank is a "
+        "cross-sectional lane independent of financial state"
+    ),
+    "lineage_identity": (
+        "source_row_bindings for every present same-period table plus "
+        "availability-aware previous_year_income row binding"
+    ),
+}
+SUCCESSOR_FINANCIAL_DEPENDENCY_CONTRACT_SHA256 = canonical_json_sha256(
+    SUCCESSOR_FINANCIAL_DEPENDENCY_CONTRACT
+)
 
 # Long aliases are useful to callers that group constants by domain.
 FUNDAMENTAL_SAFE_SUCCESSOR_DERIVATION_CONTRACT = SUCCESSOR_DERIVATION_CONTRACT
@@ -111,6 +160,13 @@ SUCCESSOR_REPLAY_MAX_ROWS = 10_000_000
 SUCCESSOR_REPLAY_MAX_CELLS = 100_000_000
 SUCCESSOR_REPLAY_MAX_COLUMNS = 256
 SUCCESSOR_REPLAY_MAX_FILE_BYTES = 64 * 1024**2
+SUPPORT_STREAM_BATCH_ROWS = 2_048
+SUPPORT_STREAM_BATCH_BYTES = 16 * 1024 * 1024
+SUPPORT_SYMBOL_MAX_ROWS = 100_000
+SUPPORT_SYMBOL_MAX_BYTES = 64 * 1024 * 1024
+DERIVATION_ACCUMULATOR_BUDGET_SCHEMA = (
+    "cn-fundamental-successor-derivation-accumulator-budget.v1"
+)
 
 
 class SafeSuccessorError(RuntimeError):
@@ -317,6 +373,16 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _stat_identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        int(value.st_dev),
+        int(value.st_ino),
+        int(value.st_size),
+        int(value.st_mtime_ns),
+        int(stat.S_IFMT(value.st_mode)),
+    )
+
+
 def _read_frame(source: pd.DataFrame | Path | str) -> pd.DataFrame:
     if isinstance(source, pd.DataFrame):
         return source
@@ -371,14 +437,238 @@ def _mapping_hash(mapping: Mapping[str, Any], field: str) -> str:
     return claimed
 
 
+def _streaming_support_store(value: Any) -> bool:
+    return callable(getattr(value, "iter_batches", None)) and isinstance(
+        getattr(value, "table_fingerprints", None), Mapping
+    )
+
+
+def _support_fingerprints(raw_tables: Mapping[str, Any]) -> dict[str, str]:
+    if set(raw_tables) != set(RAW_TABLES):
+        _fail("INCOMPLETE_SUPPORT_TABLE_SET", "support bundle must contain all raw tables")
+    if _streaming_support_store(raw_tables):
+        fingerprints = getattr(raw_tables, "table_fingerprints")
+        observed = {
+            str(table): str(digest).strip().lower()
+            for table, digest in dict(fingerprints).items()
+        }
+        if set(observed) != set(RAW_TABLES) or any(
+            not _valid_sha256(value) for value in observed.values()
+        ):
+            _fail("SUPPORT_FRAME_TAMPER", "streamed table fingerprints are incomplete")
+        return observed
+    output: dict[str, str] = {}
+    for table in RAW_TABLES:
+        frame = raw_tables[table]
+        if not isinstance(frame, pd.DataFrame):
+            _fail("SUPPORT_TABLE_ACCESS_INVALID", f"{table} is not a DataFrame")
+        output[table] = frame_fingerprint(frame)
+    return output
+
+
+def _iter_support_batches(
+    raw_tables: Mapping[str, Any],
+    table: str,
+) -> Iterator[pd.DataFrame]:
+    if table not in RAW_TABLES:
+        _fail("SUPPORT_TABLE_ACCESS_INVALID", f"unknown support table: {table}")
+    if _streaming_support_store(raw_tables):
+        iterator = getattr(raw_tables, "iter_batches")
+        for batch in iterator(
+            table,
+            batch_rows=SUPPORT_STREAM_BATCH_ROWS,
+            batch_bytes=SUPPORT_STREAM_BATCH_BYTES,
+        ):
+            if not isinstance(batch, pd.DataFrame) or len(batch) > SUPPORT_STREAM_BATCH_ROWS:
+                _fail("SUPPORT_STREAM_BATCH_INVALID", f"{table} batch is invalid")
+            estimated = int(batch.memory_usage(index=True, deep=True).sum())
+            if estimated > SUPPORT_STREAM_BATCH_BYTES:
+                _fail("SUPPORT_STREAM_BATCH_LIMIT", f"{table} batch exceeds byte limit")
+            yield batch
+        return
+    frame = raw_tables[table]
+    if not isinstance(frame, pd.DataFrame):
+        _fail("SUPPORT_TABLE_ACCESS_INVALID", f"{table} is not a DataFrame")
+    for start in range(0, len(frame), SUPPORT_STREAM_BATCH_ROWS):
+        batch = frame.iloc[start : start + SUPPORT_STREAM_BATCH_ROWS].copy()
+        estimated = int(batch.memory_usage(index=True, deep=True).sum())
+        if estimated > SUPPORT_STREAM_BATCH_BYTES:
+            _fail("SUPPORT_STREAM_BATCH_LIMIT", f"{table} batch exceeds byte limit")
+        yield batch
+
+
+def _iter_support_symbol_groups(
+    raw_tables: Mapping[str, Any],
+    table: str,
+    *,
+    maximum_symbol_bytes: int = SUPPORT_SYMBOL_MAX_BYTES,
+) -> Iterator[tuple[str, list[dict[str, Any]]]]:
+    if (
+        type(maximum_symbol_bytes) is not int
+        or maximum_symbol_bytes < SUPPORT_STREAM_BATCH_BYTES
+        or maximum_symbol_bytes > SUPPORT_SYMBOL_MAX_BYTES
+    ):
+        _fail("SUPPORT_SYMBOL_RESOURCE_POLICY_INVALID", table)
+    current_symbol = ""
+    current_rows: list[dict[str, Any]] = []
+    current_bytes = 0
+    previous_symbol = ""
+    for batch in _iter_support_batches(raw_tables, table):
+        for value in batch.to_dict("records"):
+            row = dict(value)
+            symbol = _safe_symbol(row.get("ts_code"))
+            if previous_symbol and symbol < previous_symbol:
+                _fail("SUPPORT_STREAM_SORT_ORDER", f"{table} is not sorted by symbol")
+            previous_symbol = symbol
+            if current_symbol and symbol != current_symbol:
+                yield current_symbol, current_rows
+                current_rows = []
+                current_bytes = 0
+            current_symbol = symbol
+            encoded = json.dumps(
+                {
+                    str(key): list(_material_token(item))
+                    for key, item in sorted(row.items(), key=lambda pair: str(pair[0]))
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            current_rows.append(row)
+            current_bytes += len(encoded)
+            if (
+                len(current_rows) > SUPPORT_SYMBOL_MAX_ROWS
+                or current_bytes > maximum_symbol_bytes
+            ):
+                _fail("SUPPORT_SYMBOL_RESOURCE_LIMIT", f"{table} symbol group is too large")
+    if current_symbol:
+        yield current_symbol, current_rows
+
+
+class _AccumulatorGuard:
+    def __init__(self, budget: Mapping[str, Any]) -> None:
+        payload = dict(budget)
+        _mapping_hash(payload, "binding_sha256")
+        required = {
+            "binding_sha256",
+            "daily_basic_row_limit",
+            "effective_memory_headroom_bytes",
+            "forecast_anchor_row_limit",
+            "forecast_delta_row_limit",
+            "period_anchor_row_limit",
+            "period_delta_row_limit",
+            "period_lineage_row_limit",
+            "post_capture_receipt_sha256",
+            "schema_version",
+            "status",
+            "total_accumulator_byte_limit",
+        }
+        if (
+            set(payload) != required
+            or payload.get("schema_version") != DERIVATION_ACCUMULATOR_BUDGET_SCHEMA
+            or payload.get("status") != "PASS"
+            or not _valid_sha256(payload.get("post_capture_receipt_sha256"))
+        ):
+            _fail("DERIVATION_RESOURCE_BUDGET_INVALID", "budget contract is invalid")
+        lanes = {
+            "daily_basic": "daily_basic_row_limit",
+            "forecast_anchor": "forecast_anchor_row_limit",
+            "forecast_delta": "forecast_delta_row_limit",
+            "period_anchor": "period_anchor_row_limit",
+            "period_delta": "period_delta_row_limit",
+            "period_lineage": "period_lineage_row_limit",
+        }
+        limits: dict[str, int] = {}
+        for lane, field in lanes.items():
+            value = payload.get(field)
+            if type(value) is not int or value < 0:
+                _fail("DERIVATION_RESOURCE_BUDGET_INVALID", f"invalid {field}")
+            limits[lane] = value
+        byte_limit = payload.get("total_accumulator_byte_limit")
+        headroom = payload.get("effective_memory_headroom_bytes")
+        if (
+            type(byte_limit) is not int
+            or byte_limit < 1
+            or type(headroom) is not int
+            or headroom < 128 * 1024 * 1024
+            or byte_limit > headroom // 2
+        ):
+            _fail("DERIVATION_RESOURCE_BUDGET_INVALID", "memory budget is invalid")
+        self._payload = payload
+        self._limits = limits
+        self._byte_limit = byte_limit
+        self._counts = {lane: 0 for lane in lanes}
+        self._bytes = {lane: 0 for lane in lanes}
+        self._total_bytes = 0
+        self._maximum_row_bytes = 0
+
+    @property
+    def maximum_symbol_source_bytes(self) -> int:
+        return min(
+            SUPPORT_SYMBOL_MAX_BYTES,
+            int(self._payload["effective_memory_headroom_bytes"]) // 8,
+        )
+
+    @staticmethod
+    def _encoded_size(value: Any) -> int:
+        if isinstance(value, Mapping):
+            body: dict[str, Any] = {
+                str(key): list(_material_token(item))
+                for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+            }
+        else:
+            body = {"value": str(value)}
+        return len(
+            json.dumps(
+                body,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+
+    def add(self, lane: str, value: Any) -> None:
+        if lane not in self._limits:
+            _fail("DERIVATION_RESOURCE_LANE_INVALID", lane)
+        size = self._encoded_size(value)
+        next_count = self._counts[lane] + 1
+        next_total = self._total_bytes + size
+        if next_count > self._limits[lane] or next_total > self._byte_limit:
+            _fail(
+                "DERIVATION_ACCUMULATOR_LIMIT_EXCEEDED",
+                f"{lane} exceeded its sealed row/byte budget",
+            )
+        self._counts[lane] = next_count
+        self._bytes[lane] += size
+        self._total_bytes = next_total
+        self._maximum_row_bytes = max(self._maximum_row_bytes, size)
+
+    def receipt(self) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "schema_version": "cn-fundamental-successor-derivation-accumulator.v1",
+            "budget_binding_sha256": self._payload["binding_sha256"],
+            "counts": dict(self._counts),
+            "bytes": dict(self._bytes),
+            "total_bytes": self._total_bytes,
+            "maximum_row_bytes": self._maximum_row_bytes,
+            "status": "PASS",
+        }
+        body["binding_sha256"] = canonical_json_sha256(body)
+        return body
+
+
 def seal_support_plan(
-    raw_tables: Mapping[str, pd.DataFrame],
+    raw_tables: Mapping[str, Any],
     *,
     parent_cutoff: str,
     target_cutoff: str,
     permanent_support_refs: Mapping[str, Any] | None = None,
     boundary_non_reachability: Mapping[str, Sequence[str]] | None = None,
     absence_proofs: Sequence[Mapping[str, Any]] = (),
+    support_prefix_mode: str = SUCCESSOR_SUPPORT_PREFIX_VALIDATION_MODE,
+    historical_taint_registry_sha256: str = "",
+    append_first_income_dependencies: Sequence[Mapping[str, Any]] = (),
+    append_first_financial_dependencies: Sequence[Mapping[str, Any]] = (),
     extra: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the canonical seal expected by :func:`assemble_safe_successor`.
@@ -391,8 +681,68 @@ def seal_support_plan(
     target = _strict_date(target_cutoff, label="target_cutoff")
     if target <= parent:
         _fail("INVALID_SUCCESSOR_WINDOW", "target cutoff must follow parent cutoff")
-    if set(raw_tables) != set(RAW_TABLES):
-        _fail("INCOMPLETE_SUPPORT_TABLE_SET", "support bundle must contain all raw tables")
+    prefix_mode = str(support_prefix_mode or "").strip()
+    if prefix_mode not in {
+        SUCCESSOR_SUPPORT_PREFIX_VALIDATION_MODE,
+        SUCCESSOR_APPEND_FIRST_MODE,
+    }:
+        _fail("INVALID_SUPPORT_PREFIX_MODE", prefix_mode)
+    registry_sha256 = str(historical_taint_registry_sha256 or "").strip().lower()
+    if prefix_mode == SUCCESSOR_APPEND_FIRST_MODE:
+        if not _valid_sha256(registry_sha256):
+            _fail(
+                "HISTORICAL_TAINT_REGISTRY_REQUIRED",
+                "append-first mode requires one sealed historical-taint registry",
+            )
+    elif registry_sha256:
+        _fail(
+            "HISTORICAL_TAINT_REGISTRY_WITH_PREFIX_REPLAY",
+            "historical-taint isolation is exclusive to append-first mode",
+        )
+    dependencies: list[dict[str, str]] = []
+    dependency_values = [
+        {"table": "income", **dict(value)}
+        for value in append_first_income_dependencies
+    ] + [dict(value) for value in append_first_financial_dependencies]
+    for value in dependency_values:
+        if not isinstance(value, Mapping) or set(value) != {
+            "end_date",
+            "table",
+            "ts_code",
+        }:
+            _fail(
+                "APPEND_FIRST_FINANCIAL_DEPENDENCY_INVALID",
+                "financial dependency must contain table, ts_code and end_date",
+            )
+        table = str(value["table"])
+        if table not in {"balancesheet", "cashflow", "income"}:
+            _fail(
+                "APPEND_FIRST_FINANCIAL_DEPENDENCY_INVALID",
+                "financial dependency table cannot seed a production fallback",
+            )
+        dependencies.append(
+            {
+                "end_date": _period(value["end_date"]),
+                "table": table,
+                "ts_code": _safe_symbol(value["ts_code"]),
+            }
+        )
+    dependencies.sort(
+        key=lambda row: (row["table"], row["ts_code"], row["end_date"])
+    )
+    if len(
+        {(row["table"], row["ts_code"], row["end_date"]) for row in dependencies}
+    ) != len(dependencies):
+        _fail(
+            "APPEND_FIRST_FINANCIAL_DEPENDENCY_DUPLICATE",
+            "financial dependencies must be unique",
+        )
+    if prefix_mode != SUCCESSOR_APPEND_FIRST_MODE and dependencies:
+        _fail(
+            "APPEND_FIRST_FINANCIAL_DEPENDENCY_MODE_MISMATCH",
+            "bounded financial dependencies require append-first mode",
+        )
+    raw_fingerprints = _support_fingerprints(raw_tables)
     body: dict[str, Any] = {
         "schema_version": SUCCESSOR_PLAN_SCHEMA,
         "status": "sealed",
@@ -404,11 +754,18 @@ def seal_support_plan(
         "responses_has_more": 0,
         "schema_failures": 0,
         "duplicate_conflicts": 0,
-        "support_prefix_complete": True,
+        "support_prefix_mode": prefix_mode,
+        "support_prefix_complete": (
+            prefix_mode == SUCCESSOR_SUPPORT_PREFIX_VALIDATION_MODE
+        ),
+        "predecessor_prefix_trusted": prefix_mode == SUCCESSOR_APPEND_FIRST_MODE,
+        "historical_taint_registry_sha256": registry_sha256,
+        "append_first_financial_dependencies": dependencies,
         "delta_window_complete": True,
-        "raw_table_fingerprints": {
-            table: frame_fingerprint(raw_tables[table]) for table in RAW_TABLES
-        },
+        "raw_table_fingerprints": raw_fingerprints,
+        "financial_dependency_contract_sha256": (
+            SUCCESSOR_FINANCIAL_DEPENDENCY_CONTRACT_SHA256
+        ),
         "permanent_support_refs": dict(permanent_support_refs or {}),
         "boundary_non_reachability": {
             lane: sorted({_safe_symbol(symbol) for symbol in values})
@@ -426,7 +783,7 @@ def seal_support_plan(
 
 
 def _validate_plan(
-    raw_tables: Mapping[str, pd.DataFrame],
+    raw_tables: Mapping[str, Any],
     plan: Mapping[str, Any],
     *,
     parent_cutoff: str,
@@ -434,14 +791,65 @@ def _validate_plan(
 ) -> tuple[dict[str, Any], dict[str, str]]:
     payload = dict(plan)
     _mapping_hash(payload, "plan_sha256")
+    prefix_mode = str(payload.get("support_prefix_mode") or "")
+    prefix_state_valid = (
+        prefix_mode == SUCCESSOR_SUPPORT_PREFIX_VALIDATION_MODE
+        and payload.get("support_prefix_complete") is True
+        and payload.get("predecessor_prefix_trusted") is False
+        and payload.get("historical_taint_registry_sha256") == ""
+        and payload.get("append_first_financial_dependencies") == []
+    ) or (
+        prefix_mode == SUCCESSOR_APPEND_FIRST_MODE
+        and payload.get("support_prefix_complete") is False
+        and payload.get("predecessor_prefix_trusted") is True
+        and _valid_sha256(payload.get("historical_taint_registry_sha256"))
+        and isinstance(payload.get("append_first_financial_dependencies"), list)
+        and payload.get("support_start")
+        == (datetime.strptime(parent_cutoff, "%Y%m%d").date() + timedelta(days=1)).strftime(
+            "%Y%m%d"
+        )
+    )
+    dependencies = payload.get("append_first_financial_dependencies")
+    if not isinstance(dependencies, list):
+        _fail("UNSEALED_SUPPORT_PLAN", "income dependency keyset is absent")
+    replayed_dependencies: list[dict[str, str]] = []
+    for value in dependencies:
+        if not isinstance(value, Mapping) or set(value) != {
+            "end_date",
+            "table",
+            "ts_code",
+        }:
+            _fail("UNSEALED_SUPPORT_PLAN", "financial dependency keyset is invalid")
+        table = str(value["table"])
+        if table not in {"balancesheet", "cashflow", "income"}:
+            _fail("UNSEALED_SUPPORT_PLAN", "financial dependency table is invalid")
+        replayed_dependencies.append(
+            {
+                "end_date": _period(value["end_date"]),
+                "table": table,
+                "ts_code": _safe_symbol(value["ts_code"]),
+            }
+        )
+    replayed_dependencies.sort(
+        key=lambda row: (row["table"], row["ts_code"], row["end_date"])
+    )
+    if replayed_dependencies != dependencies or len(
+        {
+            (row["table"], row["ts_code"], row["end_date"])
+            for row in replayed_dependencies
+        }
+    ) != len(replayed_dependencies):
+        _fail("UNSEALED_SUPPORT_PLAN", "income dependency keyset is not canonical")
     if (
         payload.get("schema_version") != SUCCESSOR_PLAN_SCHEMA
         or payload.get("status") != "sealed"
         or payload.get("parent_cutoff") != parent_cutoff
         or payload.get("target_cutoff") != target_cutoff
         or payload.get("tables") != list(RAW_TABLES)
-        or payload.get("support_prefix_complete") is not True
+        or not prefix_state_valid
         or payload.get("delta_window_complete") is not True
+        or payload.get("financial_dependency_contract_sha256")
+        != SUCCESSOR_FINANCIAL_DEPENDENCY_CONTRACT_SHA256
     ):
         _fail("UNSEALED_SUPPORT_PLAN", "support plan contract is incomplete")
     for counter in (
@@ -453,10 +861,8 @@ def _validate_plan(
     ):
         if type(payload.get(counter)) is not int or payload[counter] != 0:
             _fail("PROVIDER_AUDIT_NOT_CLEAN", f"support plan {counter} must be zero")
-    if set(raw_tables) != set(RAW_TABLES):
-        _fail("INCOMPLETE_SUPPORT_TABLE_SET", "support bundle must contain all raw tables")
     declared = dict(payload.get("raw_table_fingerprints", {}) or {})
-    actual = {table: frame_fingerprint(raw_tables[table]) for table in RAW_TABLES}
+    actual = _support_fingerprints(raw_tables)
     if set(declared) != set(RAW_TABLES) or declared != actual:
         _fail("SUPPORT_FRAME_TAMPER", "support frame fingerprints do not match the seal")
     refs = dict(payload.get("permanent_support_refs", {}) or {})
@@ -725,6 +1131,11 @@ def _derive_period_endpoint(
     direct_ocf_profit = _ratio(fi.get("ocf_to_profit") if fi else None)
 
     previous_period = (pd.Timestamp(end_date) - pd.DateOffset(years=1)).strftime("%Y%m%d")
+    previous_income_required = (
+        enforce_hidden_dependencies
+        and not math.isfinite(direct_yoy)
+        and math.isfinite(profit)
+    )
     previous_income = _dependency(
         state["income"],
         plan=plan,
@@ -732,12 +1143,11 @@ def _derive_period_endpoint(
         symbol=symbol,
         end_date=previous_period,
         availability=availability,
-        required=(
-            enforce_hidden_dependencies and not math.isfinite(direct_yoy) and math.isfinite(profit)
-        ),
+        required=previous_income_required,
     )
     previous_profit = _first_number(previous_income, ("n_income_attr_p", "n_income"))
-    if enforce_hidden_dependencies and not math.isfinite(direct_debt):
+    balance_required = enforce_hidden_dependencies and not math.isfinite(direct_debt)
+    if balance_required:
         _dependency(
             state["balancesheet"],
             plan=plan,
@@ -747,9 +1157,10 @@ def _derive_period_endpoint(
             availability=availability,
             required=True,
         )
-    if enforce_hidden_dependencies and (
+    cashflow_required = enforce_hidden_dependencies and (
         not math.isfinite(direct_ocf_profit) or not math.isfinite(direct_fcf)
-    ):
+    )
+    if cashflow_required:
         _dependency(
             state["cashflow"],
             plan=plan,
@@ -834,7 +1245,55 @@ def _derive_period_endpoint(
                 str(previous_income.get("__row_binding") or "") if previous_income else ""
             ),
             "available_as_of_event": previous_income is not None,
+            "required_for_fallback": previous_income_required,
+            "absence_proven": (
+                previous_income is None
+                and previous_income_required
+                and _absence_is_proven(
+                    plan,
+                    table="income",
+                    symbol=symbol,
+                    end_date=previous_period,
+                    availability=availability,
+                )
+            ),
         },
+        "dependency_requirements": [
+            {
+                "table": table,
+                "end_date": dependency_end,
+                "required": required,
+                "row_binding": (
+                    str(row.get("__row_binding") or "") if row is not None else ""
+                ),
+                "bounded_support": (
+                    row is not None
+                    and bool(plan.get("support_start"))
+                    and _strict_date(
+                        row.get("availability_date"),
+                        label="dependency row availability",
+                    )
+                    < _strict_date(plan["support_start"], label="support_start")
+                ),
+                "absence_proven": (
+                    row is None
+                    and required
+                    and _absence_is_proven(
+                        plan,
+                        table=table,
+                        symbol=symbol,
+                        end_date=dependency_end,
+                        availability=availability,
+                    )
+                ),
+            }
+            for table, dependency_end, required, row in (
+                ("income", previous_period, previous_income_required, previous_income),
+                ("balancesheet", end_date, balance_required, balance),
+                ("cashflow", end_date, cashflow_required, cashflow),
+            )
+            if required
+        ],
         "metric_methods": {
             "fin_debt_to_assets": "direct" if math.isfinite(direct_debt) else "fallback",
             "fin_net_profit_yoy": (
@@ -855,6 +1314,35 @@ def _derive_event_graph(
     plan: Mapping[str, Any],
     parent_cutoff: str,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if plan.get("support_prefix_mode") == SUCCESSOR_APPEND_FIRST_MODE:
+        symbols = sorted(
+            {
+                str(row["ts_code"])
+                for table in FINANCIAL_TABLES
+                for row in financial_rows[table]
+            }
+        )
+        append_records: list[dict[str, Any]] = []
+        append_lineage: list[dict[str, Any]] = []
+        for symbol in symbols:
+            symbol_rows = {
+                table: [
+                    row
+                    for row in financial_rows[table]
+                    if str(row["ts_code"]) == symbol
+                ]
+                for table in FINANCIAL_TABLES
+            }
+            _boundary, delta, delta_lineage, _derived = _derive_symbol_event_window(
+                symbol_rows,
+                symbol=symbol,
+                plan=plan,
+                parent_cutoff=parent_cutoff,
+                target_cutoff=str(plan["target_cutoff"]),
+            )
+            append_records.extend(delta)
+            append_lineage.extend(delta_lineage)
+        return append_records, append_lineage
     events: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for table in FINANCIAL_TABLES:
         for value in financial_rows[table]:
@@ -888,6 +1376,444 @@ def _derive_event_graph(
             records.append(record)
             lineage.append(row_lineage)
     return records, lineage
+
+
+def _derive_symbol_event_window(
+    financial_rows: Mapping[str, Sequence[Mapping[str, Any]]],
+    *,
+    symbol: str,
+    plan: Mapping[str, Any],
+    parent_cutoff: str,
+    target_cutoff: str,
+) -> tuple[
+    dict[str, Any] | None,
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    int,
+]:
+    """Replay one symbol while retaining only its boundary winner and delta."""
+
+    ordered = sorted(
+        (
+            row
+            for table in FINANCIAL_TABLES
+            for row in financial_rows[table]
+        ),
+        key=lambda row: (
+            str(row["availability_date"]),
+            str(row["__table"]),
+            str(row["end_date"]),
+        ),
+    )
+    state: dict[str, dict[tuple[str, str], Mapping[str, Any]]] = {
+        table: {} for table in FINANCIAL_TABLES
+    }
+    append_first = plan.get("support_prefix_mode") == SUCCESSOR_APPEND_FIRST_MODE
+    declared_dependencies = {
+        (str(value["table"]), str(value["ts_code"]), str(value["end_date"]))
+        for value in list(plan.get("append_first_financial_dependencies", []) or [])
+        if str(value.get("ts_code") or "") == symbol
+    }
+    declared_absences = {
+        (str(value["table"]), str(value["symbol"]), str(value["end_date"]))
+        for value in list(plan.get("absence_proofs", []) or [])
+        if value.get("status") == "PROVEN_ABSENT"
+        and str(value.get("symbol") or "") == symbol
+    }
+    observed_dependencies: set[tuple[str, str, str]] = set()
+    boundary_winner: dict[str, Any] | None = None
+    delta_records: list[dict[str, Any]] = []
+    delta_lineage: list[dict[str, Any]] = []
+    derived_records = 0
+    for availability, grouped_rows in groupby(
+        ordered,
+        key=lambda row: str(row["availability_date"]),
+    ):
+        batch = list(grouped_rows)
+        affected: set[str] = set()
+        for row in batch:
+            table = str(row["__table"])
+            endpoint = (symbol, str(row["end_date"]))
+            if append_first and availability <= parent_cutoff:
+                dependency = (table, symbol, str(row["end_date"]))
+                if dependency not in declared_dependencies:
+                    _fail(
+                        "APPEND_FIRST_PREFIX_ROW_PRESENT",
+                        "append-first source contains an undeclared predecessor row",
+                    )
+                observed_dependencies.add(dependency)
+            state[table][endpoint] = row
+            affected.add(str(row["end_date"]))
+        for end_date in sorted(affected):
+            if append_first and availability <= parent_cutoff:
+                continue
+            record, row_lineage = _derive_period_endpoint(
+                symbol=symbol,
+                end_date=end_date,
+                availability=availability,
+                state=state,
+                plan=plan,
+                enforce_hidden_dependencies=availability > parent_cutoff,
+            )
+            derived_records += 1
+            if availability <= parent_cutoff:
+                boundary_winner = _winner(
+                    [value for value in (boundary_winner, record) if value is not None],
+                    end_field="end_date",
+                    lane="period",
+                )
+            elif availability <= target_cutoff:
+                delta_records.append(record)
+                delta_lineage.append(row_lineage)
+    if append_first:
+        required_dependencies = {
+            (str(requirement["table"]), symbol, str(requirement["end_date"]))
+            for row in delta_lineage
+            for requirement in row["dependency_requirements"]
+            if requirement.get("required") is True
+            and str(requirement.get("row_binding") or "")
+            and requirement.get("bounded_support") is True
+        }
+        required_absences = {
+            (str(requirement["table"]), symbol, str(requirement["end_date"]))
+            for row in delta_lineage
+            for requirement in row["dependency_requirements"]
+            if requirement.get("required") is True
+            and requirement.get("absence_proven") is True
+        }
+        if observed_dependencies != declared_dependencies:
+            _fail(
+                "APPEND_FIRST_FINANCIAL_DEPENDENCY_EVIDENCE_MISMATCH",
+                "declared financial support was not captured exactly",
+            )
+        if required_dependencies != declared_dependencies:
+            _fail(
+                "APPEND_FIRST_FINANCIAL_DEPENDENCY_NOT_EXACTLY_CONSUMED",
+                "bounded financial support must equal the production fallback read-set",
+            )
+        if required_absences != declared_absences:
+            _fail(
+                "APPEND_FIRST_FINANCIAL_ABSENCE_NOT_EXACTLY_CONSUMED",
+                "bounded financial absence proofs must equal the production fallback read-set",
+            )
+    return boundary_winner, delta_records, delta_lineage, derived_records
+
+
+def replay_successor_event_trace(
+    *,
+    financial_rows: Mapping[str, Sequence[Mapping[str, Any]]],
+    symbol: str,
+    parent_cutoff: str,
+    target_cutoff: str,
+    support_start: str = "",
+) -> dict[str, Any]:
+    """Replay the exact production financial kernel for one taint subject.
+
+    This diagnostic surface deliberately calls the same normalization,
+    atomic-event, read-set, fallback, winner and lineage code used by
+    ``assemble_safe_successor``.  It does not create a SuccessorBundle and has
+    no staging or publication capability.
+    """
+
+    resolved_symbol = _safe_symbol(symbol)
+    parent = _strict_date(parent_cutoff, label="parent_cutoff")
+    target = _strict_date(target_cutoff, label="target_cutoff")
+    if target <= parent:
+        _fail("INVALID_SUCCESSOR_WINDOW", "target cutoff must follow parent cutoff")
+    if set(financial_rows) != set(FINANCIAL_TABLES):
+        _fail("SUPPORT_TABLE_SET_MISMATCH", "financial trace requires four tables")
+    normalized: dict[str, list[dict[str, Any]]] = {}
+    input_fingerprints: dict[str, str] = {}
+    for table in FINANCIAL_TABLES:
+        frame = pd.DataFrame([dict(row) for row in financial_rows[table]])
+        values = _normalize_financial_table(
+            frame,
+            table=table,
+            target_cutoff=target,
+        )
+        if any(str(row["ts_code"]) != resolved_symbol for row in values):
+            _fail("SUPPORT_SYMBOL_STREAM_DRIFT", "trace crossed subject identity")
+        normalized[table] = values
+        input_fingerprints[table] = frame_fingerprint(pd.DataFrame(values))
+    plan = {
+        "support_start": (
+            _strict_date(support_start, label="support_start")
+            if support_start
+            else ""
+        ),
+        "financial_dependency_contract_sha256": (
+            SUCCESSOR_FINANCIAL_DEPENDENCY_CONTRACT_SHA256
+        ),
+    }
+    boundary, delta, lineage, derived = _derive_symbol_event_window(
+        normalized,
+        symbol=resolved_symbol,
+        plan=plan,
+        parent_cutoff=parent,
+        target_cutoff=target,
+    )
+    if plan["financial_dependency_contract_sha256"] != (
+        SUCCESSOR_FINANCIAL_DEPENDENCY_CONTRACT_SHA256
+    ):
+        _fail("DEPENDENCY_CONTRACT_DRIFT", "financial dependency contract changed")
+    receipt = {
+        "schema_version": "cn-fundamental-successor-event-trace.v1",
+        "dependency_contract_sha256": (
+            SUCCESSOR_FINANCIAL_DEPENDENCY_CONTRACT_SHA256
+        ),
+        "symbol": resolved_symbol,
+        "parent_cutoff": parent,
+        "target_cutoff": target,
+        "support_start": plan["support_start"],
+        "input_frame_fingerprints": input_fingerprints,
+        "boundary_present": boundary is not None,
+        "boundary_frame_fingerprint": (
+            frame_fingerprint(pd.DataFrame([boundary]))
+            if boundary is not None
+            else frame_fingerprint(pd.DataFrame())
+        ),
+        "delta_frame_fingerprint": frame_fingerprint(pd.DataFrame(delta)),
+        "lineage_frame_fingerprint": canonical_json_sha256(
+            {"lineage": lineage}
+        ),
+        "derived_record_count": derived,
+        "delta_record_count": len(delta),
+        "delta_lineage_count": len(lineage),
+        "kernel": "fundamental_incremental._derive_symbol_event_window",
+    }
+    receipt["trace_sha256"] = canonical_json_sha256(receipt)
+    return {
+        "boundary_winner": boundary,
+        "delta_records": delta,
+        "delta_lineage": lineage,
+        "normalized_financial_rows": normalized,
+        "trace_receipt": receipt,
+    }
+
+
+def _derive_streamed_financial(
+    raw_tables: Mapping[str, Any],
+    *,
+    accumulator: _AccumulatorGuard,
+    plan: Mapping[str, Any],
+    parent_cutoff: str,
+    target_cutoff: str,
+) -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    dict[str, dict[str, Any]],
+    dict[str, Any],
+]:
+    streams = {
+        table: iter(
+            _iter_support_symbol_groups(
+                raw_tables,
+                table,
+                maximum_symbol_bytes=accumulator.maximum_symbol_source_bytes,
+            )
+        )
+        for table in FINANCIAL_TABLES
+    }
+    heads: dict[str, tuple[str, list[dict[str, Any]]] | None] = {}
+    for table, stream in streams.items():
+        heads[table] = next(stream, None)
+    delta_records: list[dict[str, Any]] = []
+    delta_lineage: list[dict[str, Any]] = []
+    boundary_winners: dict[str, dict[str, Any]] = {}
+    high_rows = 0
+    high_bytes = 0
+    high_derived_records = 0
+    symbols = 0
+    while any(value is not None for value in heads.values()):
+        symbol = min(
+            value[0]
+            for value in heads.values()
+            if value is not None
+        )
+        symbols += 1
+        financial: dict[str, list[dict[str, Any]]] = {}
+        resident_rows = 0
+        resident_bytes = 0
+        for table in FINANCIAL_TABLES:
+            head = heads[table]
+            if head is not None and head[0] == symbol:
+                source_rows = head[1]
+                heads[table] = next(streams[table], None)
+            else:
+                source_rows = []
+            resident_rows += len(source_rows)
+            resident_bytes += sum(
+                len(json.dumps(row, ensure_ascii=False, sort_keys=True, default=str))
+                for row in source_rows
+            )
+            financial[table] = _normalize_financial_table(
+                pd.DataFrame(source_rows),
+                table=table,
+                target_cutoff=target_cutoff,
+            )
+        if (
+            resident_rows > SUPPORT_SYMBOL_MAX_ROWS
+            or resident_bytes > accumulator.maximum_symbol_source_bytes
+        ):
+            _fail("SUPPORT_SYMBOL_RESOURCE_LIMIT", "financial symbol state is too large")
+        high_rows = max(high_rows, resident_rows)
+        high_bytes = max(high_bytes, resident_bytes)
+        (
+            boundary_winner,
+            symbol_delta_records,
+            symbol_delta_lineage,
+            derived_records,
+        ) = _derive_symbol_event_window(
+            financial,
+            symbol=symbol,
+            plan=plan,
+            parent_cutoff=parent_cutoff,
+            target_cutoff=target_cutoff,
+        )
+        high_derived_records = max(high_derived_records, derived_records)
+        if any(str(row.get("ts_code")) != symbol for row in symbol_delta_records):
+            _fail("SUPPORT_SYMBOL_STREAM_DRIFT", "financial symbol state crossed groups")
+        if boundary_winner is not None:
+            accumulator.add("period_anchor", boundary_winner)
+            boundary_winners[symbol] = boundary_winner
+        for row, row_lineage in zip(
+            symbol_delta_records,
+            symbol_delta_lineage,
+            strict=True,
+        ):
+            accumulator.add("period_delta", row)
+            accumulator.add("period_lineage", row_lineage)
+            delta_records.append(row)
+            delta_lineage.append(row_lineage)
+    delta_records.sort(
+        key=lambda row: (
+            _strict_date(row.get("availability_date"), label="period availability"),
+            str(row.get("ts_code") or ""),
+            _period(row.get("end_date")),
+        )
+    )
+    delta_lineage.sort(
+        key=lambda row: (
+            _strict_date(row.get("availability_date"), label="lineage availability"),
+            str(row.get("symbol") or ""),
+            _period(row.get("end_date")),
+        )
+    )
+    receipt = {
+        "schema_version": "cn-fundamental-support-symbol-stream.v1",
+        "financial_symbols": symbols,
+        "maximum_resident_source_rows": high_rows,
+        "maximum_resident_source_bytes": high_bytes,
+        "maximum_symbol_derived_records_processed": high_derived_records,
+        "maximum_symbol_rows": SUPPORT_SYMBOL_MAX_ROWS,
+        "maximum_symbol_bytes": accumulator.maximum_symbol_source_bytes,
+        "same_symbol_availability_atomic": True,
+        "full_table_getitem_used": False,
+        "retained_prefix_winners": len(boundary_winners),
+        "retained_delta_records": len(delta_records),
+        "retained_delta_lineage": len(delta_lineage),
+        "full_support_records_retained": False,
+    }
+    receipt["binding_sha256"] = canonical_json_sha256(receipt)
+    return delta_records, delta_lineage, boundary_winners, receipt
+
+
+def _normalize_streamed_forecast(
+    raw_tables: Mapping[str, Any],
+    *,
+    accumulator: _AccumulatorGuard,
+    parent_cutoff: str,
+    target_cutoff: str,
+    run_id: str,
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]], dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    boundary_winners: dict[str, dict[str, Any]] = {}
+    high_rows = 0
+    symbols = 0
+    for symbol, rows in _iter_support_symbol_groups(
+        raw_tables,
+        "forecast",
+        maximum_symbol_bytes=accumulator.maximum_symbol_source_bytes,
+    ):
+        symbols += 1
+        high_rows = max(high_rows, len(rows))
+        replay = _forecast_records(
+            _normalize_forecast_table(
+                pd.DataFrame(rows),
+                target_cutoff=target_cutoff,
+                run_id=run_id,
+            )
+        )
+        prefix = [
+            row
+            for row in replay
+            if _strict_date(row.get("availability_date"), label="forecast availability")
+            <= parent_cutoff
+        ]
+        winner = _winner(prefix, end_field="forecast_end_date", lane="forecast")
+        if winner is not None:
+            accumulator.add("forecast_anchor", winner)
+            boundary_winners[symbol] = winner
+        for row in replay:
+            availability = _strict_date(
+                row.get("availability_date"),
+                label="forecast availability",
+            )
+            if parent_cutoff < availability <= target_cutoff:
+                accumulator.add("forecast_delta", row)
+                output.append(row)
+    receipt = {
+        "schema_version": "cn-fundamental-support-forecast-stream.v1",
+        "symbols": symbols,
+        "maximum_resident_source_rows": high_rows,
+        "maximum_symbol_rows": SUPPORT_SYMBOL_MAX_ROWS,
+        "full_table_getitem_used": False,
+        "retained_prefix_winners": len(boundary_winners),
+        "retained_delta_records": len(output),
+        "full_support_records_retained": False,
+    }
+    receipt["binding_sha256"] = canonical_json_sha256(receipt)
+    return output, boundary_winners, receipt
+
+
+def _normalize_streamed_daily_basic(
+    raw_tables: Mapping[str, Any],
+    *,
+    accumulator: _AccumulatorGuard,
+    parent_cutoff: str,
+    target_cutoff: str,
+) -> tuple[list[dict[str, Any]], set[tuple[str, str]], dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    keys: set[tuple[str, str]] = set()
+    high_rows = 0
+    symbols = 0
+    for _symbol, rows in _iter_support_symbol_groups(
+        raw_tables,
+        "daily_basic",
+        maximum_symbol_bytes=accumulator.maximum_symbol_source_bytes,
+    ):
+        symbols += 1
+        high_rows = max(high_rows, len(rows))
+        normalized, batch_keys = _normalize_daily_basic(
+            pd.DataFrame(rows),
+            parent_cutoff=parent_cutoff,
+            target_cutoff=target_cutoff,
+        )
+        if keys.intersection(batch_keys):
+            _fail("DUPLICATE_DAILY_BASIC_KEY", "daily_basic streamed keys overlap")
+        for row in normalized:
+            accumulator.add("daily_basic", row)
+        keys.update(batch_keys)
+        output.extend(normalized)
+    receipt = {
+        "schema_version": "cn-fundamental-support-daily-stream.v1",
+        "symbols": symbols,
+        "maximum_resident_source_rows": high_rows,
+        "maximum_symbol_rows": SUPPORT_SYMBOL_MAX_ROWS,
+        "full_table_getitem_used": False,
+    }
+    receipt["binding_sha256"] = canonical_json_sha256(receipt)
+    return output, keys, receipt
 
 
 def _latest_parent_seeds(
@@ -1010,6 +1936,43 @@ def _period_anchor_equal(parent: Mapping[str, Any], replay: Mapping[str, Any]) -
     return all(_same_scalar(parent.get(field), replay.get(field)) for field in PERIOD_VALUE_FIELDS)
 
 
+def successor_period_anchor_equal(
+    parent: Mapping[str, Any],
+    replay: Mapping[str, Any],
+) -> bool:
+    """Public diagnostic wrapper around the production period comparator."""
+
+    return _period_anchor_equal(parent, replay)
+
+
+def successor_period_winner(
+    candidates: Sequence[Mapping[str, Any]],
+) -> dict[str, Any] | None:
+    """Use the production period winner ordering for diagnostic replay."""
+
+    return _winner(candidates, end_field="end_date", lane="period")
+
+
+def successor_financial_row_binding(
+    *,
+    table: str,
+    row: Mapping[str, Any],
+    target_cutoff: str,
+) -> str:
+    """Return the production lineage identity for one provider source row."""
+
+    if table not in FINANCIAL_TABLES:
+        _fail("SUPPORT_TABLE_SET_MISMATCH", "row binding requires a financial table")
+    normalized = _normalize_financial_table(
+        pd.DataFrame([dict(row)]),
+        table=table,
+        target_cutoff=_strict_date(target_cutoff, label="target_cutoff"),
+    )
+    if len(normalized) != 1:
+        _fail("SUPPORT_ROW_BINDING_INVALID", "one input row did not produce one binding")
+    return str(normalized[0]["__row_binding"])
+
+
 def _forecast_anchor_equal(parent: Mapping[str, Any], replay: Mapping[str, Any]) -> bool:
     if _period(parent.get("forecast_end_date"), label="forecast_end_date") != _period(
         replay.get("forecast_end_date"), label="forecast_end_date"
@@ -1107,6 +2070,78 @@ def _prove_boundary(
         "forecast": results["forecast"],
         "period_rule": "anchor_equality_or_lane_non_reachability",
         "forecast_rule": "anchor_equality_or_lane_non_reachability",
+    }
+    body["binding_sha256"] = canonical_json_sha256(body)
+    return body
+
+
+def _prove_boundary_winners(
+    *,
+    parent_period: Mapping[str, Mapping[str, Any]],
+    parent_forecast: Mapping[str, Mapping[str, Any]],
+    replay_period: Mapping[str, Mapping[str, Any]],
+    replay_forecast: Mapping[str, Mapping[str, Any]],
+    relevant_symbols: set[str],
+    plan: Mapping[str, Any],
+    parent_cutoff: str,
+) -> dict[str, Any]:
+    """Prove the seam from one bounded prefix winner per symbol and lane."""
+
+    declared = dict(plan.get("boundary_non_reachability", {}) or {})
+    nonreachable = {
+        lane: {_safe_symbol(symbol) for symbol in list(declared.get(lane, []) or [])}
+        for lane in ("period", "forecast")
+    }
+    results: dict[str, dict[str, str]] = {"period": {}, "forecast": {}}
+    for symbol in sorted(relevant_symbols):
+        for lane, parent_map, replay_map, comparator in (
+            (
+                "period",
+                parent_period,
+                replay_period,
+                _period_anchor_equal,
+            ),
+            (
+                "forecast",
+                parent_forecast,
+                replay_forecast,
+                _forecast_anchor_equal,
+            ),
+        ):
+            parent = parent_map.get(symbol)
+            replay = replay_map.get(symbol)
+            if parent is None and replay is None:
+                results[lane][symbol] = "LANE_NON_REACHABLE_EMPTY"
+                continue
+            if replay is None:
+                if symbol not in nonreachable[lane]:
+                    _fail(
+                        "BOUNDARY_LANE_UNPROVEN",
+                        f"{lane} parent seed cannot be reached from support",
+                        details={"symbol": symbol},
+                    )
+                results[lane][symbol] = "LANE_NON_REACHABLE_DECLARED"
+                continue
+            if parent is None or not comparator(parent, replay):
+                _fail(
+                    "BOUNDARY_ANCHOR_MISMATCH",
+                    f"{lane} replay does not equal the immediate predecessor anchor",
+                    details={"symbol": symbol},
+                )
+            if symbol in nonreachable[lane]:
+                _fail(
+                    "FALSE_NON_REACHABILITY_CLAIM",
+                    f"{lane} is reachable despite a non-reachability claim",
+                    details={"symbol": symbol},
+                )
+            results[lane][symbol] = "ANCHOR_EQUAL"
+    body: dict[str, Any] = {
+        "parent_cutoff": parent_cutoff,
+        "period": results["period"],
+        "forecast": results["forecast"],
+        "period_rule": "anchor_equality_or_lane_non_reachability",
+        "forecast_rule": "anchor_equality_or_lane_non_reachability",
+        "prefix_replay_mode": "ONE_WINNER_PER_SYMBOL_LANE",
     }
     body["binding_sha256"] = canonical_json_sha256(body)
     return body
@@ -1756,7 +2791,7 @@ def assemble_safe_successor(
     *,
     parent_tables: Mapping[str, pd.DataFrame | Path | str],
     parent_closure: Mapping[str, Any],
-    support_raw_tables: Mapping[str, pd.DataFrame],
+    support_raw_tables: Mapping[str, Any],
     plan_metadata: Mapping[str, Any],
     keyset_closure: Mapping[str, Any],
     parent_cutoff: str,
@@ -1799,63 +2834,235 @@ def assemble_safe_successor(
             "sealed predecessor pointer/manifest do not match the closure",
         )
 
-    financial = {
-        table: _normalize_financial_table(
-            support_raw_tables[table], table=table, target_cutoff=target
+    streaming_support = _streaming_support_store(support_raw_tables)
+    accumulator: _AccumulatorGuard | None = None
+    if streaming_support:
+        budget = plan.get("derivation_resource_budget")
+        if not isinstance(budget, Mapping):
+            _fail(
+                "DERIVATION_RESOURCE_BUDGET_MISSING",
+                "streaming production support requires a sealed accumulator budget",
+            )
+        accumulator = _AccumulatorGuard(budget)
+        (
+            delta_period,
+            period_lineage,
+            replay_period_anchors,
+            financial_stream,
+        ) = _derive_streamed_financial(
+            support_raw_tables,
+            accumulator=accumulator,
+            plan=plan,
+            parent_cutoff=parent,
+            target_cutoff=target,
         )
-        for table in FINANCIAL_TABLES
-    }
-    replay_period, period_lineage = _derive_event_graph(
-        financial,
-        plan=plan,
-        parent_cutoff=parent,
-    )
-    normalized_forecast = _normalize_forecast_table(
-        support_raw_tables["forecast"],
-        target_cutoff=target,
-        run_id=generation_id,
-    )
-    replay_forecast = _forecast_records(normalized_forecast)
-    daily_basic, daily_basic_keys = _normalize_daily_basic(
-        support_raw_tables["daily_basic"],
-        parent_cutoff=parent,
-        target_cutoff=target,
-    )
+        (
+            delta_forecast,
+            replay_forecast_anchors,
+            forecast_stream,
+        ) = _normalize_streamed_forecast(
+            support_raw_tables,
+            accumulator=accumulator,
+            parent_cutoff=parent,
+            target_cutoff=target,
+            run_id=generation_id,
+        )
+        daily_basic, daily_basic_keys, daily_stream = _normalize_streamed_daily_basic(
+            support_raw_tables,
+            accumulator=accumulator,
+            parent_cutoff=parent,
+            target_cutoff=target,
+        )
+    else:
+        financial = {
+            table: _normalize_financial_table(
+                support_raw_tables[table], table=table, target_cutoff=target
+            )
+            for table in FINANCIAL_TABLES
+        }
+        replay_period, period_lineage = _derive_event_graph(
+            financial,
+            plan=plan,
+            parent_cutoff=parent,
+        )
+        normalized_forecast = _normalize_forecast_table(
+            support_raw_tables["forecast"],
+            target_cutoff=target,
+            run_id=generation_id,
+        )
+        replay_forecast = _forecast_records(normalized_forecast)
+        daily_basic, daily_basic_keys = _normalize_daily_basic(
+            support_raw_tables["daily_basic"],
+            parent_cutoff=parent,
+            target_cutoff=target,
+        )
+        financial_stream = {
+            "schema_version": "cn-fundamental-support-symbol-stream.v1",
+            "mode": "bounded_reference_frames",
+            "full_table_getitem_used": True,
+        }
+        financial_stream["binding_sha256"] = canonical_json_sha256(financial_stream)
+        forecast_stream = {
+            "schema_version": "cn-fundamental-support-forecast-stream.v1",
+            "mode": "bounded_reference_frame",
+            "full_table_getitem_used": True,
+        }
+        forecast_stream["binding_sha256"] = canonical_json_sha256(forecast_stream)
+        daily_stream = {
+            "schema_version": "cn-fundamental-support-daily-stream.v1",
+            "mode": "bounded_reference_frame",
+            "full_table_getitem_used": True,
+        }
+        daily_stream["binding_sha256"] = canonical_json_sha256(daily_stream)
     keyset = _validate_keyset_input(keyset_closure, daily_basic_keys=daily_basic_keys)
     parent_period, parent_forecast, parent_daily_columns = _latest_parent_seeds(
         parent_tables["fundamental_daily"],
         parent_cutoff=parent,
     )
-    delta_period = [
-        dict(row)
-        for row in replay_period
-        if parent < _strict_date(row["availability_date"], label="period availability") <= target
-    ]
-    delta_forecast = [
-        dict(row)
-        for row in replay_forecast
-        if parent < _strict_date(row["availability_date"], label="forecast availability") <= target
-    ]
-    relevant_symbols = (
-        {
-            symbol
-            for symbol, _trade_date in _keys(
-                keyset["expected_scope_keys"],
-                label="expected_scope_keys",
-            )
+    if not streaming_support:
+        period_pairs = [
+            (dict(row), dict(row_lineage))
+            for row, row_lineage in zip(replay_period, period_lineage, strict=True)
+            if parent
+            < _strict_date(row["availability_date"], label="period availability")
+            <= target
+        ]
+        delta_period = [row for row, _row_lineage in period_pairs]
+        period_lineage = [row_lineage for _row, row_lineage in period_pairs]
+        delta_forecast = [
+            dict(row)
+            for row in replay_forecast
+            if parent
+            < _strict_date(row["availability_date"], label="forecast availability")
+            <= target
+        ]
+    relevant_symbols = {
+        symbol
+        for symbol, _trade_date in _keys(
+            keyset["expected_scope_keys"],
+            label="expected_scope_keys",
+        )
+    }.union(str(row["ts_code"]) for row in delta_period).union(
+        str(row["ts_code"]) for row in delta_forecast
+    )
+    prefix_mode = str(plan["support_prefix_mode"])
+    if prefix_mode == SUCCESSOR_APPEND_FIRST_MODE:
+        declared_dependency_keys = {
+            (str(value["table"]), str(value["ts_code"]), str(value["end_date"]))
+            for value in list(plan.get("append_first_financial_dependencies", []) or [])
         }
-        .union(str(row["ts_code"]) for row in delta_period)
-        .union(str(row["ts_code"]) for row in delta_forecast)
-    )
-    boundary = _prove_boundary(
-        parent_period=parent_period,
-        parent_forecast=parent_forecast,
-        replay_period=replay_period,
-        replay_forecast=replay_forecast,
-        relevant_symbols=relevant_symbols,
-        plan=plan,
-        parent_cutoff=parent,
-    )
+        declared_absence_keys = {
+            (str(value["table"]), str(value["symbol"]), str(value["end_date"]))
+            for value in list(plan.get("absence_proofs", []) or [])
+            if value.get("status") == "PROVEN_ABSENT"
+        }
+        consumed_dependency_keys = {
+            (
+                str(requirement["table"]),
+                str(value["symbol"]),
+                str(requirement["end_date"]),
+            )
+            for value in period_lineage
+            for requirement in value["dependency_requirements"]
+            if requirement.get("required") is True
+            and str(requirement.get("row_binding") or "")
+            and requirement.get("bounded_support") is True
+        }
+        consumed_absence_keys = {
+            (
+                str(requirement["table"]),
+                str(value["symbol"]),
+                str(requirement["end_date"]),
+            )
+            for value in period_lineage
+            for requirement in value["dependency_requirements"]
+            if requirement.get("required") is True
+            and requirement.get("absence_proven") is True
+        }
+        if consumed_dependency_keys != declared_dependency_keys:
+            _fail(
+                "APPEND_FIRST_FINANCIAL_DEPENDENCY_NOT_EXACTLY_CONSUMED",
+                "bounded financial support must equal the complete fallback read-set",
+            )
+        if consumed_absence_keys != declared_absence_keys:
+            _fail(
+                "APPEND_FIRST_FINANCIAL_ABSENCE_NOT_EXACTLY_CONSUMED",
+                "bounded financial absence proofs must equal the complete fallback read-set",
+            )
+        period_anchors = (
+            replay_period_anchors
+            if streaming_support
+            else {
+                str(row["ts_code"]): dict(row)
+                for row in replay_period
+                if _strict_date(
+                    row["availability_date"],
+                    label="period availability",
+                )
+                <= parent
+            }
+        )
+        forecast_anchors = (
+            replay_forecast_anchors
+            if streaming_support
+            else {
+                str(row["ts_code"]): dict(row)
+                for row in replay_forecast
+                if _strict_date(
+                    row["availability_date"],
+                    label="forecast availability",
+                )
+                <= parent
+            }
+        )
+        if period_anchors or forecast_anchors:
+            _fail(
+                "APPEND_FIRST_PREFIX_ROW_PRESENT",
+                "append-first source contains a row at or before the predecessor cutoff",
+            )
+        boundary = {
+            "schema_version": "cn-fundamental-successor-boundary.append-first.v1",
+            "status": "PASS",
+            "mode": SUCCESSOR_APPEND_FIRST_MODE,
+            "parent_cutoff": parent,
+            "predecessor_reference_sha256": predecessor["reference_sha256"],
+            "historical_taint_registry_sha256": plan[
+                "historical_taint_registry_sha256"
+            ],
+            "support_prefix_row_count": 0,
+            "bounded_financial_support_key_count": len(
+                list(plan.get("append_first_financial_dependencies", []) or [])
+            ),
+            "bounded_financial_absence_proof_count": len(
+                [
+                    value
+                    for value in list(plan.get("absence_proofs", []) or [])
+                    if value.get("status") == "PROVEN_ABSENT"
+                ]
+            ),
+            "current_window_material_conflict_count": 0,
+        }
+        boundary["binding_sha256"] = canonical_json_sha256(boundary)
+    elif streaming_support:
+        boundary = _prove_boundary_winners(
+            parent_period=parent_period,
+            parent_forecast=parent_forecast,
+            replay_period=replay_period_anchors,
+            replay_forecast=replay_forecast_anchors,
+            relevant_symbols=relevant_symbols,
+            plan=plan,
+            parent_cutoff=parent,
+        )
+    else:
+        boundary = _prove_boundary(
+            parent_period=parent_period,
+            parent_forecast=parent_forecast,
+            replay_period=replay_period,
+            replay_forecast=replay_forecast,
+            relevant_symbols=relevant_symbols,
+            plan=plan,
+            parent_cutoff=parent,
+        )
     period_suffix = pd.DataFrame(delta_period)
     if period_suffix.empty:
         period_suffix = pd.DataFrame(columns=_parent_columns(parent_tables["fundamental_period"]))
@@ -1914,6 +3121,21 @@ def assemble_safe_successor(
         "future_map_lookahead": False,
         "size_bucket_sessions": size_evidence,
         "boundary": boundary,
+        "support_streaming": {
+            "financial": financial_stream,
+            "forecast": forecast_stream,
+            "daily_basic": daily_stream,
+            "accumulator": (
+                accumulator.receipt()
+                if accumulator is not None
+                else {
+                    "schema_version": (
+                        "cn-fundamental-successor-derivation-accumulator.v1"
+                    ),
+                    "mode": "bounded_reference_frames",
+                }
+            ),
+        },
     }
     lineage["binding_sha256"] = canonical_json_sha256(lineage)
     candidate_tables = _materialize_candidates(
@@ -1936,7 +3158,13 @@ def assemble_safe_successor(
         "run_id": generation_id,
         "parent_cutoff": parent,
         "target_cutoff": target,
-        "support_prefix_mode": "validation_only",
+        "support_prefix_mode": prefix_mode,
+        "historical_taint_registry_sha256": str(
+            plan.get("historical_taint_registry_sha256") or ""
+        ),
+        "bounded_financial_support_keyset_sha256": canonical_json_sha256(
+            list(plan.get("append_first_financial_dependencies", []) or [])
+        ),
         "ordinary_merge_used": False,
         "parent_table_frame_fingerprints": parent_fingerprints,
         "support_plan_sha256": plan["plan_sha256"],
@@ -2655,18 +3883,93 @@ def _copy_provider_evidence(
     destination: Path,
 ) -> dict[str, str]:
     output: dict[str, str] = {}
-    destination.mkdir(parents=True, exist_ok=True)
+    destination.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(destination, 0o700)
     for name, source in sorted(files.items()):
         relative = Path(str(name))
         if relative.is_absolute() or ".." in relative.parts or not relative.parts:
             _fail("UNSAFE_PROVIDER_EVIDENCE_PATH", "provider evidence path is unsafe")
         path = destination / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        current = path.parent
+        while current == destination or destination in current.parents:
+            os.chmod(current, 0o700)
+            if current == destination:
+                break
+            current = current.parent
         if isinstance(source, bytes):
             _atomic_write(path, source)
         else:
-            source_path = Path(source).expanduser().resolve(strict=True)
-            _atomic_write(path, source_path.read_bytes())
+            source_path = Path(source).expanduser()
+            if not source_path.is_absolute():
+                source_path = Path.cwd() / source_path
+            before = os.lstat(source_path)
+            if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+                _fail(
+                    "UNSAFE_PROVIDER_EVIDENCE_SOURCE",
+                    "provider evidence source is not a regular file",
+                )
+            descriptor = os.open(
+                source_path,
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            )
+            temporary_descriptor = -1
+            temporary_name = ""
+            digest = hashlib.sha256()
+            observed = 0
+            try:
+                opened = os.fstat(descriptor)
+                if _stat_identity(opened) != _stat_identity(before):
+                    _fail(
+                        "PROVIDER_EVIDENCE_SOURCE_DRIFT",
+                        "provider evidence changed while opening",
+                    )
+                temporary_descriptor, temporary_name = tempfile.mkstemp(
+                    prefix=f".{path.name}.",
+                    dir=path.parent,
+                )
+                os.fchmod(temporary_descriptor, 0o600)
+                with os.fdopen(descriptor, "rb", closefd=False) as source_handle:
+                    with os.fdopen(
+                        temporary_descriptor,
+                        "wb",
+                        closefd=False,
+                    ) as destination_handle:
+                        while True:
+                            chunk = source_handle.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            destination_handle.write(chunk)
+                            digest.update(chunk)
+                            observed += len(chunk)
+                        destination_handle.flush()
+                        os.fsync(destination_handle.fileno())
+                after = os.lstat(source_path)
+                if (
+                    _stat_identity(after) != _stat_identity(before)
+                    or observed != before.st_size
+                ):
+                    _fail(
+                        "PROVIDER_EVIDENCE_SOURCE_DRIFT",
+                        "provider evidence changed while copying",
+                    )
+                os.replace(temporary_name, path)
+                temporary_name = ""
+                _fsync_directory(path.parent)
+            finally:
+                os.close(descriptor)
+                if temporary_descriptor >= 0:
+                    os.close(temporary_descriptor)
+                if temporary_name:
+                    try:
+                        os.unlink(temporary_name)
+                    except OSError:
+                        pass
+            if _sha256_file(path) != digest.hexdigest():
+                _fail(
+                    "PROVIDER_EVIDENCE_READBACK_MISMATCH",
+                    "provider evidence changed after streaming copy",
+                )
         output[str(relative)] = _sha256_file(path)
     _fsync_directory(destination)
     return output
@@ -2976,9 +4279,11 @@ def stage_successor_generation(
         )
         quarantine_parent = parent_paths["fundamental_quarantine"]
         assert quarantine_parent is not None
-        _atomic_write(
-            table_paths["fundamental_quarantine"],
-            quarantine_parent.read_bytes(),
+        _copy_provider_evidence(
+            {
+                table_paths["fundamental_quarantine"].name: quarantine_parent,
+            },
+            generation_directory,
         )
         if _sha256_file(table_paths["fundamental_quarantine"]) != _sha256_file(quarantine_parent):
             _fail("QUARANTINE_BYTE_IDENTITY_MISMATCH", "quarantine bytes changed")
@@ -3038,6 +4343,111 @@ def stage_successor_generation(
                     f"permanent support evidence is absent or changed: {name}",
                 )
 
+        source_validation: dict[str, Any] | None = None
+        source_manifest_sha256 = provider_manifest.get(
+            "source_fileset_manifest_sha256"
+        )
+        if source_manifest_sha256 is not None:
+            from .fundamental_successor_source import (
+                validate_successor_support_fileset,
+            )
+
+            implementation_sha256 = str(
+                provider_manifest.get("implementation_sha256") or ""
+            ).lower()
+            if (
+                not _valid_sha256(source_manifest_sha256)
+                or not _valid_sha256(implementation_sha256)
+            ):
+                _fail(
+                    "SOURCE_FILESET_BINDING_INVALID",
+                    "source fileset binding is incomplete",
+                )
+            validated_source = validate_successor_support_fileset(
+                evidence_directory / "source",
+                expected_implementation_sha256=implementation_sha256,
+            )
+            if (
+                validated_source.get("manifest_sha256")
+                != str(source_manifest_sha256).lower()
+            ):
+                _fail(
+                    "SOURCE_FILESET_MANIFEST_MISMATCH",
+                    "source fileset manifest changed during staging",
+                )
+            source_validation = {
+                "implementation_sha256": implementation_sha256,
+                "manifest_sha256": validated_source["manifest_sha256"],
+                "resource_sha256": dict(
+                    validated_source.get("resource_accounting", {}) or {}
+                ).get("resource_sha256"),
+                "schema_version": validated_source["schema_version"],
+                "status": "PASS",
+            }
+        elif dict(metadata_extra or {}).get("maintenance_schema_version") == (
+            "cn-fundamental-safe-successor-maintenance.v1"
+        ):
+            _fail(
+                "SOURCE_FILESET_BINDING_MISSING",
+                "production successor staging requires source replay evidence",
+            )
+
+        historical_taint_validation: dict[str, Any] | None = None
+        if bundle.derivation_evidence.get("support_prefix_mode") == (
+            SUCCESSOR_APPEND_FIRST_MODE
+        ):
+            from .fundamental_historical_taint import (
+                validate_historical_taint_registry,
+            )
+
+            declared_registry_sha = str(
+                provider_manifest.get("historical_taint_registry_sha256") or ""
+            ).lower()
+            declared_registry_file_sha = str(
+                provider_manifest.get(
+                    "historical_taint_registry_file_sha256"
+                )
+                or ""
+            ).lower()
+            registry_path = evidence_directory / "historical_taint" / "registry.json"
+            if (
+                not _valid_sha256(declared_registry_sha)
+                or not _valid_sha256(declared_registry_file_sha)
+                or evidence_files.get("historical_taint/registry.json")
+                != declared_registry_file_sha
+                or bundle.derivation_evidence.get(
+                    "historical_taint_registry_sha256"
+                )
+                != declared_registry_sha
+                or source_validation is None
+            ):
+                _fail(
+                    "HISTORICAL_TAINT_BINDING_MISMATCH",
+                    "append-first staging is missing its sealed taint/source closure",
+                )
+            registry = validate_historical_taint_registry(
+                registry_path,
+                evidence_root=evidence_directory,
+                predecessor=bundle.predecessor_binding,
+                delta_fileset_root=evidence_directory / "source",
+            )
+            if registry.get("registry_sha256") != declared_registry_sha:
+                _fail(
+                    "HISTORICAL_TAINT_BINDING_MISMATCH",
+                    "historical-taint registry digest differs after replay",
+                )
+            historical_taint_validation = {
+                "schema_version": registry["schema_version"],
+                "status": registry["status"],
+                "classification": registry["classification"],
+                "historical_conflict_count": registry[
+                    "historical_conflict_count"
+                ],
+                "current_window_material_conflict_count": 0,
+                "same_period_delta_row_count": 0,
+                "registry_sha256": declared_registry_sha,
+            }
+
         metadata: dict[str, Any] = {
             "gate2_passed": True,
             "gate2_contract": SUCCESSOR_READINESS_SCHEMA,
@@ -3061,6 +4471,8 @@ def stage_successor_generation(
             "resource_preflight": dict(bundle.resource_preflight),
             "target_bindings": dict(targets),
             "successor_chain": dict(bundle.successor_chain),
+            "source_fileset_validation": source_validation,
+            "historical_taint_validation": historical_taint_validation,
             "merge": {
                 "mode": "safe_successor_append_only",
                 "ordinary_merge_used": False,
@@ -3341,10 +4753,21 @@ def validate_successor_provenance(
         != pointer_envelope.get("resource_preflight_sha256")
     ):
         _fail("SUCCESSOR_EVIDENCE_BINDING_MISMATCH", "derivation/readiness evidence differs")
+    prefix_mode = str(derivation.get("support_prefix_mode") or "")
+    prefix_gate_valid = prefix_mode == SUCCESSOR_SUPPORT_PREFIX_VALIDATION_MODE
+    if prefix_mode == SUCCESSOR_APPEND_FIRST_MODE:
+        prefix_gate_valid = (
+            _valid_sha256(
+                derivation.get("historical_taint_registry_sha256")
+            )
+            and derivation.get("historical_taint_registry_sha256")
+            == provider.get("historical_taint_registry_sha256")
+            and readiness.get("prefix_gate_passed") is True
+        )
     if (
         derivation.get("contract_version") != SUCCESSOR_DERIVATION_CONTRACT
         or derivation.get("ordinary_merge_used") is not False
-        or derivation.get("support_prefix_mode") != "validation_only"
+        or not prefix_gate_valid
         or readiness.get("schema_version") != SUCCESSOR_READINESS_SCHEMA
         or readiness.get("gate2_contract") != SUCCESSOR_READINESS_SCHEMA
         or readiness.get("status") != "PASS"
@@ -3681,6 +5104,109 @@ def validate_successor_provenance(
                 "PROVIDER_EVIDENCE_READBACK_MISMATCH",
                 f"provider evidence changed: {relative}",
             )
+    source_validation: dict[str, Any] | None = None
+    source_manifest_sha256 = provider.get("source_fileset_manifest_sha256")
+    if source_manifest_sha256 is not None:
+        from .fundamental_successor_source import (
+            validate_successor_support_fileset,
+        )
+
+        implementation_sha256 = str(
+            provider.get("implementation_sha256") or ""
+        ).lower()
+        if (
+            not _valid_sha256(source_manifest_sha256)
+            or not _valid_sha256(implementation_sha256)
+        ):
+            _fail(
+                "SOURCE_FILESET_BINDING_INVALID",
+                "source fileset binding is incomplete",
+            )
+        validated_source = validate_successor_support_fileset(
+            evidence_root / "source",
+            expected_implementation_sha256=implementation_sha256,
+        )
+        if (
+            validated_source.get("manifest_sha256")
+            != str(source_manifest_sha256).lower()
+        ):
+            _fail(
+                "SOURCE_FILESET_MANIFEST_MISMATCH",
+                "source fileset manifest changed after staging",
+            )
+        source_validation = {
+            "implementation_sha256": implementation_sha256,
+            "manifest_sha256": validated_source["manifest_sha256"],
+            "resource_sha256": dict(
+                validated_source.get("resource_accounting", {}) or {}
+            ).get("resource_sha256"),
+            "schema_version": validated_source["schema_version"],
+            "status": "PASS",
+        }
+        if pointer_metadata.get("source_fileset_validation") != source_validation:
+            _fail(
+                "SOURCE_FILESET_VALIDATION_MISMATCH",
+                "staging and promotion source replay receipts differ",
+            )
+    elif pointer_metadata.get("source_fileset_validation") is not None:
+        _fail(
+            "SOURCE_FILESET_BINDING_MISSING",
+            "source validation receipt has no source fileset binding",
+        )
+    historical_taint_validation: dict[str, Any] | None = None
+    if derivation.get("support_prefix_mode") == SUCCESSOR_APPEND_FIRST_MODE:
+        from .fundamental_historical_taint import (
+            validate_historical_taint_registry,
+        )
+
+        declared_registry_sha = str(
+            provider.get("historical_taint_registry_sha256") or ""
+        ).lower()
+        declared_registry_file_sha = str(
+            provider.get("historical_taint_registry_file_sha256") or ""
+        ).lower()
+        if (
+            not _valid_sha256(declared_registry_file_sha)
+            or _sha256_file(
+                evidence_root / "historical_taint" / "registry.json"
+            )
+            != declared_registry_file_sha
+        ):
+            _fail(
+                "HISTORICAL_TAINT_BINDING_MISMATCH",
+                "historical-taint registry file digest differs",
+            )
+        registry = validate_historical_taint_registry(
+            evidence_root / "historical_taint" / "registry.json",
+            evidence_root=evidence_root,
+            predecessor=predecessor,
+            delta_fileset_root=evidence_root / "source",
+        )
+        historical_taint_validation = {
+            "schema_version": registry["schema_version"],
+            "status": registry["status"],
+            "classification": registry["classification"],
+            "historical_conflict_count": registry[
+                "historical_conflict_count"
+            ],
+            "current_window_material_conflict_count": 0,
+            "same_period_delta_row_count": 0,
+            "registry_sha256": declared_registry_sha,
+        }
+        if (
+            registry.get("registry_sha256") != declared_registry_sha
+            or pointer_metadata.get("historical_taint_validation")
+            != historical_taint_validation
+        ):
+            _fail(
+                "HISTORICAL_TAINT_VALIDATION_MISMATCH",
+                "staging and promotion historical-taint receipts differ",
+            )
+    elif pointer_metadata.get("historical_taint_validation") is not None:
+        _fail(
+            "HISTORICAL_TAINT_VALIDATION_UNEXPECTED",
+            "prefix-replay successor unexpectedly carries taint isolation",
+        )
     for table_name in FUNDAMENTAL_TABLES:
         if pointer_tables[table_name] != str(
             Path("_fundamental_generations") / generation_id / f"{table_name}.parquet"
@@ -3785,6 +5311,7 @@ def validate_successor_provenance(
         "table_sha256": output_sha,
         "provider_evidence_files": provider_evidence_files,
         "provider_binding_sha256": provider_binding,
+        "source_fileset_validation": source_validation,
         "successor_chain_fingerprint": chain_fingerprint,
         "predecessor": predecessor_receipt,
         "target_bindings": targets,
@@ -3810,6 +5337,9 @@ __all__ = [
     "RAW_TABLES",
     "SUCCESSOR_CHAIN_SCHEMA",
     "SUCCESSOR_DERIVATION_CONTRACT",
+    "SUCCESSOR_FINANCIAL_DEPENDENCY_CONTRACT",
+    "SUCCESSOR_FINANCIAL_DEPENDENCY_CONTRACT_SCHEMA",
+    "SUCCESSOR_FINANCIAL_DEPENDENCY_CONTRACT_SHA256",
     "SUCCESSOR_KEYSET_SCHEMA",
     "SUCCESSOR_PLAN_SCHEMA",
     "SUCCESSOR_PROVIDER_MANIFEST_SCHEMA",
@@ -3823,9 +5353,13 @@ __all__ = [
     "build_keyset_closure",
     "build_successor_chain",
     "capture_parent_closure",
+    "replay_successor_event_trace",
     "seal_successor_provider_manifest",
     "seal_support_plan",
     "stage_successor_generation",
     "successor_resource_preflight",
+    "successor_financial_row_binding",
+    "successor_period_anchor_equal",
+    "successor_period_winner",
     "validate_successor_provenance",
 ]

@@ -7,8 +7,8 @@ import pytest
 from quant_investor.contracts import seal_artifact
 from quant_investor.market.exchange_calendar_official import (
     DECODER_IDS,
+    EVIDENCE_ROLES,
     decode_capture_projection,
-    decode_daily_status,
     decode_session_intervals,
     decoder_code_sha256,
     decoder_id,
@@ -20,7 +20,7 @@ BASE = "2026-08-16T00:00:00Z"
 
 
 @pytest.mark.parametrize("exchange", ["SSE", "SZSE", "BSE"])
-@pytest.mark.parametrize("role", ["DAILY_STATUS", "SESSION_RULE"])
+@pytest.mark.parametrize("role", sorted(EVIDENCE_ROLES))
 def test_unadmitted_official_calendar_wire_contracts_fail_closed(exchange: str, role: str) -> None:
     assert DECODER_IDS == {}
     with pytest.raises(
@@ -49,11 +49,6 @@ def test_project_authored_synthetic_bodies_never_gain_production_authority(
         SystemContractError,
         match="OFFICIAL_CALENDAR_WIRE_CONTRACT_UNVERIFIED",
     ):
-        decode_daily_status(exchange, synthetic, media_type="application/json")
-    with pytest.raises(
-        SystemContractError,
-        match="OFFICIAL_CALENDAR_WIRE_CONTRACT_UNVERIFIED",
-    ):
         decode_session_intervals(exchange, synthetic, media_type="application/json")
     assert len(decoder_code_sha256()) == 64
 
@@ -67,11 +62,15 @@ def test_decoder_admission_contract_binds_endpoint_response_and_native_fixture()
             "decoder_admission_id": "sse-daily-capture-admission-test-only",
             "state": "ADMITTED",
             "exchange_id": "SSE",
-            "evidence_role": "DAILY_STATUS",
+            "evidence_role": "ANNUAL_HOLIDAY_NOTICE",
             "issuer": "SSE_OFFICIAL",
             "endpoint_scheme": "https",
             "endpoint_host": "www.sse.com.cn",
             "endpoint_path_query_template": "/issuer/path?date={date}",
+            "fixture_request_url": "https://www.sse.com.cn/issuer/path?date=2024",
+            "fixture_effective_url": "https://www.sse.com.cn/issuer/path?date=2024",
+            "fixture_redirect_chain": [],
+            "fixture_tls_verified": True,
             "redirect_policy": "NO_REDIRECTS",
             "http_status": 200,
             "raw_media_type": "application/json",

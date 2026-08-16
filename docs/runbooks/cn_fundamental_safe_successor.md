@@ -25,6 +25,49 @@ The operator proves the daily-basic keyset against canonical bars and
 reason-coded non-bar classifications, freezes the predecessor prefix, and
 derives only the open successor window.
 
+An unpaired opaque balancesheet observation is never eligible for publication.
+Use the exclusive live-source diagnostic first:
+
+```text
+market fundamental-maintain \
+  --taint-analysis-dry-run \
+  --allow-live \
+  --universes full_a \
+  --audit-run-root /absolute/private/new-run-root \
+  ...the frozen predecessor/market/PIT/scope/history arguments...
+```
+
+Despite the name, this command calls the registered live provider. Its only
+write-set is the private audit root; it cannot create a staging generation,
+install a generation, advance a pointer, or authorize promotion. `PASS` proves
+only that the deferred observation is target-bounded and non-reachable through
+the requested cutoff. A terminal `BLOCKED` run id/root cannot later resume as
+`PASS`.
+
+An owner-approved append-first successor is an explicit modifier of this
+phase, never a historical-winner fallback:
+
+```text
+market fundamental-maintain \
+  --safe-incremental-successor \
+  --append-first-successor \
+  --historical-taint-failure-evidence /absolute/private/failure#ordinal \
+  --successor-income-support TS_CODE@YYYYMMDD \
+  --successor-financial-support TABLE:TS_CODE@YYYYMMDD \
+  --allow-live \
+  --universes full_a \
+  ...the frozen predecessor/market/PIT/scope/history/staging arguments...
+```
+
+Support requests are bounded by exact subject and period and may seed only
+hidden calculation state. They cannot create a predecessor winner, period or
+daily suffix, or canonical row. The captured pre-cutoff keyset must equal the
+actually consumed fallback read-set; absent, extra, cross-symbol, cross-period,
+post-cutoff, or unused support blocks. Empty provider responses are sealed as
+absence proofs, not synthesized data or allowlists. Registry, raw response,
+failure evidence, capture binding, and immutable predecessor table refs are
+replayed again at staging and promotion.
+
 ## Promotion
 
 `market fundamental-promote --safe-incremental-successor` is read-only unless
@@ -44,6 +87,16 @@ sealed source filesets. Each owner-only, regular, single-link Parquet file is
 hashed from an `O_NOFOLLOW` descriptor before decoding, rewound and decoded
 through that same descriptor, then rehashed and inode-checked after decoding.
 Logical table equivalence never replaces the manifest's exact Parquet byte SHA.
+
+Before the first provider call, the operator seals a resource receipt covering
+available RAM, process RSS, `RLIMIT_AS`/`RLIMIT_DATA` headroom, physical RAM,
+source capture, staging and canonical temp/final/orphan/rollback space, fsync
+reserve, rolling free-disk protection, and a 25% margin. It repeats the receipt
+after capture with exact source/table sizes. Request evidence is streamed;
+records replay from exact raw bytes; aggregate support Parquet is deterministic
+and sorted with at most 2,048 rows and 16 MiB per stream batch. Financial replay
+holds at most one symbol's four-endpoint hidden state under one aggregate
+per-symbol byte cap, while forecast and daily-basic replay remain batched.
 
 ## Derivation boundary
 

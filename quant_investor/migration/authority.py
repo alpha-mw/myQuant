@@ -45,12 +45,14 @@ from quant_investor.system.release_install import (
 from quant_investor.system.store import object_ref_for_artifact, validate_object_ref
 
 CONCURRENT_HANDOFF_KIND: Final = "system.concurrent_task_handoff"
+MAIN_CHECKOUT_ADOPTION_KIND: Final = "system.main_checkout_adoption"
 LEGACY_DISPOSITION_KIND: Final = "system.legacy_source_disposition"
 FINAL_AUTHORIZATION_KIND: Final = "system.final_cutover_authorization"
 GATE_EVIDENCE_KIND: Final = "system.cutover_gate_evidence"
 AUTHORITY_KINDS: Final = frozenset(
     {
         CONCURRENT_HANDOFF_KIND,
+        MAIN_CHECKOUT_ADOPTION_KIND,
         LEGACY_DISPOSITION_KIND,
         FINAL_AUTHORIZATION_KIND,
         GATE_EVIDENCE_KIND,
@@ -63,6 +65,29 @@ _SHA256_RE: Final = re.compile(r"^[0-9a-f]{64}$")
 _THREAD_RE: Final = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 _PATH_ROW_FIELDS: Final = frozenset(
     {"path", "status", "mode", "size", "git_blob_oid", "byte_sha256"}
+)
+_ADOPTION_PATH_STATUSES: Final = frozenset({"ADDED", "MODIFIED"})
+_ADOPTION_DISPOSITION_ROW_FIELDS: Final = frozenset(
+    {
+        "path",
+        "partition",
+        "decision",
+        "target_path",
+        "target_blob_oid",
+        "behavior_test_selector",
+        "reason",
+    }
+)
+_ADOPTION_DECISIONS: Final = frozenset(
+    {
+        "EXACT_PRESERVED",
+        "REPAIRED_IN_FINAL_INTEGRATION",
+        "PORTED_TO_STABLE",
+        "LEGACY_CUSTODY_ONLY",
+    }
+)
+_SOURCE_TASK_COMPLETION_FIELDS: Final = frozenset(
+    {"status", "latest_turn_id", "completed_at", "final_message_sha256"}
 )
 _TEST_ROW_FIELDS: Final = frozenset({"command", "exit_code", "stdout_sha256", "status"})
 _READBACK_ROW_FIELDS: Final = frozenset(
@@ -460,6 +485,265 @@ def validate_concurrent_task_handoff(
     )
     if canonical_json_bytes(rebuilt) != canonical_json_bytes(artifact):
         raise SystemContractError("concurrent task handoff semantic replay differs")
+    return artifact
+
+
+def _validate_adoption_path_rows(value: Any) -> list[dict[str, Any]]:
+    if type(value) is not list or not value:
+        raise SystemContractError("adoption path rows are absent")
+    rows: list[dict[str, Any]] = []
+    for index, value_row in enumerate(value):
+        if type(value_row) is not dict or set(value_row) != _PATH_ROW_FIELDS:
+            raise SystemContractError("adoption path row fields are not exact")
+        status = value_row["status"]
+        mode = value_row["mode"]
+        size = value_row["size"]
+        if (
+            status not in _ADOPTION_PATH_STATUSES
+            or mode not in {"100600", "100644", "100755"}
+            or type(size) is not int
+            or size < 0
+        ):
+            raise SystemContractError("adoption path identity is invalid")
+        rows.append(
+            {
+                "path": _path(value_row["path"], label=f"adoption.paths[{index}].path"),
+                "status": status,
+                "mode": mode,
+                "size": size,
+                "git_blob_oid": _git_oid(
+                    value_row["git_blob_oid"],
+                    label=f"adoption.paths[{index}].git_blob_oid",
+                ),
+                "byte_sha256": _sha(
+                    value_row["byte_sha256"],
+                    label=f"adoption.paths[{index}].byte_sha256",
+                ),
+            }
+        )
+    if rows != sorted(rows, key=lambda row: row["path"]):
+        raise SystemContractError("adoption paths are not canonical sorted")
+    paths = [row["path"] for row in rows]
+    if paths != sorted(set(paths)):
+        raise SystemContractError("adoption paths are not unique")
+    return rows
+
+
+def _validate_adoption_partition(value: Any, *, label: str) -> list[str]:
+    if type(value) is not list or not value:
+        raise SystemContractError(f"{label} is absent")
+    paths = [_path(item, label=f"{label}[{index}]") for index, item in enumerate(value)]
+    if paths != sorted(set(paths)):
+        raise SystemContractError(f"{label} is not sorted unique")
+    return paths
+
+
+def _validate_adoption_dispositions(
+    value: Any,
+    *,
+    task_origin_paths: Sequence[str],
+    orphan_paths: Sequence[str],
+) -> list[dict[str, Any]]:
+    if type(value) is not list or not value:
+        raise SystemContractError("adoption dispositions are absent")
+    task_set = set(task_origin_paths)
+    orphan_set = set(orphan_paths)
+    rows: list[dict[str, Any]] = []
+    for index, value_row in enumerate(value):
+        if type(value_row) is not dict or set(value_row) != _ADOPTION_DISPOSITION_ROW_FIELDS:
+            raise SystemContractError("adoption disposition fields are not exact")
+        path = _path(value_row["path"], label=f"adoption.dispositions[{index}].path")
+        partition = value_row["partition"]
+        expected_partition = (
+            "TASK_ORIGIN" if path in task_set else "ORPHAN" if path in orphan_set else None
+        )
+        if partition != expected_partition:
+            raise SystemContractError("adoption disposition partition differs")
+        decision = value_row["decision"]
+        if decision not in _ADOPTION_DECISIONS:
+            raise SystemContractError("adoption disposition decision is invalid")
+        target_path = _path(
+            value_row["target_path"],
+            label=f"adoption.dispositions[{index}].target_path",
+            allow_empty=True,
+        )
+        target_blob_oid = value_row["target_blob_oid"]
+        if decision == "LEGACY_CUSTODY_ONLY":
+            if target_path or target_blob_oid != "":
+                raise SystemContractError("legacy-custody adoption has a target")
+        else:
+            _git_oid(
+                target_blob_oid,
+                label=f"adoption.dispositions[{index}].target_blob_oid",
+            )
+            if not target_path:
+                raise SystemContractError("adoption target is absent")
+        if decision == "EXACT_PRESERVED" and target_path != path:
+            raise SystemContractError("exact-preserved adoption changes path")
+        rows.append(
+            {
+                "path": path,
+                "partition": partition,
+                "decision": decision,
+                "target_path": target_path,
+                "target_blob_oid": target_blob_oid,
+                "behavior_test_selector": _text(
+                    value_row["behavior_test_selector"],
+                    label=f"adoption.dispositions[{index}].behavior_test_selector",
+                ),
+                "reason": _text(
+                    value_row["reason"],
+                    label=f"adoption.dispositions[{index}].reason",
+                ),
+            }
+        )
+    if rows != sorted(rows, key=lambda row: row["path"]):
+        raise SystemContractError("adoption dispositions are not canonical sorted")
+    return rows
+
+
+def build_main_checkout_adoption(  # noqa: C901
+    *,
+    adoption_id: str,
+    task_name: str,
+    thread_id: str,
+    accepted_baseline_commit: str,
+    accepted_baseline_tree: str,
+    adoption_commit: str,
+    adoption_tree: str,
+    adoption_parent: str,
+    path_rows: Sequence[Mapping[str, Any]],
+    task_origin_paths: Sequence[str],
+    orphan_paths: Sequence[str],
+    disposition_rows: Sequence[Mapping[str, Any]],
+    focused_test_rows: Sequence[Mapping[str, Any]],
+    full_gate_refs: Sequence[Mapping[str, Any]],
+    source_task_completion: Mapping[str, Any],
+    readback_rows: Sequence[Mapping[str, Any]],
+    user_authorization_basis: str,
+    writer_ended: bool,
+    main_clean: bool,
+    created_at: str,
+) -> dict[str, Any]:
+    """Seal truthful prospective adoption of an externally committed checkout."""
+
+    if type(thread_id) is not str or _THREAD_RE.fullmatch(thread_id) is None:
+        raise SystemContractError("adoption task thread id is invalid")
+    if writer_ended is not True or main_clean is not True:
+        raise SystemPreconditionError("adoption writer/main cleanliness is unresolved")
+    normalized_paths = _validate_adoption_path_rows(list(path_rows))
+    task_paths = _validate_adoption_partition(task_origin_paths, label="task_origin_paths")
+    orphan = _validate_adoption_partition(orphan_paths, label="orphan_paths")
+    complete_paths = [row["path"] for row in normalized_paths]
+    if set(task_paths) & set(orphan) or sorted([*task_paths, *orphan]) != complete_paths:
+        raise SystemPreconditionError("adoption 17/5 path partition is not exact")
+    if len(task_paths) != 17 or len(orphan) != 5 or len(complete_paths) != 22:
+        raise SystemPreconditionError("adoption path cardinality is not 22=17+5")
+    dispositions = _validate_adoption_dispositions(
+        list(disposition_rows),
+        task_origin_paths=task_paths,
+        orphan_paths=orphan,
+    )
+    if [row["path"] for row in dispositions] != complete_paths:
+        raise SystemPreconditionError("adoption disposition closure is incomplete")
+    completion = dict(source_task_completion)
+    if set(completion) != _SOURCE_TASK_COMPLETION_FIELDS:
+        raise SystemContractError("source task completion fields are not exact")
+    if completion["status"] != "COMPLETED_WITHOUT_COMMIT":
+        raise SystemPreconditionError("source task outcome is not completed-without-commit")
+    turn_id = completion["latest_turn_id"]
+    if type(turn_id) is not str or _THREAD_RE.fullmatch(turn_id) is None:
+        raise SystemContractError("source task completion turn id is invalid")
+    normalized_completion = {
+        "status": "COMPLETED_WITHOUT_COMMIT",
+        "latest_turn_id": turn_id,
+        "completed_at": _canonical_timestamp(
+            completion["completed_at"], label="source_task_completion.completed_at"
+        ),
+        "final_message_sha256": _sha(
+            completion["final_message_sha256"],
+            label="source_task_completion.final_message_sha256",
+        ),
+    }
+    readbacks = _validate_readback_rows(list(readback_rows), label="adoption readback_rows")
+    if readbacks[0]["commit"] != adoption_commit or readbacks[0]["tree"] != adoption_tree:
+        raise SystemPreconditionError("adoption readback commit/tree differs")
+    return seal_artifact(
+        MAIN_CHECKOUT_ADOPTION_KIND,
+        {
+            "adoption_id": _text(adoption_id, label="adoption_id"),
+            "state": "IMMUTABLE",
+            "task_name": _text(task_name, label="task_name"),
+            "thread_id": thread_id,
+            "source_task_outcome": "COMPLETED_WITHOUT_COMMIT",
+            "handoff_type": "PROSPECTIVE_ADOPTION",
+            "accepted_baseline_commit": _git_oid(
+                accepted_baseline_commit, label="accepted_baseline_commit"
+            ),
+            "accepted_baseline_tree": _git_oid(
+                accepted_baseline_tree, label="accepted_baseline_tree"
+            ),
+            "adoption_commit": _git_oid(adoption_commit, label="adoption_commit"),
+            "adoption_tree": _git_oid(adoption_tree, label="adoption_tree"),
+            "adoption_parent": _git_oid(adoption_parent, label="adoption_parent"),
+            "path_rows": normalized_paths,
+            "task_origin_paths": task_paths,
+            "orphan_paths": orphan,
+            "disposition_rows": dispositions,
+            "focused_test_rows": _validate_test_rows(list(focused_test_rows)),
+            "full_gate_refs": _validate_preflight_rows(list(full_gate_refs)),
+            "source_task_completion": normalized_completion,
+            "writer_ended": True,
+            "main_clean": True,
+            "readback_rows": readbacks,
+            "user_authorization_basis": _text(
+                user_authorization_basis, label="user_authorization_basis"
+            ),
+            "task_authorship_claimed": False,
+            "human_signature_claimed": False,
+            "history_rewritten": False,
+        },
+        created_at=created_at,
+    )
+
+
+def validate_main_checkout_adoption(
+    document: Mapping[str, Any] | bytes,
+) -> dict[str, Any]:
+    artifact = _artifact(document, MAIN_CHECKOUT_ADOPTION_KIND)
+    payload = artifact["payload"]
+    if (
+        payload.get("source_task_outcome") != "COMPLETED_WITHOUT_COMMIT"
+        or payload.get("handoff_type") != "PROSPECTIVE_ADOPTION"
+        or payload.get("task_authorship_claimed") is not False
+        or payload.get("human_signature_claimed") is not False
+        or payload.get("history_rewritten") is not False
+    ):
+        raise SystemPreconditionError("prospective adoption authority claim differs")
+    rebuilt = build_main_checkout_adoption(
+        adoption_id=payload["adoption_id"],
+        task_name=payload["task_name"],
+        thread_id=payload["thread_id"],
+        accepted_baseline_commit=payload["accepted_baseline_commit"],
+        accepted_baseline_tree=payload["accepted_baseline_tree"],
+        adoption_commit=payload["adoption_commit"],
+        adoption_tree=payload["adoption_tree"],
+        adoption_parent=payload["adoption_parent"],
+        path_rows=payload["path_rows"],
+        task_origin_paths=payload["task_origin_paths"],
+        orphan_paths=payload["orphan_paths"],
+        disposition_rows=payload["disposition_rows"],
+        focused_test_rows=payload["focused_test_rows"],
+        full_gate_refs=payload["full_gate_refs"],
+        source_task_completion=payload["source_task_completion"],
+        readback_rows=payload["readback_rows"],
+        user_authorization_basis=payload["user_authorization_basis"],
+        writer_ended=payload["writer_ended"],
+        main_clean=payload["main_clean"],
+        created_at=artifact["created_at"],
+    )
+    if canonical_json_bytes(rebuilt) != canonical_json_bytes(artifact):
+        raise SystemContractError("main checkout adoption semantic replay differs")
     return artifact
 
 
@@ -954,6 +1238,143 @@ def _git_blob(repository_root: Path, commit: str, path: str) -> tuple[str, str, 
     return mode, oid, blob
 
 
+def _git_adoption_path_rows(
+    repository_root: Path,
+    *,
+    parent_commit: str,
+    adoption_commit: str,
+) -> list[dict[str, Any]]:
+    """Reconstruct the exact single-parent adoption delta from Git objects."""
+
+    raw = _git(
+        repository_root,
+        "diff-tree",
+        "--no-commit-id",
+        "--name-status",
+        "-z",
+        "-r",
+        "--no-renames",
+        parent_commit,
+        adoption_commit,
+    )
+    parts = raw.split(b"\0")
+    if parts and parts[-1] == b"":
+        parts.pop()
+    if len(parts) % 2:
+        raise SystemPreconditionError("adoption Git delta is malformed")
+    rows: list[dict[str, Any]] = []
+    for offset in range(0, len(parts), 2):
+        try:
+            status_code = parts[offset].decode("ascii")
+            path = parts[offset + 1].decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise SystemPreconditionError("adoption Git delta is not canonical text") from exc
+        status = {"A": "ADDED", "M": "MODIFIED"}.get(status_code)
+        if status is None:
+            raise SystemPreconditionError("adoption Git delta contains a non-A/M path")
+        normalized_path = _path(path, label="adoption Git delta path")
+        mode, oid, blob = _git_blob(repository_root, adoption_commit, normalized_path)
+        rows.append(
+            {
+                "path": normalized_path,
+                "status": status,
+                "mode": mode,
+                "size": len(blob),
+                "git_blob_oid": oid,
+                "byte_sha256": _sha256(blob),
+            }
+        )
+    if rows != sorted(rows, key=lambda row: row["path"]):
+        raise SystemPreconditionError("adoption Git delta order is unstable")
+    return _validate_adoption_path_rows(rows)
+
+
+def validate_main_checkout_adoption_closure(
+    document: Mapping[str, Any] | bytes,
+    *,
+    repository_root: str | os.PathLike[str],
+    final_commit: str,
+    final_preflight_rows: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Deeply replay a prospective main-checkout adoption from immutable Git."""
+
+    artifact = validate_main_checkout_adoption(document)
+    payload = artifact["payload"]
+    root = Path(repository_root).resolve(strict=True)
+    top = Path(_git(root, "rev-parse", "--show-toplevel").decode("utf-8").strip()).resolve()
+    if top != root:
+        raise SystemPreconditionError("adoption repository root differs")
+
+    adoption_commit = payload["adoption_commit"]
+    adoption_parent = payload["adoption_parent"]
+    adoption_tree = payload["adoption_tree"]
+    baseline = payload["accepted_baseline_commit"]
+    if _git_scalar(root, "rev-parse", f"{adoption_commit}^{{commit}}") != adoption_commit:
+        raise SystemPreconditionError("adoption commit object is absent")
+    if _git_scalar(root, "rev-parse", f"{adoption_commit}^{{tree}}") != adoption_tree:
+        raise SystemPreconditionError("adoption tree differs from Git")
+    if _git_scalar(root, "rev-parse", f"{adoption_commit}^") != adoption_parent:
+        raise SystemPreconditionError("adoption direct parent differs from Git")
+    if adoption_parent != baseline:
+        raise SystemPreconditionError("adoption parent is not the accepted baseline")
+    if _git_scalar(root, "rev-parse", f"{baseline}^{{tree}}") != payload[
+        "accepted_baseline_tree"
+    ]:
+        raise SystemPreconditionError("accepted baseline tree differs from Git")
+
+    observed_rows = _git_adoption_path_rows(
+        root,
+        parent_commit=adoption_parent,
+        adoption_commit=adoption_commit,
+    )
+    if observed_rows != payload["path_rows"]:
+        raise SystemPreconditionError("adoption path rows differ from Git")
+    observed_paths = [row["path"] for row in observed_rows]
+    if sorted([*payload["task_origin_paths"], *payload["orphan_paths"]]) != observed_paths:
+        raise SystemPreconditionError("adoption path partition differs from Git")
+
+    _inventory, inventory_sha = _git_inventory(root, adoption_commit)
+    empty_status_sha = _sha256(b"")
+    for row in payload["readback_rows"]:
+        if (
+            row["commit"] != adoption_commit
+            or row["tree"] != adoption_tree
+            or row["status_porcelain_sha256"] != empty_status_sha
+            or row["path_inventory_sha256"] != inventory_sha
+        ):
+            raise SystemPreconditionError("adoption readback is not reproducible")
+    if payload["full_gate_refs"] != _validate_preflight_rows(list(final_preflight_rows)):
+        raise SystemPreconditionError("adoption full-gate bindings differ from final authority")
+
+    frozen_final = _git_oid(final_commit, label="final_commit")
+    if not _is_ancestor(root, adoption_commit, frozen_final):
+        raise SystemPreconditionError("adoption commit is not an ancestor of final release")
+    source_by_path = {row["path"]: row for row in observed_rows}
+    for disposition in payload["disposition_rows"]:
+        source = source_by_path[disposition["path"]]
+        decision = disposition["decision"]
+        if decision == "LEGACY_CUSTODY_ONLY":
+            try:
+                _git_blob(root, frozen_final, disposition["path"])
+            except SystemPreconditionError:
+                continue
+            raise SystemPreconditionError("legacy-custody path remains in final release")
+        target_mode, target_oid, target_raw = _git_blob(
+            root, frozen_final, disposition["target_path"]
+        )
+        if target_mode not in {"100600", "100644", "100755"}:
+            raise SystemPreconditionError("adoption target mode is unsafe")
+        if target_oid != disposition["target_blob_oid"]:
+            raise SystemPreconditionError("adoption target blob differs from disposition")
+        if decision == "EXACT_PRESERVED" and (
+            target_oid != source["git_blob_oid"]
+            or len(target_raw) != source["size"]
+            or _sha256(target_raw) != source["byte_sha256"]
+        ):
+            raise SystemPreconditionError("exact-preserved adoption path changed")
+    return artifact
+
+
 def _is_ancestor(repository_root: Path, ancestor: str, descendant: str) -> bool:
     try:
         completed = subprocess.run(
@@ -985,7 +1406,8 @@ def _seal_final_cutover_authorization(  # noqa: C901
     accepted_baseline_commit: str,
     historical_integration_commit: str,
     historical_dirty_evidence_ref: Mapping[str, Any],
-    concurrent_task_handoff_ref: Mapping[str, Any],
+    concurrent_task_handoff_ref: None,
+    main_checkout_adoption_ref: Mapping[str, Any],
     legacy_disposition_ref: Mapping[str, Any],
     deployed_release_ref: Mapping[str, Any],
     release_commit: str,
@@ -1000,6 +1422,10 @@ def _seal_final_cutover_authorization(  # noqa: C901
     preflight_rows: Sequence[Mapping[str, Any]],
     created_at: str,
 ) -> dict[str, Any]:
+    if concurrent_task_handoff_ref is not None:
+        raise SystemPreconditionError(
+            "prospective-adoption final authority requires null handoff tombstone"
+        )
     ancestry: list[dict[str, Any]] = []
     for index, value in enumerate(ancestry_rows):
         row = dict(value)
@@ -1053,8 +1479,9 @@ def _seal_final_cutover_authorization(  # noqa: C901
             "historical_dirty_evidence_ref": validate_object_ref(
                 historical_dirty_evidence_ref, label="historical_dirty_evidence_ref"
             ),
-            "concurrent_task_handoff_ref": validate_object_ref(
-                concurrent_task_handoff_ref, label="concurrent_task_handoff_ref"
+            "concurrent_task_handoff_ref": None,
+            "main_checkout_adoption_ref": validate_object_ref(
+                main_checkout_adoption_ref, label="main_checkout_adoption_ref"
             ),
             "legacy_disposition_ref": validate_object_ref(
                 legacy_disposition_ref, label="legacy_disposition_ref"
@@ -1094,7 +1521,8 @@ def build_final_cutover_authorization(  # noqa: C901
     accepted_baseline_commit: str,
     historical_integration_commit: str,
     historical_dirty_evidence_ref: Mapping[str, Any],
-    concurrent_task_handoff_ref: Mapping[str, Any],
+    concurrent_task_handoff_ref: None,
+    main_checkout_adoption_ref: Mapping[str, Any],
     legacy_disposition_ref: Mapping[str, Any],
     deployed_release_ref: Mapping[str, Any],
     release_commit: str,
@@ -1138,6 +1566,7 @@ def build_final_cutover_authorization(  # noqa: C901
         historical_integration_commit=historical_integration_commit,
         historical_dirty_evidence_ref=historical_dirty_evidence_ref,
         concurrent_task_handoff_ref=concurrent_task_handoff_ref,
+        main_checkout_adoption_ref=main_checkout_adoption_ref,
         legacy_disposition_ref=legacy_disposition_ref,
         deployed_release_ref=deployed_release_ref,
         release_commit=release_commit,
@@ -1170,6 +1599,7 @@ def validate_final_cutover_authorization(
         historical_integration_commit=payload["historical_integration_commit"],
         historical_dirty_evidence_ref=payload["historical_dirty_evidence_ref"],
         concurrent_task_handoff_ref=payload["concurrent_task_handoff_ref"],
+        main_checkout_adoption_ref=payload["main_checkout_adoption_ref"],
         legacy_disposition_ref=payload["legacy_disposition_ref"],
         deployed_release_ref=payload["deployed_release_ref"],
         release_commit=payload["release_commit"],
@@ -1255,24 +1685,30 @@ def validate_final_cutover_authorization_closure(  # noqa: C901
         ):
             raise SystemPreconditionError("clean checkout readback is not reproducible")
 
-    handoff = validate_concurrent_task_handoff(
-        object_resolver(payload["concurrent_task_handoff_ref"])
+    if payload["concurrent_task_handoff_ref"] is not None:
+        raise SystemPreconditionError("prospective-adoption handoff tombstone is not null")
+    adoption_ref = payload["main_checkout_adoption_ref"]
+    adoption = validate_main_checkout_adoption_closure(
+        object_resolver(adoption_ref),
+        repository_root=root,
+        final_commit=final_commit,
+        final_preflight_rows=payload["preflight_rows"],
     )
+    if object_ref_for_artifact(adoption) != adoption_ref:
+        raise SystemPreconditionError("main checkout adoption exact object differs")
     disposition = validate_legacy_source_disposition(
         object_resolver(payload["legacy_disposition_ref"])
     )
     object_resolver(payload["historical_dirty_evidence_ref"])
-    handoff_payload = handoff["payload"]
-    if handoff_payload["accepted_baseline_commit"] != payload["accepted_baseline_commit"]:
-        raise SystemPreconditionError("handoff baseline differs from final authorization")
-    task_commit = handoff_payload["task_commit"]
-    if _git_scalar(root, "rev-parse", f"{task_commit}^{{tree}}") != handoff_payload["task_tree"]:
-        raise SystemPreconditionError("handoff task tree differs from Git")
+    adoption_payload = adoption["payload"]
+    if adoption_payload["accepted_baseline_commit"] != payload["accepted_baseline_commit"]:
+        raise SystemPreconditionError("adoption baseline differs from final authorization")
+    adoption_commit = adoption_payload["adoption_commit"]
 
     required_ancestors = {
         payload["accepted_baseline_commit"],
         payload["historical_integration_commit"],
-        task_commit,
+        adoption_commit,
     }
     claimed_pairs = {(row["ancestor"], row["descendant"]) for row in payload["ancestry_rows"]}
     for ancestor in required_ancestors:
@@ -1286,34 +1722,6 @@ def validate_final_cutover_authorization_closure(  # noqa: C901
     for row in payload["excluded_commit_rows"]:
         if _is_ancestor(root, row["commit"], row["descendant"]):
             raise SystemPreconditionError("excluded commit is an ancestor of final release")
-
-    disposition_by_source = {row["source_path"]: row for row in disposition["payload"]["rows"]}
-    for row in handoff_payload["path_rows"]:
-        task_mode, task_oid, task_raw = _git_blob(root, task_commit, row["path"])
-        if (
-            task_mode != row["mode"]
-            or task_oid != row["git_blob_oid"]
-            or len(task_raw) != row["size"]
-            or _sha256(task_raw) != row["byte_sha256"]
-        ):
-            raise SystemPreconditionError("handoff path does not match task commit")
-        try:
-            final_mode, final_oid, final_raw = _git_blob(root, final_commit, row["path"])
-        except SystemPreconditionError:
-            final_mode = final_oid = ""
-            final_raw = b""
-        if (final_mode, final_oid, final_raw) == (task_mode, task_oid, task_raw):
-            continue
-        disposition_row = disposition_by_source.get(row["path"])
-        if disposition_row is None or disposition_row["classification"] != "PORTED_TO_STABLE":
-            raise SystemPreconditionError("task-owned path is not preserved or ported")
-        stable_mode, stable_oid, _ = _git_blob(
-            root, final_commit, disposition_row["stable_target_path"]
-        )
-        if stable_mode not in {"100600", "100644", "100755"} or stable_oid != (
-            disposition_row["stable_target_blob_oid"]
-        ):
-            raise SystemPreconditionError("ported task path target differs from disposition")
 
     for row in disposition["payload"]["rows"]:
         _mode, source_oid, _raw = _git_blob(
@@ -1446,6 +1854,7 @@ def publish_authority_artifact(  # noqa: C901
         raise SystemContractError("authority artifact kind is not permitted")
     validators = {
         CONCURRENT_HANDOFF_KIND: validate_concurrent_task_handoff,
+        MAIN_CHECKOUT_ADOPTION_KIND: validate_main_checkout_adoption,
         LEGACY_DISPOSITION_KIND: validate_legacy_source_disposition,
         FINAL_AUTHORIZATION_KIND: validate_final_cutover_authorization,
         GATE_EVIDENCE_KIND: validate_cutover_gate_evidence,
@@ -1522,10 +1931,12 @@ __all__ = [
     "CONCURRENT_HANDOFF_KIND",
     "FINAL_AUTHORIZATION_KIND",
     "LEGACY_DISPOSITION_KIND",
+    "MAIN_CHECKOUT_ADOPTION_KIND",
     "REQUIRED_FINAL_PREFLIGHT_GATES",
     "build_concurrent_task_handoff",
     "build_final_cutover_authorization",
     "build_legacy_source_disposition",
+    "build_main_checkout_adoption",
     "publish_authority_artifact",
     "run_cutover_gate",
     "validate_concurrent_task_handoff",
@@ -1533,4 +1944,6 @@ __all__ = [
     "validate_final_cutover_authorization",
     "validate_final_cutover_authorization_closure",
     "validate_legacy_source_disposition",
+    "validate_main_checkout_adoption",
+    "validate_main_checkout_adoption_closure",
 ]
