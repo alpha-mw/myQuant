@@ -3327,11 +3327,19 @@ def validate_successor_provenance(
         expected_sha = str(value["sha256"]).lower()
         if evidence_root not in path.parents:
             _fail("SUPPORT_REFERENCE_TAMPER", f"permanent support bytes changed: {name}")
-        permanent_payloads[name] = _successor_read_bytes(
-            path,
-            expected_sha256=expected_sha,
-            sealed_fileset=sealed_fileset,
-        )
+        try:
+            permanent_payloads[name] = _successor_read_bytes(
+                path,
+                expected_sha256=expected_sha,
+                sealed_fileset=sealed_fileset,
+            )
+        except SafeSuccessorError as exc:
+            if exc.code in {"SUCCESSOR_FILE_HASH_MISMATCH", "SUCCESSOR_FILE_SIZE_INVALID"}:
+                _fail(
+                    "SUPPORT_REFERENCE_TAMPER",
+                    f"permanent support bytes changed: {name}",
+                )
+            raise
     if (
         hashlib.sha256(permanent_payloads["predecessor_pointer"]).hexdigest()
         != predecessor["pointer_sha256"]
@@ -3377,11 +3385,22 @@ def validate_successor_provenance(
             or expected_sha != str(binding.get("sha256") or "").lower()
         ):
             _fail("TARGET_SEALED_REF_TAMPER", f"sealed target bytes changed: {name}")
-        sealed_target_payloads[name] = _successor_read_bytes(
-            path,
-            expected_sha256=expected_sha,
-            sealed_fileset=sealed_fileset,
-        )
+        try:
+            sealed_target_payloads[name] = _successor_read_bytes(
+                path,
+                expected_sha256=expected_sha,
+                sealed_fileset=sealed_fileset,
+            )
+        except SafeSuccessorError as exc:
+            if exc.code in {
+                "SUCCESSOR_FILE_HASH_MISMATCH",
+                "SUCCESSOR_FILE_SIZE_INVALID",
+            }:
+                _fail(
+                    "TARGET_SEALED_REF_TAMPER",
+                    f"sealed target bytes changed: {name}",
+                )
+            raise
         for reference in binding.get("immutable_refs", []):
             reference_candidate = Path(str(reference.get("path") or "")).expanduser()
             ref_path = (

@@ -516,7 +516,7 @@ def _open_stable_parquet_path(
             os.close(descriptor)
 
 
-def _iter_bounded_parquet_rows(
+def _iter_bounded_parquet_rows(  # noqa: C901
     *,
     columns: Sequence[str],
     path: Path | None = None,
@@ -2130,7 +2130,7 @@ def _receipt_input_source_rows(
     return rows
 
 
-def _receipt_copied_paths(
+def _receipt_copied_paths(  # noqa: C901
     *,
     store: SystemStore,
     normalized: Mapping[str, Any],
@@ -2420,7 +2420,7 @@ def _historical_generation_intent_sha256(
     return hashlib.sha256(canonical_json_bytes(body)).hexdigest()
 
 
-def _validate_historical_production_bootstrap_generation_closure(
+def _validate_historical_production_bootstrap_generation_closure(  # noqa: C901
     *,
     store: SystemStore,
     verified_generation: Mapping[str, Any],
