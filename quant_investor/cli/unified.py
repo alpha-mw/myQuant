@@ -559,6 +559,16 @@ def factor_history(*, workspace_root: str) -> dict[str, Any]:
             "entries": [],
             "blockers": ["SYSTEM_ACTIVE_POINTER_ABSENT"],
         }
+    if (
+        active.get("generation_state") == "OPERATIONAL"
+        and active.get("deployed_release_verified") is not True
+    ):
+        return {
+            "status": "BLOCKED",
+            "active_generation_id": active.get("generation_id"),
+            "entries": [],
+            "blockers": ["SYSTEM_DEPLOYED_RELEASE_UNCONFIRMED"],
+        }
     factor_set = active.get("factor_active_set")
     factor_status_artifact = active.get("factor_status")
     entry = {

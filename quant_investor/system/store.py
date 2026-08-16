@@ -2965,7 +2965,7 @@ class SystemStore:
             "final_cutover_authorization_byte_sha256": (final_authorization_stored.byte_sha256),
         }
 
-    def read_active(
+    def read_active(  # noqa: C901 - current-release verification with historical fallback
         self, *, deployed_release_ref: Mapping[str, Any] | None = None
     ) -> dict[str, Any] | None:
         """Return the fully resolved active generation, or ``None`` if uninitialized."""
@@ -2978,7 +2978,41 @@ class SystemStore:
         pointer = current["pointer"]
 
         if current["pointer_byte_sha256"] == completion["initial_pointer_byte_sha256"]:
-            verified = completion["initial_generation"]
+            anchored_release_ref = validate_object_ref(
+                completion["authorization"]["payload"]["deployed_release_ref"],
+                label="initial authorization deployed release ref",
+            )
+            if deployed_release_ref is not None:
+                requested_release_ref = validate_object_ref(
+                    deployed_release_ref,
+                    label="deployed_release_ref",
+                )
+                if requested_release_ref != anchored_release_ref:
+                    raise SystemContractError(
+                        "requested release differs from initial authorization"
+                    )
+            else:
+                requested_release_ref = anchored_release_ref
+            try:
+                verified = self._verify_generation(
+                    pointer["generation_id"],
+                    deployed_release_ref=requested_release_ref,
+                    validation_level="stat",
+                )
+                from quant_investor.factors.governance.production import (
+                    validate_production_bootstrap_generation_closure,
+                )
+
+                validate_production_bootstrap_generation_closure(
+                    store=self,
+                    verified_generation=verified,
+                    deployed_release_ref=requested_release_ref,
+                    validation_mode="PRE_CAS_CURRENT",
+                )
+            except SystemError:
+                if deployed_release_ref is not None:
+                    raise
+                verified = completion["initial_generation"]
         else:
             try:
                 verified = self._verify_generation(

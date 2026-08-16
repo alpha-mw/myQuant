@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 import quant_investor.factors.governance.production as production_module
+import quant_investor.system.store as system_store_module
 
 from quant_investor.contracts import (
     canonical_json_bytes,
@@ -221,6 +222,8 @@ def test_completed_activation_replay_is_exact_and_never_repeats_cas(
     assert second["activation"]["cas_performed"] is False
     assert first["pointer"] == second["pointer"]
     assert first["migration_completion"]["marker"] == second["migration_completion"]["marker"]
+    assert first["deployed_release_verified"] is True
+    assert second["deployed_release_verified"] is True
 
 
 def test_initial_marker_remains_valid_after_descendant_release_commit(tmp_path: Path) -> None:
@@ -256,7 +259,29 @@ def test_initial_marker_remains_valid_after_descendant_release_commit(tmp_path: 
     readback = store.read_active()
     assert readback is not None
     assert readback["pointer"] == activated["pointer"]
+    assert readback["deployed_release_verified"] is True
     assert readback["migration_completion"]["marker"]["payload"]["migration_replay_refused"] is True
+
+
+def test_default_initial_read_falls_back_to_historical_when_install_drifted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    closure, _generation, inputs = _case(tmp_path)
+    store = closure["store"]
+    activated = store.activate_initial_generation(**inputs)
+
+    def reject_drifted_install(_release: object) -> None:
+        raise SystemContractError("installed release differs")
+
+    monkeypatch.setattr(system_store_module, "_verify_installed_release", reject_drifted_install)
+    readback = store.read_active()
+    assert readback["pointer"] == activated["pointer"]
+    assert readback["deployed_release_verified"] is False
+    assert readback["historical_release_verified"] is True
+
+    with pytest.raises(SystemContractError, match="installed release differs"):
+        store.read_active(deployed_release_ref=inputs["deployed_release_ref"])
 
 
 def test_fresh_descendant_process_uses_historical_anchor_and_can_suspend(

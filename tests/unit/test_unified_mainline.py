@@ -11,6 +11,7 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+import quant_investor.factors.governance.production as production_module
 
 from quant_investor.cli.main import main
 from quant_investor.contracts import canonical_json_bytes, seal_artifact
@@ -747,7 +748,15 @@ def test_mainline_readiness_preserves_factor_and_source_blockers() -> None:
 def test_real_operational_generation_returns_only_generation_bound_result(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # This test exercises Mainline state transitions below the independently
+    # tested production-source admission boundary.
+    monkeypatch.setattr(
+        production_module,
+        "validate_production_bootstrap_generation_closure",
+        lambda **_kwargs: {},
+    )
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir(mode=0o700)
     source_root = workspace_root

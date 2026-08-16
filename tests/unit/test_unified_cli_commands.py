@@ -348,6 +348,37 @@ def test_factor_history_projects_authoritative_composite_cycle_state(
     }
 
 
+def test_factor_history_blocks_historical_unconfirmed_release(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import quant_investor.system as system
+
+    class SystemStoreBoundary:
+        def __init__(self, workspace_root: object) -> None:
+            assert workspace_root == str(tmp_path)
+
+        def read_active(self) -> dict:
+            return {
+                "deployed_release_verified": False,
+                "generation_id": "a" * 64,
+                "generation_state": "OPERATIONAL",
+                "historical_release_verified": True,
+            }
+
+    monkeypatch.setattr(system, "SystemStore", SystemStoreBoundary)
+
+    main(["factor", "history", "--workspace-root", str(tmp_path)])
+
+    assert _line(capsys) == {
+        "active_generation_id": "a" * 64,
+        "blockers": ["SYSTEM_DEPLOYED_RELEASE_UNCONFIRMED"],
+        "entries": [],
+        "status": "BLOCKED",
+    }
+
+
 @pytest.mark.parametrize(
     "forbidden_field",
     [
