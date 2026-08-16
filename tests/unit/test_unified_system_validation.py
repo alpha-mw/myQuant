@@ -556,7 +556,7 @@ def test_corrupt_prepared_mapping_fails_closed_without_callback_replay(
     assert list(fixture["workspace"].rglob("completion.json")) == []
 
 
-def test_runner_rejects_process_rss_above_the_hard_limit_before_callback_resolution(
+def test_runner_does_not_charge_long_lived_parent_rss_to_the_callback_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(validation_module, "_open_fd_count", lambda: 0)
@@ -565,17 +565,22 @@ def test_runner_rejects_process_rss_above_the_hard_limit_before_callback_resolut
         "_resident_rss_bytes",
         lambda: MAXIMUM_VALIDATION_RSS_BYTES + 1,
     )
-    with pytest.raises(SystemSecurityError, match="RSS"):
-        validation_module._invoke_callback(
-            object(),
-            profile={
-                "callback_module": "never.imported",
-                "callback_qualified_name": "never",
-                "validation_lane": "BOOTSTRAP",
-            },
-            validation_request={},
-            trusted_at=STAMP,
-        )
+    monkeypatch.setattr(
+        validation_module,
+        "_run_callback_worker",
+        lambda *args, **kwargs: ({"validated": True}, 1),
+    )
+
+    assert validation_module._invoke_callback(
+        object(),
+        profile={
+            "callback_module": "quant_investor.factors.governance.contextual",
+            "callback_qualified_name": "validate_bootstrap_contextual_run",
+            "validation_lane": "BOOTSTRAP",
+        },
+        validation_request={},
+        trusted_at=STAMP,
+    ) == {"validated": True}
 
 
 def test_invocation_worker_rejects_transient_peak_after_memory_is_released() -> None:

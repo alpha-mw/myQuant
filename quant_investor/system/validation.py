@@ -1040,6 +1040,9 @@ def _run_callback_worker(  # noqa: C901
             raise SystemSecurityError("contextual validation worker could not start") from exc
         if process_id == 0:
             try:
+                baseline_rss = _resident_rss_bytes()
+                if baseline_rss <= 0:
+                    raise SystemSecurityError("contextual validation RSS baseline is unavailable")
                 try:
                     result = callback(
                         system_store=store,
@@ -1050,11 +1053,16 @@ def _run_callback_worker(  # noqa: C901
                         raise SystemContractError(
                             "compiled validation callback did not return an exact payload"
                         )
-                    envelope = {"state": "PASS", "result": result}
+                    envelope = {
+                        "state": "PASS",
+                        "baseline_rss_bytes": baseline_rss,
+                        "result": result,
+                    }
                 except BaseException as exc:  # child boundary must not leak a traceback
                     name, code, detail = _error_detail(exc)
                     envelope = {
                         "state": "ERROR",
+                        "baseline_rss_bytes": baseline_rss,
                         "error_type": name,
                         "error_code": code,
                         "error_detail": detail,
@@ -1065,6 +1073,7 @@ def _run_callback_worker(  # noqa: C901
                     raw = canonical_json_bytes(
                         {
                             "state": "ERROR",
+                            "baseline_rss_bytes": baseline_rss,
                             "error_type": "SystemSecurityError",
                             "error_code": "SYSTEM_STORAGE_SECURITY",
                             "error_detail": "contextual validation worker result is invalid",
@@ -1074,6 +1083,7 @@ def _run_callback_worker(  # noqa: C901
                     raw = canonical_json_bytes(
                         {
                             "state": "ERROR",
+                            "baseline_rss_bytes": baseline_rss,
                             "error_type": "SystemSecurityError",
                             "error_code": "SYSTEM_STORAGE_SECURITY",
                             "error_detail": "contextual validation worker result is too large",
@@ -1123,8 +1133,6 @@ def _run_callback_worker(  # noqa: C901
         ):
             raise SystemSecurityError("contextual validation worker terminated unexpectedly")
         peak_rss = _worker_peak_rss_bytes(usage)
-        if peak_rss <= 0 or peak_rss > MAXIMUM_VALIDATION_RSS_BYTES:
-            raise SystemSecurityError("contextual validation RSS bound exceeded")
         channel.seek(0, os.SEEK_END)
         size = channel.tell()
         if size <= 0 or size > _MAXIMUM_WORKER_RESULT_BYTES:
@@ -1137,9 +1145,20 @@ def _run_callback_worker(  # noqa: C901
         raise SystemSecurityError("contextual validation worker result is invalid") from exc
     if type(envelope) is not dict or envelope.get("state") not in {"PASS", "ERROR"}:
         raise SystemSecurityError("contextual validation worker response is invalid")
+    observed_baseline_rss = envelope.get("baseline_rss_bytes")
+    if (
+        type(observed_baseline_rss) is not int
+        or observed_baseline_rss <= 0
+        or peak_rss < observed_baseline_rss
+        or peak_rss - observed_baseline_rss > MAXIMUM_VALIDATION_RSS_BYTES
+    ):
+        raise SystemSecurityError("contextual validation RSS bound exceeded")
     if envelope["state"] == "ERROR":
         raise _worker_error(envelope)
-    if set(envelope) != {"state", "result"} or type(envelope["result"]) is not dict:
+    if (
+        set(envelope) != {"state", "baseline_rss_bytes", "result"}
+        or type(envelope["result"]) is not dict
+    ):
         raise SystemSecurityError("contextual validation worker response is invalid")
     return dict(envelope["result"]), peak_rss
 
@@ -1153,9 +1172,6 @@ def _invoke_callback(
 ) -> dict[str, Any]:
     if _open_fd_count() > MAXIMUM_VALIDATION_OPEN_FDS:
         raise SystemSecurityError("validation runner file descriptor bound exceeded")
-    before_rss = _resident_rss_bytes()
-    if before_rss > MAXIMUM_VALIDATION_RSS_BYTES:
-        raise SystemSecurityError("contextual validation RSS bound exceeded")
     from quant_investor.factors.governance.contextual import (
         validate_bootstrap_contextual_run,
         validate_prospective_contextual_run,
@@ -1191,9 +1207,6 @@ def _invoke_callback(
     )
     if _open_fd_count() > MAXIMUM_VALIDATION_OPEN_FDS:
         raise SystemSecurityError("validation runner file descriptor bound exceeded")
-    after_rss = _resident_rss_bytes()
-    if after_rss > MAXIMUM_VALIDATION_RSS_BYTES:
-        raise SystemSecurityError("contextual validation RSS bound exceeded")
     return dict(result)
 
 
