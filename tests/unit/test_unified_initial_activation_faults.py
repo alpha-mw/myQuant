@@ -12,11 +12,13 @@ import pytest
 import quant_investor.factors.governance.production as production_module
 import quant_investor.system.store as system_store_module
 
+from quant_investor.cli.unified import factor_history, system_status, system_verify
 from quant_investor.contracts import (
     canonical_json_bytes,
     parse_canonical_json_bytes,
     seal_artifact,
 )
+from quant_investor.mainline import MainlineStore
 from quant_investor.system import (
     ACTIVE_POINTER_PATH,
     ACTIVATION_TRANSACTIONS_ROOT,
@@ -279,6 +281,41 @@ def test_default_initial_read_falls_back_to_historical_when_install_drifted(
     assert readback["pointer"] == activated["pointer"]
     assert readback["deployed_release_verified"] is False
     assert readback["historical_release_verified"] is True
+    completion = store.verify_migration_completion()
+    assert completion["initial_pointer"] == activated["pointer"]
+
+    import quant_investor.system as system_package
+
+    monkeypatch.setattr(system_package, "SystemStore", lambda _workspace_root: store)
+    active_verify = system_verify(
+        workspace_root=str(closure["workspace"]),
+        generation_id=None,
+    )
+    assert active_verify == {
+        "status": "BLOCKED",
+        "active_generation_id": activated["generation_id"],
+        "generation_state": "OPERATIONAL",
+        "verified": False,
+        "blockers": ["SYSTEM_DEPLOYED_RELEASE_UNCONFIRMED"],
+    }
+    named_verify = system_verify(
+        workspace_root=str(closure["workspace"]),
+        generation_id=activated["generation_id"],
+    )
+    assert named_verify["status"] == "VERIFIED"
+    assert named_verify["verified"] is True
+    status_result = system_status(workspace_root=str(closure["workspace"]))
+    assert status_result["capabilities"]["system"] == "PARTIAL"
+    assert "SYSTEM_DEPLOYED_RELEASE_UNCONFIRMED" in status_result["blockers"]
+    assert factor_history(workspace_root=str(closure["workspace"])) == {
+        "status": "BLOCKED",
+        "active_generation_id": activated["generation_id"],
+        "entries": [],
+        "blockers": ["SYSTEM_DEPLOYED_RELEASE_UNCONFIRMED"],
+    }
+    assert MainlineStore(closure["workspace"], system_store=store).status(strategy_id="fixture")[
+        "blockers"
+    ] == ["DEPLOYED_RELEASE_NOT_VERIFIED"]
 
     with pytest.raises(SystemContractError, match="installed release differs"):
         store.read_active(deployed_release_ref=inputs["deployed_release_ref"])

@@ -133,6 +133,18 @@ def system_verify(
             "verified": False,
             "blockers": list(verified.get("blockers", [])),
         }
+    if (
+        generation_id is None
+        and verified.get("generation_state") == "OPERATIONAL"
+        and verified.get("deployed_release_verified") is not True
+    ):
+        return {
+            "status": "BLOCKED",
+            "active_generation_id": verified["generation_id"],
+            "generation_state": verified["generation_state"],
+            "verified": False,
+            "blockers": ["SYSTEM_DEPLOYED_RELEASE_UNCONFIRMED"],
+        }
     return {
         "status": "VERIFIED",
         "active_generation_id": verified["generation_id"],
