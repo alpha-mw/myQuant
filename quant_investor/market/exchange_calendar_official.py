@@ -413,7 +413,9 @@ def decoder_id(exchange: str, role: EvidenceRole, issuer_category_id: str | None
     return value
 
 
-def validate_required_category_set(document: Mapping[str, Any]) -> dict[str, Any]:
+def validate_required_category_set(  # noqa: C901
+    document: Mapping[str, Any],
+) -> dict[str, Any]:
     if type(document) is not dict or set(document) != _INDEX_POLICY_FIELDS:
         raise SystemContractError("official calendar required-category set fields differ")
     result = dict(document)
