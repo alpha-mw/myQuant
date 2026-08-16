@@ -562,7 +562,7 @@ def test_runner_rejects_process_rss_above_the_hard_limit_before_callback_resolut
     monkeypatch.setattr(validation_module, "_open_fd_count", lambda: 0)
     monkeypatch.setattr(
         validation_module,
-        "_maximum_rss_bytes",
+        "_resident_rss_bytes",
         lambda: MAXIMUM_VALIDATION_RSS_BYTES + 1,
     )
     with pytest.raises(SystemSecurityError, match="RSS"):

@@ -8,7 +8,6 @@ import hashlib
 import os
 from pathlib import PurePosixPath
 import re
-import resource
 import sys
 import time
 from typing import Any, Final
@@ -880,9 +879,79 @@ def _open_fd_count() -> int:
         return 0
 
 
-def _maximum_rss_bytes() -> int:
-    value = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    return int(value if sys.platform == "darwin" else value * 1024)
+def _resident_rss_bytes() -> int:
+    """Return current resident bytes, never the process-lifetime high-water mark."""
+
+    if sys.platform == "darwin":
+        import ctypes
+        import ctypes.util
+
+        fields = [("ri_uuid", ctypes.c_uint8 * 16)] + [
+            (name, ctypes.c_uint64)
+            for name in (
+                "ri_user_time",
+                "ri_system_time",
+                "ri_pkg_idle_wkups",
+                "ri_interrupt_wkups",
+                "ri_pageins",
+                "ri_wired_size",
+                "ri_resident_size",
+                "ri_phys_footprint",
+                "ri_proc_start_abstime",
+                "ri_proc_exit_abstime",
+                "ri_child_user_time",
+                "ri_child_system_time",
+                "ri_child_pkg_idle_wkups",
+                "ri_child_interrupt_wkups",
+                "ri_child_pageins",
+                "ri_child_elapsed_abstime",
+                "ri_diskio_bytesread",
+                "ri_diskio_byteswritten",
+            )
+        ]
+        rusage_info_v2 = type(
+            "_RusageInfoV2",
+            (ctypes.Structure,),
+            {"_fields_": fields},
+        )
+        library_path = ctypes.util.find_library("proc")
+        if library_path is None:
+            raise SystemSecurityError("current resident RSS measurement unavailable")
+        try:
+            library = ctypes.CDLL(library_path)
+            library.proc_pid_rusage.argtypes = [
+                ctypes.c_int,
+                ctypes.c_int,
+                ctypes.c_void_p,
+            ]
+            library.proc_pid_rusage.restype = ctypes.c_int
+            usage = rusage_info_v2()
+            result = library.proc_pid_rusage(
+                os.getpid(),
+                2,  # RUSAGE_INFO_V2
+                ctypes.byref(usage),
+            )
+            resident = int(usage.ri_resident_size)
+        except (AttributeError, OSError, TypeError, ValueError) as exc:
+            raise SystemSecurityError("current resident RSS measurement unavailable") from exc
+        if result != 0 or resident <= 0:
+            raise SystemSecurityError("current resident RSS measurement unavailable")
+        return resident
+
+    if sys.platform.startswith("linux"):
+        try:
+            with open("/proc/self/statm", encoding="ascii") as handle:
+                fields = handle.read(256).split()
+            resident_pages = int(fields[1])
+            page_size = int(os.sysconf("SC_PAGE_SIZE"))
+        except (IndexError, OSError, TypeError, ValueError) as exc:
+            raise SystemSecurityError("current resident RSS measurement unavailable") from exc
+        resident = resident_pages * page_size
+        if resident <= 0:
+            raise SystemSecurityError("current resident RSS measurement unavailable")
+        return resident
+
+    raise SystemSecurityError("current resident RSS measurement unavailable")
 
 
 def _invoke_callback(
@@ -894,7 +963,7 @@ def _invoke_callback(
 ) -> dict[str, Any]:
     if _open_fd_count() > MAXIMUM_VALIDATION_OPEN_FDS:
         raise SystemSecurityError("validation runner file descriptor bound exceeded")
-    before_rss = _maximum_rss_bytes()
+    before_rss = _resident_rss_bytes()
     if before_rss > MAXIMUM_VALIDATION_RSS_BYTES:
         raise SystemSecurityError("contextual validation RSS bound exceeded")
     started = time.monotonic()
@@ -934,7 +1003,7 @@ def _invoke_callback(
         raise SystemSecurityError("contextual validation time bound exceeded")
     if _open_fd_count() > MAXIMUM_VALIDATION_OPEN_FDS:
         raise SystemSecurityError("validation runner file descriptor bound exceeded")
-    after_rss = _maximum_rss_bytes()
+    after_rss = _resident_rss_bytes()
     if after_rss > MAXIMUM_VALIDATION_RSS_BYTES:
         raise SystemSecurityError("contextual validation RSS bound exceeded")
     if type(result) is not dict:
