@@ -39,6 +39,12 @@ predecessor bytes. Any source, schema, canonicalization, hidden-PIT,
 resource-budget, keyset, SHA, CAS, readback, or pointer-drift blocker leaves the
 current healthy Fundamental pointer unchanged.
 
+Path-backed staging and promotion use the same exact-byte custody boundary as
+sealed source filesets. Each owner-only, regular, single-link Parquet file is
+hashed from an `O_NOFOLLOW` descriptor before decoding, rewound and decoded
+through that same descriptor, then rehashed and inode-checked after decoding.
+Logical table equivalence never replaces the manifest's exact Parquet byte SHA.
+
 ## Derivation boundary
 
 A safe successor is a mixed generation. The original seam remains the first

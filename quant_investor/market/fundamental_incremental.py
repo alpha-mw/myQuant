@@ -20,6 +20,7 @@ import json
 import math
 import os
 import shutil
+import stat
 import tempfile
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -2287,6 +2288,7 @@ def _write_streamed_candidate(
                 )
     finally:
         writer.close()
+    os.chmod(destination, 0o600, follow_symlinks=False)
     _fsync_file(destination)
     return parent_rows
 
@@ -2326,7 +2328,7 @@ def _assert_streamed_prefix_equal(
 
 
 @contextmanager
-def _successor_open_parquet(
+def _successor_open_parquet(  # noqa: C901
     path: Path,
     *,
     expected_sha256: str,
@@ -2338,11 +2340,132 @@ def _successor_open_parquet(
             expected_sha256=expected_sha256,
             maximum_bytes=SUCCESSOR_REPLAY_MAX_FILE_BYTES,
             decoded_reservation_bytes=SUCCESSOR_REPLAY_BATCH_BYTES,
-        ) as stream:
-            yield stream
+        ) as governed_stream:
+            yield governed_stream
         return
-    with path.open("rb") as stream:
-        yield stream
+
+    descriptor: int | None = None
+    stream: BinaryIO | None = None
+
+    def identity(value: os.stat_result) -> tuple[int, ...]:
+        return (
+            int(value.st_dev),
+            int(value.st_ino),
+            int(value.st_mode),
+            int(value.st_uid),
+            int(value.st_nlink),
+            int(value.st_size),
+            int(value.st_mtime_ns),
+            int(value.st_ctime_ns),
+        )
+
+    def verify_file(value: os.stat_result) -> None:
+        if (
+            not stat.S_ISREG(value.st_mode)
+            or value.st_uid != os.geteuid()
+            or stat.S_IMODE(value.st_mode) != 0o600
+            or value.st_nlink != 1
+        ):
+            _fail(
+                "SUCCESSOR_FILE_SECURITY_INVALID",
+                f"Parquet source identity is unsafe: {path.name}",
+            )
+        if value.st_size <= 0 or value.st_size > SUCCESSOR_REPLAY_MAX_FILE_BYTES:
+            _fail(
+                "SUCCESSOR_FILE_SIZE_INVALID",
+                f"source byte bound failed: {path.name}",
+            )
+
+    def descriptor_sha256(value: os.stat_result) -> str:
+        assert descriptor is not None
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        digest = hashlib.sha256()
+        seen = 0
+        while True:
+            chunk = os.read(descriptor, min(1024 * 1024, SUCCESSOR_REPLAY_MAX_FILE_BYTES + 1))
+            if not chunk:
+                break
+            seen += len(chunk)
+            if seen > SUCCESSOR_REPLAY_MAX_FILE_BYTES:
+                _fail(
+                    "SUCCESSOR_FILE_SIZE_INVALID",
+                    f"source byte bound failed: {path.name}",
+                )
+            digest.update(chunk)
+        if seen != value.st_size:
+            _fail(
+                "SUCCESSOR_FILE_IDENTITY_DRIFT",
+                f"Parquet source size changed during replay: {path.name}",
+            )
+        return digest.hexdigest()
+
+    try:
+        if path.parent.resolve(strict=True) != path.parent:
+            _fail(
+                "SUCCESSOR_FILE_SECURITY_INVALID",
+                f"Parquet source parent is not canonical: {path.name}",
+            )
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+        descriptor = os.open(path, flags)
+        before = os.fstat(descriptor)
+        verify_file(before)
+        if descriptor_sha256(before) != expected_sha256:
+            _fail(
+                "SUCCESSOR_FILE_HASH_MISMATCH",
+                f"source bytes changed: {path.name}",
+            )
+        after_hash = os.fstat(descriptor)
+        path_after_hash = os.stat(path, follow_symlinks=False)
+        if identity(before) != identity(after_hash) or identity(after_hash) != identity(
+            path_after_hash
+        ):
+            _fail(
+                "SUCCESSOR_FILE_IDENTITY_DRIFT",
+                f"Parquet source changed before decode: {path.name}",
+            )
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        stream = os.fdopen(os.dup(descriptor), "rb", closefd=True)
+        try:
+            yield stream
+        finally:
+            stream.close()
+            stream = None
+            after_decode = os.fstat(descriptor)
+            path_after_decode = os.stat(path, follow_symlinks=False)
+            if identity(before) != identity(after_decode) or identity(after_decode) != identity(
+                path_after_decode
+            ):
+                _fail(
+                    "SUCCESSOR_FILE_IDENTITY_DRIFT",
+                    f"Parquet source changed during decode: {path.name}",
+                )
+            if descriptor_sha256(after_decode) != expected_sha256:
+                _fail(
+                    "SUCCESSOR_FILE_HASH_MISMATCH",
+                    f"source bytes changed during decode: {path.name}",
+                )
+            after_final_hash = os.fstat(descriptor)
+            path_after_final_hash = os.stat(path, follow_symlinks=False)
+            if identity(after_decode) != identity(after_final_hash) or identity(
+                after_final_hash
+            ) != identity(path_after_final_hash):
+                _fail(
+                    "SUCCESSOR_FILE_IDENTITY_DRIFT",
+                    f"Parquet source changed during final readback: {path.name}",
+                )
+    except SafeSuccessorError:
+        raise
+    except OSError as exc:
+        _fail(
+            "SUCCESSOR_FILE_SECURITY_INVALID",
+            f"Parquet source descriptor cannot be opened: {path.name}",
+        )
+        raise AssertionError from exc
+    finally:
+        if stream is not None:
+            stream.close()
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 def _successor_read_bytes(
@@ -3409,11 +3532,22 @@ def validate_successor_provenance(
                 else reference_candidate.resolve(strict=True)
             )
             expected_ref_sha = str(reference.get("sha256") or "").lower()
-            ref_raw = _successor_read_bytes(
-                ref_path,
-                expected_sha256=expected_ref_sha,
-                sealed_fileset=sealed_fileset,
-            )
+            try:
+                ref_raw = _successor_read_bytes(
+                    ref_path,
+                    expected_sha256=expected_ref_sha,
+                    sealed_fileset=sealed_fileset,
+                )
+            except SafeSuccessorError as exc:
+                if exc.code in {
+                    "SUCCESSOR_FILE_HASH_MISMATCH",
+                    "SUCCESSOR_FILE_SIZE_INVALID",
+                }:
+                    _fail(
+                        "TARGET_IMMUTABLE_REF_TAMPER",
+                        f"target immutable ref changed: {name}",
+                    )
+                raise
             if hashlib.sha256(ref_raw).hexdigest() != expected_ref_sha or (
                 reference.get("size") is not None and len(ref_raw) != int(reference["size"])
             ):
@@ -3486,15 +3620,28 @@ def validate_successor_provenance(
         else provider_candidate.resolve(strict=True)
     )
     provider_raw = _canonical_bytes(provider)
-    if (
-        evidence_root not in provider_path.parents
-        or _successor_read_bytes(
+    if evidence_root not in provider_path.parents:
+        _fail(
+            "SUCCESSOR_PROVIDER_FILE_READBACK_MISMATCH",
+            "sealed provider manifest bytes changed",
+        )
+    try:
+        provider_readback = _successor_read_bytes(
             provider_path,
             expected_sha256=hashlib.sha256(provider_raw).hexdigest(),
             sealed_fileset=sealed_fileset,
         )
-        != provider_raw
-    ):
+    except SafeSuccessorError as exc:
+        if exc.code in {
+            "SUCCESSOR_FILE_HASH_MISMATCH",
+            "SUCCESSOR_FILE_SIZE_INVALID",
+        }:
+            _fail(
+                "SUCCESSOR_PROVIDER_FILE_READBACK_MISMATCH",
+                "sealed provider manifest bytes changed",
+            )
+        raise
+    if provider_readback != provider_raw:
         _fail(
             "SUCCESSOR_PROVIDER_FILE_READBACK_MISMATCH",
             "sealed provider manifest bytes changed",
@@ -3508,15 +3655,28 @@ def validate_successor_provenance(
             )
         candidate = evidence_root / relative
         evidence_path = candidate if sealed_fileset is not None else candidate.resolve(strict=True)
-        if (
-            evidence_root not in evidence_path.parents
-            or _successor_file_sha256(
+        if evidence_root not in evidence_path.parents:
+            _fail(
+                "PROVIDER_EVIDENCE_READBACK_MISMATCH",
+                f"provider evidence changed: {relative}",
+            )
+        try:
+            observed_evidence_sha = _successor_file_sha256(
                 evidence_path,
                 expected_sha256=str(digest).lower(),
                 sealed_fileset=sealed_fileset,
             )
-            != str(digest).lower()
-        ):
+        except SafeSuccessorError as exc:
+            if exc.code in {
+                "SUCCESSOR_FILE_HASH_MISMATCH",
+                "SUCCESSOR_FILE_SIZE_INVALID",
+            }:
+                _fail(
+                    "PROVIDER_EVIDENCE_READBACK_MISMATCH",
+                    f"provider evidence changed: {relative}",
+                )
+            raise
+        if observed_evidence_sha != str(digest).lower():
             _fail(
                 "PROVIDER_EVIDENCE_READBACK_MISMATCH",
                 f"provider evidence changed: {relative}",
@@ -3530,17 +3690,28 @@ def validate_successor_provenance(
                 f"table path is noncanonical: {table_name}",
             )
         candidate = root / str(pointer_tables[table_name])
-        path = candidate if sealed_fileset is not None else candidate.resolve(strict=True)
+        path = candidate
         if root not in path.parents:
             _fail(
                 "UNSAFE_SUCCESSOR_TABLE_PATH",
                 f"table escapes generation root: {table_name}",
             )
-        observed = _streaming_table_evidence(
-            path,
-            expected_sha256=str(output_sha[table_name]),
-            sealed_fileset=sealed_fileset,
-        )
+        try:
+            observed = _streaming_table_evidence(
+                path,
+                expected_sha256=str(output_sha[table_name]),
+                sealed_fileset=sealed_fileset,
+            )
+        except SafeSuccessorError as exc:
+            if exc.code in {
+                "SUCCESSOR_FILE_HASH_MISMATCH",
+                "SUCCESSOR_FILE_SIZE_INVALID",
+            }:
+                _fail(
+                    "SUCCESSOR_TABLE_READBACK_MISMATCH",
+                    f"table readback differs: {table_name}",
+                )
+            raise
         if observed != manifest_tables[table_name]:
             _fail(
                 "SUCCESSOR_TABLE_READBACK_MISMATCH",
