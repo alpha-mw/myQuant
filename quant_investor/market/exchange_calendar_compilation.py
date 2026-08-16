@@ -96,12 +96,7 @@ def compiler_ast_sha256() -> str:
 
 
 def _identifier(value: Any, *, label: str) -> str:
-    if (
-        type(value) is not str
-        or not value
-        or value.strip() != value
-        or len(value) > 200
-    ):
+    if type(value) is not str or not value or value.strip() != value or len(value) > 200:
         raise SystemContractError(f"{label} is not canonical text")
     return value
 
@@ -166,6 +161,15 @@ def _file_ref(value: Any, *, label: str) -> dict[str, Any]:
 
 
 def validate_index_closure(document: Mapping[str, Any] | bytes) -> dict[str, Any]:
+    del document
+    raise SystemPreconditionError(
+        "shallow calendar index closure is disabled; native page/body replay is required"
+    )
+
+
+def _disabled_shallow_validate_index_closure(
+    document: Mapping[str, Any] | bytes,
+) -> dict[str, Any]:
     try:
         artifact = validate_artifact(document, expected_kind=INDEX_CLOSURE_KIND)
     except ContractError as exc:
@@ -251,9 +255,11 @@ def _normalize_source_row(value: Any, *, coverage: date, cutoff: date) -> dict[s
             {"start_date": start.isoformat(), "end_date": end.isoformat(), "weekdays": weekdays}
         )
         previous_end = end
-    if not intervals or intervals[0]["start_date"] > coverage.isoformat() or intervals[-1][
-        "end_date"
-    ] < cutoff.isoformat():
+    if (
+        not intervals
+        or intervals[0]["start_date"] > coverage.isoformat()
+        or intervals[-1]["end_date"] < cutoff.isoformat()
+    ):
         raise SystemPreconditionError("weekly rule intervals do not cover the compilation window")
     closures = value["closure_dates"]
     if type(closures) is not list:
@@ -279,14 +285,14 @@ def _normalize_source_row(value: Any, *, coverage: date, cutoff: date) -> dict[s
                 "closes_local": closes.strftime("%H:%M:%S"),
             }
         )
-    if not sessions or sessions != sorted(sessions, key=lambda row: (row["opens_local"], row["phase"])):
+    if not sessions or sessions != sorted(
+        sessions, key=lambda row: (row["opens_local"], row["phase"])
+    ):
         raise SystemContractError("session intervals are not canonical")
     if not any(
-        row["opens_local"] == "09:30:00" and row["closes_local"] == "11:30:00"
-        for row in sessions
+        row["opens_local"] == "09:30:00" and row["closes_local"] == "11:30:00" for row in sessions
     ) or not any(
-        row["opens_local"] == "13:00:00" and row["closes_local"] == "15:00:00"
-        for row in sessions
+        row["opens_local"] == "13:00:00" and row["closes_local"] == "15:00:00" for row in sessions
     ):
         raise SystemPreconditionError("official continuous-auction intervals are incomplete")
     return {
@@ -328,8 +334,13 @@ def _compile_row(source: Mapping[str, Any], *, coverage: date, cutoff: date) -> 
         ]
         if len(matches) != 1:
             raise SystemPreconditionError("weekly rule applicability is ambiguous")
-        is_open = cursor.isoweekday() in matches[0]["weekdays"] and cursor.isoformat() not in closures
-        row: dict[str, Any] = {"date": cursor.isoformat(), "status": "OPEN" if is_open else "CLOSED"}
+        is_open = (
+            cursor.isoweekday() in matches[0]["weekdays"] and cursor.isoformat() not in closures
+        )
+        row: dict[str, Any] = {
+            "date": cursor.isoformat(),
+            "status": "OPEN" if is_open else "CLOSED",
+        }
         if is_open:
             opens_local = datetime.combine(cursor, time(9, 30), tzinfo=zone)
             closes_local = datetime.combine(cursor, time(15, 0), tzinfo=zone)
@@ -365,13 +376,29 @@ def build_exchange_calendar_compilation(  # noqa: C901
     contradiction_rows: Sequence[Mapping[str, Any]],
     created_at: str,
 ) -> dict[str, Any]:
+    raise SystemPreconditionError(
+        "shallow calendar compilation is disabled; native capture replay is required"
+    )
+
+
+def _disabled_shallow_build_exchange_calendar_compilation(  # noqa: C901
+    *,
+    compilation_id: str,
+    coverage_start_date: str,
+    cutoff_date: str,
+    release_ref: Mapping[str, Any],
+    source_exchange_rows: Sequence[Mapping[str, Any]],
+    calendar_json_file_ref: Mapping[str, Any],
+    calendar_parquet_file_ref: Mapping[str, Any],
+    contradiction_rows: Sequence[Mapping[str, Any]],
+    created_at: str,
+) -> dict[str, Any]:
     coverage = _date(coverage_start_date, label="coverage_start_date")
     cutoff = _date(cutoff_date, label="cutoff_date")
     if coverage > date(2024, 1, 1) or coverage > cutoff:
         raise SystemPreconditionError("calendar compilation coverage is insufficient")
     normalized_sources = [
-        _normalize_source_row(row, coverage=coverage, cutoff=cutoff)
-        for row in source_exchange_rows
+        _normalize_source_row(row, coverage=coverage, cutoff=cutoff) for row in source_exchange_rows
     ]
     exchanges = [row["exchange_id"] for row in normalized_sources]
     if exchanges != ["BSE", "SSE", "SZSE"]:
@@ -438,6 +465,14 @@ def build_exchange_calendar_compilation(  # noqa: C901
 
 
 def validate_exchange_calendar_compilation(
+    document: Mapping[str, Any] | bytes,
+) -> dict[str, Any]:
+    raise SystemPreconditionError(
+        "shallow calendar compilation replay is disabled; native capture replay is required"
+    )
+
+
+def _disabled_shallow_validate_exchange_calendar_compilation(
     document: Mapping[str, Any] | bytes,
 ) -> dict[str, Any]:
     try:

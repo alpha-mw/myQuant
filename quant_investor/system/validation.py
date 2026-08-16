@@ -8,7 +8,9 @@ import hashlib
 import os
 from pathlib import PurePosixPath
 import re
+import signal
 import sys
+import tempfile
 import time
 from typing import Any, Final
 
@@ -16,6 +18,7 @@ from quant_investor.contracts import (
     ContractError,
     canonical_json_bytes,
     get_contract,
+    parse_canonical_json_bytes,
     seal_artifact,
     validate_artifact,
 )
@@ -954,6 +957,193 @@ def _resident_rss_bytes() -> int:
     raise SystemSecurityError("current resident RSS measurement unavailable")
 
 
+_MAXIMUM_WORKER_RESULT_BYTES: Final = 16 * 1024**2
+_WORKER_ERROR_TYPES: Final = frozenset(
+    {
+        "FactorGovernanceError",
+        "SystemContractError",
+        "SystemImmutableConflict",
+        "SystemNotFound",
+        "SystemPreconditionError",
+        "SystemSecurityError",
+        "SystemStorageError",
+    }
+)
+
+
+def _worker_peak_rss_bytes(usage: Any) -> int:
+    value = int(usage.ru_maxrss)
+    return value if sys.platform == "darwin" else value * 1024
+
+
+def _error_detail(error: BaseException) -> tuple[str, str, str]:
+    name = type(error).__name__
+    if name not in _WORKER_ERROR_TYPES:
+        return (
+            "SystemSecurityError",
+            "SYSTEM_STORAGE_SECURITY",
+            "contextual validation worker failed",
+        )
+    code = getattr(error, "code", "")
+    message = str(error)
+    prefix = f"{code}:" if type(code) is str and code else ""
+    detail = message.removeprefix(prefix) if prefix else message
+    if not detail or len(detail.encode("utf-8")) > 16_384:
+        return (
+            "SystemSecurityError",
+            "SYSTEM_STORAGE_SECURITY",
+            "contextual validation worker error is invalid",
+        )
+    return name, code, detail
+
+
+def _worker_error(envelope: Mapping[str, Any]) -> BaseException:
+    name = envelope.get("error_type")
+    code = envelope.get("error_code")
+    detail = envelope.get("error_detail")
+    if name not in _WORKER_ERROR_TYPES or type(code) is not str or type(detail) is not str:
+        return SystemSecurityError("contextual validation worker response is invalid")
+    if name == "FactorGovernanceError":
+        from quant_investor.factors.governance.errors import FactorGovernanceError
+
+        return FactorGovernanceError(detail, code=code)
+    error_types = {
+        "SystemContractError": SystemContractError,
+        "SystemImmutableConflict": SystemImmutableConflict,
+        "SystemNotFound": SystemNotFound,
+        "SystemPreconditionError": SystemPreconditionError,
+        "SystemSecurityError": SystemSecurityError,
+        "SystemStorageError": SystemStorageError,
+    }
+    selected = error_types.get(name)
+    if selected is None:
+        return SystemSecurityError("contextual validation worker response is invalid")
+    return selected(detail, code=code)
+
+
+def _run_callback_worker(  # noqa: C901
+    callback: Any,
+    *,
+    store: Any,
+    validation_request: Mapping[str, Any],
+    trusted_at: str,
+    maximum_seconds: float,
+) -> tuple[dict[str, Any], int]:
+    """Run one callback in a fork-scoped peak-RSS accounting domain."""
+
+    if not hasattr(os, "fork") or not hasattr(os, "wait4"):
+        raise SystemSecurityError("invocation-scoped validation worker unavailable")
+    with tempfile.TemporaryFile(mode="w+b") as channel:
+        try:
+            process_id = os.fork()
+        except OSError as exc:
+            raise SystemSecurityError("contextual validation worker could not start") from exc
+        if process_id == 0:
+            try:
+                try:
+                    result = callback(
+                        system_store=store,
+                        validation_request=dict(validation_request),
+                        trusted_at=trusted_at,
+                    )
+                    if type(result) is not dict:
+                        raise SystemContractError(
+                            "compiled validation callback did not return an exact payload"
+                        )
+                    envelope = {"state": "PASS", "result": result}
+                except BaseException as exc:  # child boundary must not leak a traceback
+                    name, code, detail = _error_detail(exc)
+                    envelope = {
+                        "state": "ERROR",
+                        "error_type": name,
+                        "error_code": code,
+                        "error_detail": detail,
+                    }
+                try:
+                    raw = canonical_json_bytes(envelope)
+                except Exception:
+                    raw = canonical_json_bytes(
+                        {
+                            "state": "ERROR",
+                            "error_type": "SystemSecurityError",
+                            "error_code": "SYSTEM_STORAGE_SECURITY",
+                            "error_detail": "contextual validation worker result is invalid",
+                        }
+                    )
+                if len(raw) > _MAXIMUM_WORKER_RESULT_BYTES:
+                    raw = canonical_json_bytes(
+                        {
+                            "state": "ERROR",
+                            "error_type": "SystemSecurityError",
+                            "error_code": "SYSTEM_STORAGE_SECURITY",
+                            "error_detail": "contextual validation worker result is too large",
+                        }
+                    )
+                channel.seek(0)
+                channel.write(raw)
+                channel.flush()
+                os._exit(0)
+            except BaseException:
+                os._exit(70)
+
+        started = time.monotonic()
+        status: int | None = None
+        usage: Any = None
+        try:
+            while status is None:
+                waited, observed_status, observed_usage = os.wait4(
+                    process_id,
+                    os.WNOHANG,
+                )
+                if waited == process_id:
+                    status = observed_status
+                    usage = observed_usage
+                    break
+                if time.monotonic() - started > maximum_seconds:
+                    os.kill(process_id, signal.SIGKILL)
+                    _waited, status, usage = os.wait4(process_id, 0)
+                    raise SystemSecurityError("contextual validation time bound exceeded")
+                time.sleep(0.01)
+        except BaseException:
+            if status is None:
+                try:
+                    os.kill(process_id, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                try:
+                    os.wait4(process_id, 0)
+                except ChildProcessError:
+                    pass
+            raise
+        if (
+            status is None
+            or not os.WIFEXITED(status)
+            or os.WEXITSTATUS(status) != 0
+            or usage is None
+        ):
+            raise SystemSecurityError("contextual validation worker terminated unexpectedly")
+        peak_rss = _worker_peak_rss_bytes(usage)
+        if peak_rss <= 0 or peak_rss > MAXIMUM_VALIDATION_RSS_BYTES:
+            raise SystemSecurityError("contextual validation RSS bound exceeded")
+        channel.seek(0, os.SEEK_END)
+        size = channel.tell()
+        if size <= 0 or size > _MAXIMUM_WORKER_RESULT_BYTES:
+            raise SystemSecurityError("contextual validation worker result is invalid")
+        channel.seek(0)
+        raw = channel.read(size)
+    try:
+        envelope = parse_canonical_json_bytes(raw)
+    except ContractError as exc:
+        raise SystemSecurityError("contextual validation worker result is invalid") from exc
+    if type(envelope) is not dict or envelope.get("state") not in {"PASS", "ERROR"}:
+        raise SystemSecurityError("contextual validation worker response is invalid")
+    if envelope["state"] == "ERROR":
+        raise _worker_error(envelope)
+    if set(envelope) != {"state", "result"} or type(envelope["result"]) is not dict:
+        raise SystemSecurityError("contextual validation worker response is invalid")
+    return dict(envelope["result"]), peak_rss
+
+
 def _invoke_callback(
     store: Any,
     *,
@@ -966,7 +1156,6 @@ def _invoke_callback(
     before_rss = _resident_rss_bytes()
     if before_rss > MAXIMUM_VALIDATION_RSS_BYTES:
         raise SystemSecurityError("contextual validation RSS bound exceeded")
-    started = time.monotonic()
     from quant_investor.factors.governance.contextual import (
         validate_bootstrap_contextual_run,
         validate_prospective_contextual_run,
@@ -988,26 +1177,23 @@ def _invoke_callback(
         or getattr(callback, "__module__", None) != profile["callback_module"]
     ):
         raise SystemPreconditionError("compiled validation callback identity mismatch")
-    result = callback(
-        system_store=store,
-        validation_request=dict(validation_request),
-        trusted_at=trusted_at,
-    )
-    elapsed = time.monotonic() - started
     maximum_seconds = (
         MAXIMUM_BOOTSTRAP_VALIDATION_SECONDS
         if profile["validation_lane"] == "BOOTSTRAP"
         else MAXIMUM_PROSPECTIVE_VALIDATION_SECONDS
     )
-    if elapsed > maximum_seconds:
-        raise SystemSecurityError("contextual validation time bound exceeded")
+    result, _peak_rss = _run_callback_worker(
+        callback,
+        store=store,
+        validation_request=validation_request,
+        trusted_at=trusted_at,
+        maximum_seconds=maximum_seconds,
+    )
     if _open_fd_count() > MAXIMUM_VALIDATION_OPEN_FDS:
         raise SystemSecurityError("validation runner file descriptor bound exceeded")
     after_rss = _resident_rss_bytes()
     if after_rss > MAXIMUM_VALIDATION_RSS_BYTES:
         raise SystemSecurityError("contextual validation RSS bound exceeded")
-    if type(result) is not dict:
-        raise SystemContractError("compiled validation callback did not return an exact payload")
     return dict(result)
 
 

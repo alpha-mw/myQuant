@@ -576,3 +576,21 @@ def test_runner_rejects_process_rss_above_the_hard_limit_before_callback_resolut
             validation_request={},
             trusted_at=STAMP,
         )
+
+
+def test_invocation_worker_rejects_transient_peak_after_memory_is_released() -> None:
+    def transient_peak(**_kwargs: Any) -> dict[str, bool]:
+        allocation = bytearray(MAXIMUM_VALIDATION_RSS_BYTES)
+        for offset in range(0, len(allocation), 4096):
+            allocation[offset] = 1
+        del allocation
+        return {"released_before_return": True}
+
+    with pytest.raises(SystemSecurityError, match="RSS"):
+        validation_module._run_callback_worker(
+            transient_peak,
+            store=object(),
+            validation_request={},
+            trusted_at=STAMP,
+            maximum_seconds=30,
+        )

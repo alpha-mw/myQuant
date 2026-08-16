@@ -14,7 +14,11 @@ import pyarrow.parquet as pq
 import pyarrow as pa
 import pytest
 
-from quant_investor.contracts import canonical_json_bytes, seal_artifact
+from quant_investor.contracts import (
+    ArtifactValidationError,
+    canonical_json_bytes,
+    seal_artifact,
+)
 from quant_investor.cli.unified import system_activate, system_status, system_verify
 from quant_investor.factors.governance import (
     BLEND_W75_CONTROL,
@@ -27,11 +31,8 @@ from quant_investor.factors.governance.production import (
 )
 import quant_investor.factors.governance.production as production_module
 import quant_investor.market.fundamental_incremental as fundamental_incremental_module
-from quant_investor.market.exchange_calendar_official import (
-    decode_capture_projection as production_decode_capture_projection,
-    decoder_code_sha256,
-    decoder_id as production_decoder_id,
-)
+import quant_investor.market.exchange_calendar_closure as calendar_closure_module
+from quant_investor.market.exchange_calendar_official import decoder_code_sha256
 from quant_investor.system import (
     SystemActivationAuthorizationError,
     SystemContractError,
@@ -42,6 +43,7 @@ from quant_investor.system import (
     decode_assembly_request,
     installed_code_manifest_sha256,
     verify_emergency_controller,
+    object_ref_for_artifact,
 )
 from unified_activation_helpers import prepare_initial_activation
 
@@ -56,8 +58,16 @@ from quant_investor.market.fundamental_incremental import stage_successor_genera
 from quant_investor.mainline import build_mainline_candidate
 from tests.unit.test_fundamental_incremental_successor import _path_backed_case
 from tests.unit.test_unified_mainline import _candidate_dependencies
+from tests.unit.test_exchange_calendar_closure import (
+    DECODER_SHA as TEST_CALENDAR_DECODER_SHA,
+    _build as _build_calendar_case,
+    _case as _calendar_case,
+    _decoder as _calendar_decoder,
+    _decoder_id as _calendar_decoder_id,
+)
 
 SYMBOLS = ["000001.SZ", "000002.SZ", "600000.SH", "600001.SH"]
+_TEST_CALENDAR_ADMISSIONS: dict[tuple[str, str], dict[str, Any]] = {}
 
 
 def _test_only_synthetic_daily_bytes(
@@ -190,11 +200,22 @@ def _test_only_decode_projection(
 
 @pytest.fixture(autouse=True)
 def _synthetic_calendar_decoder_is_test_only(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(production_module, "decoder_id", _test_only_decoder_id)
+    real_validate = calendar_closure_module.validate_exchange_calendar_compilation
+
+    def validate_for_test(document: Any, **kwargs: Any) -> dict[str, Any]:
+        return real_validate(
+            document,
+            **kwargs,
+            decoder=_calendar_decoder,
+            admission_resolver=lambda exchange, role: _TEST_CALENDAR_ADMISSIONS[(exchange, role)],
+            decoder_id_resolver=_calendar_decoder_id,
+            decoder_sha256=TEST_CALENDAR_DECODER_SHA,
+        )
+
     monkeypatch.setattr(
         production_module,
-        "decode_capture_projection",
-        _test_only_decode_projection,
+        "validate_exchange_calendar_compilation",
+        validate_for_test,
     )
 
 
@@ -269,6 +290,100 @@ def _seed_workspace(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         created_at=BASE,
     )
     return workspace, store.put_object(release)
+
+
+def _finalize_input_refs(
+    root: Path, *, cutoff: date, market_sessions: list[str]
+) -> dict[str, dict[str, str] | list[dict[str, str]]]:
+    production_release = seal_artifact(
+        "system.release",
+        {
+            "release_id": "production-bootstrap-release",
+            "state": "OPERATIONAL",
+            "code_sha256": "3" * 64,
+            "wheel_sha256": "4" * 64,
+            "code_manifest_sha256": installed_code_manifest_sha256(),
+        },
+        created_at=BASE,
+    )
+    calendar_case = _calendar_case(cutoff=cutoff, exchanges=("SSE", "SZSE"))
+    calendar_case["release_ref"] = object_ref_for_artifact(production_release)
+    calendar_case["market_sessions"] = market_sessions
+    _TEST_CALENDAR_ADMISSIONS.clear()
+    _TEST_CALENDAR_ADMISSIONS.update(calendar_case["admission_by_subject"])
+    compilation = _build_calendar_case(calendar_case)
+    for encoded_ref, raw in calendar_case["raw_by_ref"].items():
+        reference = json.loads(encoded_ref)
+        _write(root, reference["relative_path"], raw)
+
+    artifact_paths: dict[str, list[str]] = {
+        "calendar_capture_file_refs": [],
+        "calendar_decoder_admission_file_refs": [],
+        "calendar_index_closure_file_refs": [],
+    }
+    for field, artifacts, folder in (
+        ("calendar_capture_file_refs", calendar_case["captures"], "captures"),
+        (
+            "calendar_decoder_admission_file_refs",
+            calendar_case["admissions"],
+            "admissions",
+        ),
+        ("calendar_index_closure_file_refs", calendar_case["indexes"], "indexes"),
+    ):
+        for artifact in artifacts:
+            relative = f"closure/calendar-{folder}/{artifact['artifact_id']}.json"
+            _write(root, relative, canonical_json_bytes(artifact))
+            artifact_paths[field].append(relative)
+    _write(
+        root,
+        "closure/calendar-compilation.json",
+        canonical_json_bytes(compilation),
+    )
+    scalars = {
+        "exchange_calendar_file_ref": "strict/exchange_calendar.parquet",
+        "calendar_runtime_json_file_ref": "strict/exchange_calendar.json",
+        "calendar_compilation_file_ref": "closure/calendar-compilation.json",
+        "market_scope_file_ref": "closure/market_scope.json",
+        "market_pointer_file_ref": "closure/market_pointer.json",
+        "market_snapshot_manifest_file_ref": "closure/market_snapshot_manifest.json",
+        "pit_pointer_file_ref": "closure/pit_pointer.json",
+        "pit_generation_manifest_file_ref": "closure/pit_generation_manifest.json",
+        "pit_membership_file_ref": "closure/pit_membership.parquet",
+        "fundamental_pointer_file_ref": "_fundamental_latest.json",
+        "fundamental_generation_manifest_file_ref": (
+            "_fundamental_generations/staged_successor/manifest.json"
+        ),
+        "bootstrap_decision_file_ref": "decision/bootstrap-decision.json",
+    }
+    result: dict[str, dict[str, str] | list[dict[str, str]]] = {
+        field: _byte_ref(root, relative) for field, relative in scalars.items()
+    }
+    result["calendar_raw_file_refs"] = sorted(
+        [
+            _byte_ref(root, json.loads(encoded_ref)["relative_path"])
+            for encoded_ref in sorted(calendar_case["raw_by_ref"])
+            if json.loads(encoded_ref)["relative_path"].startswith("raw/")
+        ],
+        key=lambda row: (row["relative_path"], row["byte_sha256"]),
+    )
+    for field, paths in artifact_paths.items():
+        result[field] = [_byte_ref(root, relative) for relative in sorted(paths)]
+    result["market_table_file_refs"] = [_byte_ref(root, "closure/market-2026.parquet")]
+    result["fundamental_table_file_refs"] = [
+        _byte_ref(root, f"_fundamental_generations/staged_successor/{name}.parquet")
+        for name in (
+            "fundamental_daily",
+            "fundamental_period",
+            "fundamental_quarantine",
+        )
+    ]
+    evidence_root = root / "_fundamental_generations/staged_successor/provider_evidence"
+    result["fundamental_evidence_file_refs"] = [
+        _byte_ref(root, path.relative_to(root).as_posix())
+        for path in sorted(evidence_root.rglob("*"))
+        if path.is_file()
+    ]
+    return result
 
 
 def _inputs(root: Path) -> dict[str, dict[str, str] | list[dict[str, str]]]:
@@ -460,6 +575,14 @@ def _inputs(root: Path) -> dict[str, dict[str, str] | list[dict[str, str]]]:
         if source.is_file():
             _write(root, source.relative_to(capture.staging_root).as_posix(), source.read_bytes())
     _write(root, "decision/bootstrap-decision.json", _decision_bytes())
+    return _finalize_input_refs(
+        root,
+        cutoff=cutoff,
+        market_sessions=[row["open_session"].isoformat() for row in calendar_rows[-100:]],
+    )
+
+    # The former DAILY_STATUS fixture remains unreachable below only to keep
+    # this patch reviewable; the request contract rejects all of its fields.
     calendar_file_ref = _byte_ref(root, "strict/exchange_calendar.parquet")
     session_set = {row["open_session"].isoformat() for row in calendar_rows}
     daily_status_rows: list[dict[str, str]] = []
@@ -546,12 +669,6 @@ def _inputs(root: Path) -> dict[str, dict[str, str] | list[dict[str, str]]]:
             raw_by_exchange_role[key] = raw_ref
             capture_by_exchange_role[key] = _byte_ref(root, capture_relative)
             source_by_exchange_role[key] = source_url
-    raw_calendar_refs = sorted(
-        raw_by_exchange_role.values(), key=lambda value: value["relative_path"]
-    )
-    capture_refs = sorted(
-        capture_by_exchange_role.values(), key=lambda value: value["relative_path"]
-    )
     calendar_manifest = seal_artifact(
         "system.exchange_calendar_manifest",
         {
@@ -595,15 +712,58 @@ def _inputs(root: Path) -> dict[str, dict[str, str] | list[dict[str, str]]]:
         "closure/calendar_manifest.json",
         canonical_json_bytes(calendar_manifest),
     )
+    production_release = seal_artifact(
+        "system.release",
+        {
+            "release_id": "production-bootstrap-release",
+            "state": "OPERATIONAL",
+            "code_sha256": "3" * 64,
+            "wheel_sha256": "4" * 64,
+            "code_manifest_sha256": installed_code_manifest_sha256(),
+        },
+        created_at=BASE,
+    )
+    calendar_case = _calendar_case(
+        cutoff=cutoff,
+        exchanges=("SSE", "SZSE"),
+    )
+    calendar_case["release_ref"] = object_ref_for_artifact(production_release)
+    _TEST_CALENDAR_ADMISSIONS.clear()
+    _TEST_CALENDAR_ADMISSIONS.update(calendar_case["admission_by_subject"])
+    calendar_compilation = _build_calendar_case(calendar_case)
+    for encoded_ref, raw in calendar_case["raw_by_ref"].items():
+        reference = json.loads(encoded_ref)
+        _write(root, reference["relative_path"], raw)
+    calendar_capture_paths: list[str] = []
+    for artifact in calendar_case["captures"]:
+        relative = f"closure/calendar-captures/{artifact['artifact_id']}.json"
+        _write(root, relative, canonical_json_bytes(artifact))
+        calendar_capture_paths.append(relative)
+    calendar_admission_paths: list[str] = []
+    for artifact in calendar_case["admissions"]:
+        relative = f"closure/calendar-admissions/{artifact['artifact_id']}.json"
+        _write(root, relative, canonical_json_bytes(artifact))
+        calendar_admission_paths.append(relative)
+    calendar_index_paths: list[str] = []
+    for artifact in calendar_case["indexes"]:
+        relative = f"closure/calendar-indexes/{artifact['artifact_id']}.json"
+        _write(root, relative, canonical_json_bytes(artifact))
+        calendar_index_paths.append(relative)
+    _write(
+        root,
+        "closure/calendar-compilation.json",
+        canonical_json_bytes(calendar_compilation),
+    )
     scalars = {
         "exchange_calendar_file_ref": "strict/exchange_calendar.parquet",
+        "calendar_runtime_json_file_ref": "strict/exchange_calendar.json",
+        "calendar_compilation_file_ref": "closure/calendar-compilation.json",
         "market_scope_file_ref": "closure/market_scope.json",
         "market_pointer_file_ref": "closure/market_pointer.json",
         "market_snapshot_manifest_file_ref": "closure/market_snapshot_manifest.json",
         "pit_pointer_file_ref": "closure/pit_pointer.json",
         "pit_generation_manifest_file_ref": "closure/pit_generation_manifest.json",
         "pit_membership_file_ref": "closure/pit_membership.parquet",
-        "calendar_manifest_file_ref": "closure/calendar_manifest.json",
         "fundamental_pointer_file_ref": "_fundamental_latest.json",
         "fundamental_generation_manifest_file_ref": (
             "_fundamental_generations/staged_successor/manifest.json"
@@ -613,8 +773,20 @@ def _inputs(root: Path) -> dict[str, dict[str, str] | list[dict[str, str]]]:
     result: dict[str, dict[str, str] | list[dict[str, str]]] = {
         field: _byte_ref(root, relative) for field, relative in scalars.items()
     }
-    result["calendar_raw_file_refs"] = raw_calendar_refs
-    result["calendar_capture_file_refs"] = capture_refs
+    result["calendar_raw_file_refs"] = [
+        _byte_ref(root, json.loads(encoded_ref)["relative_path"])
+        for encoded_ref in sorted(calendar_case["raw_by_ref"])
+        if json.loads(encoded_ref)["relative_path"].startswith("raw/")
+    ]
+    result["calendar_capture_file_refs"] = [
+        _byte_ref(root, relative) for relative in sorted(calendar_capture_paths)
+    ]
+    result["calendar_decoder_admission_file_refs"] = [
+        _byte_ref(root, relative) for relative in sorted(calendar_admission_paths)
+    ]
+    result["calendar_index_closure_file_refs"] = [
+        _byte_ref(root, relative) for relative in sorted(calendar_index_paths)
+    ]
     result["market_table_file_refs"] = [_byte_ref(root, "closure/market-2026.parquet")]
     result["fundamental_table_file_refs"] = [
         _byte_ref(root, f"_fundamental_generations/staged_successor/{name}.parquet")
@@ -729,6 +901,33 @@ def _request(
     }
     return canonical_json_bytes(
         seal_artifact("system.bootstrap_operator_request", payload, created_at=BASE)
+    )
+
+
+def _calendar_path(
+    files: dict[str, dict[str, str] | list[dict[str, str]]],
+    field: str,
+    fragment: str,
+) -> str:
+    rows = files[field]
+    assert isinstance(rows, list)
+    matches = [row["relative_path"] for row in rows if fragment in row["relative_path"]]
+    assert len(matches) == 1
+    return matches[0]
+
+
+def _replace_list_file_ref(
+    root: Path,
+    files: dict[str, dict[str, str] | list[dict[str, str]]],
+    field: str,
+    relative: str,
+) -> None:
+    rows = files[field]
+    assert isinstance(rows, list)
+    replacement = _byte_ref(root, relative)
+    files[field] = sorted(
+        [replacement if row["relative_path"] == relative else row for row in rows],
+        key=lambda row: (row["relative_path"], row["byte_sha256"]),
     )
 
 
@@ -1458,24 +1657,25 @@ def test_production_bootstrap_rejects_unofficial_calendar_authority(
     workspace, release_ref = _seed_workspace(tmp_path)
     input_root = tmp_path / "sealed-inputs"
     files = _inputs(input_root)
-    manifest_path = input_root / "closure/calendar_manifest.json"
-    manifest = json.loads(manifest_path.read_bytes())
-    payload = manifest["payload"]
-    payload["exchange_rows"][1]["daily_status_source_url"] = "https://example.com/calendar"
-    tampered = seal_artifact(
-        "system.exchange_calendar_manifest",
-        payload,
-        created_at=BASE,
-    )
+    relative = _calendar_path(files, "calendar_capture_file_refs", "sse-trading_week_rule")
+    capture = json.loads((input_root / relative).read_bytes())
+    capture["payload"]["request_url"] = "https://example.com/calendar"
+    capture["payload"]["effective_url"] = "https://example.com/calendar"
     _write(
         input_root,
-        "closure/calendar_manifest.json",
-        canonical_json_bytes(tampered),
+        relative,
+        canonical_json_bytes(
+            seal_artifact(
+                "system.exchange_calendar_capture",
+                capture["payload"],
+                created_at=BASE,
+            )
+        ),
     )
-    files["calendar_manifest_file_ref"] = _byte_ref(input_root, "closure/calendar_manifest.json")
+    _replace_list_file_ref(input_root, files, "calendar_capture_file_refs", relative)
     raw = _request(workspace_root=workspace, release_ref=release_ref, files=files)
 
-    with pytest.raises(SystemContractError, match="source authority"):
+    with pytest.raises(SystemSecurityError, match="official issuer authority"):
         assemble_production_bootstrap(
             workspace_root=workspace,
             input_root=input_root,
@@ -1483,62 +1683,18 @@ def test_production_bootstrap_rejects_unofficial_calendar_authority(
         )
 
 
-def test_production_bootstrap_requires_explicit_daily_open_closed_evidence(
+def test_production_bootstrap_rejects_legacy_daily_status_request_fields(
     tmp_path: Path,
 ) -> None:
     workspace, release_ref = _seed_workspace(tmp_path)
     input_root = tmp_path / "sealed-inputs"
     files = _inputs(input_root)
-    capture_path = input_root / "closure/calendar-daily-capture-sse.json"
-    capture = json.loads(capture_path.read_bytes())
-    capture_payload = capture["payload"]
-    capture_payload["daily_status_rows"].pop(10)
-    _write(
-        input_root,
-        "closure/calendar-daily-capture-sse.json",
-        canonical_json_bytes(
-            seal_artifact(
-                "system.exchange_calendar_capture",
-                capture_payload,
-                created_at=BASE,
-            )
-        ),
-    )
-    new_capture_ref = _byte_ref(input_root, "closure/calendar-daily-capture-sse.json")
-    capture_refs = list(files["calendar_capture_file_refs"])
-    capture_refs = [
-        (
-            new_capture_ref
-            if row["relative_path"] == "closure/calendar-daily-capture-sse.json"
-            else row
-        )
-        for row in capture_refs
-    ]
-    files["calendar_capture_file_refs"] = sorted(
-        capture_refs, key=lambda value: value["relative_path"]
-    )
-    manifest_path = input_root / "closure/calendar_manifest.json"
-    manifest = json.loads(manifest_path.read_bytes())
-    manifest_payload = manifest["payload"]
-    manifest_payload["exchange_rows"][0]["daily_status_capture_file_ref"] = new_capture_ref
-    _write(
-        input_root,
-        "closure/calendar_manifest.json",
-        canonical_json_bytes(
-            seal_artifact(
-                "system.exchange_calendar_manifest",
-                manifest_payload,
-                created_at=BASE,
-            )
-        ),
-    )
-    files["calendar_manifest_file_ref"] = _byte_ref(input_root, "closure/calendar_manifest.json")
-
-    with pytest.raises(SystemContractError, match="projection binding"):
-        assemble_production_bootstrap(
+    files["calendar_manifest_file_ref"] = files["calendar_compilation_file_ref"]
+    with pytest.raises(ArtifactValidationError, match="fields are not exact"):
+        _request(
             workspace_root=workspace,
-            input_root=input_root,
-            request_raw=_request(workspace_root=workspace, release_ref=release_ref, files=files),
+            release_ref=release_ref,
+            files=files,
         )
     assert not (workspace / "results/system/objects/system.production_bootstrap_receipt").exists()
     assert not (workspace / "results/system/generations").exists()
@@ -1551,11 +1707,10 @@ def test_production_bootstrap_rejects_unadmitted_synthetic_calendar_body(
     workspace, release_ref = _seed_workspace(tmp_path)
     input_root = tmp_path / "sealed-inputs"
     files = _inputs(input_root)
-    monkeypatch.setattr(production_module, "decoder_id", production_decoder_id)
     monkeypatch.setattr(
         production_module,
-        "decode_capture_projection",
-        production_decode_capture_projection,
+        "validate_exchange_calendar_compilation",
+        calendar_closure_module.validate_exchange_calendar_compilation,
     )
     with pytest.raises(
         SystemContractError,
@@ -1571,22 +1726,27 @@ def test_production_bootstrap_rejects_unadmitted_synthetic_calendar_body(
     assert not (workspace / "results/system/_active.json").exists()
 
 
-def test_production_bootstrap_rejects_synthetic_daily_date_gap(tmp_path: Path) -> None:
+def test_production_bootstrap_rejects_notice_index_pagination_drift(tmp_path: Path) -> None:
     workspace, release_ref = _seed_workspace(tmp_path)
     input_root = tmp_path / "sealed-inputs"
     files = _inputs(input_root)
-    raw_path = input_root / "closure/calendar-daily-raw-szse.bin"
-    native = json.loads(raw_path.read_bytes())
-    native["data"].pop(10)
-    _replace_synthetic_calendar_capture(
+    relative = _calendar_path(files, "calendar_index_closure_file_refs", "szse")
+    index = json.loads((input_root / relative).read_bytes())
+    index["payload"]["reported_page_count"] = 2
+    _write(
         input_root,
-        files,
-        exchange="SZSE",
-        role="DAILY_STATUS",
-        raw_body=canonical_json_bytes(native),
+        relative,
+        canonical_json_bytes(
+            seal_artifact(
+                "system.exchange_calendar_index_closure",
+                index["payload"],
+                created_at=BASE,
+            )
+        ),
     )
+    _replace_list_file_ref(input_root, files, "calendar_index_closure_file_refs", relative)
 
-    with pytest.raises(SystemContractError, match="coverage is not consecutive"):
+    with pytest.raises((SystemPreconditionError, SystemSecurityError)):
         assemble_production_bootstrap(
             workspace_root=workspace,
             input_root=input_root,
@@ -1594,25 +1754,36 @@ def test_production_bootstrap_rejects_synthetic_daily_date_gap(tmp_path: Path) -
         )
 
 
-def test_production_bootstrap_rejects_cross_exchange_calendar_disagreement(
+def test_production_bootstrap_rejects_caller_authored_exchange_projection_drift(
     tmp_path: Path,
 ) -> None:
     workspace, release_ref = _seed_workspace(tmp_path)
     input_root = tmp_path / "sealed-inputs"
     files = _inputs(input_root)
-    raw_path = input_root / "closure/calendar-daily-raw-szse.bin"
-    native = json.loads(raw_path.read_bytes())
-    open_row = next(row for row in native["data"] if row["tradeFlag"] == "1")
-    open_row["tradeFlag"] = "0"
-    _replace_synthetic_calendar_capture(
-        input_root,
-        files,
-        exchange="SZSE",
-        role="DAILY_STATUS",
-        raw_body=canonical_json_bytes(native),
+    relative = files["calendar_compilation_file_ref"]["relative_path"]
+    compilation = json.loads((input_root / relative).read_bytes())
+    row = next(
+        item
+        for item in compilation["payload"]["exchange_rows"][1]["daily_rows"]
+        if item["status"] == "OPEN"
     )
+    row["status"] = "CLOSED"
+    row["opens_at_utc"] = None
+    row["closes_at_utc"] = None
+    _write(
+        input_root,
+        relative,
+        canonical_json_bytes(
+            seal_artifact(
+                "system.exchange_calendar_compilation",
+                compilation["payload"],
+                created_at=BASE,
+            )
+        ),
+    )
+    files["calendar_compilation_file_ref"] = _byte_ref(input_root, relative)
 
-    with pytest.raises(SystemContractError, match="OPEN/CLOSED calendar differs"):
+    with pytest.raises(SystemSecurityError, match="compilation replay differs"):
         assemble_production_bootstrap(
             workspace_root=workspace,
             input_root=input_root,
@@ -1626,18 +1797,39 @@ def test_production_bootstrap_rejects_unsupported_official_session_hours(
     workspace, release_ref = _seed_workspace(tmp_path)
     input_root = tmp_path / "sealed-inputs"
     files = _inputs(input_root)
-    raw_path = input_root / "closure/calendar-rules-raw-sse.bin"
-    native = json.loads(raw_path.read_bytes())
-    native["continuousAuction"][0]["beginTime"] = "09:31:00"
-    _replace_synthetic_calendar_capture(
-        input_root,
-        files,
-        exchange="SSE",
-        role="SESSION_RULE",
-        raw_body=canonical_json_bytes(native),
+    raw_relative = _calendar_path(files, "calendar_raw_file_refs", "sse-session_rule.json")
+    native = json.loads((input_root / raw_relative).read_bytes())
+    native["projection"]["session_rule_intervals"][0]["session_intervals"][0][
+        "opens_local"
+    ] = "09:31:00"
+    raw_body = canonical_json_bytes(native)
+    _write(input_root, raw_relative, raw_body)
+    _replace_list_file_ref(input_root, files, "calendar_raw_file_refs", raw_relative)
+    capture_relative = _calendar_path(
+        files, "calendar_capture_file_refs", "sse-session_rule-capture"
     )
+    capture = json.loads((input_root / capture_relative).read_bytes())
+    raw_ref = _byte_ref(input_root, raw_relative)
+    capture["payload"]["raw_file_ref"] = raw_ref
+    capture["payload"]["raw_sha256"] = raw_ref["byte_sha256"]
+    capture["payload"]["raw_byte_length"] = len(raw_body)
+    capture["payload"]["projection_sha256"] = hashlib.sha256(
+        canonical_json_bytes(native["projection"])
+    ).hexdigest()
+    _write(
+        input_root,
+        capture_relative,
+        canonical_json_bytes(
+            seal_artifact(
+                "system.exchange_calendar_capture",
+                capture["payload"],
+                created_at=BASE,
+            )
+        ),
+    )
+    _replace_list_file_ref(input_root, files, "calendar_capture_file_refs", capture_relative)
 
-    with pytest.raises(SystemContractError, match="session-rule projection binding"):
+    with pytest.raises(SystemPreconditionError, match="continuous-auction"):
         assemble_production_bootstrap(
             workspace_root=workspace,
             input_root=input_root,
@@ -1649,7 +1841,9 @@ def test_production_bootstrap_rejects_decoder_code_identity_drift(tmp_path: Path
     workspace, release_ref = _seed_workspace(tmp_path)
     input_root = tmp_path / "sealed-inputs"
     files = _inputs(input_root)
-    capture_relative = "closure/calendar-daily-capture-sse.json"
+    capture_relative = _calendar_path(
+        files, "calendar_capture_file_refs", "sse-trading_week_rule-capture"
+    )
     capture_path = input_root / capture_relative
     capture = json.loads(capture_path.read_bytes())
     capture["payload"]["decoder_sha256"] = "0" * 64
@@ -1664,31 +1858,9 @@ def test_production_bootstrap_rejects_decoder_code_identity_drift(tmp_path: Path
             )
         ),
     )
-    capture_ref = _byte_ref(input_root, capture_relative)
-    files["calendar_capture_file_refs"] = sorted(
-        [
-            capture_ref if row["relative_path"] == capture_relative else row
-            for row in files["calendar_capture_file_refs"]
-        ],
-        key=lambda value: value["relative_path"],
-    )
-    manifest_path = input_root / "closure/calendar_manifest.json"
-    manifest = json.loads(manifest_path.read_bytes())
-    manifest["payload"]["exchange_rows"][0]["daily_status_capture_file_ref"] = capture_ref
-    _write(
-        input_root,
-        "closure/calendar_manifest.json",
-        canonical_json_bytes(
-            seal_artifact(
-                "system.exchange_calendar_manifest",
-                manifest["payload"],
-                created_at=BASE,
-            )
-        ),
-    )
-    files["calendar_manifest_file_ref"] = _byte_ref(input_root, "closure/calendar_manifest.json")
+    _replace_list_file_ref(input_root, files, "calendar_capture_file_refs", capture_relative)
 
-    with pytest.raises(SystemContractError, match="decoder identity differs"):
+    with pytest.raises(SystemSecurityError, match="capture/admission binding"):
         assemble_production_bootstrap(
             workspace_root=workspace,
             input_root=input_root,

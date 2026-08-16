@@ -51,7 +51,16 @@ substitute.
 PIT pointer and complete Fundamental safe-successor v3 fileset are explicit
 path/SHA inputs. The fileset includes the canonical Fundamental pointer,
 manifest, all three Parquet tables, and every provider-evidence file. The
-assembler reconstructs the canonical layout under owner-only staging and
+calendar side of that same request is an exact native-source DAG: a detached
+`system.exchange_calendar_compilation`, runtime JSON, strict Parquet, raw
+issuer responses, zero-request-header capture envelopes, registered decoder
+admissions, and complete notice-index/page/body closures. The assembler reruns
+the admitted decoders, derives weekly rules, closures, effective-dated session
+rules, precedence and market contradictions, and then requires its regenerated
+JSON and Parquet bytes to equal the requested files. The superseded
+`calendar_manifest_file_ref` and project-authored `DAILY_STATUS` projection are
+not accepted request fields or calendar authority. The assembler reconstructs
+the canonical layout under owner-only staging and
 replays predecessor, target-source, derivation, readiness, resource, provider,
 table and response-evidence bindings. A homogeneous v1 claim, partial fileset,
 or market/PIT/Fundamental cutoff drift fails before generation publication.

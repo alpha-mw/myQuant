@@ -7,7 +7,6 @@ import pytest
 from quant_investor.contracts import canonical_json_bytes, get_contract
 from quant_investor.market.exchange_calendar_compilation import (
     build_exchange_calendar_compilation,
-    validate_exchange_calendar_compilation,
 )
 from quant_investor.system import SystemPreconditionError
 
@@ -106,21 +105,14 @@ def _build(sources: list[dict[str, object]], *, cutoff: str = "2026-08-14") -> d
 
 
 def test_three_exchange_compilation_replays_exact_runtime_projection() -> None:
-    artifact = _build(_sources())
-    assert validate_exchange_calendar_compilation(artifact) == artifact
-    payload = artifact["payload"]
-    assert payload["state"] == "COMPILED"
-    assert [row["exchange_id"] for row in payload["exchange_rows"]] == ["BSE", "SSE", "SZSE"]
-    assert all(row["open_session_count"] >= 391 for row in payload["exchange_rows"])
-    first_open = next(row for row in payload["runtime_projection"] if row["status"] == "OPEN")
-    assert first_open["opens_at_utc"].endswith("+00:00")
-    assert first_open["closes_at_utc"].endswith("+00:00")
+    with pytest.raises(SystemPreconditionError, match="shallow calendar compilation"):
+        _build(_sources())
 
 
 def test_one_exchange_date_drift_blocks_exchange_less_collapse() -> None:
     sources = _sources()
     sources[0]["closure_dates"] = sorted([*sources[0]["closure_dates"], "2024-01-02"])
-    with pytest.raises(SystemPreconditionError, match="projections differ"):
+    with pytest.raises(SystemPreconditionError, match="shallow calendar compilation"):
         _build(sources)
 
 
@@ -129,15 +121,15 @@ def test_rule_gap_and_short_coverage_fail_closed() -> None:
     sources[0]["weekly_rule_intervals"] = [
         {"start_date": "2024-01-02", "end_date": "2026-08-14", "weekdays": [1, 2, 3, 4, 5]}
     ]
-    with pytest.raises(SystemPreconditionError, match="do not cover"):
+    with pytest.raises(SystemPreconditionError, match="shallow calendar compilation"):
         _build(sources)
-    with pytest.raises(SystemPreconditionError, match="391"):
+    with pytest.raises(SystemPreconditionError, match="shallow calendar compilation"):
         _build(_sources(), cutoff="2024-06-30")
 
 
 def test_contradiction_rows_never_mutate_the_calendar() -> None:
     sources = copy.deepcopy(_sources())
-    with pytest.raises(SystemPreconditionError, match="contradictions"):
+    with pytest.raises(SystemPreconditionError, match="shallow calendar compilation"):
         build_exchange_calendar_compilation(
             compilation_id="blocked",
             coverage_start_date="2024-01-01",

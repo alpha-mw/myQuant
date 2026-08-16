@@ -62,6 +62,10 @@ from quant_investor.market.fundamental_incremental import (
     SafeSuccessorError,
     validate_successor_provenance,
 )
+from quant_investor.market.exchange_calendar_closure import (
+    validate_exchange_calendar_compilation,
+    validate_historical_compilation_envelope,
+)
 from quant_investor.market.exchange_calendar_official import (
     EvidenceRole,
     decode_capture_projection,
@@ -119,9 +123,12 @@ BOOTSTRAP_OPERATOR_REQUEST_FIELDS: Final = frozenset(
         "pit_pointer_file_ref",
         "pit_generation_manifest_file_ref",
         "pit_membership_file_ref",
-        "calendar_manifest_file_ref",
+        "calendar_runtime_json_file_ref",
+        "calendar_compilation_file_ref",
         "calendar_raw_file_refs",
         "calendar_capture_file_refs",
+        "calendar_decoder_admission_file_refs",
+        "calendar_index_closure_file_refs",
         "fundamental_pointer_file_ref",
         "fundamental_generation_manifest_file_ref",
         "fundamental_table_file_refs",
@@ -143,6 +150,8 @@ _MAX_MARKET_TABLES: Final = 24
 _MINIMUM_MARKET_SESSIONS: Final = 91
 _PARQUET_BATCH_ROWS: Final = 2_048
 _PARQUET_BATCH_BYTES: Final = 16 * 1024**2
+# Historical decoder names remain only inside the explicitly disabled rejection
+# functions below.  They are not request fields or production DAG roles.
 _CALENDAR_MANIFEST_KIND: Final = "system.exchange_calendar_manifest"
 _CALENDAR_MANIFEST_CONTRACT_SHA256: Final = get_contract(_CALENDAR_MANIFEST_KIND).contract_sha256
 _CALENDAR_CAPTURE_KIND: Final = "system.exchange_calendar_capture"
@@ -177,38 +186,8 @@ _CALENDAR_EXCHANGE_FIELDS: Final = frozenset(
     }
 )
 _CALENDAR_INTERVAL_FIELDS: Final = frozenset({"opens_local", "closes_local"})
-_CALENDAR_CAPTURE_FIELDS: Final = frozenset(
-    {
-        "calendar_capture_id",
-        "state",
-        "evidence_role",
-        "exchange_id",
-        "issuer",
-        "source_url",
-        "request_url",
-        "effective_url",
-        "redirect_chain",
-        "http_status",
-        "issuer_host",
-        "tls_verified",
-        "captured_at",
-        "raw_file_ref",
-        "raw_sha256",
-        "raw_byte_length",
-        "raw_media_type",
-        "decoder_id",
-        "decoder_sha256",
-        "timezone",
-        "session_intervals",
-        "coverage_start_date",
-        "cutoff_date",
-        "daily_status_rows",
-        "projection_sha256",
-        "transform_code_sha256",
-    }
-)
+_CALENDAR_CAPTURE_FIELDS: Final = frozenset()
 _CALENDAR_STATUS_FIELDS: Final = frozenset({"date", "status"})
-_EXCHANGE_BY_SUFFIX: Final = {".SH": "SSE", ".SZ": "SZSE", ".BJ": "BSE"}
 _OFFICIAL_CALENDAR_AUTHORITIES: Final = {
     "SSE": ("SSE_OFFICIAL", "www.sse.com.cn"),
     "SZSE": ("SZSE_OFFICIAL", "www.szse.cn"),
@@ -218,6 +197,7 @@ _CN_CONTINUOUS_SESSION_INTERVALS: Final = [
     {"opens_local": "09:30:00", "closes_local": "11:30:00"},
     {"opens_local": "13:00:00", "closes_local": "15:00:00"},
 ]
+_EXCHANGE_BY_SUFFIX: Final = {".SH": "SSE", ".SZ": "SZSE", ".BJ": "BSE"}
 
 
 def _sha256(raw: bytes) -> str:
@@ -324,7 +304,8 @@ def validate_bootstrap_operator_request(
             "pit_pointer_file_ref",
             "pit_generation_manifest_file_ref",
             "pit_membership_file_ref",
-            "calendar_manifest_file_ref",
+            "calendar_runtime_json_file_ref",
+            "calendar_compilation_file_ref",
             "fundamental_pointer_file_ref",
             "fundamental_generation_manifest_file_ref",
             "bootstrap_decision_file_ref",
@@ -334,6 +315,14 @@ def validate_bootstrap_operator_request(
     calendar_captures = _file_refs(
         payload["calendar_capture_file_refs"],
         label="calendar_capture_file_refs",
+    )
+    calendar_admissions = _file_refs(
+        payload["calendar_decoder_admission_file_refs"],
+        label="calendar_decoder_admission_file_refs",
+    )
+    calendar_indexes = _file_refs(
+        payload["calendar_index_closure_file_refs"],
+        label="calendar_index_closure_file_refs",
     )
     market_tables = _file_refs(payload["market_table_file_refs"], label="market_table_file_refs")
     if len(market_tables) > _MAX_MARKET_TABLES:
@@ -352,6 +341,8 @@ def validate_bootstrap_operator_request(
             *scalar_files.values(),
             *calendar_raw,
             *calendar_captures,
+            *calendar_admissions,
+            *calendar_indexes,
             *market_tables,
             *fundamental_tables,
             *fundamental_evidence,
@@ -374,6 +365,8 @@ def validate_bootstrap_operator_request(
         "files": scalar_files,
         "calendar_raw_file_refs": calendar_raw,
         "calendar_capture_file_refs": calendar_captures,
+        "calendar_decoder_admission_file_refs": calendar_admissions,
+        "calendar_index_closure_file_refs": calendar_indexes,
         "market_table_file_refs": market_tables,
         "fundamental_table_file_refs": fundamental_tables,
         "fundamental_evidence_file_refs": fundamental_evidence,
@@ -1000,8 +993,10 @@ def _copy_request_inputs(
         "pit_pointer_file_ref": "closure/pit_pointer.json",
         "pit_generation_manifest_file_ref": "closure/pit_generation_manifest.json",
         "pit_membership_file_ref": "closure/pit_membership.parquet",
-        "calendar_manifest_file_ref": "calendar_replay/"
-        + normalized["files"]["calendar_manifest_file_ref"]["relative_path"],
+        "calendar_runtime_json_file_ref": "calendar_replay/"
+        + normalized["files"]["calendar_runtime_json_file_ref"]["relative_path"],
+        "calendar_compilation_file_ref": "calendar_replay/"
+        + normalized["files"]["calendar_compilation_file_ref"]["relative_path"],
         "bootstrap_decision_file_ref": ("operations/unified_cutover/bootstrap-decision.json"),
     }
     copied: dict[str, list[str] | str] = {}
@@ -1031,7 +1026,12 @@ def _copy_request_inputs(
             _copy_exact_once(source, target, reference["byte_sha256"])
             rows.append(relative)
         copied[field] = rows
-    for field in ("calendar_raw_file_refs", "calendar_capture_file_refs"):
+    for field in (
+        "calendar_raw_file_refs",
+        "calendar_capture_file_refs",
+        "calendar_decoder_admission_file_refs",
+        "calendar_index_closure_file_refs",
+    ):
         rows = []
         for reference in normalized[field]:
             relative = "calendar_replay/" + reference["relative_path"]
@@ -1426,6 +1426,8 @@ class _FundamentalSealedFileset:
     _LIST_FIELDS: Final = (
         "calendar_raw_file_refs",
         "calendar_capture_file_refs",
+        "calendar_decoder_admission_file_refs",
+        "calendar_index_closure_file_refs",
         "market_table_file_refs",
         "fundamental_table_file_refs",
         "fundamental_evidence_file_refs",
@@ -1769,7 +1771,27 @@ def _symbol_exchanges(symbols: Sequence[str]) -> list[str]:
     return sorted(exchanges)
 
 
-def _validate_calendar_capture(  # noqa: C901
+def _reject_legacy_calendar_capture(  # noqa: C901
+    *,
+    normalized: Mapping[str, Any],
+    input_root: Path,
+    capture_ref: Mapping[str, str],
+    raw_ref: Mapping[str, str],
+    exchange: str,
+    issuer: str,
+    source_url: str,
+    captured_at: str,
+    evidence_role: EvidenceRole,
+    coverage_start: str,
+    cutoff: str,
+    sessions: Sequence[str],
+    session_intervals: Sequence[Mapping[str, str]],
+    transform_code_sha256: str,
+) -> dict[str, Any]:
+    raise SystemPreconditionError("legacy DAILY_STATUS calendar captures are not admitted")
+
+
+def _legacy_calendar_capture_quarantine(  # noqa: C901
     *,
     normalized: Mapping[str, Any],
     input_root: Path,
@@ -1905,7 +1927,17 @@ def _validate_calendar_capture(  # noqa: C901
     return capture
 
 
-def _validate_calendar_manifest(  # noqa: C901
+def _reject_legacy_calendar_manifest(  # noqa: C901
+    *,
+    normalized: Mapping[str, Any],
+    input_root: Path,
+    cohort_symbols: Sequence[str],
+    source_projection: Mapping[str, Any],
+) -> dict[str, Any]:
+    raise SystemPreconditionError("legacy calendar manifest authority is not admitted")
+
+
+def _legacy_calendar_manifest_quarantine(  # noqa: C901
     *,
     normalized: Mapping[str, Any],
     input_root: Path,
@@ -2046,7 +2078,7 @@ def _validate_calendar_manifest(  # noqa: C901
             cast(EvidenceRole, "SESSION_RULE"),
         ):
             source_url, captured_at, raw_ref, capture_ref = source_rows[role]
-            _validate_calendar_capture(
+            _reject_legacy_calendar_capture(
                 normalized=normalized,
                 input_root=input_root,
                 capture_ref=capture_ref,
@@ -2076,6 +2108,141 @@ def _validate_calendar_manifest(  # noqa: C901
     return manifest
 
 
+def _validate_calendar_compilation_closure(  # noqa: C901
+    *,
+    normalized: Mapping[str, Any],
+    staging_root: Path,
+    copied: Mapping[str, list[str] | str],
+    cohort_symbols: Sequence[str],
+    source_projection: Mapping[str, Any],
+    release_ref: Mapping[str, Any],
+    store: SystemStore | None = None,
+    observed_inputs: Mapping[tuple[str, int], Mapping[str, Any]] | None = None,
+    validation_mode: str = "PRE_CAS_CURRENT",
+) -> dict[str, Any]:
+    """Replay the sole admitted calendar DAG from exact source bytes."""
+
+    if (store is None) != (observed_inputs is None):
+        raise SystemContractError("calendar replay authority is incomplete")
+
+    def source_bytes(field: str, ordinal: int = 0) -> bytes:
+        if observed_inputs is not None:
+            assert store is not None
+            _artifact, raw = store.read_source_object_bytes(
+                observed_inputs[(field, ordinal)],
+                maximum_bytes=MAXIMUM_FACTOR_SOURCE_OBJECT_BYTES,
+            )
+            return raw
+        if field in normalized["files"]:
+            relative = _copied_path(copied, field)
+        else:
+            relative = _copied_paths(copied, field)[ordinal]
+        return _read_stable_bytes(
+            staging_root / relative,
+            maximum_bytes=MAXIMUM_FACTOR_SOURCE_OBJECT_BYTES,
+        )
+
+    raw_by_ref: dict[bytes, bytes] = {}
+    for field in (
+        "calendar_raw_file_refs",
+        "calendar_capture_file_refs",
+        "calendar_decoder_admission_file_refs",
+        "calendar_index_closure_file_refs",
+    ):
+        for ordinal, reference in enumerate(normalized[field]):
+            raw_by_ref[canonical_json_bytes(reference)] = source_bytes(field, ordinal)
+    for field in (
+        "exchange_calendar_file_ref",
+        "calendar_runtime_json_file_ref",
+        "calendar_compilation_file_ref",
+    ):
+        reference = normalized["files"][field]
+        raw_by_ref[canonical_json_bytes(reference)] = source_bytes(field)
+
+    def raw_resolver(reference: Mapping[str, Any]) -> bytes:
+        normalized_value = dict(reference)
+        declared_size = normalized_value.pop("size", None)
+        if declared_size is not None and (type(declared_size) is not int or declared_size <= 0):
+            raise SystemContractError("calendar replay file size is invalid")
+        normalized_ref = _file_ref(normalized_value, label="calendar replay file ref")
+        try:
+            raw = raw_by_ref[canonical_json_bytes(normalized_ref)]
+        except KeyError as exc:
+            raise SystemContractError(
+                "calendar compiler requested a file outside request closure"
+            ) from exc
+        if _sha256(raw) != normalized_ref["byte_sha256"]:
+            raise SystemSecurityError("calendar compiler source bytes differ")
+        if declared_size is not None and declared_size != len(raw):
+            raise SystemSecurityError("calendar compiler source size differs")
+        return raw
+
+    def documents(field: str) -> list[dict[str, Any]]:
+        return [
+            _parse_source_json(source_bytes(field, ordinal), label=f"{field}[{ordinal}]")
+            for ordinal in range(len(normalized[field]))
+        ]
+
+    compilation_raw = source_bytes("calendar_compilation_file_ref")
+    compilation_document = _parse_source_json(
+        compilation_raw, label="calendar_compilation_file_ref"
+    )
+    if (
+        _sha256(compilation_raw)
+        != normalized["files"]["calendar_compilation_file_ref"]["byte_sha256"]
+    ):
+        raise SystemSecurityError("calendar compilation exact bytes differ")
+    expected_exchanges = _symbol_exchanges(cohort_symbols)
+    market_sessions = source_projection.get("market_sessions")
+    if type(market_sessions) is not list:
+        raise SystemContractError("calendar market-session projection is absent")
+    if validation_mode == "PRE_CAS_CURRENT":
+        compilation = validate_exchange_calendar_compilation(
+            compilation_document,
+            pit_exchange_ids=expected_exchanges,
+            market_session_dates=market_sessions,
+            capture_documents=documents("calendar_capture_file_refs"),
+            admission_documents=documents("calendar_decoder_admission_file_refs"),
+            index_closure_documents=documents("calendar_index_closure_file_refs"),
+            raw_resolver=raw_resolver,
+            expected_release_ref=release_ref,
+        )
+    elif validation_mode == "HISTORICAL":
+        payload = compilation_document.get("payload")
+        if type(payload) is not dict:
+            raise SystemContractError("historical calendar compilation payload is absent")
+        historical_compiler_sha = payload.get("compiler_code_sha256")
+        if type(historical_compiler_sha) is not str:
+            raise SystemContractError("historical calendar compiler SHA is absent")
+        compilation = validate_historical_compilation_envelope(
+            compilation_document,
+            expected_release_ref=release_ref,
+            expected_compiler_code_sha256=historical_compiler_sha,
+        )
+    else:
+        raise SystemContractError("calendar validation mode is invalid")
+    payload = compilation["payload"]
+    if (
+        payload["calendar_json_file_ref"] != normalized["files"]["calendar_runtime_json_file_ref"]
+        or payload["calendar_parquet_file_ref"] != normalized["files"]["exchange_calendar_file_ref"]
+        or payload["cutoff_date"] != source_projection.get("pit_signal_session")
+        or payload["cutoff_date"] != source_projection.get("latest_market_session")
+        or payload["pit_exchange_ids"] != expected_exchanges
+        or payload["market_session_dates_sha256"] != _sha256(canonical_json_bytes(market_sessions))
+    ):
+        raise SystemContractError("calendar compilation/Factor source binding differs")
+    calendar_projection = source_projection.get("calendar")
+    runtime = payload["runtime_projection"]
+    open_rows = [row for row in runtime if row["status"] == "OPEN"]
+    if type(calendar_projection) is not dict or (
+        calendar_projection.get("open_sessions") != [row["date"] for row in open_rows]
+        or calendar_projection.get("opens_at_utc") != [row["opens_at_utc"] for row in open_rows]
+        or calendar_projection.get("closes_at_utc") != [row["closes_at_utc"] for row in open_rows]
+    ):
+        raise SystemContractError("calendar compilation/strict Parquet replay differs")
+    return compilation
+
+
 def _receipt_input_source_rows(
     *,
     normalized: Mapping[str, Any],
@@ -2091,6 +2258,8 @@ def _receipt_input_source_rows(
     expected_lists = {
         "calendar_raw_file_refs",
         "calendar_capture_file_refs",
+        "calendar_decoder_admission_file_refs",
+        "calendar_index_closure_file_refs",
         "market_table_file_refs",
         "fundamental_table_file_refs",
         "fundamental_evidence_file_refs",
@@ -2144,6 +2313,8 @@ def _receipt_copied_paths(  # noqa: C901
     for field in (
         "calendar_raw_file_refs",
         "calendar_capture_file_refs",
+        "calendar_decoder_admission_file_refs",
+        "calendar_index_closure_file_refs",
         "market_table_file_refs",
         "fundamental_table_file_refs",
         "fundamental_evidence_file_refs",
@@ -2306,7 +2477,8 @@ def _validate_operational_source_topology(
         label="calendar operational source",
         expected_sources=[
             ("calendar", calendar_ref),
-            ("manifest", scalar("calendar_manifest_file_ref")),
+            ("compilation", scalar("calendar_compilation_file_ref")),
+            ("runtime-json", scalar("calendar_runtime_json_file_ref")),
             *[
                 (f"official-raw-{index:04d}", ref)
                 for index, ref in enumerate(values("calendar_raw_file_refs"))
@@ -2314,6 +2486,14 @@ def _validate_operational_source_topology(
             *[
                 (f"official-capture-{index:04d}", ref)
                 for index, ref in enumerate(values("calendar_capture_file_refs"))
+            ],
+            *[
+                (f"decoder-admission-{index:04d}", ref)
+                for index, ref in enumerate(values("calendar_decoder_admission_file_refs"))
+            ],
+            *[
+                (f"index-closure-{index:04d}", ref)
+                for index, ref in enumerate(values("calendar_index_closure_file_refs"))
             ],
         ],
     )
@@ -2855,27 +3035,37 @@ def _validate_production_bootstrap_generation_closure(  # noqa: C901
     ):
         raise SystemContractError("production market/PIT cohort replay differs")
     staging_prefix = _staging_relative_root(normalized["operation_id"])
-    calendar_root = store.source_root / staging_prefix / "calendar_replay"
     for field in (
         "exchange_calendar_file_ref",
-        "calendar_manifest_file_ref",
+        "calendar_runtime_json_file_ref",
+        "calendar_compilation_file_ref",
     ):
         if copied[field] != str(
             staging_prefix / "calendar_replay" / normalized["files"][field]["relative_path"]
         ):
             raise SystemContractError("production calendar replay path differs")
-    for field in ("calendar_raw_file_refs", "calendar_capture_file_refs"):
+    for field in (
+        "calendar_raw_file_refs",
+        "calendar_capture_file_refs",
+        "calendar_decoder_admission_file_refs",
+        "calendar_index_closure_file_refs",
+    ):
         expected_paths = [
             str(staging_prefix / "calendar_replay" / row["relative_path"])
             for row in normalized[field]
         ]
         if copied[field] != expected_paths:
             raise SystemContractError("production calendar evidence replay paths differ")
-    _validate_calendar_manifest(
+    _validate_calendar_compilation_closure(
         normalized=normalized,
-        input_root=calendar_root,
+        staging_root=store.source_root,
+        copied=copied,
         cohort_symbols=source_projection["all_pit_symbols"],
         source_projection=source_projection,
+        release_ref=release_ref,
+        store=store,
+        observed_inputs=observed_inputs,
+        validation_mode=validation_mode,
     )
     fundamental_closure = _validate_fundamental_closure(
         normalized=normalized,
@@ -3046,11 +3236,13 @@ def assemble_production_bootstrap(  # noqa: C901
         pit_ref=pit_ref,
         market_ref=market_ref,
     )
-    _validate_calendar_manifest(
+    _validate_calendar_compilation_closure(
         normalized=normalized,
-        input_root=staging / "calendar_replay",
+        staging_root=staging,
+        copied=copied_local,
         cohort_symbols=source_projection["all_pit_symbols"],
         source_projection=source_projection,
+        release_ref=release_ref,
     )
     if (
         source_projection["all_pit_symbols"] != materialized["scope_symbols"]
@@ -3252,7 +3444,8 @@ def assemble_production_bootstrap(  # noqa: C901
         "market_snapshot_manifest_file_ref",
         "pit_pointer_file_ref",
         "pit_generation_manifest_file_ref",
-        "calendar_manifest_file_ref",
+        "calendar_runtime_json_file_ref",
+        "calendar_compilation_file_ref",
         "fundamental_pointer_file_ref",
         "fundamental_generation_manifest_file_ref",
     }
@@ -3290,6 +3483,26 @@ def assemble_production_bootstrap(  # noqa: C901
             created_at=created_at,
         )
         for relative in _copied_paths(copied, "calendar_capture_file_refs")
+    ]
+    calendar_admission_refs = [
+        _source(
+            store,
+            relative,
+            source_format="JSON",
+            media_type="application/json",
+            created_at=created_at,
+        )
+        for relative in _copied_paths(copied, "calendar_decoder_admission_file_refs")
+    ]
+    calendar_index_refs = [
+        _source(
+            store,
+            relative,
+            source_format="JSON",
+            media_type="application/json",
+            created_at=created_at,
+        )
+        for relative in _copied_paths(copied, "calendar_index_closure_file_refs")
     ]
     market_table_refs = [
         _source(
@@ -3337,12 +3550,18 @@ def assemble_production_bootstrap(  # noqa: C901
         "calendar-top",
         [
             ("calendar", calendar_ref),
-            ("manifest", raw_objects["calendar_manifest_file_ref"]),
+            ("compilation", raw_objects["calendar_compilation_file_ref"]),
+            ("runtime-json", raw_objects["calendar_runtime_json_file_ref"]),
             *[(f"official-raw-{index:04d}", ref) for index, ref in enumerate(calendar_raw_refs)],
             *[
                 (f"official-capture-{index:04d}", ref)
                 for index, ref in enumerate(calendar_capture_refs)
             ],
+            *[
+                (f"decoder-admission-{index:04d}", ref)
+                for index, ref in enumerate(calendar_admission_refs)
+            ],
+            *[(f"index-closure-{index:04d}", ref) for index, ref in enumerate(calendar_index_refs)],
         ],
         created_at=created_at,
     )
@@ -3419,7 +3638,8 @@ def assemble_production_bootstrap(  # noqa: C901
             "pit_pointer_file_ref": raw_objects["pit_pointer_file_ref"],
             "pit_generation_manifest_file_ref": raw_objects["pit_generation_manifest_file_ref"],
             "pit_membership_file_ref": raw_objects["pit_membership_file_ref"],
-            "calendar_manifest_file_ref": raw_objects["calendar_manifest_file_ref"],
+            "calendar_runtime_json_file_ref": raw_objects["calendar_runtime_json_file_ref"],
+            "calendar_compilation_file_ref": raw_objects["calendar_compilation_file_ref"],
             "fundamental_pointer_file_ref": raw_objects["fundamental_pointer_file_ref"],
             "fundamental_generation_manifest_file_ref": raw_objects[
                 "fundamental_generation_manifest_file_ref"
@@ -3429,6 +3649,8 @@ def assemble_production_bootstrap(  # noqa: C901
         list_refs={
             "calendar_raw_file_refs": calendar_raw_refs,
             "calendar_capture_file_refs": calendar_capture_refs,
+            "calendar_decoder_admission_file_refs": calendar_admission_refs,
+            "calendar_index_closure_file_refs": calendar_index_refs,
             "market_table_file_refs": market_table_refs,
             "fundamental_table_file_refs": fundamental_table_refs,
             "fundamental_evidence_file_refs": fundamental_evidence_refs,
