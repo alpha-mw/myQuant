@@ -67,7 +67,8 @@ from tests.unit.test_exchange_calendar_closure import (
 )
 
 SYMBOLS = ["000001.SZ", "000002.SZ", "600000.SH", "600001.SH"]
-_TEST_CALENDAR_ADMISSIONS: dict[tuple[str, str], dict[str, Any]] = {}
+_TEST_CALENDAR_ADMISSIONS: dict[tuple[str, str, str | None], dict[str, Any]] = {}
+_TEST_CALENDAR_CATEGORY_SETS: dict[tuple[str, str], dict[str, Any]] = {}
 
 
 def _test_only_synthetic_daily_bytes(
@@ -207,8 +208,13 @@ def _synthetic_calendar_decoder_is_test_only(monkeypatch: pytest.MonkeyPatch) ->
             document,
             **kwargs,
             decoder=_calendar_decoder,
-            admission_resolver=lambda exchange, role: _TEST_CALENDAR_ADMISSIONS[(exchange, role)],
+            admission_resolver=lambda exchange, role, category: _TEST_CALENDAR_ADMISSIONS[
+                (exchange, role, category)
+            ],
             decoder_id_resolver=_calendar_decoder_id,
+            category_set_resolver=lambda exchange, set_id: _TEST_CALENDAR_CATEGORY_SETS[
+                (exchange, set_id)
+            ],
             decoder_sha256=TEST_CALENDAR_DECODER_SHA,
         )
 
@@ -311,6 +317,8 @@ def _finalize_input_refs(
     calendar_case["market_sessions"] = market_sessions
     _TEST_CALENDAR_ADMISSIONS.clear()
     _TEST_CALENDAR_ADMISSIONS.update(calendar_case["admission_by_subject"])
+    _TEST_CALENDAR_CATEGORY_SETS.clear()
+    _TEST_CALENDAR_CATEGORY_SETS.update(calendar_case["category_sets"])
     compilation = _build_calendar_case(calendar_case)
     for encoded_ref, raw in calendar_case["raw_by_ref"].items():
         reference = json.loads(encoded_ref)
@@ -730,6 +738,8 @@ def _inputs(root: Path) -> dict[str, dict[str, str] | list[dict[str, str]]]:
     calendar_case["release_ref"] = object_ref_for_artifact(production_release)
     _TEST_CALENDAR_ADMISSIONS.clear()
     _TEST_CALENDAR_ADMISSIONS.update(calendar_case["admission_by_subject"])
+    _TEST_CALENDAR_CATEGORY_SETS.clear()
+    _TEST_CALENDAR_CATEGORY_SETS.update(calendar_case["category_sets"])
     calendar_compilation = _build_calendar_case(calendar_case)
     for encoded_ref, raw in calendar_case["raw_by_ref"].items():
         reference = json.loads(encoded_ref)
@@ -1752,6 +1762,54 @@ def test_production_bootstrap_rejects_notice_index_pagination_drift(tmp_path: Pa
             input_root=input_root,
             request_raw=_request(workspace_root=workspace, release_ref=release_ref, files=files),
         )
+
+
+def test_calendar_replay_budget_rejects_many_small_and_few_near_cap_objects() -> None:
+    one_mebibyte = 1024**2
+    many_small = [("calendar_raw_file_refs", ordinal, one_mebibyte) for ordinal in range(129)]
+    with pytest.raises(SystemSecurityError, match="aggregate byte bound"):
+        production_module._validate_calendar_size_rows(many_small)
+
+    near_cap = [("calendar_raw_file_refs", ordinal, 8 * one_mebibyte) for ordinal in range(17)]
+    with pytest.raises(SystemSecurityError, match="aggregate byte bound"):
+        production_module._validate_calendar_size_rows(near_cap)
+
+
+def test_calendar_budget_preflight_precedes_staging_and_materialization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace, release_ref = _seed_workspace(tmp_path)
+    input_root = tmp_path / "sealed-inputs"
+    request_raw = _request(
+        workspace_root=workspace,
+        release_ref=release_ref,
+        files=_inputs(input_root),
+    )
+
+    def rejected_preflight(**_kwargs: Any) -> None:
+        raise SystemSecurityError("calendar replay exceeds its aggregate byte bound")
+
+    monkeypatch.setattr(
+        production_module,
+        "_preflight_calendar_input_budget",
+        rejected_preflight,
+    )
+    monkeypatch.setattr(
+        production_module,
+        "_ensure_staging_root",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("staging must not begin before the byte preflight")
+        ),
+    )
+    with pytest.raises(SystemSecurityError, match="aggregate byte bound"):
+        assemble_production_bootstrap(
+            workspace_root=workspace,
+            input_root=input_root,
+            request_raw=request_raw,
+        )
+    assert not (workspace / "data/private/system_source_staging").exists()
+    assert not (workspace / "results/system/generations").exists()
 
 
 def test_production_bootstrap_rejects_caller_authored_exchange_projection_drift(

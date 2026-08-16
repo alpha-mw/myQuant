@@ -150,6 +150,22 @@ _MAX_MARKET_TABLES: Final = 24
 _MINIMUM_MARKET_SESSIONS: Final = 91
 _PARQUET_BATCH_ROWS: Final = 2_048
 _PARQUET_BATCH_BYTES: Final = 16 * 1024**2
+_CALENDAR_INPUT_COUNT_LIMITS: Final = {
+    "calendar_raw_file_refs": 1_152,
+    "calendar_capture_file_refs": 1_024,
+    "calendar_decoder_admission_file_refs": 128,
+    "calendar_index_closure_file_refs": 128,
+}
+_CALENDAR_INPUT_BYTE_LIMITS: Final = {
+    "calendar_raw_file_refs": 8 * 1024**2,
+    "calendar_capture_file_refs": 1024**2,
+    "calendar_decoder_admission_file_refs": 1024**2,
+    "calendar_index_closure_file_refs": 4 * 1024**2,
+    "calendar_runtime_json_file_ref": 16 * 1024**2,
+    "calendar_compilation_file_ref": 16 * 1024**2,
+    "exchange_calendar_file_ref": 64 * 1024**2,
+}
+_MAXIMUM_CALENDAR_REPLAY_BYTES: Final = 128 * 1024**2
 # Historical decoder names remain only inside the explicitly disabled rejection
 # functions below.  They are not request fields or production DAG roles.
 _CALENDAR_MANIFEST_KIND: Final = "system.exchange_calendar_manifest"
@@ -259,6 +275,45 @@ def _file_refs(value: Any, *, label: str, minimum: int = 1) -> list[dict[str, st
     if keys != sorted(keys) or len(keys) != len(set(keys)):
         raise SystemContractError(f"{label} must be sorted and unique")
     return rows
+
+
+def _calendar_reference_rows(
+    normalized: Mapping[str, Any],
+) -> list[tuple[str, int, Mapping[str, str]]]:
+    rows: list[tuple[str, int, Mapping[str, str]]] = []
+    for field, maximum_count in _CALENDAR_INPUT_COUNT_LIMITS.items():
+        references = normalized[field]
+        if len(references) > maximum_count:
+            raise SystemSecurityError(f"{field} exceeds its production count bound")
+        rows.extend((field, ordinal, reference) for ordinal, reference in enumerate(references))
+    for field in (
+        "calendar_runtime_json_file_ref",
+        "calendar_compilation_file_ref",
+        "exchange_calendar_file_ref",
+    ):
+        rows.append((field, 0, normalized["files"][field]))
+    return rows
+
+
+def _validate_calendar_size_rows(
+    rows: Sequence[tuple[str, int, int]],
+) -> None:
+    aggregate = 0
+    for field, _ordinal, size in rows:
+        maximum = _CALENDAR_INPUT_BYTE_LIMITS[field]
+        if type(size) is not int or size <= 0 or size > maximum:
+            raise SystemSecurityError(f"{field} exceeds its production byte bound")
+        aggregate += size
+        if aggregate > _MAXIMUM_CALENDAR_REPLAY_BYTES:
+            raise SystemSecurityError("calendar replay exceeds its aggregate byte bound")
+
+
+def _preflight_calendar_input_budget(*, normalized: Mapping[str, Any], input_root: Path) -> None:
+    sizes: list[tuple[str, int, int]] = []
+    for field, ordinal, reference in _calendar_reference_rows(normalized):
+        path = _stable_input_path(input_root, reference)
+        sizes.append((field, ordinal, os.lstat(path).st_size))
+    _validate_calendar_size_rows(sizes)
 
 
 def validate_bootstrap_operator_request(
@@ -2125,12 +2180,51 @@ def _validate_calendar_compilation_closure(  # noqa: C901
     if (store is None) != (observed_inputs is None):
         raise SystemContractError("calendar replay authority is incomplete")
 
+    def copied_relative(field: str, ordinal: int) -> str:
+        if field in normalized["files"]:
+            return _copied_path(copied, field)
+        return _copied_paths(copied, field)[ordinal]
+
+    size_rows: list[tuple[str, int, int]] = []
+    for field, ordinal, reference in _calendar_reference_rows(normalized):
+        relative = copied_relative(field, ordinal)
+        if observed_inputs is not None:
+            assert store is not None
+            source_ref = observed_inputs[(field, ordinal)]
+            artifact = store.get_object(source_ref)
+            payload = artifact.get("payload")
+            if (
+                artifact.get("kind") != "system.source_object"
+                or type(payload) is not dict
+                or payload.get("source_root_id") != store.source_root_id
+                or payload.get("relative_path") != relative
+                or payload.get("byte_sha256") != reference["byte_sha256"]
+            ):
+                raise SystemContractError("calendar replay source descriptor differs")
+        try:
+            root = staging_root.resolve(strict=True)
+            path = root.joinpath(relative).resolve(strict=True)
+            path.relative_to(root)
+            metadata = os.lstat(path)
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise SystemSecurityError("calendar replay source path is unavailable") from exc
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or metadata.st_nlink != 1
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+        ):
+            raise SystemSecurityError("calendar replay source storage is invalid")
+        size_rows.append((field, ordinal, metadata.st_size))
+    _validate_calendar_size_rows(size_rows)
+
     def source_bytes(field: str, ordinal: int = 0) -> bytes:
         if observed_inputs is not None:
             assert store is not None
             _artifact, raw = store.read_source_object_bytes(
                 observed_inputs[(field, ordinal)],
-                maximum_bytes=MAXIMUM_FACTOR_SOURCE_OBJECT_BYTES,
+                maximum_bytes=_CALENDAR_INPUT_BYTE_LIMITS[field],
             )
             return raw
         if field in normalized["files"]:
@@ -2139,7 +2233,7 @@ def _validate_calendar_compilation_closure(  # noqa: C901
             relative = _copied_paths(copied, field)[ordinal]
         return _read_stable_bytes(
             staging_root / relative,
-            maximum_bytes=MAXIMUM_FACTOR_SOURCE_OBJECT_BYTES,
+            maximum_bytes=_CALENDAR_INPUT_BYTE_LIMITS[field],
         )
 
     raw_by_ref: dict[bytes, bytes] = {}
@@ -2179,8 +2273,11 @@ def _validate_calendar_compilation_closure(  # noqa: C901
 
     def documents(field: str) -> list[dict[str, Any]]:
         return [
-            _parse_source_json(source_bytes(field, ordinal), label=f"{field}[{ordinal}]")
-            for ordinal in range(len(normalized[field]))
+            _parse_source_json(
+                raw_resolver(reference),
+                label=f"{field}[{ordinal}]",
+            )
+            for ordinal, reference in enumerate(normalized[field])
         ]
 
     compilation_raw = source_bytes("calendar_compilation_file_ref")
@@ -2196,14 +2293,34 @@ def _validate_calendar_compilation_closure(  # noqa: C901
     market_sessions = source_projection.get("market_sessions")
     if type(market_sessions) is not list:
         raise SystemContractError("calendar market-session projection is absent")
+    capture_documents = documents("calendar_capture_file_refs")
+    admission_documents = documents("calendar_decoder_admission_file_refs")
+    index_documents = documents("calendar_index_closure_file_refs")
+    required_raw_refs: list[dict[str, Any]] = [
+        _file_ref(
+            document["payload"]["raw_file_ref"],
+            label="calendar capture raw_file_ref",
+        )
+        for document in capture_documents
+    ]
+    for document in admission_documents:
+        fixture_ref = dict(document["payload"]["fixture_raw_file_ref"])
+        fixture_ref.pop("size", None)
+        required_raw_refs.append(
+            _file_ref(fixture_ref, label="calendar admission fixture_raw_file_ref")
+        )
+    if sorted(map(canonical_json_bytes, required_raw_refs)) != sorted(
+        map(canonical_json_bytes, normalized["calendar_raw_file_refs"])
+    ):
+        raise SystemContractError("calendar raw source closure differs")
     if validation_mode == "PRE_CAS_CURRENT":
         compilation = validate_exchange_calendar_compilation(
             compilation_document,
             pit_exchange_ids=expected_exchanges,
             market_session_dates=market_sessions,
-            capture_documents=documents("calendar_capture_file_refs"),
-            admission_documents=documents("calendar_decoder_admission_file_refs"),
-            index_closure_documents=documents("calendar_index_closure_file_refs"),
+            capture_documents=capture_documents,
+            admission_documents=admission_documents,
+            index_closure_documents=index_documents,
             raw_resolver=raw_resolver,
             expected_release_ref=release_ref,
         )
@@ -3140,7 +3257,6 @@ def assemble_production_bootstrap(  # noqa: C901
     store = SystemStore(workspace)
     if normalized["source_root_id"] != store.source_root_id:
         raise SystemContractError("bootstrap request source root identity differs")
-    staging = _ensure_staging_root(workspace, normalized["operation_id"])
     if store.read_active() is not None:
         raise SystemPreconditionError("bootstrap assembly requires EMPTY System pointer")
     if (workspace / str(MIGRATION_MARKER_PATH)).exists():
@@ -3149,6 +3265,8 @@ def assemble_production_bootstrap(  # noqa: C901
     release = store.get_object(release_ref)
     if release["kind"] != "system.release":
         raise SystemContractError("deployed release ref kind is invalid")
+    _preflight_calendar_input_budget(normalized=normalized, input_root=inputs)
+    staging = _ensure_staging_root(workspace, normalized["operation_id"])
     bootstrap_operator_request_ref = store.put_object(normalized["document"])
 
     copied_local = _copy_request_inputs(

@@ -241,10 +241,18 @@ exact HTTPS endpoint/query contract, redirect policy, real status/content type
 and response headers, retained native body bytes and SHA, capture time,
 decoder bytes, and normalized projection SHA. Decoder tests must replay that
 retained capture rather than manufacture a body from the expected projection.
-Daily `OPEN`/`CLOSED` evidence and official continuous-session evidence remain
-separate roles. Until both admitted roles cover every exchange in the sealed
-PIT cohort through the exact cutoff, production generation publication and CAS
-remain blocked.
+The runtime calendar is compiled from admitted official trading-week rules,
+continuous-session rules, annual holiday notices, temporary-closure notices,
+and session-change notices. Notice discovery is a separate authority: every
+exchange has a code-owned exact required-category set, and every admitted index
+page must bind its issuer category, page number, inclusive publication window,
+and request query in both directions. Complete pagination, the exact category
+union, all relevant body captures, a discovery start early enough to retain
+prior-year annual notices, and the distinct calendar effective-coverage window
+must all close. Per-role counts, individual object sizes, and aggregate replay
+bytes are bounded before source bodies are materialized. Until this native
+rule/notice closure covers every exchange in the sealed PIT cohort through the
+exact cutoff, production generation publication and CAS remain blocked.
 
 Any unknown pointer, caller, writer, authority claim, resolver difference,
 custody failure, source-closure mismatch, test failure,

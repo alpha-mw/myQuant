@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import os
 from pathlib import Path
 import threading
 from typing import Any
@@ -594,6 +595,27 @@ def test_invocation_worker_rejects_transient_peak_after_memory_is_released() -> 
     with pytest.raises(SystemSecurityError, match="RSS"):
         validation_module._run_callback_worker(
             transient_peak,
+            store=object(),
+            validation_request={},
+            trusted_at=STAMP,
+            maximum_seconds=30,
+        )
+
+
+def test_invocation_worker_rejects_transient_file_descriptor_peak() -> None:
+    def retain_excess_descriptors(**_kwargs: Any) -> dict[str, bool]:
+        descriptors: list[int] = []
+        try:
+            for _ in range(validation_module.MAXIMUM_VALIDATION_OPEN_FDS + 1):
+                descriptors.append(os.open("/dev/null", os.O_RDONLY))
+            return {"retained_to_return": True}
+        finally:
+            for descriptor in descriptors:
+                os.close(descriptor)
+
+    with pytest.raises(SystemSecurityError, match="validation worker failed"):
+        validation_module._run_callback_worker(
+            retain_excess_descriptors,
             store=object(),
             validation_request={},
             trusted_at=STAMP,

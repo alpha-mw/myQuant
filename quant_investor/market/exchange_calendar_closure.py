@@ -16,7 +16,7 @@ from io import BytesIO
 from pathlib import Path, PurePosixPath
 import re
 from typing import Any, Final, cast
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 from zoneinfo import ZoneInfo
 
 import pyarrow as pa
@@ -65,6 +65,7 @@ BODY_ROLES: Final = frozenset(
     {"ANNUAL_HOLIDAY_NOTICE", "TEMPORARY_CLOSURE_NOTICE", "SESSION_CHANGE_NOTICE"}
 )
 DIRECT_ROLES: Final = frozenset({"TRADING_WEEK_RULE", "SESSION_RULE"})
+MAXIMUM_DIRECT_CAPTURES_PER_EXCHANGE_ROLE: Final = 8
 _SHA_RE: Final = re.compile(r"^[0-9a-f]{64}$")
 _SAFE_RESPONSE_HEADERS: Final = frozenset(
     {"cache-control", "content-length", "content-type", "etag", "last-modified"}
@@ -100,18 +101,25 @@ _INDEX_FIELDS: Final = frozenset(
         "state",
         "exchange_id",
         "issuer",
-        "category",
+        "issuer_category_id",
+        "required_category_set_id",
+        "category_scope",
+        "category_completeness_policy",
+        "query_window_semantics",
         "root_capture_ref",
         "page_capture_refs",
         "reported_page_count",
         "reported_item_count",
         "observed_item_count",
-        "window_start_date",
-        "window_end_date",
+        "discovery_publish_start_date",
+        "discovery_publish_end_date",
+        "calendar_effective_coverage_start_date",
+        "calendar_effective_coverage_end_date",
         "entry_rows",
         "body_capture_refs",
         "pagination_complete",
-        "date_window_complete",
+        "discovery_window_complete",
+        "calendar_coverage_bound",
         "unknown_relevant_count",
     }
 )
@@ -149,8 +157,9 @@ _COMPILATION_FIELDS: Final = frozenset(
 
 RawResolver = Callable[[Mapping[str, Any]], bytes]
 ArtifactResolver = Callable[[Mapping[str, Any]], Mapping[str, Any]]
-AdmissionResolver = Callable[[str, official.EvidenceRole], Mapping[str, Any]]
-DecoderIdResolver = Callable[[str, official.EvidenceRole], str]
+AdmissionResolver = Callable[[str, official.EvidenceRole, str | None], Mapping[str, Any]]
+DecoderIdResolver = Callable[[str, official.EvidenceRole, str | None], str]
+CategorySetResolver = Callable[[str, str], Mapping[str, Any]]
 ProjectionDecoder = Callable[..., Mapping[str, object]]
 
 
@@ -293,9 +302,53 @@ def _header_rows(value: Any, *, label: str) -> list[dict[str, str]]:
 def _endpoint_matches(template: str, request_url: str) -> bool:
     parsed = urlsplit(request_url)
     target = parsed.path + (("?" + parsed.query) if parsed.query else "")
-    pattern = re.escape(template)
-    pattern = re.sub(r"\\\{[A-Za-z_][A-Za-z0-9_]*\\\}", r"[^&/?#]+", pattern)
-    return re.fullmatch(pattern, target) is not None
+    return "{" not in template and "}" not in template and template == target
+
+
+def _index_request_binding(
+    *,
+    admission: Mapping[str, Any],
+    projection: Mapping[str, Any],
+    request_url: str,
+) -> None:
+    template = urlsplit(admission["endpoint_path_query_template"])
+    actual = urlsplit(request_url)
+    if "{" in template.path or "}" in template.path or template.path != actual.path:
+        raise SystemSecurityError("calendar index request path differs from admission")
+    try:
+        template_pairs = parse_qsl(
+            template.query,
+            keep_blank_values=True,
+            strict_parsing=True,
+        )
+        actual_pairs = parse_qsl(
+            actual.query,
+            keep_blank_values=True,
+            strict_parsing=True,
+        )
+    except ValueError as exc:
+        raise SystemContractError("calendar index request query is invalid") from exc
+    if len(template_pairs) != len({name for name, _ in template_pairs}) or len(actual_pairs) != len(
+        {name for name, _ in actual_pairs}
+    ):
+        raise SystemContractError("calendar index request query is duplicated")
+    sources = {
+        "ISSUER_CATEGORY_ID": admission["issuer_category_id"],
+        "PAGE_NUMBER": str(projection["page_number"]),
+        "DISCOVERY_PUBLISH_START_DATE": projection["discovery_publish_start_date"],
+        "DISCOVERY_PUBLISH_END_DATE": projection["discovery_publish_end_date"],
+    }
+    policy_rows = admission["required_query_parameters"]
+    expected = {row["name"]: sources[row["value_source"]] for row in policy_rows}
+    if dict(actual_pairs) != expected:
+        raise SystemSecurityError("calendar index request/query projection binding differs")
+    template_values = dict(template_pairs)
+    if set(template_values) != set(expected) or any(
+        template_values[name] != "{" + row["value_source"] + "}"
+        for row in policy_rows
+        for name in [row["name"]]
+    ):
+        raise SystemContractError("calendar index request template binding differs")
 
 
 def _default_decoder(
@@ -428,8 +481,8 @@ def _projection(  # noqa: C901
             "page_number",
             "page_count",
             "reported_item_count",
-            "window_start_date",
-            "window_end_date",
+            "discovery_publish_start_date",
+            "discovery_publish_end_date",
             "entries",
         }
         if set(result) != expected:
@@ -481,11 +534,13 @@ def _projection(  # noqa: C901
             "page_number": page,
             "page_count": count,
             "reported_item_count": total,
-            "window_start_date": _date(
-                result["window_start_date"], label="index.window_start_date"
+            "discovery_publish_start_date": _date(
+                result["discovery_publish_start_date"],
+                label="index.discovery_publish_start_date",
             ).isoformat(),
-            "window_end_date": _date(
-                result["window_end_date"], label="index.window_end_date"
+            "discovery_publish_end_date": _date(
+                result["discovery_publish_end_date"],
+                label="index.discovery_publish_end_date",
             ).isoformat(),
             "entries": entries,
         }
@@ -501,7 +556,7 @@ def _validate_capture(  # noqa: C901
     admission_resolver: AdmissionResolver,
     decoder_id_resolver: DecoderIdResolver,
     decoder_sha256: str,
-) -> tuple[dict[str, Any], dict[str, Any]]:
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     try:
         capture = validate_artifact(document, expected_kind=CAPTURE_KIND)
     except ContractError as exc:
@@ -557,14 +612,15 @@ def _validate_capture(  # noqa: C901
     if admission_ref["kind"] != ADMISSION_KIND:
         raise SystemContractError("calendar capture decoder admission kind differs")
     supplied = official.validate_decoder_admission(artifact_resolver(admission_ref))
+    admission_payload = supplied["payload"]
+    category_id = admission_payload["issuer_category_id"]
     registered = official.validate_decoder_admission(
-        admission_resolver(exchange, cast(official.EvidenceRole, role))
+        admission_resolver(exchange, cast(official.EvidenceRole, role), category_id)
     )
     if canonical_json_bytes(supplied) != canonical_json_bytes(registered):
         raise SystemSecurityError("calendar decoder admission is not registered")
     if object_ref_for_artifact(supplied) != admission_ref:
         raise SystemContractError("calendar decoder admission ref differs")
-    admission_payload = supplied["payload"]
     fixture_ref = _file_ref(
         admission_payload["fixture_raw_file_ref"],
         label="decoder.fixture_raw_file_ref",
@@ -587,13 +643,18 @@ def _validate_capture(  # noqa: C901
         or admission_payload["evidence_role"] != role
         or admission_payload["issuer"] != payload["issuer"]
         or admission_payload["decoder_id"]
-        != decoder_id_resolver(exchange, cast(official.EvidenceRole, role))
+        != decoder_id_resolver(exchange, cast(official.EvidenceRole, role), category_id)
         or admission_payload["decoder_sha256"] != decoder_sha256
         or payload["decoder_id"] != admission_payload["decoder_id"]
         or payload["decoder_sha256"] != decoder_sha256
         or payload["http_status"] != admission_payload["http_status"]
         or media_type != admission_payload["raw_media_type"]
-        or not _endpoint_matches(admission_payload["endpoint_path_query_template"], request_url)
+        or (
+            role != "NOTICE_INDEX_SNAPSHOT"
+            and not _endpoint_matches(
+                admission_payload["endpoint_path_query_template"], request_url
+            )
+        )
     ):
         raise SystemSecurityError("calendar capture/admission binding differs")
     projection = _projection(
@@ -605,29 +666,54 @@ def _validate_capture(  # noqa: C901
     )
     if payload["projection_sha256"] != _sha256(canonical_json_bytes(projection)):
         raise SystemSecurityError("calendar capture projection binding differs")
-    return capture, projection
+    official.validate_redirect_chain(
+        policy=admission_payload["redirect_policy"],
+        exchange=exchange,
+        request_url=request_url,
+        effective_url=effective_url,
+        redirects=redirects,
+        label="official calendar capture",
+    )
+    if role == "NOTICE_INDEX_SNAPSHOT":
+        if (
+            projection["category"] != category_id
+            or admission_payload["discovery_start_date"]
+            != projection["discovery_publish_start_date"]
+        ):
+            raise SystemSecurityError("calendar index admission/projection binding differs")
+        _index_request_binding(
+            admission=admission_payload,
+            projection=fixture_projection,
+            request_url=admission_payload["fixture_request_url"],
+        )
+        _index_request_binding(
+            admission=admission_payload,
+            projection=projection,
+            request_url=request_url,
+        )
+    return capture, projection, supplied
 
 
 def _resolve_capture_map(
     capture_documents: Sequence[Mapping[str, Any]],
     **validation: Any,
-) -> dict[bytes, tuple[dict[str, Any], dict[str, Any]]]:
-    result: dict[bytes, tuple[dict[str, Any], dict[str, Any]]] = {}
+) -> dict[bytes, tuple[dict[str, Any], dict[str, Any], dict[str, Any]]]:
+    result: dict[bytes, tuple[dict[str, Any], dict[str, Any], dict[str, Any]]] = {}
     for document in capture_documents:
-        capture, projection = _validate_capture(document, **validation)
+        capture, projection, admission = _validate_capture(document, **validation)
         key = canonical_json_bytes(object_ref_for_artifact(capture))
         if key in result:
             raise SystemContractError("calendar capture authority is duplicated")
-        result[key] = (capture, projection)
+        result[key] = (capture, projection, admission)
     return result
 
 
 def _capture_for_ref(
-    capture_map: Mapping[bytes, tuple[dict[str, Any], dict[str, Any]]],
+    capture_map: Mapping[bytes, tuple[dict[str, Any], dict[str, Any], dict[str, Any]]],
     value: Any,
     *,
     label: str,
-) -> tuple[dict[str, Any], dict[str, Any]]:
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     ref = validate_object_ref(value, label=label)
     if ref["kind"] != CAPTURE_KIND:
         raise SystemContractError(f"{label} has the wrong kind")
@@ -642,7 +728,8 @@ def _derive_index_closure(  # noqa: C901
     *,
     coverage: date,
     cutoff: date,
-    capture_map: Mapping[bytes, tuple[dict[str, Any], dict[str, Any]]],
+    capture_map: Mapping[bytes, tuple[dict[str, Any], dict[str, Any], dict[str, Any]]],
+    category_set_resolver: CategorySetResolver,
 ) -> dict[str, Any]:
     try:
         supplied = validate_artifact(document, expected_kind=INDEX_CLOSURE_KIND)
@@ -666,9 +753,9 @@ def _derive_index_closure(  # noqa: C901
         minimum=0,
     )
     root_ref = validate_object_ref(supplied_payload["root_capture_ref"], label="root_capture_ref")
-    pages: list[tuple[dict[str, str], dict[str, Any], dict[str, Any]]] = []
+    pages: list[tuple[dict[str, str], dict[str, Any], dict[str, Any], dict[str, Any]]] = []
     for ref in page_refs:
-        capture, projection = _capture_for_ref(
+        capture, projection, admission = _capture_for_ref(
             capture_map, ref, label="calendar index page capture"
         )
         payload = capture["payload"]
@@ -677,38 +764,90 @@ def _derive_index_closure(  # noqa: C901
             or payload["evidence_role"] != "NOTICE_INDEX_SNAPSHOT"
         ):
             raise SystemContractError("calendar index page subject differs")
-        pages.append((ref, capture, projection))
+        pages.append((ref, capture, projection, admission))
     pages.sort(key=lambda item: item[2]["page_number"])
     if [row[2]["page_number"] for row in pages] != list(range(1, len(pages) + 1)):
         raise SystemPreconditionError("calendar index pagination is incomplete")
     first = pages[0][2]
+    first_admission = pages[0][3]["payload"]
+    set_id = first_admission["required_category_set_id"]
+    policy = official.validate_required_category_set(category_set_resolver(exchange, set_id))
+    expected_admission_policy = {
+        field: policy[field]
+        for field in (
+            "category_scope",
+            "category_completeness_policy",
+            "query_window_semantics",
+            "required_query_parameters",
+            "page_parameter",
+            "cursor_parameter",
+            "required_category_set_id",
+            "discovery_start_date",
+        )
+    }
     if (
-        root_ref != pages[0][0]
+        policy["exchange_id"] != exchange
+        or policy["issuer"] != EXCHANGE_ISSUERS[exchange]
+        or first_admission["issuer_category_id"] not in policy["required_issuer_category_ids"]
+        or any(
+            any(
+                admission["payload"][field] != value
+                for field, value in expected_admission_policy.items()
+            )
+            or admission["payload"]["issuer_category_id"] != first_admission["issuer_category_id"]
+            for _, _, _, admission in pages
+        )
+        or root_ref != pages[0][0]
         or first["page_count"] != len(pages)
+        or len(pages) > policy["maximum_page_count"]
         or any(
             row[2]["page_count"] != len(pages)
             or row[2]["reported_item_count"] != first["reported_item_count"]
             or row[2]["category"] != first["category"]
-            or row[2]["window_start_date"] != first["window_start_date"]
-            or row[2]["window_end_date"] != first["window_end_date"]
+            or row[2]["discovery_publish_start_date"] != first["discovery_publish_start_date"]
+            or row[2]["discovery_publish_end_date"] != first["discovery_publish_end_date"]
             for row in pages
         )
     ):
         raise SystemPreconditionError("calendar index pagination metadata differs")
-    entries = [entry for _, _, page in pages for entry in page["entries"]]
+    entries = [entry for _, _, page, _ in pages for entry in page["entries"]]
     entries.sort(key=lambda row: (row["publish_date"], row["entry_id"]))
     if len(entries) != first["reported_item_count"] or len(
         {row["entry_id"] for row in entries}
     ) != len(entries):
         raise SystemPreconditionError("calendar index item closure differs")
-    window_start = _date(first["window_start_date"], label="index.window_start_date")
-    window_end = _date(first["window_end_date"], label="index.window_end_date")
-    date_window_complete = window_start <= coverage and window_end >= cutoff
+    category_role_row = next(
+        row
+        for row in policy["category_role_rows"]
+        if row["issuer_category_id"] == first_admission["issuer_category_id"]
+    )
+    if any(
+        row["relevant"] and row["evidence_role"] not in category_role_row["allowed_evidence_roles"]
+        for row in entries
+    ):
+        raise SystemPreconditionError("calendar index entry role is outside category policy")
+    window_start = _date(
+        first["discovery_publish_start_date"],
+        label="index.discovery_publish_start_date",
+    )
+    window_end = _date(
+        first["discovery_publish_end_date"],
+        label="index.discovery_publish_end_date",
+    )
+    discovery_window_complete = (
+        window_start.isoformat() == policy["discovery_start_date"]
+        and window_start < coverage
+        and window_end == cutoff
+        and all(
+            window_start <= _date(row["publish_date"], label="entry.publish_date") <= window_end
+            for row in entries
+        )
+    )
     relevant = [row for row in entries if row["relevant"]]
     unknown_count = sum(row["evidence_role"] is None for row in relevant)
     body_by_subject: dict[tuple[str, str], dict[str, str]] = {}
     for ref in body_refs:
-        capture, _ = _capture_for_ref(capture_map, ref, label="calendar index body capture")
+        capture, _, _ = _capture_for_ref(capture_map, ref, label="calendar index body capture")
         payload = capture["payload"]
         key = (payload["effective_url"], payload["evidence_role"])
         if payload["exchange_id"] != exchange or payload["evidence_role"] not in BODY_ROLES:
@@ -723,25 +862,34 @@ def _derive_index_closure(  # noqa: C901
     }
     if set(body_by_subject) != expected_subjects:
         raise SystemPreconditionError("calendar index relevant-body closure differs")
+    if len(body_refs) > policy["maximum_body_count"]:
+        raise SystemPreconditionError("calendar index body count exceeds its admitted bound")
     payload = {
         "index_closure_id": _identifier(
             supplied_payload["index_closure_id"], label="index_closure_id"
         ),
-        "state": "COMPLETE" if unknown_count == 0 and date_window_complete else "BLOCKED",
+        "state": "COMPLETE" if unknown_count == 0 and discovery_window_complete else "BLOCKED",
         "exchange_id": exchange,
         "issuer": EXCHANGE_ISSUERS[exchange],
-        "category": first["category"],
+        "issuer_category_id": first["category"],
+        "required_category_set_id": set_id,
+        "category_scope": policy["category_scope"],
+        "category_completeness_policy": policy["category_completeness_policy"],
+        "query_window_semantics": policy["query_window_semantics"],
         "root_capture_ref": root_ref,
         "page_capture_refs": page_refs,
         "reported_page_count": len(pages),
         "reported_item_count": first["reported_item_count"],
         "observed_item_count": len(entries),
-        "window_start_date": window_start.isoformat(),
-        "window_end_date": window_end.isoformat(),
+        "discovery_publish_start_date": window_start.isoformat(),
+        "discovery_publish_end_date": window_end.isoformat(),
+        "calendar_effective_coverage_start_date": coverage.isoformat(),
+        "calendar_effective_coverage_end_date": cutoff.isoformat(),
         "entry_rows": entries,
         "body_capture_refs": body_refs,
         "pagination_complete": True,
-        "date_window_complete": date_window_complete,
+        "discovery_window_complete": discovery_window_complete,
+        "calendar_coverage_bound": True,
         "unknown_relevant_count": unknown_count,
     }
     rebuilt = seal_artifact(INDEX_CLOSURE_KIND, payload, created_at=supplied["created_at"])
@@ -777,7 +925,7 @@ def _derive_exchange_source(  # noqa: C901
     exchange: str,
     coverage: date,
     cutoff: date,
-    captures: Sequence[tuple[dict[str, Any], dict[str, Any]]],
+    captures: Sequence[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]],
     index_closures: Sequence[dict[str, Any]],
 ) -> dict[str, Any]:
     indexed_refs = {
@@ -785,7 +933,7 @@ def _derive_exchange_source(  # noqa: C901
         for closure in index_closures
         for ref in closure["payload"]["body_capture_refs"]
     }
-    for capture, _ in captures:
+    for capture, _, _ in captures:
         role = capture["payload"]["evidence_role"]
         if (
             role in BODY_ROLES
@@ -796,7 +944,7 @@ def _derive_exchange_source(  # noqa: C901
     session_base: list[dict[str, Any]] = []
     session_changes: list[dict[str, Any]] = []
     closure_sources: dict[str, list[dict[str, str]]] = {}
-    for capture, projection in captures:
+    for capture, projection, _ in captures:
         role = capture["payload"]["evidence_role"]
         ref = object_ref_for_artifact(capture)
         if role == "TRADING_WEEK_RULE":
@@ -1018,6 +1166,7 @@ def build_exchange_calendar_compilation(  # noqa: C901
     decoder: ProjectionDecoder = _default_decoder,
     admission_resolver: AdmissionResolver = official.decoder_admission,
     decoder_id_resolver: DecoderIdResolver = official.decoder_id,
+    category_set_resolver: CategorySetResolver = official.required_category_set,
     decoder_sha256: str | None = None,
 ) -> dict[str, Any]:
     coverage = _date(coverage_start_date, label="coverage_start_date")
@@ -1067,13 +1216,48 @@ def build_exchange_calendar_compilation(  # noqa: C901
         decoder_sha256=code_sha,
     )
     index_closures = [
-        _derive_index_closure(document, coverage=coverage, cutoff=cutoff, capture_map=capture_map)
+        _derive_index_closure(
+            document,
+            coverage=coverage,
+            cutoff=cutoff,
+            capture_map=capture_map,
+            category_set_resolver=category_set_resolver,
+        )
         for document in index_closure_documents
     ]
     if len({canonical_json_bytes(object_ref_for_artifact(row)) for row in index_closures}) != len(
         index_closures
     ):
         raise SystemContractError("calendar index closure is duplicated")
+    if {row[0]["payload"]["exchange_id"] for row in capture_map.values()} != set(exchanges):
+        raise SystemPreconditionError("calendar capture/PIT exchange set differs")
+    referenced_admissions = {
+        canonical_json_bytes(object_ref_for_artifact(row[2])) for row in capture_map.values()
+    }
+    if referenced_admissions != set(admissions):
+        raise SystemPreconditionError("calendar decoder admission closure differs")
+    indexed_page_refs = {
+        canonical_json_bytes(ref)
+        for closure in index_closures
+        for ref in closure["payload"]["page_capture_refs"]
+    }
+    for exchange in exchanges:
+        for role in DIRECT_ROLES:
+            count = sum(
+                row[0]["payload"]["exchange_id"] == exchange
+                and row[0]["payload"]["evidence_role"] == role
+                for row in capture_map.values()
+            )
+            if not 1 <= count <= MAXIMUM_DIRECT_CAPTURES_PER_EXCHANGE_ROLE:
+                raise SystemPreconditionError(
+                    "calendar direct capture count exceeds its exact role bound"
+                )
+    if any(
+        row[0]["payload"]["evidence_role"] == "NOTICE_INDEX_SNAPSHOT"
+        and canonical_json_bytes(object_ref_for_artifact(row[0])) not in indexed_page_refs
+        for row in capture_map.values()
+    ):
+        raise SystemPreconditionError("calendar index page is outside category closure")
     source_rows: list[dict[str, Any]] = []
     for exchange in exchanges:
         exchange_captures = [
@@ -1084,6 +1268,18 @@ def build_exchange_calendar_compilation(  # noqa: C901
         ]
         if not exchange_indexes:
             raise SystemPreconditionError("calendar exchange index closure is absent")
+        set_ids = {row["payload"]["required_category_set_id"] for row in exchange_indexes}
+        if len(set_ids) != 1:
+            raise SystemPreconditionError("calendar exchange category-set authority differs")
+        set_id = next(iter(set_ids))
+        category_policy = official.validate_required_category_set(
+            category_set_resolver(exchange, set_id)
+        )
+        observed_categories = sorted(
+            row["payload"]["issuer_category_id"] for row in exchange_indexes
+        )
+        if observed_categories != category_policy["required_issuer_category_ids"]:
+            raise SystemPreconditionError("calendar exchange required-category set is incomplete")
         source_rows.append(
             _derive_exchange_source(
                 exchange=exchange,
@@ -1167,6 +1363,7 @@ def validate_exchange_calendar_compilation(
     decoder: ProjectionDecoder = _default_decoder,
     admission_resolver: AdmissionResolver = official.decoder_admission,
     decoder_id_resolver: DecoderIdResolver = official.decoder_id,
+    category_set_resolver: CategorySetResolver = official.required_category_set,
     decoder_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Replay a compilation with the currently installed admitted decoders."""
@@ -1204,6 +1401,7 @@ def validate_exchange_calendar_compilation(
         decoder=decoder,
         admission_resolver=admission_resolver,
         decoder_id_resolver=decoder_id_resolver,
+        category_set_resolver=category_set_resolver,
         decoder_sha256=decoder_sha256,
     )
     if canonical_json_bytes(rebuilt) != canonical_json_bytes(artifact):

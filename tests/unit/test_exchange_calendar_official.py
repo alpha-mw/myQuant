@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 
 import pytest
@@ -66,7 +67,16 @@ def test_decoder_admission_contract_binds_endpoint_response_and_native_fixture()
             "issuer": "SSE_OFFICIAL",
             "endpoint_scheme": "https",
             "endpoint_host": "www.sse.com.cn",
-            "endpoint_path_query_template": "/issuer/path?date={date}",
+            "endpoint_path_query_template": "/issuer/path?date=2024",
+            "issuer_category_id": None,
+            "category_scope": None,
+            "category_completeness_policy": None,
+            "query_window_semantics": None,
+            "required_query_parameters": [],
+            "page_parameter": None,
+            "cursor_parameter": None,
+            "required_category_set_id": None,
+            "discovery_start_date": None,
             "fixture_request_url": "https://www.sse.com.cn/issuer/path?date=2024",
             "fixture_effective_url": "https://www.sse.com.cn/issuer/path?date=2024",
             "fixture_redirect_chain": [],
@@ -91,3 +101,33 @@ def test_decoder_admission_contract_binds_endpoint_response_and_native_fixture()
     )
     assert validate_decoder_admission(admission) == admission
     assert DECODER_IDS == {}
+
+    redirected = copy.deepcopy(admission["payload"])
+    target = "https://www.sse.com.cn/issuer/path?date=2024&redirected=1"
+    redirected["fixture_effective_url"] = target
+    redirected["fixture_redirect_chain"] = [target]
+    redirected_admission = seal_artifact(
+        "system.exchange_calendar_decoder_admission",
+        redirected,
+        created_at=BASE,
+    )
+    with pytest.raises(SystemContractError, match="NO_REDIRECTS"):
+        validate_decoder_admission(redirected_admission)
+
+    redirected["redirect_policy"] = "SAME_ISSUER_HOST_ONLY"
+    same_host_admission = seal_artifact(
+        "system.exchange_calendar_decoder_admission",
+        redirected,
+        created_at=BASE,
+    )
+    assert validate_decoder_admission(same_host_admission) == same_host_admission
+
+    redirected["fixture_effective_url"] = "https://www.bse.cn/issuer/path"
+    redirected["fixture_redirect_chain"] = [redirected["fixture_effective_url"]]
+    cross_host = seal_artifact(
+        "system.exchange_calendar_decoder_admission",
+        redirected,
+        created_at=BASE,
+    )
+    with pytest.raises(SystemContractError, match="redirect authority"):
+        validate_decoder_admission(cross_host)

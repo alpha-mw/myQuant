@@ -8,6 +8,7 @@ import hashlib
 import os
 from pathlib import PurePosixPath
 import re
+import resource
 import signal
 import sys
 import tempfile
@@ -1043,6 +1044,22 @@ def _run_callback_worker(  # noqa: C901
                 baseline_rss = _resident_rss_bytes()
                 if baseline_rss <= 0:
                     raise SystemSecurityError("contextual validation RSS baseline is unavailable")
+                baseline_open_fds = _open_fd_count()
+                if not 0 < baseline_open_fds <= MAXIMUM_VALIDATION_OPEN_FDS:
+                    raise SystemSecurityError(
+                        "contextual validation worker file descriptor baseline differs"
+                    )
+                _soft_limit, hard_limit = resource.getrlimit(resource.RLIMIT_NOFILE)
+                worker_limit = (
+                    MAXIMUM_VALIDATION_OPEN_FDS
+                    if hard_limit == resource.RLIM_INFINITY
+                    else min(MAXIMUM_VALIDATION_OPEN_FDS, hard_limit)
+                )
+                if baseline_open_fds > worker_limit:
+                    raise SystemSecurityError(
+                        "contextual validation worker file descriptor limit is unavailable"
+                    )
+                resource.setrlimit(resource.RLIMIT_NOFILE, (worker_limit, hard_limit))
                 try:
                     result = callback(
                         system_store=store,
@@ -1053,16 +1070,37 @@ def _run_callback_worker(  # noqa: C901
                         raise SystemContractError(
                             "compiled validation callback did not return an exact payload"
                         )
+                    state = "PASS"
+                    error_detail: tuple[str, str, str] | None = None
+                except BaseException as exc:  # child boundary must not leak a traceback
+                    state = "ERROR"
+                    error_detail = _error_detail(exc)
+                    result = None
+                post_open_fds = _open_fd_count()
+                if not 0 < post_open_fds <= MAXIMUM_VALIDATION_OPEN_FDS:
+                    state = "ERROR"
+                    error_detail = (
+                        "SystemSecurityError",
+                        "SYSTEM_STORAGE_SECURITY",
+                        "contextual validation worker file descriptor bound exceeded",
+                    )
+                    result = None
+                if state == "PASS":
                     envelope = {
                         "state": "PASS",
                         "baseline_rss_bytes": baseline_rss,
+                        "baseline_open_fd_count": baseline_open_fds,
+                        "post_open_fd_count": post_open_fds,
                         "result": result,
                     }
-                except BaseException as exc:  # child boundary must not leak a traceback
-                    name, code, detail = _error_detail(exc)
+                else:
+                    assert error_detail is not None
+                    name, code, detail = error_detail
                     envelope = {
                         "state": "ERROR",
                         "baseline_rss_bytes": baseline_rss,
+                        "baseline_open_fd_count": baseline_open_fds,
+                        "post_open_fd_count": post_open_fds,
                         "error_type": name,
                         "error_code": code,
                         "error_detail": detail,
@@ -1074,6 +1112,8 @@ def _run_callback_worker(  # noqa: C901
                         {
                             "state": "ERROR",
                             "baseline_rss_bytes": baseline_rss,
+                            "baseline_open_fd_count": baseline_open_fds,
+                            "post_open_fd_count": post_open_fds,
                             "error_type": "SystemSecurityError",
                             "error_code": "SYSTEM_STORAGE_SECURITY",
                             "error_detail": "contextual validation worker result is invalid",
@@ -1084,6 +1124,8 @@ def _run_callback_worker(  # noqa: C901
                         {
                             "state": "ERROR",
                             "baseline_rss_bytes": baseline_rss,
+                            "baseline_open_fd_count": baseline_open_fds,
+                            "post_open_fd_count": post_open_fds,
                             "error_type": "SystemSecurityError",
                             "error_code": "SYSTEM_STORAGE_SECURITY",
                             "error_detail": "contextual validation worker result is too large",
@@ -1146,6 +1188,8 @@ def _run_callback_worker(  # noqa: C901
     if type(envelope) is not dict or envelope.get("state") not in {"PASS", "ERROR"}:
         raise SystemSecurityError("contextual validation worker response is invalid")
     observed_baseline_rss = envelope.get("baseline_rss_bytes")
+    observed_baseline_fds = envelope.get("baseline_open_fd_count")
+    observed_post_fds = envelope.get("post_open_fd_count")
     if (
         type(observed_baseline_rss) is not int
         or observed_baseline_rss <= 0
@@ -1153,10 +1197,24 @@ def _run_callback_worker(  # noqa: C901
         or peak_rss - observed_baseline_rss > MAXIMUM_VALIDATION_RSS_BYTES
     ):
         raise SystemSecurityError("contextual validation RSS bound exceeded")
+    if (
+        type(observed_baseline_fds) is not int
+        or type(observed_post_fds) is not int
+        or not 0 < observed_baseline_fds <= MAXIMUM_VALIDATION_OPEN_FDS
+        or not 0 < observed_post_fds <= MAXIMUM_VALIDATION_OPEN_FDS
+    ):
+        raise SystemSecurityError("contextual validation worker file descriptor bound exceeded")
     if envelope["state"] == "ERROR":
         raise _worker_error(envelope)
     if (
-        set(envelope) != {"state", "baseline_rss_bytes", "result"}
+        set(envelope)
+        != {
+            "state",
+            "baseline_rss_bytes",
+            "baseline_open_fd_count",
+            "post_open_fd_count",
+            "result",
+        }
         or type(envelope["result"]) is not dict
     ):
         raise SystemSecurityError("contextual validation worker response is invalid")
