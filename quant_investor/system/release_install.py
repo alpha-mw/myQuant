@@ -648,6 +648,41 @@ def prepare_operational_release(  # noqa: C901
         build_root = Path(directory)
         build_output = build_root / "dist"
         build_output.mkdir(mode=0o700)
+        build_environment_root = build_root / "environment"
+        build_environment = {
+            **environment,
+            "UV_PROJECT_ENVIRONMENT": str(build_environment_root),
+            "VIRTUAL_ENV": str(build_environment_root),
+        }
+        _run_release_tool(
+            [
+                str(uv),
+                "venv",
+                "--offline",
+                "--no-project",
+                "--python",
+                sys.executable,
+                str(build_environment_root),
+            ],
+            root=root,
+            environment=build_environment,
+            timeout=300,
+        )
+        _run_release_tool(
+            [
+                str(uv),
+                "sync",
+                "--offline",
+                "--locked",
+                "--extra",
+                "dev",
+                "--no-install-project",
+                "--no-install-workspace",
+            ],
+            root=root,
+            environment=build_environment,
+            timeout=1800,
+        )
         _run_release_tool(
             [
                 str(uv),
@@ -659,7 +694,7 @@ def prepare_operational_release(  # noqa: C901
                 str(build_output),
             ],
             root=root,
-            environment=environment,
+            environment=build_environment,
             timeout=900,
         )
         source_candidates = sorted(build_output.glob("*.tar.gz"))

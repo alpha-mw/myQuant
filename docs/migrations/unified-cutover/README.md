@@ -186,6 +186,12 @@ immutable receipts and the current frozen tree; it does not rerun pytest.
 The `clean_detached_clone` gate and release builder both require an exact clean
 detached HEAD, double-read the commit/tree/status/root, and reject even a clean
 checkout that remains attached to a branch.
+The release builder creates a separate temporary build environment, resolves
+the declared `dev` extra from the exact lock in offline mode, and then invokes
+the build backend with isolation disabled inside that prepared environment.
+The final runtime environment is separately synchronized from the same lock
+before the exact wheel is installed non-editably; a missing cached locked
+artifact is a hard failure, never a network fallback.
 
 Final authorization validation has two distinct modes. `PRE_CAS_CURRENT`
 requires current HEAD/tree and a clean checkout to equal the frozen release.
@@ -198,8 +204,26 @@ The initial production-bootstrap receipt follows the same split:
 all strict source semantics, while `HISTORICAL` obtains the original assembler
 blob from the final authorization's frozen Git commit and verifies the anchored
 generation without comparing it to a later installed release. Historical
-source files remain exact-hash checked; historical code is read as bytes and is
-never executed.
+replay parses the initial stored catalog only as non-executable dispatch
+metadata, validates each artifact envelope and object reference from exact
+bytes, and checks the anchored emergency controller by its stored SHA and
+historical metadata envelope. It neither compares the initial catalog with the
+descendant compiled catalog nor regenerates the initial controller from the
+descendant controller template. Historical source files remain owner/mode/link
+checked and exact-hash checked; historical code is read as bytes and is never
+executed. The same anchor permits a later non-empty transition to an already
+verified `SYSTEM_SUSPENDED` generation without granting Factor authority.
+
+Fundamental safe-successor replay consumes an explicit sealed fileset resolver.
+JSON and evidence inputs use bounded exact-byte reads; Parquet inputs remain
+under a stable `O_NOFOLLOW` descriptor for decoding and exit-time path/inode
+readback. Decoding uses at most 2,048 rows and 16 MiB per batch, rejects
+oversized row groups before decoding, and enforces fixed total row, column,
+cell, compressed-byte, and uncompressed-byte bounds. Pointer, manifest,
+provider evidence, permanent support refs, sealed target refs, immutable target
+refs, and all three Fundamental tables must be present in the declared fileset.
+No pathname reopen or whole-row-group `to_pandas()` is authoritative in this
+production validation path.
 
 The production calendar decoder registry is intentionally empty in this
 release. No SSE, SZSE, or BSE response format has yet been admitted from a

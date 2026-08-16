@@ -14,6 +14,7 @@ cutoff may create an append-only suffix.
 from __future__ import annotations
 
 import base64
+from contextlib import contextmanager
 import hashlib
 import json
 import math
@@ -24,7 +25,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Mapping, Sequence
+from typing import Any, BinaryIO, Iterable, Iterator, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -39,7 +40,6 @@ from quant_investor.market.fundamental_provider_contract import (
     frame_fingerprint,
     frame_logical_schema,
 )
-
 
 SUCCESSOR_DERIVATION_CONTRACT = "cn-fundamental-derivation.safe-successor.v1"
 SUCCESSOR_READINESS_SCHEMA = "cn-fundamental-readiness.safe-successor.v1"
@@ -104,6 +104,12 @@ PERMANENT_SUPPORT_REFERENCE_NAMES = (
     "support_manifest",
 )
 MAX_SUCCESSOR_CHAIN_DEPTH = 4096
+SUCCESSOR_REPLAY_BATCH_ROWS = 2_048
+SUCCESSOR_REPLAY_BATCH_BYTES = 16 * 1024**2
+SUCCESSOR_REPLAY_MAX_ROWS = 10_000_000
+SUCCESSOR_REPLAY_MAX_CELLS = 100_000_000
+SUCCESSOR_REPLAY_MAX_COLUMNS = 256
+SUCCESSOR_REPLAY_MAX_FILE_BYTES = 64 * 1024**2
 
 
 class SafeSuccessorError(RuntimeError):
@@ -239,10 +245,14 @@ def _timestamp(date_text: str) -> pd.Timestamp:
 
 
 def _availability(row: Mapping[str, Any], *, forecast: bool = False) -> str:
-    columns = ("ann_date", "f_ann_date", "availability_date") if forecast else (
-        "f_ann_date",
-        "ann_date",
-        "availability_date",
+    columns = (
+        ("ann_date", "f_ann_date", "availability_date")
+        if forecast
+        else (
+            "f_ann_date",
+            "ann_date",
+            "availability_date",
+        )
     )
     for column in columns:
         resolved = _optional_date(row.get(column))
@@ -593,9 +603,9 @@ def _normalize_forecast_table(
             ]
             last_parent = _number(original.get("last_parent_net"))
             if available_profits and math.isfinite(last_parent) and abs(last_parent) > 0:
-                revision = (
-                    sum(available_profits) / len(available_profits) - last_parent
-                ) / abs(last_parent)
+                revision = (sum(available_profits) / len(available_profits) - last_parent) / abs(
+                    last_parent
+                )
         normalized = {
             **dict(original),
             "ts_code": symbol,
@@ -656,18 +666,20 @@ def _dependency(
     required: bool,
 ) -> Mapping[str, Any] | None:
     row = state.get((symbol, end_date))
-    if row is None and required and not _absence_is_proven(
-        plan,
-        table=table,
-        symbol=symbol,
-        end_date=end_date,
-        availability=availability,
+    if (
+        row is None
+        and required
+        and not _absence_is_proven(
+            plan,
+            table=table,
+            symbol=symbol,
+            end_date=end_date,
+            availability=availability,
+        )
     ):
         support_start_value = plan.get("support_start")
         support_start = (
-            _strict_date(support_start_value, label="support_start")
-            if support_start_value
-            else ""
+            _strict_date(support_start_value, label="support_start") if support_start_value else ""
         )
         code = (
             "SUPPORT_START_ANCHOR_UNCLOSED"
@@ -720,9 +732,7 @@ def _derive_period_endpoint(
         end_date=previous_period,
         availability=availability,
         required=(
-            enforce_hidden_dependencies
-            and not math.isfinite(direct_yoy)
-            and math.isfinite(profit)
+            enforce_hidden_dependencies and not math.isfinite(direct_yoy) and math.isfinite(profit)
         ),
     )
     previous_profit = _first_number(previous_income, ("n_income_attr_p", "n_income"))
@@ -752,11 +762,7 @@ def _derive_period_endpoint(
     free_cashflow = (
         direct_fcf
         if math.isfinite(direct_fcf)
-        else (
-            ocf - capex
-            if math.isfinite(ocf) and math.isfinite(capex)
-            else float("nan")
-        )
+        else (ocf - capex if math.isfinite(ocf) and math.isfinite(capex) else float("nan"))
     )
     fallback_debt = (
         total_liab / total_assets
@@ -780,10 +786,7 @@ def _derive_period_endpoint(
     )
     source_rows = [row for row in (fi, income, balance, cashflow) if row is not None]
     sources = sorted(
-        {
-            str(row.get("source") or "live_tushare_safe_successor").strip()
-            for row in source_rows
-        }
+        {str(row.get("source") or "live_tushare_safe_successor").strip() for row in source_rows}
     )
     fetched = sorted(
         {str(row.get("fetched_at") or "").strip() for row in source_rows if row.get("fetched_at")}
@@ -804,9 +807,7 @@ def _derive_period_endpoint(
         "fin_debt_to_assets": direct_debt if math.isfinite(direct_debt) else fallback_debt,
         "fin_net_profit_yoy": direct_yoy if math.isfinite(direct_yoy) else fallback_yoy,
         "fin_ocf_to_profit": (
-            direct_ocf_profit
-            if math.isfinite(direct_ocf_profit)
-            else fallback_ocf_profit
+            direct_ocf_profit if math.isfinite(direct_ocf_profit) else fallback_ocf_profit
         ),
         "fin_fcf_to_profit": fcf_profit,
         "free_cashflow": free_cashflow,
@@ -829,9 +830,7 @@ def _derive_period_endpoint(
         "previous_year_income": {
             "end_date": previous_period,
             "row_binding": (
-                str(previous_income.get("__row_binding") or "")
-                if previous_income
-                else ""
+                str(previous_income.get("__row_binding") or "") if previous_income else ""
             ),
             "available_as_of_event": previous_income is not None,
         },
@@ -912,11 +911,7 @@ def _latest_parent_seeds(
     if isinstance(parent_daily, pd.DataFrame):
         available_columns = list(parent_daily.columns)
         batches = iter(
-            [
-                parent_daily.loc[
-                    :, [column for column in columns if column in parent_daily.columns]
-                ]
-            ]
+            [parent_daily.loc[:, [column for column in columns if column in parent_daily.columns]]]
         )
     else:
         parquet = pq.ParquetFile(Path(parent_daily))
@@ -963,8 +958,8 @@ def _latest_parent_seeds(
                 if key in row
             }
             forecast[symbol]["ts_code"] = symbol
-            forecast[symbol]["availability_date"] = (
-                row.get("forecast_ann_date") or row.get("availability_date")
+            forecast[symbol]["availability_date"] = row.get("forecast_ann_date") or row.get(
+                "availability_date"
             )
     return period, forecast, available_columns
 
@@ -1322,9 +1317,7 @@ def _derive_daily_suffix(
             period_candidates = [
                 row
                 for row in periods.get(symbol, [])
-                if _strict_date(
-                    row.get("availability_date"), label="period availability"
-                )
+                if _strict_date(row.get("availability_date"), label="period availability")
                 <= trade_date
             ]
             period = _winner(period_candidates, end_field="end_date", lane="period")
@@ -1334,9 +1327,7 @@ def _derive_daily_suffix(
             forecast_candidates = [
                 row
                 for row in forecasts.get(symbol, [])
-                if _strict_date(
-                    row.get("availability_date"), label="forecast availability"
-                )
+                if _strict_date(row.get("availability_date"), label="forecast availability")
                 <= trade_date
             ]
             forecast = _winner(
@@ -1403,9 +1394,9 @@ def _derive_daily_suffix(
         # Preserve the public predecessor column order.  Columns absent from a
         # suffix row are added as nulls; no new public columns are introduced.
         frame = frame.reindex(columns=list(parent_daily_columns))
-        frame = frame.sort_values(
-            ["ts_code", "trade_date"], kind="mergesort"
-        ).reset_index(drop=True)
+        frame = frame.sort_values(["ts_code", "trade_date"], kind="mergesort").reset_index(
+            drop=True
+        )
     else:
         frame = pd.DataFrame(columns=list(parent_daily_columns))
     return frame, no_period, size_evidence
@@ -1416,8 +1407,7 @@ def _reference_from_parent(parent_closure: Mapping[str, Any]) -> dict[str, Any]:
     generation_id = str(parent_closure.get("generation_id") or "").strip()
     cutoff = _strict_date(parent_closure.get("cutoff"), label="predecessor cutoff")
     if not generation_id or any(
-        not _valid_sha256(parent_closure.get(field))
-        for field in required_sha_fields
+        not _valid_sha256(parent_closure.get(field)) for field in required_sha_fields
     ):
         _fail("INVALID_PREDECESSOR_CLOSURE", "predecessor pointer/manifest identity is incomplete")
     table_sha = dict(parent_closure.get("table_sha256", {}) or {})
@@ -1584,13 +1574,10 @@ def _validate_successor_chain(chain: Mapping[str, Any]) -> str:
     if (
         _strict_date(seam.get("cutoff"), label="original seam cutoff")
         != dict(payload["root_reference"])["cutoff"]
-        or seam.get("root_reference_sha256")
-        != dict(payload["root_reference"])["reference_sha256"]
+        or seam.get("root_reference_sha256") != dict(payload["root_reference"])["reference_sha256"]
     ):
         _fail("INVALID_SUCCESSOR_CHAIN", "original seam changed")
-    if root.get("provenance_schema_version") != (
-        "cn-fundamental-primary-provenance.v2"
-    ):
+    if root.get("provenance_schema_version") != ("cn-fundamental-primary-provenance.v2"):
         _fail("INVALID_SUCCESSOR_CHAIN", "chain root is not a v2 generation")
     immediate_schema = immediate.get("provenance_schema_version")
     if immediate_schema == "cn-fundamental-primary-provenance.v2":
@@ -1788,12 +1775,8 @@ def assemble_safe_successor(
     if target <= parent:
         _fail("INVALID_SUCCESSOR_WINDOW", "target cutoff must follow parent cutoff")
     generation_id = str(run_id or "").strip()
-    safe_characters = (
-        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-"
-    )
-    if not generation_id or any(
-        character not in safe_characters for character in generation_id
-    ):
+    safe_characters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-"
+    if not generation_id or any(character not in safe_characters for character in generation_id):
         _fail("INVALID_GENERATION_ID", "run_id is not a safe generation id")
     predecessor = _reference_from_parent(parent_closure)
     if predecessor["cutoff"] != parent:
@@ -1807,10 +1790,8 @@ def assemble_safe_successor(
     )
     permanent_refs = dict(plan["permanent_support_refs"])
     if (
-        dict(permanent_refs["predecessor_pointer"])["sha256"]
-        != predecessor["pointer_sha256"]
-        or dict(permanent_refs["predecessor_manifest"])["sha256"]
-        != predecessor["manifest_sha256"]
+        dict(permanent_refs["predecessor_pointer"])["sha256"] != predecessor["pointer_sha256"]
+        or dict(permanent_refs["predecessor_manifest"])["sha256"] != predecessor["manifest_sha256"]
     ):
         _fail(
             "PREDECESSOR_PERMANENT_REF_MISMATCH",
@@ -1854,14 +1835,16 @@ def assemble_safe_successor(
         for row in replay_forecast
         if parent < _strict_date(row["availability_date"], label="forecast availability") <= target
     ]
-    relevant_symbols = {
-        symbol
-        for symbol, _trade_date in _keys(
-            keyset["expected_scope_keys"],
-            label="expected_scope_keys",
-        )
-    }.union(str(row["ts_code"]) for row in delta_period).union(
-        str(row["ts_code"]) for row in delta_forecast
+    relevant_symbols = (
+        {
+            symbol
+            for symbol, _trade_date in _keys(
+                keyset["expected_scope_keys"],
+                label="expected_scope_keys",
+            )
+        }
+        .union(str(row["ts_code"]) for row in delta_period)
+        .union(str(row["ts_code"]) for row in delta_forecast)
     )
     boundary = _prove_boundary(
         parent_period=parent_period,
@@ -2342,14 +2325,149 @@ def _assert_streamed_prefix_equal(
         _fail("STAGED_PREFIX_COUNT_MISMATCH", f"{table_name} prefix count changed")
 
 
-def _streaming_table_evidence(path: Path) -> dict[str, Any]:
-    parquet = pq.ParquetFile(path)
+@contextmanager
+def _successor_open_parquet(
+    path: Path,
+    *,
+    expected_sha256: str,
+    sealed_fileset: Any | None,
+) -> Iterator[BinaryIO]:
+    if sealed_fileset is not None:
+        with sealed_fileset.open_parquet(
+            path,
+            expected_sha256=expected_sha256,
+            maximum_bytes=SUCCESSOR_REPLAY_MAX_FILE_BYTES,
+            decoded_reservation_bytes=SUCCESSOR_REPLAY_BATCH_BYTES,
+        ) as stream:
+            yield stream
+        return
+    with path.open("rb") as stream:
+        yield stream
+
+
+def _successor_read_bytes(
+    path: Path,
+    *,
+    expected_sha256: str,
+    sealed_fileset: Any | None,
+) -> bytes:
+    if sealed_fileset is not None:
+        return sealed_fileset.read_bytes(
+            path,
+            expected_sha256=expected_sha256,
+            maximum_bytes=SUCCESSOR_REPLAY_MAX_FILE_BYTES,
+        )
+    metadata = path.stat()
+    if metadata.st_size <= 0 or metadata.st_size > SUCCESSOR_REPLAY_MAX_FILE_BYTES:
+        _fail("SUCCESSOR_FILE_SIZE_INVALID", f"source byte bound failed: {path.name}")
+    raw = path.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != expected_sha256:
+        _fail("SUCCESSOR_FILE_HASH_MISMATCH", f"source bytes changed: {path.name}")
+    return raw
+
+
+def _successor_file_sha256(
+    path: Path,
+    *,
+    expected_sha256: str,
+    sealed_fileset: Any | None,
+) -> str:
+    raw = _successor_read_bytes(
+        path,
+        expected_sha256=expected_sha256,
+        sealed_fileset=sealed_fileset,
+    )
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _successor_expected_sha256(
+    path: Path,
+    *,
+    sealed_fileset: Any | None,
+    fallback_sha256: str | None = None,
+) -> str:
+    if sealed_fileset is not None:
+        return sealed_fileset.expected_sha256(path, fallback_sha256=fallback_sha256)
+    if fallback_sha256 is not None:
+        return fallback_sha256
+    return _sha256_file(path)
+
+
+def _bounded_parquet_metadata(parquet: pq.ParquetFile, *, label: str) -> tuple[int, list[str]]:
     rows = int(parquet.metadata.num_rows)
     columns = list(parquet.schema_arrow.names)
+    if (
+        rows < 0
+        or rows > SUCCESSOR_REPLAY_MAX_ROWS
+        or len(columns) > SUCCESSOR_REPLAY_MAX_COLUMNS
+        or rows * len(columns) > SUCCESSOR_REPLAY_MAX_CELLS
+    ):
+        _fail("SUCCESSOR_PARQUET_RESOURCE_BOUND", f"table metadata exceeds bounds: {label}")
+    for index in range(parquet.num_row_groups):
+        group = parquet.metadata.row_group(index)
+        compressed = 0
+        uncompressed = 0
+        for column_index in range(group.num_columns):
+            column = group.column(column_index)
+            compressed += int(column.total_compressed_size)
+            uncompressed += int(column.total_uncompressed_size)
+        if int(group.num_rows) == 0:
+            continue
+        if (
+            int(group.num_rows) < 0
+            or int(group.num_rows) > SUCCESSOR_REPLAY_MAX_ROWS
+            or compressed <= 0
+            or compressed > SUCCESSOR_REPLAY_MAX_FILE_BYTES
+            or uncompressed <= 0
+            or uncompressed > SUCCESSOR_REPLAY_BATCH_BYTES
+        ):
+            _fail(
+                "SUCCESSOR_PARQUET_ROW_GROUP_BOUND",
+                f"row group exceeds compressed/decoded bounds: {label}",
+            )
+    return rows, columns
+
+
+def _streaming_table_evidence(
+    path: Path,
+    *,
+    expected_sha256: str | None = None,
+    sealed_fileset: Any | None = None,
+) -> dict[str, Any]:
+    expected = expected_sha256 or _sha256_file(path)
+
+    def batches() -> Iterator[pd.DataFrame]:
+        with _successor_open_parquet(
+            path,
+            expected_sha256=expected,
+            sealed_fileset=sealed_fileset,
+        ) as stream:
+            parquet = pq.ParquetFile(stream)
+            _bounded_parquet_metadata(parquet, label=path.name)
+            for batch in parquet.iter_batches(
+                batch_size=SUCCESSOR_REPLAY_BATCH_ROWS,
+                use_threads=False,
+            ):
+                if batch.num_rows > SUCCESSOR_REPLAY_BATCH_ROWS or batch.nbytes > (
+                    SUCCESSOR_REPLAY_BATCH_BYTES
+                ):
+                    _fail(
+                        "SUCCESSOR_PARQUET_DECODE_BOUND",
+                        f"decoded batch exceeds bounds: {path.name}",
+                    )
+                yield batch.to_pandas()
+
+    with _successor_open_parquet(
+        path,
+        expected_sha256=expected,
+        sealed_fileset=sealed_fileset,
+    ) as stream:
+        parquet = pq.ParquetFile(stream)
+        rows, columns = _bounded_parquet_metadata(parquet, label=path.name)
+        empty_frame = parquet.schema_arrow.empty_table().to_pandas()
     logical_schema: list[dict[str, Any]] | None = None
     seen = 0
-    for row_group in range(parquet.num_row_groups):
-        chunk = parquet.read_row_group(row_group).to_pandas()
+    for chunk in batches():
         chunk_schema = frame_logical_schema(chunk)
         if logical_schema is None:
             logical_schema = [dict(item) for item in chunk_schema]
@@ -2357,7 +2475,7 @@ def _streaming_table_evidence(path: Path) -> dict[str, Any]:
             if len(logical_schema) != len(chunk_schema):
                 _fail(
                     "STAGED_TABLE_SCHEMA_DRIFT",
-                    f"schema changed across row groups: {path.name}",
+                    f"schema changed across batches: {path.name}",
                 )
             for aggregate, observed in zip(logical_schema, chunk_schema):
                 if (
@@ -2366,18 +2484,15 @@ def _streaming_table_evidence(path: Path) -> dict[str, Any]:
                 ):
                     _fail(
                         "STAGED_TABLE_SCHEMA_DRIFT",
-                        f"columns changed across row groups: {path.name}",
+                        f"columns changed across batches: {path.name}",
                     )
                 aggregate["logical_scalar_types"] = sorted(
-                    set(aggregate["logical_scalar_types"]).union(
-                        observed["logical_scalar_types"]
-                    )
+                    set(aggregate["logical_scalar_types"]).union(observed["logical_scalar_types"])
                 )
                 aggregate["nullable"] = bool(aggregate["nullable"] or observed["nullable"])
         seen += len(chunk)
     if logical_schema is None:
-        empty = pd.read_parquet(path)
-        logical_schema = frame_logical_schema(empty)
+        logical_schema = frame_logical_schema(empty_frame)
     if seen != rows:
         _fail("STAGED_TABLE_ROWCOUNT_DRIFT", f"row count changed: {path.name}")
     digest = hashlib.sha256()
@@ -2390,8 +2505,7 @@ def _streaming_table_evidence(path: Path) -> dict[str, Any]:
         ).encode("utf-8")
     )
     fingerprint_rows = 0
-    for row_group in range(parquet.num_row_groups):
-        chunk = parquet.read_row_group(row_group).to_pandas()
+    for chunk in batches():
         for row in chunk.itertuples(index=False, name=None):
             digest.update(b"\x00")
             digest.update(
@@ -2407,7 +2521,7 @@ def _streaming_table_evidence(path: Path) -> dict[str, Any]:
     return {
         "rows": rows,
         "columns": columns,
-        "sha256": _sha256_file(path),
+        "sha256": expected,
         "frame_fingerprint": digest.hexdigest(),
         "logical_schema": logical_schema,
     }
@@ -2451,19 +2565,13 @@ def _successor_provenance_envelope(
         "source_provenance": "live_tushare_explicit_safe_successor_mixed",
         "history_state": "mixed",
         "mixed_generation": True,
-        "seam_trade_date": dict(bundle.successor_chain["original_seam"])[
-            "cutoff"
-        ],
+        "seam_trade_date": dict(bundle.successor_chain["original_seam"])["cutoff"],
         "prefix_contract": {
-            "provenance_schema_version": bundle.predecessor_binding[
-                "provenance_schema_version"
-            ],
+            "provenance_schema_version": bundle.predecessor_binding["provenance_schema_version"],
             "reference_sha256": bundle.predecessor_binding["reference_sha256"],
         },
         "suffix_contract": SUCCESSOR_DERIVATION_CONTRACT,
-        "support_provider_contract": bundle.derivation_evidence[
-            "support_provider_contract"
-        ],
+        "support_provider_contract": bundle.derivation_evidence["support_provider_contract"],
         "gate2_contract": SUCCESSOR_READINESS_SCHEMA,
         "gate2_receipt_sha256": bundle.readiness["binding_sha256"],
         "provider_manifest_sha256": canonical_json_sha256(provider_manifest),
@@ -2546,9 +2654,7 @@ def build_keyset_closure(
         "daily_basic_keys": _serialized_keys(daily),
         **{f"{reason}_keys": _serialized_keys(values) for reason, values in reasons.items()},
         "nonbar_keys": _serialized_keys(nonbar),
-        "true_missing_keys": _serialized_keys(
-            _keys(true_missing_keys, label="true_missing_keys")
-        ),
+        "true_missing_keys": _serialized_keys(_keys(true_missing_keys, label="true_missing_keys")),
         "expected_scope_keys": _serialized_keys(expected),
     }
 
@@ -2586,8 +2692,7 @@ def capture_parent_closure(
     expected_pointer = {
         key: value
         for key, value in payload.items()
-        if key
-        not in {"pointer_path", "manifest", "primary_provenance_verified"}
+        if key not in {"pointer_path", "manifest", "primary_provenance_verified"}
     }
     expected_metadata = dict(expected_pointer.get("metadata", {}) or {})
     expected_metadata.pop("primary_provenance_verified", None)
@@ -2634,8 +2739,7 @@ def capture_parent_closure(
         for name in FUNDAMENTAL_TABLES
     }
     if any(
-        not _valid_sha256(value)
-        for value in (*table_sha.values(), *frame_fingerprints.values())
+        not _valid_sha256(value) for value in (*table_sha.values(), *frame_fingerprints.values())
     ):
         _fail("INVALID_PARENT_TABLE_IDENTITY", "parent table identity is incomplete")
     table_paths: dict[str, Path] = {}
@@ -2655,9 +2759,9 @@ def capture_parent_closure(
     captured_immutable_refs = dict(immutable_refs or {})
     if not captured_immutable_refs and base is not None:
         if manifest_path is None:
-            manifest_path = (
-                base / str(raw_pointer.get("manifest_path") or "")
-            ).resolve(strict=True)
+            manifest_path = (base / str(raw_pointer.get("manifest_path") or "")).resolve(
+                strict=True
+            )
         captured_immutable_refs = {
             str(manifest_path): {
                 "path": str(manifest_path),
@@ -2723,9 +2827,7 @@ def stage_successor_generation(
     root = Path(staging_root).expanduser()
     if root.exists():
         _fail("STAGING_ROOT_EXISTS", "isolated staging root must not already exist")
-    parent_paths = {
-        name: _source_path(bundle.parent_tables[name]) for name in FUNDAMENTAL_TABLES
-    }
+    parent_paths = {name: _source_path(bundle.parent_tables[name]) for name in FUNDAMENTAL_TABLES}
     if any(path is None for path in parent_paths.values()):
         _fail(
             "PATH_BACKED_PARENT_REQUIRED",
@@ -2735,9 +2837,7 @@ def stage_successor_generation(
         _fail("RESOURCE_PREFLIGHT_BLOCKED", "resource preflight did not pass")
     generation_directory = root / "_fundamental_generations" / resolved_id
     generation_directory.mkdir(parents=True, exist_ok=False)
-    table_paths = {
-        name: generation_directory / f"{name}.parquet" for name in FUNDAMENTAL_TABLES
-    }
+    table_paths = {name: generation_directory / f"{name}.parquet" for name in FUNDAMENTAL_TABLES}
     try:
         _write_streamed_candidate(
             parent_paths["fundamental_period"],  # type: ignore[arg-type]
@@ -2844,15 +2944,13 @@ def stage_successor_generation(
                 "absence_is_deletion": False,
                 "fundamental_period": {
                     "retained_existing_rows": (
-                        table_manifest["fundamental_period"]["rows"]
-                        - len(bundle.period_suffix)
+                        table_manifest["fundamental_period"]["rows"] - len(bundle.period_suffix)
                     ),
                     "accepted_incoming_rows": len(bundle.period_suffix),
                 },
                 "fundamental_daily": {
                     "retained_existing_rows": (
-                        table_manifest["fundamental_daily"]["rows"]
-                        - len(bundle.daily_suffix)
+                        table_manifest["fundamental_daily"]["rows"] - len(bundle.daily_suffix)
                     ),
                     "accepted_incoming_rows": len(bundle.daily_suffix),
                 },
@@ -2890,8 +2988,7 @@ def stage_successor_generation(
             "status": "OK",
             "manifest_path": str(relative_generation / "manifest.json"),
             "tables": {
-                name: str(relative_generation / f"{name}.parquet")
-                for name in FUNDAMENTAL_TABLES
+                name: str(relative_generation / f"{name}.parquet") for name in FUNDAMENTAL_TABLES
             },
             "metadata": metadata,
             "primary_provenance": provenance,
@@ -2944,6 +3041,7 @@ def validate_successor_provenance(
     *,
     generation_root: str | Path | None = None,
     historical_only: bool = True,
+    sealed_fileset: Any | None = None,
 ) -> dict[str, Any]:
     """Independently validate a v3 mixed-history provenance envelope.
 
@@ -3032,15 +3130,12 @@ def validate_successor_provenance(
         or pointer_envelope.get("status") != SUCCESSOR_PROVENANCE_STATUS
         or pointer_envelope.get("source") != "live_tushare_safe_successor"
         or pointer_envelope.get("source_priority") != "tushare_primary"
-        or pointer_envelope.get("source_provenance")
-        != "live_tushare_explicit_safe_successor_mixed"
+        or pointer_envelope.get("source_provenance") != "live_tushare_explicit_safe_successor_mixed"
         or pointer_envelope.get("history_state") != "mixed"
         or pointer_envelope.get("mixed_generation") is not True
-        or pointer_envelope.get("suffix_contract")
-        != SUCCESSOR_DERIVATION_CONTRACT
+        or pointer_envelope.get("suffix_contract") != SUCCESSOR_DERIVATION_CONTRACT
         or not str(pointer_envelope.get("support_provider_contract") or "")
-        or pointer_envelope.get("gate2_contract")
-        != SUCCESSOR_READINESS_SCHEMA
+        or pointer_envelope.get("gate2_contract") != SUCCESSOR_READINESS_SCHEMA
     ):
         _fail("SUCCESSOR_PROVENANCE_STATE_MISMATCH", "v3 provenance state is invalid")
     machine_states = dict(pointer_envelope.get("machine_states", {}) or {})
@@ -3055,16 +3150,14 @@ def validate_successor_provenance(
         _fail("SUCCESSOR_METADATA_BINDING_MISMATCH", "metadata SHA does not match")
     if (
         pointer_metadata.get("gate2_passed") is not True
-        or pointer_metadata.get("gate2_contract")
-        != SUCCESSOR_READINESS_SCHEMA
+        or pointer_metadata.get("gate2_contract") != SUCCESSOR_READINESS_SCHEMA
         or not _valid_sha256(pointer_metadata.get("gate2_receipt_sha256"))
         or pointer_metadata.get("prefix_gate_passed") is not True
         or pointer_metadata.get("suffix_gate_passed") is not True
         or pointer_metadata.get("structural_gate_passed") is not True
         or pointer_metadata.get("provider_status") != "live_tushare_safe_successor"
         or pointer_metadata.get("source_priority") != "tushare_primary"
-        or pointer_metadata.get("source_provenance")
-        != "live_tushare_explicit_safe_successor_mixed"
+        or pointer_metadata.get("source_provenance") != "live_tushare_explicit_safe_successor_mixed"
         or pointer_metadata.get("mixed") is not True
         or pointer_metadata.get("legacy_direct_reader_provenance") != "limited"
         or pointer_metadata.get("binding_aware_research_ready") is not True
@@ -3146,10 +3239,8 @@ def validate_successor_provenance(
     ):
         _fail("SUCCESSOR_GATE_STATE_MISMATCH", "successor gate evidence is not passed")
     if (
-        readiness["binding_sha256"]
-        != pointer_envelope.get("gate2_receipt_sha256")
-        or readiness["binding_sha256"]
-        != pointer_metadata.get("gate2_receipt_sha256")
+        readiness["binding_sha256"] != pointer_envelope.get("gate2_receipt_sha256")
+        or readiness["binding_sha256"] != pointer_metadata.get("gate2_receipt_sha256")
         or derivation.get("support_provider_contract")
         != pointer_envelope.get("support_provider_contract")
     ):
@@ -3164,12 +3255,9 @@ def validate_successor_provenance(
         or any(not _valid_sha256(value) for value in raw_fingerprints.values())
     ):
         _fail("SUCCESSOR_RAW_FINGERPRINT_MISMATCH", "raw table fingerprints differ")
-    prefix_fingerprints = dict(
-        pointer_envelope.get("parent_prefix_frame_fingerprints", {}) or {}
-    )
+    prefix_fingerprints = dict(pointer_envelope.get("parent_prefix_frame_fingerprints", {}) or {})
     if (
-        prefix_fingerprints
-        != dict(derivation.get("parent_table_frame_fingerprints", {}) or {})
+        prefix_fingerprints != dict(derivation.get("parent_table_frame_fingerprints", {}) or {})
         or set(prefix_fingerprints) != set(FUNDAMENTAL_TABLES)
         or any(not _valid_sha256(value) for value in prefix_fingerprints.values())
     ):
@@ -3206,22 +3294,27 @@ def validate_successor_provenance(
             "INCOMPLETE_SUPPORT_REFERENCE_SET",
             "v3 provenance permanent support refs are incomplete",
         )
-    resolved_generation_root = (
-        Path(generation_root).expanduser().resolve(strict=True)
-        if generation_root is not None
-        else None
-    )
+    resolved_generation_root = None
+    if generation_root is not None:
+        candidate_root = Path(generation_root).expanduser()
+        resolved_generation_root = (
+            Path(os.path.abspath(candidate_root))
+            if sealed_fileset is not None
+            else candidate_root.resolve(strict=True)
+        )
     if resolved_generation_root is None:
         _fail(
             "PERMANENT_SUPPORT_ROOT_REQUIRED",
             "generation_root is required to authenticate permanent support bytes",
         )
+    evidence_candidate = (
+        resolved_generation_root / "_fundamental_generations" / generation_id / "provider_evidence"
+    )
     evidence_root = (
-        resolved_generation_root
-        / "_fundamental_generations"
-        / generation_id
-        / "provider_evidence"
-    ).resolve(strict=True)
+        evidence_candidate
+        if sealed_fileset is not None
+        else evidence_candidate.resolve(strict=True)
+    )
     permanent_payloads: dict[str, bytes] = {}
     for name, value in refs.items():
         if not isinstance(value, Mapping) or not _valid_sha256(value.get("sha256")):
@@ -3229,10 +3322,16 @@ def validate_successor_provenance(
         relative = Path(str(value.get("path") or ""))
         if relative.is_absolute() or not relative.parts or ".." in relative.parts:
             _fail("INVALID_SUPPORT_REFERENCE", f"support reference path is unsafe: {name}")
-        path = (evidence_root / relative).resolve(strict=True)
-        if evidence_root not in path.parents or _sha256_file(path) != str(value["sha256"]).lower():
+        candidate = evidence_root / relative
+        path = candidate if sealed_fileset is not None else candidate.resolve(strict=True)
+        expected_sha = str(value["sha256"]).lower()
+        if evidence_root not in path.parents:
             _fail("SUPPORT_REFERENCE_TAMPER", f"permanent support bytes changed: {name}")
-        permanent_payloads[name] = path.read_bytes()
+        permanent_payloads[name] = _successor_read_bytes(
+            path,
+            expected_sha256=expected_sha,
+            sealed_fileset=sealed_fileset,
+        )
     if (
         hashlib.sha256(permanent_payloads["predecessor_pointer"]).hexdigest()
         != predecessor["pointer_sha256"]
@@ -3244,9 +3343,7 @@ def validate_successor_provenance(
             "permanent predecessor bytes do not match the v3 envelope",
         )
     try:
-        predecessor_pointer = json.loads(
-            permanent_payloads["predecessor_pointer"].decode("utf-8")
-        )
+        predecessor_pointer = json.loads(permanent_payloads["predecessor_pointer"].decode("utf-8"))
         predecessor_manifest = json.loads(
             permanent_payloads["predecessor_manifest"].decode("utf-8")
         )
@@ -3258,11 +3355,9 @@ def validate_successor_provenance(
         raise AssertionError from exc
     if (
         not isinstance(predecessor_pointer, Mapping)
-        or str(predecessor_pointer.get("generation_id") or "")
-        != predecessor["generation_id"]
+        or str(predecessor_pointer.get("generation_id") or "") != predecessor["generation_id"]
         or not isinstance(predecessor_manifest, Mapping)
-        or str(predecessor_manifest.get("generation_id") or "")
-        != predecessor["generation_id"]
+        or str(predecessor_manifest.get("generation_id") or "") != predecessor["generation_id"]
     ):
         _fail(
             "PREDECESSOR_CLOSURE_GENERATION_MISMATCH",
@@ -3274,27 +3369,34 @@ def validate_successor_provenance(
             continue
         sealed = dict(binding.get("sealed_ref", {}) or {})
         relative = Path(str(sealed.get("path") or ""))
-        path = (evidence_root / relative).resolve(strict=True)
+        candidate = evidence_root / relative
+        path = candidate if sealed_fileset is not None else candidate.resolve(strict=True)
+        expected_sha = str(sealed.get("sha256") or "").lower()
         if (
             evidence_root not in path.parents
-            or _sha256_file(path) != str(sealed.get("sha256") or "").lower()
-            or str(sealed.get("sha256") or "").lower()
-            != str(binding.get("sha256") or "").lower()
+            or expected_sha != str(binding.get("sha256") or "").lower()
         ):
             _fail("TARGET_SEALED_REF_TAMPER", f"sealed target bytes changed: {name}")
-        sealed_target_payloads[name] = path.read_bytes()
+        sealed_target_payloads[name] = _successor_read_bytes(
+            path,
+            expected_sha256=expected_sha,
+            sealed_fileset=sealed_fileset,
+        )
         for reference in binding.get("immutable_refs", []):
-            ref_path = Path(str(reference.get("path") or "")).expanduser().resolve(
-                strict=True
+            reference_candidate = Path(str(reference.get("path") or "")).expanduser()
+            ref_path = (
+                Path(os.path.abspath(reference_candidate))
+                if sealed_fileset is not None
+                else reference_candidate.resolve(strict=True)
             )
-            ref_stat = ref_path.stat()
-            if (
-                _sha256_file(ref_path)
-                != str(reference.get("sha256") or "").lower()
-                or (
-                    reference.get("size") is not None
-                    and ref_stat.st_size != int(reference["size"])
-                )
+            expected_ref_sha = str(reference.get("sha256") or "").lower()
+            ref_raw = _successor_read_bytes(
+                ref_path,
+                expected_sha256=expected_ref_sha,
+                sealed_fileset=sealed_fileset,
+            )
+            if hashlib.sha256(ref_raw).hexdigest() != expected_ref_sha or (
+                reference.get("size") is not None and len(ref_raw) != int(reference["size"])
             ):
                 _fail(
                     "TARGET_IMMUTABLE_REF_TAMPER",
@@ -3311,22 +3413,42 @@ def validate_successor_provenance(
     table_readback: dict[str, Mapping[str, Any]] = {}
     root = resolved_generation_root
     assert root is not None
-    pointer_path = (root / "_fundamental_latest.json").resolve(strict=True)
-    expected_manifest_path = str(
-        Path("_fundamental_generations") / generation_id / "manifest.json"
+    pointer_candidate = root / "_fundamental_latest.json"
+    pointer_path = (
+        pointer_candidate if sealed_fileset is not None else pointer_candidate.resolve(strict=True)
     )
+    expected_manifest_path = str(Path("_fundamental_generations") / generation_id / "manifest.json")
     if pointer_payload.get("manifest_path") != expected_manifest_path:
         _fail(
             "SUCCESSOR_MANIFEST_PATH_MISMATCH",
             "successor manifest path is noncanonical",
         )
+    manifest_candidate = root / str(pointer_payload.get("manifest_path") or "")
     manifest_path = (
-        root / str(pointer_payload.get("manifest_path") or "")
-    ).resolve(strict=True)
+        manifest_candidate
+        if sealed_fileset is not None
+        else manifest_candidate.resolve(strict=True)
+    )
     if root not in manifest_path.parents:
         _fail("UNSAFE_SUCCESSOR_MANIFEST_PATH", "successor manifest escapes generation root")
-    pointer_bytes = pointer_path.read_bytes()
-    manifest_bytes = manifest_path.read_bytes()
+    pointer_expected_sha = _successor_expected_sha256(
+        pointer_path,
+        sealed_fileset=sealed_fileset,
+    )
+    manifest_expected_sha = _successor_expected_sha256(
+        manifest_path,
+        sealed_fileset=sealed_fileset,
+    )
+    pointer_bytes = _successor_read_bytes(
+        pointer_path,
+        expected_sha256=pointer_expected_sha,
+        sealed_fileset=sealed_fileset,
+    )
+    manifest_bytes = _successor_read_bytes(
+        manifest_path,
+        expected_sha256=manifest_expected_sha,
+        sealed_fileset=sealed_fileset,
+    )
     try:
         pointer_readback = json.loads(pointer_bytes.decode("utf-8"))
         manifest_readback = json.loads(manifest_bytes.decode("utf-8"))
@@ -3338,10 +3460,21 @@ def validate_successor_provenance(
             "SUCCESSOR_JSON_READBACK_MISMATCH",
             "staged pointer/manifest bytes do not decode to the supplied closure",
         )
-    provider_path = (evidence_root / "provider_manifest.json").resolve(strict=True)
+    provider_candidate = evidence_root / "provider_manifest.json"
+    provider_path = (
+        provider_candidate
+        if sealed_fileset is not None
+        else provider_candidate.resolve(strict=True)
+    )
+    provider_raw = _canonical_bytes(provider)
     if (
         evidence_root not in provider_path.parents
-        or provider_path.read_bytes() != _canonical_bytes(provider)
+        or _successor_read_bytes(
+            provider_path,
+            expected_sha256=hashlib.sha256(provider_raw).hexdigest(),
+            sealed_fileset=sealed_fileset,
+        )
+        != provider_raw
     ):
         _fail(
             "SUCCESSOR_PROVIDER_FILE_READBACK_MISMATCH",
@@ -3354,10 +3487,16 @@ def validate_successor_provenance(
                 "UNSAFE_PROVIDER_EVIDENCE_PATH",
                 "provider evidence path is unsafe",
             )
-        evidence_path = (evidence_root / relative).resolve(strict=True)
+        candidate = evidence_root / relative
+        evidence_path = candidate if sealed_fileset is not None else candidate.resolve(strict=True)
         if (
             evidence_root not in evidence_path.parents
-            or _sha256_file(evidence_path) != str(digest).lower()
+            or _successor_file_sha256(
+                evidence_path,
+                expected_sha256=str(digest).lower(),
+                sealed_fileset=sealed_fileset,
+            )
+            != str(digest).lower()
         ):
             _fail(
                 "PROVIDER_EVIDENCE_READBACK_MISMATCH",
@@ -3365,21 +3504,24 @@ def validate_successor_provenance(
             )
     for table_name in FUNDAMENTAL_TABLES:
         if pointer_tables[table_name] != str(
-            Path("_fundamental_generations")
-            / generation_id
-            / f"{table_name}.parquet"
+            Path("_fundamental_generations") / generation_id / f"{table_name}.parquet"
         ):
             _fail(
                 "SUCCESSOR_TABLE_PATH_MISMATCH",
                 f"table path is noncanonical: {table_name}",
             )
-        path = (root / str(pointer_tables[table_name])).resolve(strict=True)
+        candidate = root / str(pointer_tables[table_name])
+        path = candidate if sealed_fileset is not None else candidate.resolve(strict=True)
         if root not in path.parents:
             _fail(
                 "UNSAFE_SUCCESSOR_TABLE_PATH",
                 f"table escapes generation root: {table_name}",
             )
-        observed = _streaming_table_evidence(path)
+        observed = _streaming_table_evidence(
+            path,
+            expected_sha256=str(output_sha[table_name]),
+            sealed_fileset=sealed_fileset,
+        )
         if observed != manifest_tables[table_name]:
             _fail(
                 "SUCCESSOR_TABLE_READBACK_MISMATCH",
@@ -3408,16 +3550,38 @@ def validate_successor_provenance(
         "live_pointer_path": targets["pit_pointer"]["path"],
         "pointer_sha256": targets["pit_pointer"]["sha256"],
         "as_of": targets["pit_pointer"]["as_of"],
-        "exact_pointer_bytes_b64": base64.b64encode(
-            sealed_target_payloads["pit_pointer"]
-        ).decode("ascii"),
+        "exact_pointer_bytes_b64": base64.b64encode(sealed_target_payloads["pit_pointer"]).decode(
+            "ascii"
+        ),
         "immutable_refs": targets["pit_pointer"].get("immutable_refs", {}),
     }
-    provider_evidence_files = {
-        path.relative_to(evidence_root.parent).as_posix(): _sha256_file(path)
-        for path in sorted(evidence_root.rglob("*"))
-        if path.is_file()
+    evidence_files = (
+        sealed_fileset.files_under(evidence_root)
+        if sealed_fileset is not None
+        else [path for path in sorted(evidence_root.rglob("*")) if path.is_file()]
+    )
+    expected_evidence_shas: dict[str, str] = {
+        str(relative): str(digest).lower()
+        for relative, digest in dict(provider.get("evidence_files", {}) or {}).items()
     }
+    expected_evidence_shas["provider_manifest.json"] = hashlib.sha256(provider_raw).hexdigest()
+    for value in refs.values():
+        expected_evidence_shas[str(value["path"])] = str(value["sha256"]).lower()
+    for name, binding in targets.items():
+        if name != "binding_sha256":
+            sealed = dict(binding.get("sealed_ref", {}) or {})
+            expected_evidence_shas[str(sealed["path"])] = str(sealed["sha256"]).lower()
+    provider_evidence_files: dict[str, str] = {}
+    for path in evidence_files:
+        relative = path.relative_to(evidence_root.parent).as_posix()
+        expected = expected_evidence_shas.get(path.relative_to(evidence_root).as_posix())
+        if expected is None:
+            _fail("UNDECLARED_PROVIDER_EVIDENCE", f"provider evidence is undeclared: {relative}")
+        provider_evidence_files[relative] = _successor_file_sha256(
+            path,
+            expected_sha256=expected,
+            sealed_fileset=sealed_fileset,
+        )
     original_seam = dict(chain["original_seam"])["cutoff"]
     immediate_parent_cutoff = dict(chain["append_boundary"])["parent_cutoff"]
     return {

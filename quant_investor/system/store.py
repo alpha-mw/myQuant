@@ -449,6 +449,400 @@ class SystemStore:
             raise SystemContractError("contract catalog does not match compiled allowlist")
         return document
 
+    def _read_historical_contract_catalog(
+        self, catalog_sha256: str
+    ) -> tuple[dict[str, Any], dict[tuple[str, str], str]]:
+        """Read an initial-generation catalog without comparing it to current code.
+
+        The permanent migration marker is a historical anchor.  A descendant
+        release may add contracts, so replay must authenticate the stored
+        catalog bytes and use their non-executable dispatch metadata instead of
+        requiring equality with the descendant process registry.
+        """
+
+        digest = _require_sha256(catalog_sha256, label="historical contract catalog")
+        stored = self._storage.read(_object_path("system.contract_catalog", digest))
+        if stored.byte_sha256 != digest:
+            raise SystemContractError("historical contract catalog byte hash mismatch")
+        try:
+            document = parse_canonical_json_bytes(stored.data, label="historical contract catalog")
+        except ContractError as exc:
+            raise SystemContractError("historical contract catalog is not canonical") from exc
+        if type(document) is not dict or set(document) != {"contracts"}:
+            raise SystemContractError("historical contract catalog fields are not exact")
+        rows = document["contracts"]
+        if type(rows) is not list or not rows:
+            raise SystemContractError("historical contract catalog is empty")
+        dispatch: dict[tuple[str, str], str] = {}
+        expected_fields = {
+            "kind",
+            "contract_sha256",
+            "identity_field",
+            "json_schema_sha256",
+            "validator_code_sha256",
+        }
+        for row in rows:
+            if type(row) is not dict or set(row) != expected_fields:
+                raise SystemContractError("historical catalog row fields are not exact")
+            kind = _require_text(row["kind"], label="historical catalog kind")
+            contract_sha = _require_sha256(
+                row["contract_sha256"], label="historical catalog contract"
+            )
+            identity_field = _require_text(
+                row["identity_field"], label="historical catalog identity field"
+            )
+            _require_sha256(row["json_schema_sha256"], label="historical catalog schema")
+            _require_sha256(row["validator_code_sha256"], label="historical catalog validator")
+            key = (kind, contract_sha)
+            if key in dispatch:
+                raise SystemContractError("historical catalog dispatch is duplicated")
+            dispatch[key] = identity_field
+        if rows != sorted(rows, key=lambda row: (row["kind"], row["contract_sha256"])):
+            raise SystemContractError("historical contract catalog is not sorted")
+        return document, dispatch
+
+    @staticmethod
+    def _validate_historical_artifact(
+        raw: bytes,
+        *,
+        dispatch: Mapping[tuple[str, str], str],
+        expected_ref: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Validate a frozen envelope using catalog metadata, never old code."""
+
+        try:
+            artifact = parse_canonical_json_bytes(raw, label="historical artifact")
+        except ContractError as exc:
+            raise SystemContractError("historical artifact is not canonical") from exc
+        envelope_fields = {
+            "kind",
+            "contract_sha256",
+            "artifact_id",
+            "created_at",
+            "payload",
+            "semantic_sha256",
+        }
+        if type(artifact) is not dict or set(artifact) != envelope_fields:
+            raise SystemContractError("historical artifact envelope fields are not exact")
+        kind = _require_text(artifact["kind"], label="historical artifact kind")
+        contract_sha = _require_sha256(
+            artifact["contract_sha256"], label="historical artifact contract"
+        )
+        identity_field = dispatch.get((kind, contract_sha))
+        payload = artifact["payload"]
+        if identity_field is None or type(payload) is not dict:
+            raise SystemContractError("historical artifact contract pair is not anchored")
+        identity = payload.get(identity_field)
+        if type(identity) is not str or not identity or artifact["artifact_id"] != identity:
+            raise SystemContractError("historical artifact identity differs")
+        created_at = _require_timestamp(
+            artifact["created_at"], label="historical artifact created_at"
+        )
+        semantic = _require_sha256(
+            artifact["semantic_sha256"], label="historical artifact semantic SHA"
+        )
+        preimage = {
+            "domain": "myquant-artifact",
+            "kind": kind,
+            "contract_sha256": contract_sha,
+            "identity_field": identity_field,
+            "artifact_id": identity,
+            "created_at": created_at,
+            "payload": payload,
+        }
+        if semantic != hashlib.sha256(canonical_json_bytes(preimage)).hexdigest():
+            raise SystemContractError("historical artifact semantic SHA differs")
+        if expected_ref is not None:
+            ref = validate_object_ref(expected_ref, label="historical object ref")
+            observed = {
+                "kind": kind,
+                "contract_sha256": contract_sha,
+                "artifact_id": identity,
+                "semantic_sha256": semantic,
+                "byte_sha256": hashlib.sha256(raw).hexdigest(),
+            }
+            if observed != ref:
+                raise SystemContractError("historical artifact exact ref differs")
+        return artifact
+
+    def _historical_get_object(
+        self,
+        ref: Mapping[str, Any],
+        *,
+        dispatch: Mapping[tuple[str, str], str],
+    ) -> dict[str, Any]:
+        normalized = validate_object_ref(ref, label="historical object ref")
+        stored = self._storage.read(_object_path(normalized["kind"], normalized["byte_sha256"]))
+        if stored.byte_sha256 != normalized["byte_sha256"]:
+            raise SystemContractError("historical object byte hash differs")
+        return self._validate_historical_artifact(
+            stored.data, dispatch=dispatch, expected_ref=normalized
+        )
+
+    def _verify_historical_source_object(self, artifact: Mapping[str, Any]) -> None:
+        payload = artifact.get("payload")
+        if artifact.get("kind") != "system.source_object" or type(payload) is not dict:
+            raise SystemContractError("historical source object is invalid")
+        if payload.get("source_root_id") != self.source_root_id:
+            raise SystemContractError("historical source root identity differs")
+        path, _media, _format = self._validate_source_metadata(
+            relative_path=payload.get("relative_path"),
+            media_type=payload.get("media_type"),
+            source_format=payload.get("source_format"),
+        )
+        expected_sha = _require_sha256(
+            payload.get("byte_sha256"), label="historical source byte SHA"
+        )
+        observed = self._source_storage.hash_workspace_file(
+            path, maximum_bytes=self.max_source_bytes
+        )
+        if observed.byte_sha256 != expected_sha:
+            raise SystemContractError("historical source bytes changed")
+
+    def _verify_historical_source_bundle(
+        self,
+        artifact: Mapping[str, Any],
+        *,
+        dispatch: Mapping[tuple[str, str], str],
+        ancestors: frozenset[str] = frozenset(),
+    ) -> None:
+        payload = artifact.get("payload")
+        if artifact.get("kind") != "system.source_bundle" or type(payload) is not dict:
+            raise SystemContractError("historical source bundle is invalid")
+        rows = payload.get("sources")
+        if type(rows) is not list:
+            raise SystemContractError("historical source bundle rows are invalid")
+        byte_sha = hashlib.sha256(canonical_json_bytes(dict(artifact))).hexdigest()
+        if byte_sha in ancestors:
+            raise SystemContractError("historical source bundle is cyclic")
+        roles: list[str] = []
+        descendants = ancestors | {byte_sha}
+        for row in rows:
+            if type(row) is not dict or set(row) != {"role", "source_ref"}:
+                raise SystemContractError("historical source bundle row fields differ")
+            roles.append(_require_text(row["role"], label="historical source role"))
+            child = self._historical_get_object(row["source_ref"], dispatch=dispatch)
+            if child["kind"] == "system.source_object":
+                self._verify_historical_source_object(child)
+            elif child["kind"] == "system.source_bundle":
+                self._verify_historical_source_bundle(
+                    child, dispatch=dispatch, ancestors=descendants
+                )
+            else:
+                raise SystemContractError("historical source bundle child kind differs")
+        if roles != sorted(roles) or len(roles) != len(set(roles)):
+            raise SystemContractError("historical source bundle roles are not exact")
+
+    def _verify_historical_initial_generation(self, generation_id: str) -> dict[str, Any]:
+        """Authenticate the immutable initial object graph without current validators."""
+
+        normalized_id = _require_sha256(generation_id, label="historical generation_id")
+        stored = self._storage.read(GENERATIONS_ROOT / normalized_id / "manifest.json")
+        try:
+            provisional = parse_canonical_json_bytes(
+                stored.data, label="historical generation manifest"
+            )
+        except ContractError as exc:
+            raise SystemContractError("historical generation manifest is not canonical") from exc
+        if type(provisional) is not dict or type(provisional.get("payload")) is not dict:
+            raise SystemContractError("historical generation manifest is invalid")
+        catalog_sha = _require_sha256(
+            provisional["payload"].get("contract_catalog_sha256"),
+            label="historical manifest catalog",
+        )
+        catalog, dispatch = self._read_historical_contract_catalog(catalog_sha)
+        manifest = self._validate_historical_artifact(stored.data, dispatch=dispatch)
+        if manifest["kind"] != MANIFEST_KIND or manifest["semantic_sha256"] != normalized_id:
+            raise SystemContractError("historical generation identity differs")
+        manifest_ref = {
+            "kind": manifest["kind"],
+            "contract_sha256": manifest["contract_sha256"],
+            "artifact_id": manifest["artifact_id"],
+            "semantic_sha256": manifest["semantic_sha256"],
+            "byte_sha256": stored.byte_sha256,
+        }
+        if self._historical_get_object(manifest_ref, dispatch=dispatch) != manifest:
+            raise SystemContractError("historical manifest object binding differs")
+        payload = manifest["payload"]
+        if (
+            payload.get("generation_state") != "OPERATIONAL"
+            or payload.get("migration_receipt_ref") is not None
+            or payload.get("migration_marker_ref") is not None
+            or payload.get("mainline_ref") is not None
+        ):
+            raise SystemContractError("historical initial manifest state differs")
+
+        def one(field: str) -> dict[str, Any]:
+            return self._historical_get_object(payload[field], dispatch=dispatch)
+
+        def many(field: str) -> list[dict[str, Any]]:
+            refs = payload.get(field)
+            if type(refs) is not list:
+                raise SystemContractError(f"historical manifest {field} is invalid")
+            return [self._historical_get_object(ref, dispatch=dispatch) for ref in refs]
+
+        release = one("release_manifest_ref")
+        sources = many("source_refs")
+        for source in sources:
+            self._verify_historical_source_bundle(source, dispatch=dispatch)
+        factor_source_objects = many("factor_source_object_refs")
+        for source in factor_source_objects:
+            self._verify_historical_source_object(source)
+        factor_policy = one("factor_policy_ref")
+        factor_evidence = many("factor_evidence_refs")
+        factor_active_set = one("factor_active_set_ref")
+        factor_validation_attestation = one("factor_validation_attestation_ref")
+        research = many("research_refs")
+        readiness = one("readiness_matrix_ref")
+        readiness_payload = readiness.get("payload")
+        if type(readiness_payload) is not dict:
+            raise SystemContractError("historical readiness payload is invalid")
+        factor_status_ref = readiness_payload.get("factor_status_ref")
+        if factor_status_ref is None:
+            raise SystemContractError("historical Factor status ref is absent")
+        factor_status = self._historical_get_object(factor_status_ref, dispatch=dispatch)
+        emergency_sha = _require_sha256(
+            payload.get("emergency_controller_sha256"),
+            label="historical emergency controller SHA",
+        )
+        controller = self._storage.read_executable(
+            PurePosixPath("results/system/control/suspend.py")
+        )
+        if controller.byte_sha256 != emergency_sha:
+            raise SystemContractError("historical emergency controller bytes changed")
+        return {
+            "verified": True,
+            "generation_state": "OPERATIONAL",
+            "generation_id": normalized_id,
+            "manifest": manifest,
+            "manifest_sha256": stored.byte_sha256,
+            "manifest_byte_sha256": stored.byte_sha256,
+            "manifest_ref": manifest_ref,
+            "contract_catalog": catalog,
+            "historical_contract_dispatch": dict(dispatch),
+            "release": release,
+            "sources": sources,
+            "factor_source_object_refs": list(payload["factor_source_object_refs"]),
+            "factor_source_objects": factor_source_objects,
+            "factor_policy": factor_policy,
+            "factor_evidence": factor_evidence,
+            "factor_active_set": factor_active_set,
+            "factor_validation_attestation_ref": payload["factor_validation_attestation_ref"],
+            "factor_validation_attestation": factor_validation_attestation,
+            "factor_validation_resolution": None,
+            "factor_contextual_result": None,
+            "factor_validation_completion": None,
+            "factor_source_verification_snapshot": None,
+            "factor_status_ref": factor_status_ref,
+            "factor_status": factor_status,
+            "factor_validation_receipt_ref": None,
+            "factor_validation_receipt": None,
+            "mainline": None,
+            "research": research,
+            "migration_receipt": None,
+            "migration_marker": None,
+            "readiness": readiness,
+            "emergency_controller": {
+                "verified": True,
+                "byte_sha256": controller.byte_sha256,
+                "historical": True,
+            },
+            "deployed_release_verified": False,
+            "historical_release_verified": True,
+        }
+
+    def _verify_historical_suspended_generation(self, generation_id: str) -> dict[str, Any]:
+        """Authenticate a prebuilt suspended target without current catalog equality."""
+
+        normalized_id = _require_sha256(generation_id, label="historical suspended generation")
+        stored = self._storage.read(GENERATIONS_ROOT / normalized_id / "manifest.json")
+        try:
+            provisional = parse_canonical_json_bytes(
+                stored.data, label="historical suspended manifest"
+            )
+        except ContractError as exc:
+            raise SystemContractError("historical suspended manifest is not canonical") from exc
+        if type(provisional) is not dict or type(provisional.get("payload")) is not dict:
+            raise SystemContractError("historical suspended manifest is invalid")
+        catalog_sha = _require_sha256(
+            provisional["payload"].get("contract_catalog_sha256"),
+            label="historical suspended catalog",
+        )
+        catalog, dispatch = self._read_historical_contract_catalog(catalog_sha)
+        manifest = self._validate_historical_artifact(stored.data, dispatch=dispatch)
+        payload = manifest["payload"]
+        if manifest["semantic_sha256"] != normalized_id:
+            raise SystemContractError("historical suspended identity differs")
+        manifest_ref = {
+            "kind": manifest["kind"],
+            "contract_sha256": manifest["contract_sha256"],
+            "artifact_id": manifest["artifact_id"],
+            "semantic_sha256": manifest["semantic_sha256"],
+            "byte_sha256": stored.byte_sha256,
+        }
+        if self._historical_get_object(manifest_ref, dispatch=dispatch) != manifest:
+            raise SystemContractError("historical suspended manifest object differs")
+        empty_fields = {
+            "source_refs": [],
+            "factor_source_object_refs": [],
+            "factor_policy_ref": None,
+            "factor_evidence_refs": [],
+            "factor_active_set_ref": None,
+            "factor_validation_attestation_ref": None,
+            "mainline_ref": None,
+            "research_refs": [],
+            "migration_receipt_ref": None,
+            "migration_marker_ref": None,
+            "emergency_controller_sha256": None,
+        }
+        if payload.get("generation_state") != "SYSTEM_SUSPENDED" or any(
+            payload.get(field) != value for field, value in empty_fields.items()
+        ):
+            raise SystemContractError("historical suspended closure is not minimal")
+        release = self._historical_get_object(payload["release_manifest_ref"], dispatch=dispatch)
+        readiness = self._historical_get_object(payload["readiness_matrix_ref"], dispatch=dispatch)
+        readiness_payload = readiness.get("payload")
+        if type(readiness_payload) is not dict or any(
+            readiness_payload.get(field) != "SUSPENDED"
+            for field in ("factor_state", "mainline_state", "investment_state")
+        ):
+            raise SystemContractError("historical suspended readiness differs")
+        return {
+            "verified": True,
+            "generation_state": "SYSTEM_SUSPENDED",
+            "generation_id": normalized_id,
+            "manifest": manifest,
+            "manifest_sha256": stored.byte_sha256,
+            "manifest_byte_sha256": stored.byte_sha256,
+            "manifest_ref": manifest_ref,
+            "contract_catalog": catalog,
+            "release": release,
+            "sources": [],
+            "factor_source_object_refs": [],
+            "factor_source_objects": [],
+            "factor_policy": None,
+            "factor_evidence": [],
+            "factor_active_set": None,
+            "factor_validation_attestation_ref": None,
+            "factor_validation_attestation": None,
+            "factor_validation_resolution": None,
+            "factor_contextual_result": None,
+            "factor_validation_completion": None,
+            "factor_source_verification_snapshot": None,
+            "factor_status_ref": None,
+            "factor_status": None,
+            "factor_validation_receipt_ref": None,
+            "factor_validation_receipt": None,
+            "mainline": None,
+            "research": [],
+            "migration_receipt": None,
+            "migration_marker": None,
+            "readiness": readiness,
+            "emergency_controller": None,
+            "deployed_release_verified": False,
+            "historical_release_verified": True,
+        }
+
     @staticmethod
     def _validated_artifact(value: Mapping[str, Any] | bytes) -> dict[str, Any]:
         try:
@@ -2142,7 +2536,11 @@ class SystemStore:
         self._validate_pointer(current.data)
         if current.byte_sha256 != expected:
             raise SystemCASMismatch(expected, current.byte_sha256)
-        verified = self.verify_generation(pointer["generation_id"])
+        if self._storage.read_optional(MIGRATION_MARKER_PATH) is not None:
+            self.verify_migration_completion()
+            verified = self._verify_historical_suspended_generation(pointer["generation_id"])
+        else:
+            verified = self.verify_generation(pointer["generation_id"])
         if verified["generation_state"] != "SYSTEM_SUSPENDED":
             raise SystemActivationAuthorizationError("emergency target must be SYSTEM_SUSPENDED")
         if verified["manifest_sha256"] != pointer["manifest_sha256"]:
@@ -2367,9 +2765,8 @@ class SystemStore:
                 authorization["payload"]["deployed_release_ref"],
                 label="authorization.deployed_release_ref",
             )
-            generation = self._verify_generation(
-                initial_pointer["generation_id"],
-                validation_level="stat",
+            generation = self._verify_historical_initial_generation(
+                initial_pointer["generation_id"]
             )
             if generation["manifest"]["payload"]["release_manifest_ref"] != deployed_ref:
                 raise SystemMigrationClosureError(
@@ -2432,6 +2829,11 @@ class SystemStore:
             "authorization_byte_sha256": authorization_stored.byte_sha256,
             "initial_pointer": dict(initial_pointer),
             "initial_pointer_byte_sha256": initial_pointer_sha,
+            "initial_generation": {
+                key: value
+                for key, value in generation.items()
+                if key != "historical_contract_dispatch"
+            },
             "marker": marker,
             "marker_byte_sha256": marker_stored.byte_sha256,
             "migration_receipt": receipt,
@@ -2454,16 +2856,23 @@ class SystemStore:
         current = chain[0]
         pointer = current["pointer"]
 
-        verified = self._verify_generation(
-            pointer["generation_id"],
-            deployed_release_ref=deployed_release_ref,
-            validation_level="stat",
-        )
+        if current["pointer_byte_sha256"] == completion["initial_pointer_byte_sha256"]:
+            verified = completion["initial_generation"]
+        else:
+            try:
+                verified = self._verify_generation(
+                    pointer["generation_id"],
+                    deployed_release_ref=deployed_release_ref,
+                    validation_level="stat",
+                )
+            except SystemContractError:
+                verified = self._verify_historical_suspended_generation(pointer["generation_id"])
         if verified["manifest_sha256"] != pointer["manifest_sha256"]:
             raise SystemContractError("active pointer manifest binding mismatch")
         if (
             verified["generation_state"] == "OPERATIONAL"
             and not verified["deployed_release_verified"]
+            and not verified.get("historical_release_verified", False)
         ):
             _verify_installed_release(verified["release"])
             verified = {**verified, "deployed_release_verified": True}

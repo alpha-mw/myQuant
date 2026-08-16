@@ -81,12 +81,13 @@ from quant_investor.system.components import (
     BOOTSTRAP_VALIDATION_PROFILE,
     MAXIMUM_DECODED_SOURCE_CELLS,
     MAXIMUM_DECODED_SOURCE_ROWS,
-    MAXIMUM_DECODE_RESERVATION_BYTES,
     MAXIMUM_FACTOR_SOURCE_OBJECT_BYTES,
 )
 from quant_investor.system.bootstrap_receipt import (
     ASSEMBLER_MODULE_PATH,
     FUNDAMENTAL_SOURCE_BLOCKERS,
+    INPUT_SOURCE_ROW_FIELDS,
+    PRODUCTION_BOOTSTRAP_RECEIPT_FIELDS,
     build_production_bootstrap_receipt,
     production_generation_intent_sha256,
     validate_production_bootstrap_receipt,
@@ -140,7 +141,8 @@ _MAX_INPUT_BYTES: Final = 4 * 1024 * 1024 * 1024
 _JSON_MAX_BYTES: Final = 64 * 1024 * 1024
 _MAX_MARKET_TABLES: Final = 24
 _MINIMUM_MARKET_SESSIONS: Final = 91
-_PARQUET_BATCH_ROWS: Final = 100_000
+_PARQUET_BATCH_ROWS: Final = 2_048
+_PARQUET_BATCH_BYTES: Final = 16 * 1024**2
 _CALENDAR_MANIFEST_KIND: Final = "system.exchange_calendar_manifest"
 _CALENDAR_MANIFEST_CONTRACT_SHA256: Final = get_contract(_CALENDAR_MANIFEST_KIND).contract_sha256
 _CALENDAR_CAPTURE_KIND: Final = "system.exchange_calendar_capture"
@@ -542,6 +544,8 @@ def _iter_bounded_parquet_rows(
                 if (
                     total_rows > MAXIMUM_DECODED_SOURCE_ROWS
                     or total_rows * len(columns) > MAXIMUM_DECODED_SOURCE_CELLS
+                    or batch.num_rows > _PARQUET_BATCH_ROWS
+                    or batch.nbytes > _PARQUET_BATCH_BYTES
                 ):
                     raise SystemSecurityError("Parquet replay exceeds decoded row/cell bounds")
                 yield from batch.to_pylist()
@@ -561,7 +565,7 @@ def _iter_bounded_parquet_rows(
     with store.open_source_object(
         source_ref,
         maximum_bytes=MAXIMUM_FACTOR_SOURCE_OBJECT_BYTES,
-        decoded_reservation_bytes=MAXIMUM_DECODE_RESERVATION_BYTES,
+        decoded_reservation_bytes=_PARQUET_BATCH_BYTES,
     ) as (_payload, stream):
         yield from decoded_rows(stream)
 
@@ -1416,47 +1420,210 @@ def _materialize_market_and_pit(
     }
 
 
+class _FundamentalSealedFileset:
+    """Resolve every safe-successor read to one predeclared immutable input."""
+
+    _LIST_FIELDS: Final = (
+        "calendar_raw_file_refs",
+        "calendar_capture_file_refs",
+        "market_table_file_refs",
+        "fundamental_table_file_refs",
+        "fundamental_evidence_file_refs",
+    )
+
+    def __init__(
+        self,
+        *,
+        normalized: Mapping[str, Any],
+        staging_root: Path,
+        copied: Mapping[str, list[str] | str],
+        store: SystemStore | None,
+        observed_inputs: Mapping[tuple[str, int], Mapping[str, Any]] | None,
+    ) -> None:
+        if (store is None) != (observed_inputs is None):
+            raise SystemContractError("Fundamental sealed-fileset authority is incomplete")
+        self._store = store
+        self._entries: dict[str, dict[str, Any]] = {}
+        self._by_sha: dict[str, list[dict[str, Any]]] = {}
+
+        def add(field: str, ordinal: int, path_text: str, reference: Mapping[str, Any]) -> None:
+            path = Path(os.path.abspath(staging_root / path_text))
+            digest = reference["byte_sha256"]
+            source_ref = (
+                None
+                if observed_inputs is None
+                else validate_object_ref(
+                    observed_inputs[(field, ordinal)],
+                    label=f"Fundamental sealed {field}[{ordinal}]",
+                )
+            )
+            entry = {
+                "path": path,
+                "byte_sha256": digest,
+                "source_ref": source_ref,
+            }
+            key = str(path)
+            if key in self._entries:
+                raise SystemContractError("Fundamental sealed path is duplicated")
+            self._entries[key] = entry
+            self._by_sha.setdefault(digest, []).append(entry)
+
+        for field, reference in normalized["files"].items():
+            add(field, 0, _copied_path(copied, field), reference)
+        for field in self._LIST_FIELDS:
+            paths = _copied_paths(copied, field)
+            references = normalized[field]
+            if len(paths) != len(references):
+                raise SystemContractError("Fundamental sealed list cardinality differs")
+            for ordinal, (path_text, reference) in enumerate(zip(paths, references, strict=True)):
+                add(field, ordinal, path_text, reference)
+
+    def _entry(self, path: Path, expected_sha256: str) -> dict[str, Any]:
+        key = str(Path(os.path.abspath(path)))
+        exact = self._entries.get(key)
+        if exact is not None:
+            if exact["byte_sha256"] != expected_sha256:
+                raise SystemSecurityError("Fundamental sealed path SHA differs")
+            return exact
+        matches = self._by_sha.get(expected_sha256, [])
+        if not matches:
+            raise SystemContractError("Fundamental sealed source is not declared")
+        if len(matches) != 1:
+            raise SystemSecurityError("Fundamental sealed source path is not uniquely bound")
+        return matches[0]
+
+    def expected_sha256(self, path: Path, *, fallback_sha256: str | None = None) -> str:
+        key = str(Path(os.path.abspath(path)))
+        exact = self._entries.get(key)
+        if exact is not None:
+            if fallback_sha256 is not None and exact["byte_sha256"] != fallback_sha256:
+                raise SystemSecurityError("Fundamental expected SHA differs")
+            return cast(str, exact["byte_sha256"])
+        if type(fallback_sha256) is not str:
+            raise SystemSecurityError("Fundamental source path is not sealed")
+        self._entry(path, fallback_sha256)
+        return fallback_sha256
+
+    def read_bytes(
+        self,
+        path: Path,
+        *,
+        expected_sha256: str,
+        maximum_bytes: int,
+    ) -> bytes:
+        entry = self._entry(path, expected_sha256)
+        source_ref = entry["source_ref"]
+        if source_ref is not None:
+            if self._store is None:  # pragma: no cover - constructor invariant
+                raise SystemContractError("Fundamental System source store is absent")
+            payload, raw = self._store.read_source_object_bytes(
+                source_ref,
+                maximum_bytes=min(maximum_bytes, MAXIMUM_FACTOR_SOURCE_OBJECT_BYTES),
+            )
+            if (
+                payload["byte_sha256"] != expected_sha256
+                or payload["relative_path"]
+                != entry["path"].relative_to(self._store.source_root).as_posix()
+            ):
+                raise SystemSecurityError("Fundamental source object binding differs")
+            return raw
+        metadata = os.lstat(entry["path"])
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+            or metadata.st_nlink != 1
+            or metadata.st_size <= 0
+            or metadata.st_size > maximum_bytes
+        ):
+            raise SystemSecurityError("Fundamental copied source security differs")
+        raw = _read_stable_bytes(entry["path"], maximum_bytes=maximum_bytes)
+        if hashlib.sha256(raw).hexdigest() != expected_sha256:
+            raise SystemSecurityError("Fundamental copied source SHA differs")
+        return raw
+
+    @contextmanager
+    def open_parquet(
+        self,
+        path: Path,
+        *,
+        expected_sha256: str,
+        maximum_bytes: int,
+        decoded_reservation_bytes: int,
+    ) -> Iterator[FileIO]:
+        if (
+            type(decoded_reservation_bytes) is not int
+            or decoded_reservation_bytes <= 0
+            or decoded_reservation_bytes > _PARQUET_BATCH_BYTES
+        ):
+            raise SystemSecurityError("Fundamental decoded reservation differs")
+        entry = self._entry(path, expected_sha256)
+        source_ref = entry["source_ref"]
+        if source_ref is not None:
+            if self._store is None:  # pragma: no cover - constructor invariant
+                raise SystemContractError("Fundamental System source store is absent")
+            with self._store.open_source_object(
+                source_ref,
+                maximum_bytes=min(maximum_bytes, MAXIMUM_FACTOR_SOURCE_OBJECT_BYTES),
+                decoded_reservation_bytes=decoded_reservation_bytes,
+            ) as (payload, stream):
+                if (
+                    payload["byte_sha256"] != expected_sha256
+                    or payload["relative_path"]
+                    != entry["path"].relative_to(self._store.source_root).as_posix()
+                ):
+                    raise SystemSecurityError("Fundamental Parquet source binding differs")
+                yield stream
+            return
+        with _open_stable_parquet_path(entry["path"], expected_sha256=expected_sha256) as stream:
+            if os.fstat(stream.fileno()).st_size > maximum_bytes:
+                raise SystemSecurityError("Fundamental Parquet source byte bound exceeded")
+            yield stream
+
+    def files_under(self, root: Path) -> list[Path]:
+        normalized_root = Path(os.path.abspath(root))
+        return sorted(
+            entry["path"]
+            for entry in self._entries.values()
+            if normalized_root in entry["path"].parents
+        )
+
+
 def _validate_fundamental_closure(  # noqa: C901
     *,
     normalized: Mapping[str, Any],
     staging_root: Path,
     copied: Mapping[str, list[str] | str],
     expected_cutoff: str,
+    store: SystemStore | None = None,
+    observed_inputs: Mapping[tuple[str, int], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    bound_files: list[tuple[Path, str]] = []
-    for field in (
-        "fundamental_pointer_file_ref",
-        "fundamental_generation_manifest_file_ref",
-    ):
-        bound_files.append(
-            (
-                staging_root / _copied_path(copied, field),
-                normalized["files"][field]["byte_sha256"],
-            )
-        )
-    for field in ("fundamental_table_file_refs", "fundamental_evidence_file_refs"):
-        paths = _copied_paths(copied, field)
-        references = normalized[field]
-        if len(paths) != len(references):
-            raise SystemContractError("Fundamental source input cardinality differs")
-        bound_files.extend(
-            (staging_root / path, reference["byte_sha256"])
-            for path, reference in zip(paths, references, strict=True)
-        )
+    sealed_fileset = _FundamentalSealedFileset(
+        normalized=normalized,
+        staging_root=staging_root,
+        copied=copied,
+        store=store,
+        observed_inputs=observed_inputs,
+    )
 
-    def snapshots() -> list[tuple[str, tuple[int, int, int, int, int, int, int]]]:
-        observed: list[tuple[str, tuple[int, int, int, int, int, int, int]]] = []
-        for path, expected_sha in bound_files:
-            metadata = os.lstat(path)
-            digest, _size = _file_digest(path)
-            if digest != expected_sha:
-                raise SystemSecurityError("Fundamental source exact SHA differs")
-            observed.append((str(path), _file_identity(metadata)))
-        return observed
+    def read_json(field: str) -> dict[str, Any]:
+        reference = normalized["files"][field]
+        raw = sealed_fileset.read_bytes(
+            staging_root / _copied_path(copied, field),
+            expected_sha256=reference["byte_sha256"],
+            maximum_bytes=_JSON_MAX_BYTES,
+        )
+        try:
+            value = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise SystemContractError(f"Fundamental {field} is invalid JSON") from exc
+        if type(value) is not dict:
+            raise SystemContractError(f"Fundamental {field} must be an object")
+        return value
 
-    before_snapshots = snapshots()
-    pointer = _read_copied_json(staging_root, copied, "fundamental_pointer_file_ref")
-    manifest = _read_copied_json(staging_root, copied, "fundamental_generation_manifest_file_ref")
+    pointer = read_json("fundamental_pointer_file_ref")
+    manifest = read_json("fundamental_generation_manifest_file_ref")
     generation_id = pointer.get("generation_id")
     if (
         type(generation_id) is not str
@@ -1520,8 +1687,9 @@ def _validate_fundamental_closure(  # noqa: C901
             manifest,
             generation_root=replay_root,
             historical_only=True,
+            sealed_fileset=sealed_fileset,
         )
-    except (SafeSuccessorError, OSError, ValueError) as exc:
+    except (SafeSuccessorError, SystemContractError, OSError, ValueError) as exc:
         raise SystemContractError(
             "Fundamental safe-successor provenance validation failed"
         ) from exc
@@ -1556,9 +1724,6 @@ def _validate_fundamental_closure(  # noqa: C901
         manifest_tables["fundamental_period"]["rows"] <= 0
     ):
         raise SystemContractError("Fundamental production tables are empty")
-    after_snapshots = snapshots()
-    if before_snapshots != after_snapshots:
-        raise SystemSecurityError("Fundamental source identity changed during replay")
     return {
         "generation_id": generation_id,
         "table_sha256s": validated["table_sha256"],
@@ -2221,6 +2386,230 @@ def _source_role_ref(
     return validate_object_ref(matches[0]["source_ref"], label=f"operational {role}")
 
 
+_INITIAL_PRODUCTION_RECEIPT_CONTRACT_SHA256: Final = (
+    "88c3baff71fb855ba73e260c267519195853482b28f781ef2f23a4dfe25a3679"
+)
+
+
+def _historical_generation_intent_sha256(
+    manifest_payload: Mapping[str, Any], *, created_at: str
+) -> str:
+    """Replay the frozen initial intent domain without current Factor policy code."""
+
+    body = {
+        "generation_state": manifest_payload["generation_state"],
+        "contract_catalog_sha256": manifest_payload["contract_catalog_sha256"],
+        "release_manifest_ref": manifest_payload["release_manifest_ref"],
+        "source_refs": manifest_payload["source_refs"],
+        "factor_source_object_refs": manifest_payload["factor_source_object_refs"],
+        "factor_policy_ref": manifest_payload["factor_policy_ref"],
+        "factor_evidence_refs": manifest_payload["factor_evidence_refs"],
+        "factor_active_set_ref": manifest_payload["factor_active_set_ref"],
+        "factor_validation_attestation_ref": manifest_payload["factor_validation_attestation_ref"],
+        "mainline_ref": None,
+        "research_role": "SOLE_PRODUCTION_BOOTSTRAP_RECEIPT",
+        "migration_receipt_ref": None,
+        "migration_marker_ref": None,
+        "skill_tree_sha256": manifest_payload["skill_tree_sha256"],
+        "automation_semantic_sha256": manifest_payload["automation_semantic_sha256"],
+        "readiness_matrix_ref": manifest_payload["readiness_matrix_ref"],
+        "emergency_controller_sha256": manifest_payload["emergency_controller_sha256"],
+        "created_at": created_at,
+        "assembly_id": manifest_payload["assembly_id"],
+    }
+    return hashlib.sha256(canonical_json_bytes(body)).hexdigest()
+
+
+def _validate_historical_production_bootstrap_generation_closure(
+    *,
+    store: SystemStore,
+    verified_generation: Mapping[str, Any],
+    deployed_release_ref: Mapping[str, Any],
+    historical_assembler_sha256: str | None,
+) -> dict[str, Any]:
+    """Verify the initial immutable graph without executing descendant semantics."""
+
+    if verified_generation.get("generation_state") != "OPERATIONAL":
+        raise SystemContractError("historical bootstrap generation is not OPERATIONAL")
+    manifest = verified_generation.get("manifest")
+    if type(manifest) is not dict or type(manifest.get("payload")) is not dict:
+        raise SystemContractError("historical generation manifest is invalid")
+    manifest_payload = manifest["payload"]
+    research = verified_generation.get("research")
+    research_refs = manifest_payload.get("research_refs")
+    if type(research) is not list or len(research) != 1 or type(research_refs) is not list:
+        raise SystemContractError("historical production receipt cardinality differs")
+    if len(research_refs) != 1:
+        raise SystemContractError("historical production receipt ref is absent")
+    receipt = research[0]
+    if (
+        type(receipt) is not dict
+        or receipt.get("kind") != "system.production_bootstrap_receipt"
+        or receipt.get("contract_sha256") != _INITIAL_PRODUCTION_RECEIPT_CONTRACT_SHA256
+        or type(receipt.get("payload")) is not dict
+    ):
+        raise SystemContractError("historical production receipt contract differs")
+    receipt_ref = {
+        "kind": receipt["kind"],
+        "contract_sha256": receipt["contract_sha256"],
+        "artifact_id": receipt["artifact_id"],
+        "semantic_sha256": receipt["semantic_sha256"],
+        "byte_sha256": hashlib.sha256(canonical_json_bytes(receipt)).hexdigest(),
+    }
+    if receipt_ref != research_refs[0]:
+        raise SystemContractError("historical production receipt exact ref differs")
+    payload = receipt["payload"]
+    if set(payload) != PRODUCTION_BOOTSTRAP_RECEIPT_FIELDS or payload["state"] != "VERIFIED":
+        raise SystemContractError("historical production receipt fields/state differ")
+    identity_body = {
+        key: payload[key]
+        for key in sorted(PRODUCTION_BOOTSTRAP_RECEIPT_FIELDS)
+        if key != "production_bootstrap_receipt_id"
+    }
+    expected_receipt_id = (
+        "production-bootstrap-" + hashlib.sha256(canonical_json_bytes(identity_body)).hexdigest()
+    )
+    if payload["production_bootstrap_receipt_id"] != expected_receipt_id:
+        raise SystemContractError("historical production receipt identity differs")
+
+    release_ref = validate_object_ref(deployed_release_ref, label="historical deployed release")
+    exact_manifest_bindings = {
+        "deployed_release_ref": manifest_payload["release_manifest_ref"],
+        "source_refs": manifest_payload["source_refs"],
+        "factor_source_object_refs": manifest_payload["factor_source_object_refs"],
+        "factor_policy_ref": manifest_payload["factor_policy_ref"],
+        "factor_evidence_refs": manifest_payload["factor_evidence_refs"],
+        "factor_active_set_ref": manifest_payload["factor_active_set_ref"],
+        "factor_validation_attestation_ref": manifest_payload["factor_validation_attestation_ref"],
+        "readiness_matrix_ref": manifest_payload["readiness_matrix_ref"],
+        "emergency_controller_sha256": manifest_payload["emergency_controller_sha256"],
+        "skill_tree_sha256": manifest_payload["skill_tree_sha256"],
+        "automation_semantic_sha256": manifest_payload["automation_semantic_sha256"],
+    }
+    if any(payload[field] != value for field, value in exact_manifest_bindings.items()):
+        raise SystemContractError("historical receipt/generation binding differs")
+    release = verified_generation.get("release")
+    if (
+        payload["deployed_release_ref"] != release_ref
+        or manifest_payload["release_manifest_ref"] != release_ref
+        or type(release) is not dict
+        or payload["release_code_manifest_sha256"]
+        != release.get("payload", {}).get("code_manifest_sha256")
+        or payload["source_root_id"] != store.source_root_id
+        or payload["generation_created_at"] != manifest["created_at"]
+        or receipt["created_at"] != manifest["created_at"]
+        or payload["mainline_ref"] is not None
+        or manifest_payload["mainline_ref"] is not None
+        or manifest_payload["migration_receipt_ref"] is not None
+        or manifest_payload["migration_marker_ref"] is not None
+    ):
+        raise SystemContractError("historical production generation envelope differs")
+    expected_assembly_id = hashlib.sha256(
+        canonical_json_bytes(
+            {
+                "domain": "system.generation_assembly",
+                "identity_inputs": {
+                    "generation_state": "OPERATIONAL",
+                    "release_id": release_ref["artifact_id"],
+                    "readiness_id": manifest_payload["readiness_matrix_ref"]["artifact_id"],
+                    "created_at": manifest["created_at"],
+                },
+            }
+        )
+    ).hexdigest()
+    if (
+        payload["expected_assembly_id"] != expected_assembly_id
+        or manifest_payload["assembly_id"] != expected_assembly_id
+        or payload["generation_intent_sha256"]
+        != _historical_generation_intent_sha256(manifest_payload, created_at=manifest["created_at"])
+    ):
+        raise SystemContractError("historical generation identity/intent differs")
+    if (
+        payload["assembler_module_path"] != ASSEMBLER_MODULE_PATH
+        or type(historical_assembler_sha256) is not str
+        or payload["assembler_code_sha256"] != historical_assembler_sha256
+    ):
+        raise SystemContractError("historical assembler code identity differs")
+
+    dispatch = verified_generation.get("historical_contract_dispatch")
+    if type(dispatch) is not dict:
+        raise SystemContractError("historical contract dispatch is absent")
+    request = store._historical_get_object(
+        payload["bootstrap_operator_request_ref"], dispatch=dispatch
+    )
+    if request.get("kind") != BOOTSTRAP_OPERATOR_REQUEST_KIND:
+        raise SystemContractError("historical bootstrap request kind differs")
+    request_payload = request.get("payload")
+    if (
+        type(request_payload) is not dict
+        or request_payload.get("release_manifest_ref") != release_ref
+        or request_payload.get("source_root_id") != payload["source_root_id"]
+        or request_payload.get("trusted_at") != receipt["created_at"]
+        or request_payload.get("skill_tree_sha256") != payload["skill_tree_sha256"]
+        or request_payload.get("automation_semantic_sha256")
+        != payload["automation_semantic_sha256"]
+        or request_payload.get("source_blockers") != payload["source_blockers"]
+    ):
+        raise SystemContractError("historical bootstrap request binding differs")
+
+    rows = payload["input_source_rows"]
+    if type(rows) is not list or not rows:
+        raise SystemContractError("historical input source rows are absent")
+    observed_keys: list[tuple[str, int]] = []
+    for row in rows:
+        if type(row) is not dict or set(row) != INPUT_SOURCE_ROW_FIELDS:
+            raise SystemContractError("historical input source row fields differ")
+        field = row["field"]
+        ordinal = row["ordinal"]
+        input_ref = row["input_file_ref"]
+        if (
+            type(field) is not str
+            or not field
+            or type(ordinal) is not int
+            or ordinal < 0
+            or type(input_ref) is not dict
+            or set(input_ref) != {"relative_path", "byte_sha256"}
+        ):
+            raise SystemContractError("historical input source row is invalid")
+        source = store._historical_get_object(row["source_object_ref"], dispatch=dispatch)
+        store._verify_historical_source_object(source)
+        source_payload = source["payload"]
+        if (
+            source_payload.get("byte_sha256") != input_ref["byte_sha256"]
+            or source_payload.get("source_root_id") != payload["source_root_id"]
+        ):
+            raise SystemContractError("historical input source bytes/root differ")
+        observed_keys.append((field, ordinal))
+    if observed_keys != sorted(observed_keys) or len(observed_keys) != len(set(observed_keys)):
+        raise SystemContractError("historical input source rows are not sorted/unique")
+    if payload["source_blockers"] != sorted(FUNDAMENTAL_SOURCE_BLOCKERS):
+        raise SystemContractError("historical source blockers differ")
+    if payload["fundamental_machine_states"] != {
+        "mixed": True,
+        "legacy_direct_reader_provenance": "limited",
+        "binding_aware_research_ready": True,
+        "homogeneous_history_ready": False,
+    }:
+        raise SystemContractError("historical Fundamental machine states differ")
+    statistics = payload["signal_statistics"]
+    if (
+        type(statistics) is not list
+        or len(statistics) != 2
+        or any(
+            type(row) is not dict
+            or type(row.get("finite_count")) is not int
+            or row["finite_count"] <= 0
+            or type(row.get("distinct_finite_count")) is not int
+            or row["distinct_finite_count"] <= 1
+            for row in statistics
+        )
+        or hashlib.sha256(canonical_json_bytes(statistics)).hexdigest()
+        != payload["signal_statistics_sha256"]
+    ):
+        raise SystemContractError("historical signal statistics proof differs")
+    return receipt
+
+
 def _validate_production_bootstrap_generation_closure(  # noqa: C901
     *,
     store: SystemStore,
@@ -2233,6 +2622,14 @@ def _validate_production_bootstrap_generation_closure(  # noqa: C901
 
     if validation_mode not in {"PRE_CAS_CURRENT", "HISTORICAL"}:
         raise SystemContractError("production bootstrap validation mode is invalid")
+
+    if validation_mode == "HISTORICAL":
+        return _validate_historical_production_bootstrap_generation_closure(
+            store=store,
+            verified_generation=verified_generation,
+            deployed_release_ref=deployed_release_ref,
+            historical_assembler_sha256=historical_assembler_sha256,
+        )
 
     if verified_generation.get("generation_state") != "OPERATIONAL":
         raise SystemContractError("production bootstrap receipt requires OPERATIONAL generation")
@@ -2393,10 +2790,6 @@ def _validate_production_bootstrap_generation_closure(  # noqa: C901
     )
     if expected_readiness["payload"] != readiness:
         raise SystemContractError("production receipt readiness replay differs")
-    if validation_mode == "HISTORICAL":
-        if payload["source_blockers"] != sorted(FUNDAMENTAL_SOURCE_BLOCKERS):
-            raise SystemContractError("historical source blocker projection differs")
-        return receipt
     _normalized_shas, eligible, strict_signals, source_projection = _strict_projection(
         store,
         calendar_ref=calendar_ref,
@@ -2489,6 +2882,8 @@ def _validate_production_bootstrap_generation_closure(  # noqa: C901
         staging_root=store.source_root,
         copied=copied,
         expected_cutoff=market_closure["cutoff"],
+        store=store,
+        observed_inputs=observed_inputs,
     )
     derived_source_blockers = _derive_source_blockers(fundamental_closure)
     if (

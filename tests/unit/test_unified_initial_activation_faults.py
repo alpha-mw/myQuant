@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import base64
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -28,6 +30,7 @@ from quant_investor.system import (
     SystemStorageError,
     build_prepared_activation_transaction,
     validate_activation_authorization,
+    verify_emergency_controller,
 )
 from test_unified_system_bootstrap import _closure
 from unified_activation_helpers import prepare_initial_activation
@@ -236,6 +239,87 @@ def test_initial_marker_remains_valid_after_descendant_release_commit(tmp_path: 
     assert readback is not None
     assert readback["pointer"] == activated["pointer"]
     assert readback["migration_completion"]["marker"]["payload"]["migration_replay_refused"] is True
+
+
+def test_fresh_descendant_process_uses_historical_anchor_and_can_suspend(
+    tmp_path: Path,
+) -> None:
+    closure, _generation, inputs = _case(tmp_path)
+    store = closure["store"]
+    activated = store.activate_initial_generation(**inputs)
+    controller = verify_emergency_controller(store)
+    target_pointer = canonical_json_bytes(
+        {
+            "generation_id": controller["generation_id"],
+            "manifest_sha256": controller["manifest_sha256"],
+            "previous_pointer_sha256": activated["pointer_byte_sha256"],
+            "activated_at": "2026-08-14T00:00:02Z",
+            "os_actor": f"uid:{os.geteuid()}:emergency-suspend",
+        }
+    )
+    source_root = Path(__file__).resolve().parents[2]
+    script = r"""
+import base64
+import json
+import sys
+import quant_investor.factors.governance.production as production
+import quant_investor.system.controller as controller
+from quant_investor.system import SystemContractError, SystemStore
+
+production.validate_production_bootstrap_generation_closure = lambda **_kwargs: {}
+controller._CONTROLLER_BODY = controller._CONTROLLER_BODY + "\n# descendant implementation\n"
+
+def reject_current_catalog(*_args, **_kwargs):
+    raise SystemContractError("descendant compiled catalog must not reinterpret anchor")
+
+SystemStore.read_contract_catalog = reject_current_catalog
+
+store = SystemStore(sys.argv[1], source_root=sys.argv[4], source_root_id=sys.argv[5])
+try:
+    before = store.read_active()
+except Exception as exc:
+    current = exc
+    while current is not None:
+        print(type(current).__name__ + ":" + str(current), file=sys.stderr)
+        current = current.__cause__
+    raise
+raw = base64.b64decode(sys.argv[3].encode("ascii"))
+suspended = store.activate_suspended_generation(
+    target_active_pointer_raw=raw,
+    expected_pointer_sha256=sys.argv[2],
+)
+print(json.dumps({
+    "before": before["generation_state"],
+    "after": suspended["generation_state"],
+    "factor_authority": suspended["factor_authority"],
+}, sort_keys=True))
+"""
+    completed = subprocess.run(
+        [
+            os.fspath(Path(os.sys.executable)),
+            "-c",
+            script,
+            str(closure["workspace"]),
+            activated["pointer_byte_sha256"],
+            base64.b64encode(target_pointer).decode("ascii"),
+            str(store.source_root),
+            store.source_root_id,
+        ],
+        cwd=source_root,
+        env={**os.environ, "PYTHONPATH": str(source_root)},
+        check=False,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    assert result == {
+        "after": "SYSTEM_SUSPENDED",
+        "before": "OPERATIONAL",
+        "factor_authority": "BLOCKED",
+    }
 
 
 def test_marker_only_and_different_pointer_are_never_overwritten(tmp_path: Path) -> None:

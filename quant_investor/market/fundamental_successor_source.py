@@ -567,9 +567,9 @@ def replay_successor_support_requests(
         target_date=sealed["target_date"],
         open_sessions=sealed["open_sessions"],
         symbols=sealed["subject_symbols"],
-        canonical_subject_scope_authority_sha256=sealed[
-            "canonical_subject_scope_ref"
-        ]["authority_closure_sha256"],
+        canonical_subject_scope_authority_sha256=sealed["canonical_subject_scope_ref"][
+            "authority_closure_sha256"
+        ],
     )
     if _canonical_json_bytes(sealed) != _canonical_json_bytes(expected):
         _fail("SUCCESSOR_PLAN_REPLAY_MISMATCH")
@@ -703,9 +703,8 @@ def _normalize_response_row(
     if table in _STATEMENT_TABLES:
         ann_date = _row_date(row["ann_date"], label="ann_date")
         f_ann_date = _row_date(row["f_ann_date"], label="f_ann_date", optional=True)
-        if (
-            params.get("start_date") != params.get("end_date")
-            or ann_date != params.get("start_date")
+        if params.get("start_date") != params.get("end_date") or ann_date != params.get(
+            "start_date"
         ):
             _fail("SUCCESSOR_RESPONSE_PARTITION_SCOPE_MISMATCH")
         availability = f_ann_date or ann_date
@@ -916,16 +915,12 @@ def _scope_partition_identity(
         _fail("SUCCESSOR_SCOPE_PARTITION_NOT_RECONCILED")
     in_symbols = {str(row["ts_code"]) for row in in_scope_rows}
     out_symbols = {str(row["ts_code"]) for row in out_of_scope_rows}
-    subject_symbols_sha256 = canonical_subject_scope_ref.get(
-        "subject_symbol_keyset_sha256"
-    )
+    subject_symbols_sha256 = canonical_subject_scope_ref.get("subject_symbol_keyset_sha256")
     if in_symbols.intersection(out_symbols):
         _fail("SUCCESSOR_SCOPE_IDENTITY_COLLISION")
     excluded_symbols = sorted(out_symbols)
     identity = {
-        "canonical_subject_scope_ref_sha256": canonical_subject_scope_ref.get(
-            "scope_sha256"
-        ),
+        "canonical_subject_scope_ref_sha256": canonical_subject_scope_ref.get("scope_sha256"),
         "full_response_observation_count": len(normalized_rows),
         "full_response_observation_multiset_sha256": _row_multiset_sha256(
             table, normalized_rows, logical=False
@@ -945,12 +940,8 @@ def _scope_partition_identity(
             table, out_of_scope_rows, logical=False
         ),
         "out_of_scope_symbol_count": len(excluded_symbols),
-        "out_of_scope_symbol_keyset_sha256": _sha256(
-            _canonical_json_bytes(excluded_symbols)
-        ),
-        "request_envelope_scope_ref_sha256": request_envelope_scope_ref.get(
-            "scope_sha256"
-        ),
+        "out_of_scope_symbol_keyset_sha256": _sha256(_canonical_json_bytes(excluded_symbols)),
+        "request_envelope_scope_ref_sha256": request_envelope_scope_ref.get("scope_sha256"),
         "scope_exclusion_policy": "FROZEN_CANONICAL_SUBJECT_PROJECTION.v2",
         "subject_symbol_keyset_sha256": subject_symbols_sha256,
     }
@@ -1086,9 +1077,7 @@ def _receipt(
         "provider_count_policy": "ZERO_SENTINEL_OR_EXACT_ITEM_COUNT.v1",
         "provider_reported_count": response.provider_reported_count,
         "provider_request_id_sha256": _sha256(response.request_id.encode("utf-8")),
-        "raw_item_order_sha256": _row_order_sha256(
-            request["table"], normalized_rows
-        ),
+        "raw_item_order_sha256": _row_order_sha256(request["table"], normalized_rows),
         "raw_response_byte_length": len(raw_response_bytes),
         "raw_response_sha256": _sha256(raw_response_bytes),
         "request_key": request["request_key"],
@@ -1424,9 +1413,7 @@ def _resource_policy(
     )
     if any(type(value) is not int or value < 1 for value in values):
         _fail("SUCCESSOR_RESOURCE_POLICY_INVALID")
-    maximum_table_memory = int(
-        Decimal(physical_memory_bytes) * _MAX_TABLE_MEMORY_FRACTION
-    )
+    maximum_table_memory = int(Decimal(physical_memory_bytes) * _MAX_TABLE_MEMORY_FRACTION)
     if (
         table_memory_limit_bytes > maximum_table_memory
         or maximum_record_bytes > table_memory_limit_bytes
@@ -1434,9 +1421,7 @@ def _resource_policy(
     ):
         _fail("SUCCESSOR_RESOURCE_POLICY_INVALID")
     return {
-        "aggregate_table_memory_limit_bytes": int(
-            Decimal(physical_memory_bytes) * Decimal("0.75")
-        ),
+        "aggregate_table_memory_limit_bytes": int(Decimal(physical_memory_bytes) * Decimal("0.75")),
         "decode_estimated_bytes_per_cell": _DECODE_ESTIMATED_BYTES_PER_CELL,
         "maximum_record_bytes": maximum_record_bytes,
         "minimum_free_disk_bytes": minimum_free_disk_bytes,
@@ -1458,10 +1443,8 @@ def _validate_resource_policy(value: Any) -> dict[str, Any]:
     }:
         _fail("SUCCESSOR_RESOURCE_POLICY_INVALID")
     if (
-        value["schema_version"]
-        != "myquant-fundamental-successor-resource-policy.v1"
-        or value["decode_estimated_bytes_per_cell"]
-        != _DECODE_ESTIMATED_BYTES_PER_CELL
+        value["schema_version"] != "myquant-fundamental-successor-resource-policy.v1"
+        or value["decode_estimated_bytes_per_cell"] != _DECODE_ESTIMATED_BYTES_PER_CELL
         or type(value["aggregate_table_memory_limit_bytes"]) is not int
         or value["aggregate_table_memory_limit_bytes"]
         != int(Decimal(value["physical_memory_bytes"]) * Decimal("0.75"))
@@ -1707,16 +1690,12 @@ def _decode_record(
     ):
         _fail("SUCCESSOR_RECORD_RAW_RESPONSE_INVALID")
     try:
-        raw_response_bytes = base64.b64decode(
-            record["raw_response_bytes_base64"], validate=True
-        )
+        raw_response_bytes = base64.b64decode(record["raw_response_bytes_base64"], validate=True)
     except Exception:
         _fail("SUCCESSOR_RECORD_RAW_RESPONSE_INVALID")
-    if (
-        len(raw_response_bytes) != record["raw_response_byte_length"]
-        or _sha256(raw_response_bytes)
-        != _hex_sha256(record["raw_response_sha256"], label="raw_response_sha256")
-    ):
+    if len(raw_response_bytes) != record["raw_response_byte_length"] or _sha256(
+        raw_response_bytes
+    ) != _hex_sha256(record["raw_response_sha256"], label="raw_response_sha256"):
         _fail("SUCCESSOR_RECORD_RAW_RESPONSE_INVALID")
     try:
         replayed = replay_tushare_response_bytes(
@@ -1750,17 +1729,11 @@ def _decode_record(
         (_typed_row(row, fields, logical=False) for row in replayed_rows),
         key=_canonical_json_bytes,
     )
-    if _canonical_json_bytes(replayed_observed) != _canonical_json_bytes(
-        record["observed_rows"]
-    ):
+    if _canonical_json_bytes(replayed_observed) != _canonical_json_bytes(record["observed_rows"]):
         _fail("SUCCESSOR_RECORD_RAW_ROWS_MISMATCH")
     subject_symbols = frozenset(binding["plan"]["subject_symbols"])
-    in_scope_rows = [
-        row for row in observed_rows if str(row["ts_code"]) in subject_symbols
-    ]
-    out_of_scope_rows = [
-        row for row in observed_rows if str(row["ts_code"]) not in subject_symbols
-    ]
+    in_scope_rows = [row for row in observed_rows if str(row["ts_code"]) in subject_symbols]
+    out_of_scope_rows = [row for row in observed_rows if str(row["ts_code"]) not in subject_symbols]
     canonical_rows, counters = _canonicalize_rows(record["table"], in_scope_rows)
     if _canonical_json_bytes(
         [_typed_row(row, fields, logical=False) for row in canonical_rows]
@@ -1834,15 +1807,12 @@ def _decode_record(
         or receipt["attempts"] != len(retry_errors) + 1
         or receipt["item_count"] != len(observed_rows)
         or receipt["provider_reported_count"] not in {0, receipt["item_count"]}
-        or receipt["provider_count_policy"]
-        != "ZERO_SENTINEL_OR_EXACT_ITEM_COUNT.v1"
+        or receipt["provider_count_policy"] != "ZERO_SENTINEL_OR_EXACT_ITEM_COUNT.v1"
         or replayed.provider_reported_count != receipt["provider_reported_count"]
         or replayed.item_count != receipt["item_count"]
         or replayed.has_more is not False
-        or _sha256(replayed.request_id.encode("utf-8"))
-        != receipt["provider_request_id_sha256"]
-        or _row_order_sha256(record["table"], replayed_rows)
-        != receipt["raw_item_order_sha256"]
+        or _sha256(replayed.request_id.encode("utf-8")) != receipt["provider_request_id_sha256"]
+        or _row_order_sha256(record["table"], replayed_rows) != receipt["raw_item_order_sha256"]
         or receipt["raw_response_byte_length"] != len(raw_response_bytes)
         or receipt["raw_response_sha256"] != _sha256(raw_response_bytes)
         or receipt["canonicalization_counters"] != counters
@@ -1923,9 +1893,7 @@ def _scope_projection_manifest(
 ) -> dict[str, Any]:
     full_count = sum(int(row["full_response_observation_count"]) for row in receipts)
     in_scope_count = sum(int(row["in_scope_observation_count"]) for row in receipts)
-    out_of_scope_count = sum(
-        int(row["out_of_scope_observation_count"]) for row in receipts
-    )
+    out_of_scope_count = sum(int(row["out_of_scope_observation_count"]) for row in receipts)
     body: dict[str, Any] = {
         "canonical_subject_scope_ref": dict(plan["canonical_subject_scope_ref"]),
         "full_response_observation_count": full_count,
@@ -2019,9 +1987,7 @@ def _table_memory_estimates(
         ):
             _fail("SUCCESSOR_RESOURCE_ACCOUNTING_INVALID")
         rows_by_table[table] += accepted
-        largest_record_by_table[table] = max(
-            largest_record_by_table[table], byte_length
-        )
+        largest_record_by_table[table] = max(largest_record_by_table[table], byte_length)
         record_bytes_by_table[table] += byte_length
     estimates: dict[str, dict[str, int]] = {}
     for table in _TABLES:
@@ -2062,9 +2028,7 @@ def _resource_accounting(
         (row["estimated_peak_memory_bytes"] for row in estimates.values()),
         default=0,
     )
-    aggregate = sum(
-        row["estimated_peak_memory_bytes"] for row in estimates.values()
-    )
+    aggregate = sum(row["estimated_peak_memory_bytes"] for row in estimates.values())
     if (
         peak > policy["table_memory_limit_bytes"]
         or aggregate > policy["aggregate_table_memory_limit_bytes"]
@@ -2072,9 +2036,7 @@ def _resource_accounting(
     ):
         _fail("SUCCESSOR_RESOURCE_PREFLIGHT_BLOCKED")
     source_payload_bytes = sum(int(ref["byte_length"]) for ref in record_refs)
-    source_payload_bytes += sum(
-        int(dict(ref)["byte_length"]) for ref in table_refs.values()
-    )
+    source_payload_bytes += sum(int(dict(ref)["byte_length"]) for ref in table_refs.values())
     body: dict[str, Any] = {
         "aggregate_estimated_memory_bytes": aggregate,
         "maximum_estimated_table_memory_bytes": peak,
@@ -2151,9 +2113,7 @@ def acquire_successor_support(
         requests_per_second=requests_per_second,
     )
     resolved_physical_memory = (
-        _physical_memory_bytes()
-        if physical_memory_bytes is None
-        else physical_memory_bytes
+        _physical_memory_bytes() if physical_memory_bytes is None else physical_memory_bytes
     )
     resolved_table_memory_limit = (
         int(Decimal(resolved_physical_memory) * _MAX_TABLE_MEMORY_FRACTION)
@@ -2247,9 +2207,7 @@ def acquire_successor_support(
                 minimum_free_disk_bytes=resource_policy["minimum_free_disk_bytes"],
                 pending_bytes=len(record_payload),
             )
-            minimum_observed_free_disk = min(
-                minimum_observed_free_disk, observed_free
-            )
+            minimum_observed_free_disk = min(minimum_observed_free_disk, observed_free)
             _atomic_write(record_path, record_payload)
             receipt, _observed_rows, _rows = _decode_record(
                 _canonical_file_mapping(record_path),
@@ -2277,15 +2235,9 @@ def acquire_successor_support(
         record_refs=record_refs,
     )
     if (
-        max(
-            row["estimated_peak_memory_bytes"]
-            for row in table_estimates.values()
-        )
+        max(row["estimated_peak_memory_bytes"] for row in table_estimates.values())
         > resource_policy["table_memory_limit_bytes"]
-        or sum(
-            row["estimated_peak_memory_bytes"]
-            for row in table_estimates.values()
-        )
+        or sum(row["estimated_peak_memory_bytes"] for row in table_estimates.values())
         > resource_policy["aggregate_table_memory_limit_bytes"]
     ):
         _fail("SUCCESSOR_RESOURCE_PREFLIGHT_BLOCKED")
@@ -2354,9 +2306,7 @@ def acquire_successor_support(
                 int(row["in_scope_observation_count"]) for row in receipts
             ),
             "malformed_requests": 0,
-            "raw_response_bytes": sum(
-                int(row["raw_response_byte_length"]) for row in receipts
-            ),
+            "raw_response_bytes": sum(int(row["raw_response_byte_length"]) for row in receipts),
             "request_attempts": request_attempts,
             "requests_empty": sum(row["status"] == "EMPTY" for row in receipts),
             "requests_failed": 0,
@@ -2403,6 +2353,7 @@ def _validate_manifest_shape(value: Mapping[str, Any]) -> dict[str, Any]:
         "record_files",
         "request_receipts",
         "request_topology_sha256",
+        "resource_accounting",
         "schema_version",
         "scope_projection",
         "status",
@@ -2594,22 +2545,13 @@ def validate_successor_support_fileset(
         or accounting["retryable_attempt_failures"]
         != sum(len(receipt["retry_error_codes"]) for receipt in validated_receipts)
         or accounting["full_response_observation_rows"]
-        != sum(
-            receipt["full_response_observation_count"]
-            for receipt in validated_receipts
-        )
+        != sum(receipt["full_response_observation_count"] for receipt in validated_receipts)
         or accounting["in_scope_observation_rows"]
         != sum(receipt["in_scope_observation_count"] for receipt in validated_receipts)
         or accounting["scope_excluded_rows"]
-        != sum(
-            receipt["out_of_scope_observation_count"]
-            for receipt in validated_receipts
-        )
+        != sum(receipt["out_of_scope_observation_count"] for receipt in validated_receipts)
         or accounting["scope_exclusion_requests"]
-        != sum(
-            receipt["out_of_scope_observation_count"] > 0
-            for receipt in validated_receipts
-        )
+        != sum(receipt["out_of_scope_observation_count"] > 0 for receipt in validated_receipts)
         or accounting["raw_response_bytes"]
         != sum(receipt["raw_response_byte_length"] for receipt in validated_receipts)
         or _canonical_json_bytes(manifest["scope_projection"])

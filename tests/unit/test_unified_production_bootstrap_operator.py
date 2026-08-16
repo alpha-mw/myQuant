@@ -23,6 +23,7 @@ from quant_investor.factors.governance.production import (
     assemble_production_bootstrap,
 )
 import quant_investor.factors.governance.production as production_module
+import quant_investor.market.fundamental_incremental as fundamental_incremental_module
 from quant_investor.market.exchange_calendar_official import (
     decode_capture_projection as production_decode_capture_projection,
     decoder_code_sha256,
@@ -1080,6 +1081,49 @@ def test_production_source_descriptor_security_drift_blocks_before_initial_cas(
     assert not (workspace / "results/system/_migration_complete.json").exists()
 
 
+@pytest.mark.parametrize("mutation", ["mode", "hardlink", "symlink"])
+def test_fundamental_source_descriptor_drift_blocks_before_initial_cas(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    workspace, release_ref = _seed_workspace(tmp_path)
+    input_root = tmp_path / "sealed-inputs"
+    result = assemble_production_bootstrap(
+        workspace_root=workspace,
+        input_root=input_root,
+        request_raw=_request(
+            workspace_root=workspace,
+            release_ref=release_ref,
+            files=_inputs(input_root),
+        ),
+    )
+    store = SystemStore(workspace)
+    prepared = prepare_initial_activation(store, result["generation"], release_ref)
+    receipt = store.get_object(result["production_bootstrap_receipt_ref"])
+    table_row = next(
+        row
+        for row in receipt["payload"]["input_source_rows"]
+        if row["field"] == "fundamental_table_file_refs"
+    )
+    source = store.get_object(table_row["source_object_ref"])
+    source_path = workspace / source["payload"]["relative_path"]
+    if mutation == "mode":
+        source_path.chmod(0o640)
+    elif mutation == "hardlink":
+        os.link(source_path, source_path.parent / "unexpected-fundamental-link.parquet")
+    else:
+        replacement = source_path.parent / "fundamental-replacement.parquet"
+        replacement.write_bytes(source_path.read_bytes())
+        replacement.chmod(0o600)
+        source_path.unlink()
+        source_path.symlink_to(replacement.name)
+
+    with pytest.raises(SystemError):
+        store.activate_initial_generation(**prepared)
+    assert not (workspace / "results/system/_active.json").exists()
+    assert not (workspace / "results/system/_migration_complete.json").exists()
+
+
 def test_production_bootstrap_rejects_parquet_replay_over_row_bound(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1099,6 +1143,112 @@ def test_production_bootstrap_rejects_parquet_replay_over_row_bound(
                 files=files,
             ),
         )
+    assert not (workspace / "results/system/generations").exists()
+
+
+def test_fundamental_replay_rejects_its_own_row_bound_before_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace, release_ref = _seed_workspace(tmp_path)
+    input_root = tmp_path / "sealed-inputs"
+    files = _inputs(input_root)
+    monkeypatch.setattr(fundamental_incremental_module, "SUCCESSOR_REPLAY_MAX_ROWS", 1)
+
+    with pytest.raises(
+        SystemContractError,
+        match="Fundamental safe-successor provenance validation failed",
+    ):
+        assemble_production_bootstrap(
+            workspace_root=workspace,
+            input_root=input_root,
+            request_raw=_request(
+                workspace_root=workspace,
+                release_ref=release_ref,
+                files=files,
+            ),
+        )
+    assert not (workspace / "results/system/generations").exists()
+
+
+def test_fundamental_replay_rejects_row_group_expansion_before_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace, release_ref = _seed_workspace(tmp_path)
+    input_root = tmp_path / "sealed-inputs"
+    files = _inputs(input_root)
+    monkeypatch.setattr(fundamental_incremental_module, "SUCCESSOR_REPLAY_BATCH_BYTES", 32)
+
+    with pytest.raises(
+        SystemContractError,
+        match="Fundamental safe-successor provenance validation failed",
+    ):
+        assemble_production_bootstrap(
+            workspace_root=workspace,
+            input_root=input_root,
+            request_raw=_request(
+                workspace_root=workspace,
+                release_ref=release_ref,
+                files=files,
+            ),
+        )
+    assert not (workspace / "results/system/generations").exists()
+
+
+def test_fundamental_descriptor_detects_inode_swap_during_decode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace, release_ref = _seed_workspace(tmp_path)
+    input_root = tmp_path / "sealed-inputs"
+    files = _inputs(input_root)
+    original = production_module._FundamentalSealedFileset.open_parquet
+    swapped = False
+
+    @production_module.contextmanager
+    def swap_inode(
+        self: Any,
+        path: Path,
+        *,
+        expected_sha256: str,
+        maximum_bytes: int,
+        decoded_reservation_bytes: int,
+    ) -> Any:
+        nonlocal swapped
+        with original(
+            self,
+            path,
+            expected_sha256=expected_sha256,
+            maximum_bytes=maximum_bytes,
+            decoded_reservation_bytes=decoded_reservation_bytes,
+        ) as stream:
+            if path.name == "fundamental_daily.parquet" and not swapped:
+                swapped = True
+                raw = path.read_bytes()
+                replacement = path.parent / "fundamental-daily-replacement.parquet"
+                replacement.write_bytes(raw)
+                replacement.chmod(0o600)
+                path.unlink()
+                replacement.rename(path)
+            yield stream
+
+    monkeypatch.setattr(
+        production_module._FundamentalSealedFileset,
+        "open_parquet",
+        swap_inode,
+    )
+    with pytest.raises(SystemSecurityError, match="changed during descriptor replay"):
+        assemble_production_bootstrap(
+            workspace_root=workspace,
+            input_root=input_root,
+            request_raw=_request(
+                workspace_root=workspace,
+                release_ref=release_ref,
+                files=files,
+            ),
+        )
+    assert swapped is True
     assert not (workspace / "results/system/generations").exists()
 
 

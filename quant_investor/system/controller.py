@@ -249,19 +249,75 @@ def verify_emergency_controller(
     ):
         raise SystemContractError("emergency controller byte SHA mismatch")
     metadata = _parse_controller_metadata(stored.data)
-    generation = store.verify_generation(metadata.get("suspended_generation_id"))
-    if generation.get("generation_state") != "SYSTEM_SUSPENDED":
-        raise SystemContractError("emergency controller target is not suspended")
-    expected_metadata = _metadata(store, generation)
-    if metadata != expected_metadata or stored.data != _controller_bytes(expected_metadata):
-        raise SystemContractError("emergency controller exact bytes are invalid")
+    generation_id = _require_sha256(
+        metadata.get("suspended_generation_id"), label="suspended_generation_id"
+    )
+    manifest_stored = store._storage.read(GENERATIONS_ROOT / generation_id / "manifest.json")
+    if manifest_stored.byte_sha256 != _require_sha256(
+        metadata.get("suspended_manifest_sha256"), label="suspended_manifest_sha256"
+    ):
+        raise SystemContractError("emergency controller suspended manifest bytes differ")
+    try:
+        manifest = parse_canonical_json_bytes(
+            manifest_stored.data, label="emergency suspended manifest"
+        )
+    except Exception as exc:
+        raise SystemContractError("emergency suspended manifest is invalid") from exc
+    payload = manifest.get("payload") if type(manifest) is dict else None
+    if (
+        type(payload) is not dict
+        or manifest.get("semantic_sha256") != generation_id
+        or payload.get("generation_state") != "SYSTEM_SUSPENDED"
+        or payload.get("source_refs") != []
+        or payload.get("factor_source_object_refs") != []
+        or payload.get("factor_policy_ref") is not None
+        or payload.get("factor_evidence_refs") != []
+        or payload.get("factor_active_set_ref") is not None
+        or payload.get("factor_validation_attestation_ref") is not None
+        or payload.get("mainline_ref") is not None
+        or payload.get("research_refs") != []
+        or payload.get("migration_receipt_ref") is not None
+        or payload.get("migration_marker_ref") is not None
+        or payload.get("emergency_controller_sha256") is not None
+    ):
+        raise SystemContractError("emergency controller target is not a minimal suspension")
+    workspace = store.workspace_root
+    expected_metadata = {
+        "active_pointer_path": str(workspace / str(ACTIVE_POINTER_PATH)),
+        "controller_contract_domain": EMERGENCY_CONTROLLER_DOMAIN,
+        "controller_path": str(workspace / str(EMERGENCY_CONTROLLER_PATH)),
+        "empty_pointer_sha256": EMPTY_POINTER_SHA256,
+        "generation_manifest_path": str(
+            workspace / str(GENERATIONS_ROOT / generation_id / "manifest.json")
+        ),
+        "manifest_contract_sha256": manifest.get("contract_sha256"),
+        "manifest_payload_fields": sorted(payload),
+        "pointer_fields": list(_POINTER_FIELDS),
+        "pointer_history_path": str(workspace / str(POINTER_HISTORY_ROOT)),
+        "suspended_generation_id": generation_id,
+        "suspended_manifest_sha256": manifest_stored.byte_sha256,
+        "target_generation_state": "SYSTEM_SUSPENDED",
+    }
+    metadata_raw = canonical_json_bytes(metadata)
+    metadata_text = metadata_raw.decode("utf-8", errors="strict")
+    expected_prefix = (
+        b"#!/usr/bin/env python3\n"
+        + _METADATA_PREFIX
+        + metadata_raw
+        + b"\n"
+        + f"METADATA = __import__('json').loads({metadata_text!r})\n".encode(
+            "utf-8", errors="strict"
+        )
+    )
+    if metadata != expected_metadata or not stored.data.startswith(expected_prefix):
+        raise SystemContractError("emergency controller historical envelope is invalid")
     return {
         "verified": True,
         "write_authority": "NONE",
         "path": str(EMERGENCY_CONTROLLER_PATH),
         "byte_sha256": stored.byte_sha256,
-        "generation_id": generation["generation_id"],
-        "manifest_sha256": generation["manifest_sha256"],
+        "generation_id": generation_id,
+        "manifest_sha256": manifest_stored.byte_sha256,
     }
 
 
