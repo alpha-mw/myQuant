@@ -9,8 +9,10 @@ again by the normal generation verifier.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from datetime import datetime, timedelta, timezone
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from datetime import date, datetime, timedelta, timezone
+from io import FileIO
 import hashlib
 import json
 import math
@@ -30,6 +32,7 @@ import pyarrow.parquet as pq
 from quant_investor.contracts import (
     ContractError,
     canonical_json_bytes,
+    contract_catalog_sha256,
     get_contract,
     seal_artifact,
     validate_artifact,
@@ -74,14 +77,27 @@ from quant_investor.system.errors import (
     SystemStorageError,
 )
 from quant_investor.system.requests import ASSEMBLY_REQUEST_FIELDS
-from quant_investor.system.components import BOOTSTRAP_VALIDATION_PROFILE
+from quant_investor.system.components import (
+    BOOTSTRAP_VALIDATION_PROFILE,
+    MAXIMUM_DECODED_SOURCE_CELLS,
+    MAXIMUM_DECODED_SOURCE_ROWS,
+    MAXIMUM_DECODE_RESERVATION_BYTES,
+    MAXIMUM_FACTOR_SOURCE_OBJECT_BYTES,
+)
 from quant_investor.system.bootstrap_receipt import (
     ASSEMBLER_MODULE_PATH,
+    FUNDAMENTAL_SOURCE_BLOCKERS,
     build_production_bootstrap_receipt,
+    production_generation_intent_sha256,
     validate_production_bootstrap_receipt,
 )
 from quant_investor.system.storage import ACTIVE_POINTER_PATH, MIGRATION_MARKER_PATH
-from quant_investor.system.store import SystemStore, object_ref_for_artifact, validate_object_ref
+from quant_investor.system.store import (
+    SystemStore,
+    generation_assembly_identity,
+    object_ref_for_artifact,
+    validate_object_ref,
+)
 from quant_investor.system.suspension import build_suspended_generation
 
 BOOTSTRAP_OPERATOR_REQUEST_KIND: Final = "system.bootstrap_operator_request"
@@ -124,6 +140,7 @@ _MAX_INPUT_BYTES: Final = 4 * 1024 * 1024 * 1024
 _JSON_MAX_BYTES: Final = 64 * 1024 * 1024
 _MAX_MARKET_TABLES: Final = 24
 _MINIMUM_MARKET_SESSIONS: Final = 91
+_PARQUET_BATCH_ROWS: Final = 100_000
 _CALENDAR_MANIFEST_KIND: Final = "system.exchange_calendar_manifest"
 _CALENDAR_MANIFEST_CONTRACT_SHA256: Final = get_contract(_CALENDAR_MANIFEST_KIND).contract_sha256
 _CALENDAR_CAPTURE_KIND: Final = "system.exchange_calendar_capture"
@@ -442,6 +459,113 @@ def _read_stable_bytes(path: Path, *, maximum_bytes: int) -> bytes:
     return raw
 
 
+@contextmanager
+def _open_stable_parquet_path(
+    path: Path,
+    *,
+    expected_sha256: str,
+) -> Iterator[FileIO]:
+    """Open one copied Parquet through one stable, owner-only descriptor."""
+
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    descriptor: int | None = None
+    stream: FileIO | None = None
+    try:
+        descriptor = os.open(path, flags)
+        before = os.fstat(descriptor)
+        mode = stat.S_IMODE(before.st_mode)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_uid != os.geteuid()
+            or before.st_nlink != 1
+            or mode & 0o022
+            or mode & 0o111
+            or before.st_size <= 0
+            or before.st_size > MAXIMUM_FACTOR_SOURCE_OBJECT_BYTES
+        ):
+            raise SystemSecurityError("Parquet source descriptor security is invalid")
+        digest = hashlib.sha256()
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+        if digest.hexdigest() != expected_sha256:
+            raise SystemSecurityError("Parquet source descriptor hash differs")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        duplicate = os.dup(descriptor)
+        os.set_inheritable(duplicate, False)
+        stream = FileIO(duplicate, mode="rb", closefd=True)
+        yield stream
+        after = os.fstat(descriptor)
+        path_after = os.stat(path, follow_symlinks=False)
+        if _file_identity(before) != _file_identity(after) or _file_identity(
+            after
+        ) != _file_identity(path_after):
+            raise SystemSecurityError("Parquet source changed during descriptor replay")
+    except (SystemContractError, SystemSecurityError, SystemStorageError):
+        raise
+    except OSError as exc:
+        raise SystemStorageError("Parquet source descriptor cannot be opened") from exc
+    finally:
+        if stream is not None:
+            stream.close()
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _iter_bounded_parquet_rows(
+    *,
+    columns: Sequence[str],
+    path: Path | None = None,
+    expected_sha256: str | None = None,
+    store: SystemStore | None = None,
+    source_ref: Mapping[str, Any] | None = None,
+) -> Iterator[dict[str, Any]]:
+    """Yield bounded rows from either a copied input or governed source object."""
+
+    if (path is None) == (source_ref is None) or (store is None) != (source_ref is None):
+        raise SystemContractError("Parquet replay source selection is invalid")
+
+    def decoded_rows(stream: FileIO) -> Iterator[dict[str, Any]]:
+        total_rows = 0
+        try:
+            parquet = pq.ParquetFile(stream)
+            if not set(columns) <= set(parquet.schema_arrow.names):
+                raise SystemContractError("Parquet replay columns are incomplete")
+            for batch in parquet.iter_batches(
+                columns=list(columns),
+                batch_size=_PARQUET_BATCH_ROWS,
+                use_threads=False,
+            ):
+                total_rows += batch.num_rows
+                if (
+                    total_rows > MAXIMUM_DECODED_SOURCE_ROWS
+                    or total_rows * len(columns) > MAXIMUM_DECODED_SOURCE_CELLS
+                ):
+                    raise SystemSecurityError("Parquet replay exceeds decoded row/cell bounds")
+                yield from batch.to_pylist()
+        except (SystemContractError, SystemSecurityError, SystemStorageError):
+            raise
+        except Exception as exc:
+            raise SystemContractError("Parquet source decode failed") from exc
+
+    if path is not None:
+        if type(expected_sha256) is not str:
+            raise SystemContractError("Parquet copied input SHA is absent")
+        with _open_stable_parquet_path(path, expected_sha256=expected_sha256) as stream:
+            yield from decoded_rows(stream)
+        return
+    if store is None or source_ref is None:  # pragma: no cover - guarded above
+        raise SystemContractError("governed Parquet source is absent")
+    with store.open_source_object(
+        source_ref,
+        maximum_bytes=MAXIMUM_FACTOR_SOURCE_OBJECT_BYTES,
+        decoded_reservation_bytes=MAXIMUM_DECODE_RESERVATION_BYTES,
+    ) as (_payload, stream):
+        yield from decoded_rows(stream)
+
+
 def _verify_input(
     input_root: Path,
     reference: Mapping[str, str],
@@ -471,6 +595,31 @@ def _ensure_staging_root(workspace_root: Path, operation_id: str) -> Path:
         else:
             current.mkdir(mode=0o700)
     return root
+
+
+def _staging_relative_root(operation_id: str) -> PurePosixPath:
+    return PurePosixPath("data/private/system_source_staging") / operation_id
+
+
+def _workspace_source_relative(operation_id: str, relative: str) -> str:
+    path = PurePosixPath(relative)
+    if path.is_absolute() or not path.parts or any(part in {"", ".", ".."} for part in path.parts):
+        raise SystemSecurityError("source staging relative path is invalid")
+    return str(_staging_relative_root(operation_id) / path)
+
+
+def _prefix_copied_paths(
+    copied: Mapping[str, list[str] | str], operation_id: str
+) -> dict[str, list[str] | str]:
+    prefixed: dict[str, list[str] | str] = {}
+    for field, value in copied.items():
+        if type(value) is str:
+            prefixed[field] = _workspace_source_relative(operation_id, value)
+        elif type(value) is list and all(type(row) is str for row in value):
+            prefixed[field] = [_workspace_source_relative(operation_id, row) for row in value]
+        else:
+            raise SystemContractError(f"copied {field} path projection is invalid")
+    return prefixed
 
 
 def _destination(staging_root: Path, relative: str) -> Path:
@@ -1032,6 +1181,9 @@ def _read_raw_market_rows(  # noqa: C901
     staging_root: Path,
     copied: Mapping[str, list[str] | str],
     closure: Mapping[str, Any],
+    normalized: Mapping[str, Any],
+    store: SystemStore | None = None,
+    observed_inputs: Mapping[tuple[str, int], Mapping[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, float], list[str]]:
     required = {"ts_code", "trade_date", "adj_close", "amount", "vol", "total_mv"}
     scope = set(closure["scope_symbols"])
@@ -1041,18 +1193,30 @@ def _read_raw_market_rows(  # noqa: C901
     observed_keys: set[tuple[str, str]] = set()
     cutoff_market_caps: dict[str, float] = {}
     sessions: set[str] = set()
-    for relative in _copied_paths(copied, "market_table_file_refs"):
-        path = staging_root / relative
-        try:
-            parquet = pq.ParquetFile(path)
-            if not required <= set(parquet.schema_arrow.names):
-                raise SystemContractError("raw market table columns are incomplete")
-            table = parquet.read(columns=sorted(required), use_threads=False)
-        except SystemContractError:
-            raise
-        except Exception as exc:
-            raise SystemContractError("raw market table decode failed") from exc
-        for index, row in enumerate(table.to_pylist()):
+    paths = _copied_paths(copied, "market_table_file_refs")
+    refs = normalized["market_table_file_refs"]
+    if len(paths) != len(refs):
+        raise SystemContractError("raw market table input cardinality differs")
+    total_input_rows = 0
+    for ordinal, (relative, input_ref) in enumerate(zip(paths, refs, strict=True)):
+        if observed_inputs is None:
+            iterator = _iter_bounded_parquet_rows(
+                path=staging_root / relative,
+                expected_sha256=input_ref["byte_sha256"],
+                columns=sorted(required),
+            )
+        else:
+            if store is None:
+                raise SystemContractError("raw market governed store is absent")
+            iterator = _iter_bounded_parquet_rows(
+                store=store,
+                source_ref=observed_inputs[("market_table_file_refs", ordinal)],
+                columns=sorted(required),
+            )
+        for index, row in enumerate(iterator):
+            total_input_rows += 1
+            if total_input_rows > MAXIMUM_DECODED_SOURCE_ROWS:
+                raise SystemSecurityError("raw market replay exceeds row bound")
             symbol = row["ts_code"]
             trade_date = row["trade_date"]
             if (
@@ -1125,6 +1289,9 @@ def _read_raw_pit_rows(  # noqa: C901
     copied: Mapping[str, list[str] | str],
     closure: Mapping[str, Any],
     cutoff_market_caps: Mapping[str, float],
+    normalized: Mapping[str, Any],
+    store: SystemStore | None = None,
+    observed_inputs: Mapping[tuple[str, int], Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     manifest = _read_copied_json(staging_root, copied, "pit_generation_manifest_file_ref")
     membership_path = staging_root / _copied_path(copied, "pit_membership_file_ref")
@@ -1145,18 +1312,24 @@ def _read_raw_pit_rows(  # noqa: C901
         "delist_date",
         "membership_quality",
     }
-    try:
-        parquet = pq.ParquetFile(membership_path)
-        if not required <= set(parquet.schema_arrow.names):
-            raise SystemContractError("PIT membership columns are incomplete")
-        table = parquet.read(columns=sorted(required), use_threads=False)
-    except SystemContractError:
-        raise
-    except Exception as exc:
-        raise SystemContractError("PIT membership decode failed") from exc
+    membership_input = normalized["files"]["pit_membership_file_ref"]
+    if observed_inputs is None:
+        iterator = _iter_bounded_parquet_rows(
+            path=membership_path,
+            expected_sha256=membership_input["byte_sha256"],
+            columns=sorted(required),
+        )
+    else:
+        if store is None:
+            raise SystemContractError("PIT governed store is absent")
+        iterator = _iter_bounded_parquet_rows(
+            store=store,
+            source_ref=observed_inputs[("pit_membership_file_ref", 0)],
+            columns=sorted(required),
+        )
     records: dict[str, dict[str, Any]] = {}
     scope = set(closure["scope_symbols"])
-    for row in table.to_pylist():
+    for row in iterator:
         symbol = row["symbol"]
         if symbol not in scope:
             continue
@@ -1218,12 +1391,14 @@ def _materialize_market_and_pit(
         staging_root=staging_root,
         copied=copied,
         closure=closure,
+        normalized=normalized,
     )
     pit_rows = _read_raw_pit_rows(
         staging_root=staging_root,
         copied=copied,
         closure=closure,
         cutoff_market_caps=market_caps,
+        normalized=normalized,
     )
     market_path = _destination(staging_root, "bootstrap/market_history.parquet")
     pit_path = _destination(staging_root, "bootstrap/pit_universe.parquet")
@@ -1248,6 +1423,38 @@ def _validate_fundamental_closure(  # noqa: C901
     copied: Mapping[str, list[str] | str],
     expected_cutoff: str,
 ) -> dict[str, Any]:
+    bound_files: list[tuple[Path, str]] = []
+    for field in (
+        "fundamental_pointer_file_ref",
+        "fundamental_generation_manifest_file_ref",
+    ):
+        bound_files.append(
+            (
+                staging_root / _copied_path(copied, field),
+                normalized["files"][field]["byte_sha256"],
+            )
+        )
+    for field in ("fundamental_table_file_refs", "fundamental_evidence_file_refs"):
+        paths = _copied_paths(copied, field)
+        references = normalized[field]
+        if len(paths) != len(references):
+            raise SystemContractError("Fundamental source input cardinality differs")
+        bound_files.extend(
+            (staging_root / path, reference["byte_sha256"])
+            for path, reference in zip(paths, references, strict=True)
+        )
+
+    def snapshots() -> list[tuple[str, tuple[int, int, int, int, int, int, int]]]:
+        observed: list[tuple[str, tuple[int, int, int, int, int, int, int]]] = []
+        for path, expected_sha in bound_files:
+            metadata = os.lstat(path)
+            digest, _size = _file_digest(path)
+            if digest != expected_sha:
+                raise SystemSecurityError("Fundamental source exact SHA differs")
+            observed.append((str(path), _file_identity(metadata)))
+        return observed
+
+    before_snapshots = snapshots()
     pointer = _read_copied_json(staging_root, copied, "fundamental_pointer_file_ref")
     manifest = _read_copied_json(staging_root, copied, "fundamental_generation_manifest_file_ref")
     generation_id = pointer.get("generation_id")
@@ -1304,7 +1511,9 @@ def _validate_fundamental_closure(  # noqa: C901
         ):
             raise SystemContractError("Fundamental table byte binding differs")
 
-    replay_root = staging_root / "fundamental_replay"
+    replay_root = (
+        staging_root / PurePosixPath(_copied_path(copied, "fundamental_pointer_file_ref")).parent
+    )
     try:
         validated = validate_successor_provenance(
             pointer,
@@ -1347,12 +1556,28 @@ def _validate_fundamental_closure(  # noqa: C901
         manifest_tables["fundamental_period"]["rows"] <= 0
     ):
         raise SystemContractError("Fundamental production tables are empty")
+    after_snapshots = snapshots()
+    if before_snapshots != after_snapshots:
+        raise SystemSecurityError("Fundamental source identity changed during replay")
     return {
         "generation_id": generation_id,
         "table_sha256s": validated["table_sha256"],
         "provenance_binding_sha256": validated["provenance_binding_sha256"],
         "machine_states": validated["machine_states"],
     }
+
+
+def _derive_source_blockers(fundamental_closure: Mapping[str, Any]) -> list[str]:
+    machine_states = fundamental_closure.get("machine_states")
+    expected = {
+        "mixed": True,
+        "legacy_direct_reader_provenance": "limited",
+        "binding_aware_research_ready": True,
+        "homogeneous_history_ready": False,
+    }
+    if type(machine_states) is not dict or machine_states != expected:
+        raise SystemContractError("Fundamental machine-state projection is unsupported")
+    return sorted(FUNDAMENTAL_SOURCE_BLOCKERS)
 
 
 def _calendar_date(value: Any, *, label: str) -> str:
@@ -1793,6 +2018,13 @@ def _receipt_copied_paths(
         payload = store._verify_source_object(source)
         if payload["byte_sha256"] != expected[key]["byte_sha256"]:
             raise SystemContractError("production receipt input source bytes differ")
+        source_path = PurePosixPath(payload["relative_path"])
+        try:
+            source_path.relative_to(_staging_relative_root(normalized["operation_id"]))
+        except ValueError as exc:
+            raise SystemContractError(
+                "production receipt source lies outside operation staging root"
+            ) from exc
         observed[key] = source_ref
         field, ordinal = key
         if field in normalized["files"]:
@@ -1807,17 +2039,49 @@ def _receipt_copied_paths(
     return copied, observed
 
 
-def _strict_table_rows(store: SystemStore, source_ref: Mapping[str, Any]) -> list[dict[str, Any]]:
-    source = store.get_object(source_ref)
-    payload = store._verify_source_object(source)
-    try:
-        return (
-            pq.ParquetFile(store.source_root / payload["relative_path"])
-            .read(use_threads=False)
-            .to_pylist()
-        )
-    except Exception as exc:
-        raise SystemContractError("strict production source table replay failed") from exc
+def _canonical_table_scalar(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise SystemContractError("strict source contains a non-finite float")
+        return value.hex()
+    if value is None or type(value) in {str, bool, int}:
+        return value
+    raise SystemContractError("strict source contains an unsupported scalar")
+
+
+def _canonical_table_projection(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    digest = hashlib.sha256()
+    count = 0
+    for row in rows:
+        normalized = {key: _canonical_table_scalar(value) for key, value in sorted(row.items())}
+        digest.update(canonical_json_bytes(normalized))
+        digest.update(b"\n")
+        count += 1
+    return {"row_count": count, "canonical_rows_sha256": digest.hexdigest()}
+
+
+def _strict_table_projection(
+    store: SystemStore,
+    source_ref: Mapping[str, Any],
+    *,
+    columns: Sequence[str],
+) -> dict[str, Any]:
+    digest = hashlib.sha256()
+    count = 0
+    for row in _iter_bounded_parquet_rows(
+        store=store,
+        source_ref=source_ref,
+        columns=columns,
+    ):
+        normalized = {key: _canonical_table_scalar(value) for key, value in sorted(row.items())}
+        digest.update(canonical_json_bytes(normalized))
+        digest.update(b"\n")
+        count += 1
+    return {"row_count": count, "canonical_rows_sha256": digest.hexdigest()}
 
 
 def _exact_source_bundle(
@@ -1834,7 +2098,7 @@ def _exact_source_bundle(
             {"role": role, "source_ref": validate_object_ref(source_ref)}
             for role, source_ref in expected_sources
         ],
-        key=lambda row: row["role"].encode("utf-8"),
+        key=lambda row: cast(str, row["role"]).encode("utf-8"),
     )
     if (
         artifact["kind"] != "system.source_bundle"
@@ -1962,8 +2226,13 @@ def _validate_production_bootstrap_generation_closure(  # noqa: C901
     store: SystemStore,
     verified_generation: Mapping[str, Any],
     deployed_release_ref: Mapping[str, Any],
+    validation_mode: str,
+    historical_assembler_sha256: str | None,
 ) -> dict[str, Any]:
     """Deep-replay the sole production receipt required for first activation."""
+
+    if validation_mode not in {"PRE_CAS_CURRENT", "HISTORICAL"}:
+        raise SystemContractError("production bootstrap validation mode is invalid")
 
     if verified_generation.get("generation_state") != "OPERATIONAL":
         raise SystemContractError("production bootstrap receipt requires OPERATIONAL generation")
@@ -1996,10 +2265,53 @@ def _validate_production_bootstrap_generation_closure(  # noqa: C901
         raise SystemContractError("production receipt/generation binding differs")
     if payload["deployed_release_ref"] != release_ref:
         raise SystemContractError("production receipt/deployed release differs")
-    assembler_path = Path(__file__).resolve(strict=True)
+    release = store.get_object(release_ref)
     if (
-        payload["assembler_module_path"] != ASSEMBLER_MODULE_PATH
-        or _sha256(assembler_path.read_bytes()) != payload["assembler_code_sha256"]
+        payload["source_root_id"] != store.source_root_id
+        or payload["release_code_manifest_sha256"] != release["payload"]["code_manifest_sha256"]
+        or payload["generation_created_at"] != manifest["created_at"]
+        or receipt["created_at"] != manifest["created_at"]
+        or manifest_payload["assembly_id"] != payload["expected_assembly_id"]
+        or manifest_payload["mainline_ref"] is not None
+        or payload["mainline_ref"] is not None
+    ):
+        raise SystemContractError("production receipt generation envelope differs")
+    expected_assembly_id = generation_assembly_identity(
+        generation_state="OPERATIONAL",
+        release_id=release_ref["artifact_id"],
+        readiness_id=manifest_payload["readiness_matrix_ref"]["artifact_id"],
+        created_at=manifest["created_at"],
+    )
+    if payload["expected_assembly_id"] != expected_assembly_id:
+        raise SystemContractError("production generation assembly identity differs")
+    expected_intent_sha = production_generation_intent_sha256(
+        generation_state=manifest_payload["generation_state"],
+        contract_catalog_sha256=manifest_payload["contract_catalog_sha256"],
+        release_manifest_ref=manifest_payload["release_manifest_ref"],
+        source_refs=manifest_payload["source_refs"],
+        factor_source_object_refs=manifest_payload["factor_source_object_refs"],
+        factor_policy_ref=manifest_payload["factor_policy_ref"],
+        factor_evidence_refs=manifest_payload["factor_evidence_refs"],
+        factor_active_set_ref=manifest_payload["factor_active_set_ref"],
+        factor_validation_attestation_ref=manifest_payload["factor_validation_attestation_ref"],
+        skill_tree_sha256=manifest_payload["skill_tree_sha256"],
+        automation_semantic_sha256=manifest_payload["automation_semantic_sha256"],
+        readiness_matrix_ref=manifest_payload["readiness_matrix_ref"],
+        emergency_controller_sha256=manifest_payload["emergency_controller_sha256"],
+        generation_created_at=manifest["created_at"],
+        expected_assembly_id=manifest_payload["assembly_id"],
+    )
+    if payload["generation_intent_sha256"] != expected_intent_sha:
+        raise SystemContractError("production generation intent differs")
+    assembler_path = Path(__file__).resolve(strict=True)
+    expected_assembler_sha = (
+        _sha256(assembler_path.read_bytes())
+        if validation_mode == "PRE_CAS_CURRENT"
+        else historical_assembler_sha256
+    )
+    if payload["assembler_module_path"] != ASSEMBLER_MODULE_PATH or (
+        type(expected_assembler_sha) is not str
+        or payload["assembler_code_sha256"] != expected_assembler_sha
     ):
         raise SystemContractError("production receipt assembler code identity differs")
 
@@ -2014,6 +2326,9 @@ def _validate_production_bootstrap_generation_closure(  # noqa: C901
         normalized["skill_tree_sha256"] != payload["skill_tree_sha256"]
         or normalized["automation_semantic_sha256"] != payload["automation_semantic_sha256"]
         or normalized["source_blockers"] != payload["source_blockers"]
+        or normalized["source_root_id"] != payload["source_root_id"]
+        or normalized["trusted_at"] != receipt["created_at"]
+        or normalized["trusted_at"] != payload["generation_created_at"]
     ):
         raise SystemContractError("production request/receipt control binding differs")
     copied, observed_inputs = _receipt_copied_paths(
@@ -2054,6 +2369,34 @@ def _validate_production_bootstrap_generation_closure(  # noqa: C901
         market_ref=market_ref,
         pit_ref=pit_ref,
     )
+    active = verified_generation["factor_active_set"]["payload"]
+    expected_factor_rows, expected_control_rows = _set_rows(bootstrap_factor_definitions())
+    readiness = verified_generation["readiness"]["payload"]
+    if (
+        active.get("factor_rows") != expected_factor_rows
+        or active.get("control_rows") != expected_control_rows
+        or active.get("producer_identity") != "NOT_CLAIMED"
+        or active.get("admission_route") != "BOOTSTRAP_EXCEPTION"
+        or readiness.get("factor_state") != "READY"
+        or readiness.get("mainline_state") != "UNINITIALIZED"
+        or readiness.get("investment_state") != "BLOCKED"
+        or readiness.get("producer_identity") != "NOT_CLAIMED"
+        or readiness.get("admission_route") != "BOOTSTRAP_EXCEPTION"
+    ):
+        raise SystemContractError("production receipt authority/readiness target differs")
+    expected_readiness = assess_readiness(
+        producer_identity=active["producer_identity"],
+        assessed_at=manifest["created_at"],
+        factor_status=verified_generation["factor_status"],
+        source_blockers=payload["source_blockers"],
+        readiness_id=readiness["readiness_id"],
+    )
+    if expected_readiness["payload"] != readiness:
+        raise SystemContractError("production receipt readiness replay differs")
+    if validation_mode == "HISTORICAL":
+        if payload["source_blockers"] != sorted(FUNDAMENTAL_SOURCE_BLOCKERS):
+            raise SystemContractError("historical source blocker projection differs")
+        return receipt
     _normalized_shas, eligible, strict_signals, source_projection = _strict_projection(
         store,
         calendar_ref=calendar_ref,
@@ -2069,16 +2412,30 @@ def _validate_production_bootstrap_generation_closure(  # noqa: C901
         staging_root=store.source_root,
         copied=copied,
         closure=market_closure,
+        normalized=normalized,
+        store=store,
+        observed_inputs=observed_inputs,
     )
     raw_pit_rows = _read_raw_pit_rows(
         staging_root=store.source_root,
         copied=copied,
         closure=market_closure,
         cutoff_market_caps=market_caps,
+        normalized=normalized,
+        store=store,
+        observed_inputs=observed_inputs,
     )
-    if _strict_table_rows(store, market_ref) != raw_market_rows:
+    if _strict_table_projection(
+        store,
+        market_ref,
+        columns=("trade_date", "symbol", "adj_close", "amount", "vol"),
+    ) != _canonical_table_projection(raw_market_rows):
         raise SystemContractError("strict market materialization differs from canonical input")
-    if _strict_table_rows(store, pit_ref) != raw_pit_rows:
+    if _strict_table_projection(
+        store,
+        pit_ref,
+        columns=("signal_session", "symbol", "industry", "total_mv", "tradable"),
+    ) != _canonical_table_projection(raw_pit_rows):
         raise SystemContractError("strict PIT materialization differs from canonical input")
     frames = {
         symbol: group.drop(columns=["symbol"]).reset_index(drop=True)
@@ -2104,15 +2461,21 @@ def _validate_production_bootstrap_generation_closure(  # noqa: C901
         or source_projection["market_symbols"] != eligible
     ):
         raise SystemContractError("production market/PIT cohort replay differs")
-    calendar_root = store.source_root / "calendar_replay"
+    staging_prefix = _staging_relative_root(normalized["operation_id"])
+    calendar_root = store.source_root / staging_prefix / "calendar_replay"
     for field in (
         "exchange_calendar_file_ref",
         "calendar_manifest_file_ref",
     ):
-        if copied[field] != "calendar_replay/" + normalized["files"][field]["relative_path"]:
+        if copied[field] != str(
+            staging_prefix / "calendar_replay" / normalized["files"][field]["relative_path"]
+        ):
             raise SystemContractError("production calendar replay path differs")
     for field in ("calendar_raw_file_refs", "calendar_capture_file_refs"):
-        expected_paths = ["calendar_replay/" + row["relative_path"] for row in normalized[field]]
+        expected_paths = [
+            str(staging_prefix / "calendar_replay" / row["relative_path"])
+            for row in normalized[field]
+        ]
         if copied[field] != expected_paths:
             raise SystemContractError("production calendar evidence replay paths differ")
     _validate_calendar_manifest(
@@ -2121,12 +2484,19 @@ def _validate_production_bootstrap_generation_closure(  # noqa: C901
         cohort_symbols=source_projection["all_pit_symbols"],
         source_projection=source_projection,
     )
-    _validate_fundamental_closure(
+    fundamental_closure = _validate_fundamental_closure(
         normalized=normalized,
         staging_root=store.source_root,
         copied=copied,
         expected_cutoff=market_closure["cutoff"],
     )
+    derived_source_blockers = _derive_source_blockers(fundamental_closure)
+    if (
+        derived_source_blockers != normalized["source_blockers"]
+        or derived_source_blockers != payload["source_blockers"]
+        or fundamental_closure["machine_states"] != payload["fundamental_machine_states"]
+    ):
+        raise SystemContractError("production source blocker projection differs")
 
     recomputation = documents["recomputation"]["document"]
     if (
@@ -2135,25 +2505,6 @@ def _validate_production_bootstrap_generation_closure(  # noqa: C901
         != payload["signal_statistics_sha256"]
     ):
         raise SystemContractError("production receipt signal statistics replay differs")
-    active = verified_generation["factor_active_set"]["payload"]
-    expected_factor_rows, expected_control_rows = _set_rows(bootstrap_factor_definitions())
-    if (
-        active.get("factor_rows") != expected_factor_rows
-        or active.get("control_rows") != expected_control_rows
-        or active.get("producer_identity") != "NOT_CLAIMED"
-        or active.get("admission_route") != "BOOTSTRAP_EXCEPTION"
-    ):
-        raise SystemContractError("production receipt Factor authority target differs")
-    readiness = verified_generation["readiness"]["payload"]
-    if (
-        readiness.get("factor_state") != "READY"
-        or readiness.get("mainline_state") != "UNINITIALIZED"
-        or readiness.get("investment_state") != "BLOCKED"
-        or readiness.get("producer_identity") != "NOT_CLAIMED"
-        or readiness.get("admission_route") != "BOOTSTRAP_EXCEPTION"
-        or not set(payload["source_blockers"]) <= set(readiness.get("blockers", []))
-    ):
-        raise SystemContractError("production receipt readiness target differs")
     return receipt
 
 
@@ -2162,6 +2513,8 @@ def validate_production_bootstrap_generation_closure(
     store: SystemStore,
     verified_generation: Mapping[str, Any],
     deployed_release_ref: Mapping[str, Any],
+    validation_mode: str,
+    historical_assembler_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Translate only expected Factor replay failures into a System hard gate."""
 
@@ -2170,6 +2523,8 @@ def validate_production_bootstrap_generation_closure(
             store=store,
             verified_generation=verified_generation,
             deployed_release_ref=deployed_release_ref,
+            validation_mode=validation_mode,
+            historical_assembler_sha256=historical_assembler_sha256,
         )
     except FactorGovernanceError as exc:
         raise SystemContractError("production bootstrap Factor closure replay failed") from exc
@@ -2197,12 +2552,10 @@ def assemble_production_bootstrap(  # noqa: C901
         or stat.S_IMODE(inputs_stat.st_mode) != 0o700
     ):
         raise SystemSecurityError("bootstrap roots must be directories")
+    store = SystemStore(workspace)
+    if normalized["source_root_id"] != store.source_root_id:
+        raise SystemContractError("bootstrap request source root identity differs")
     staging = _ensure_staging_root(workspace, normalized["operation_id"])
-    store = SystemStore(
-        workspace,
-        source_root=staging,
-        source_root_id=normalized["source_root_id"],
-    )
     if store.read_active() is not None:
         raise SystemPreconditionError("bootstrap assembly requires EMPTY System pointer")
     if (workspace / str(MIGRATION_MARKER_PATH)).exists():
@@ -2213,7 +2566,7 @@ def assemble_production_bootstrap(  # noqa: C901
         raise SystemContractError("deployed release ref kind is invalid")
     bootstrap_operator_request_ref = store.put_object(normalized["document"])
 
-    copied = _copy_request_inputs(
+    copied_local = _copy_request_inputs(
         normalized=normalized,
         input_root=inputs,
         staging_root=staging,
@@ -2221,14 +2574,18 @@ def assemble_production_bootstrap(  # noqa: C901
     materialized = _materialize_market_and_pit(
         normalized=normalized,
         staging_root=staging,
-        copied=copied,
+        copied=copied_local,
     )
-    _validate_fundamental_closure(
+    fundamental_closure = _validate_fundamental_closure(
         normalized=normalized,
         staging_root=staging,
-        copied=copied,
+        copied=copied_local,
         expected_cutoff=materialized["cutoff"],
     )
+    derived_source_blockers = _derive_source_blockers(fundamental_closure)
+    if normalized["source_blockers"] != derived_source_blockers:
+        raise SystemContractError("declared source blockers differ from machine projection")
+    copied = _prefix_copied_paths(copied_local, normalized["operation_id"])
     created_at = normalized["trusted_at"]
     factor_store = FactorValidationStore.for_sealed_operation(
         system_store=store,
@@ -2272,14 +2629,18 @@ def assemble_production_bootstrap(  # noqa: C901
     )
     pit_ref = _source(
         store,
-        materialized["pit_universe_relative"],
+        _workspace_source_relative(
+            normalized["operation_id"], materialized["pit_universe_relative"]
+        ),
         source_format="PARQUET",
         media_type="application/vnd.apache.parquet",
         created_at=created_at,
     )
     market_ref = _source(
         store,
-        materialized["market_history_relative"],
+        _workspace_source_relative(
+            normalized["operation_id"], materialized["market_history_relative"]
+        ),
         source_format="PARQUET",
         media_type="application/vnd.apache.parquet",
         created_at=created_at,
@@ -2400,21 +2761,23 @@ def assemble_production_bootstrap(  # noqa: C901
     )
     implementation_ref = _source(
         store,
-        generated_rows["implementation"][0],
+        _workspace_source_relative(normalized["operation_id"], generated_rows["implementation"][0]),
         source_format="JSON",
         media_type="application/json",
         created_at=created_at,
     )
     recomputation_ref = _source(
         store,
-        generated_rows["recomputation"][0],
+        _workspace_source_relative(normalized["operation_id"], generated_rows["recomputation"][0]),
         source_format="JSON",
         media_type="application/json",
         created_at=created_at,
     )
     source_generation_ref = _source(
         store,
-        generated_rows["source_generation"][0],
+        _workspace_source_relative(
+            normalized["operation_id"], generated_rows["source_generation"][0]
+        ),
         source_format="JSON",
         media_type="application/json",
         created_at=created_at,
@@ -2482,7 +2845,7 @@ def assemble_production_bootstrap(  # noqa: C901
         producer_identity=status["payload"]["active"]["producer_identity"],
         assessed_at=created_at,
         factor_status=status,
-        source_blockers=normalized["source_blockers"],
+        source_blockers=derived_source_blockers,
         readiness_id="bootstrap-readiness-" + normalized["operation_id"],
     )
     readiness_ref = store.put_object(readiness)
@@ -2678,8 +3041,41 @@ def assemble_production_bootstrap(  # noqa: C901
     )
     production_receipt = build_production_bootstrap_receipt(
         bootstrap_operator_request_ref=bootstrap_operator_request_ref,
+        source_root_id=store.source_root_id,
         input_source_rows=input_source_rows,
         deployed_release_ref=release_ref,
+        release_code_manifest_sha256=release["payload"]["code_manifest_sha256"],
+        generation_created_at=created_at,
+        expected_assembly_id=generation_assembly_identity(
+            generation_state="OPERATIONAL",
+            release_id=release_ref["artifact_id"],
+            readiness_id=readiness_ref["artifact_id"],
+            created_at=created_at,
+        ),
+        generation_intent_sha256=production_generation_intent_sha256(
+            generation_state="OPERATIONAL",
+            contract_catalog_sha256=contract_catalog_sha256(),
+            release_manifest_ref=release_ref,
+            source_refs=[operational_sources],
+            factor_source_object_refs=validation["contextual_result"]["payload"][
+                "source_object_refs"
+            ],
+            factor_policy_ref=bootstrap.policy_ref,
+            factor_evidence_refs=receipt["payload"]["evidence_refs"],
+            factor_active_set_ref=bootstrap.active_set_ref,
+            factor_validation_attestation_ref=validation["validation_attestation_ref"],
+            skill_tree_sha256=normalized["skill_tree_sha256"],
+            automation_semantic_sha256=normalized["automation_semantic_sha256"],
+            readiness_matrix_ref=readiness_ref,
+            emergency_controller_sha256=controller["byte_sha256"],
+            generation_created_at=created_at,
+            expected_assembly_id=generation_assembly_identity(
+                generation_state="OPERATIONAL",
+                release_id=release_ref["artifact_id"],
+                readiness_id=readiness_ref["artifact_id"],
+                created_at=created_at,
+            ),
+        ),
         source_refs=[operational_sources],
         factor_source_object_refs=validation["contextual_result"]["payload"]["source_object_refs"],
         factor_policy_ref=bootstrap.policy_ref,
@@ -2690,7 +3086,8 @@ def assemble_production_bootstrap(  # noqa: C901
         emergency_controller_sha256=controller["byte_sha256"],
         skill_tree_sha256=normalized["skill_tree_sha256"],
         automation_semantic_sha256=normalized["automation_semantic_sha256"],
-        source_blockers=normalized["source_blockers"],
+        source_blockers=derived_source_blockers,
+        fundamental_machine_states=fundamental_closure["machine_states"],
         signal_statistics=statistics,
         assembler_code_sha256=_sha256(Path(__file__).resolve(strict=True).read_bytes()),
         created_at=created_at,
@@ -2737,6 +3134,7 @@ def assemble_production_bootstrap(  # noqa: C901
         store=store,
         verified_generation=verified,
         deployed_release_ref=release_ref,
+        validation_mode="PRE_CAS_CURRENT",
     )
     if (workspace / str(ACTIVE_POINTER_PATH)).exists() or (
         workspace / str(MIGRATION_MARKER_PATH)

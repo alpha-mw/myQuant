@@ -214,6 +214,24 @@ def _domain_identity(domain: str, **identity_inputs: Any) -> str:
     ).hexdigest()
 
 
+def generation_assembly_identity(
+    *,
+    generation_state: str,
+    release_id: str,
+    readiness_id: str,
+    created_at: str,
+) -> str:
+    """Return the public deterministic identity used by generation manifests."""
+
+    return _domain_identity(
+        "system.generation_assembly",
+        generation_state=_require_text(generation_state, label="generation_state"),
+        release_id=_require_text(release_id, label="release_id"),
+        readiness_id=_require_text(readiness_id, label="readiness_id"),
+        created_at=_require_timestamp(created_at, label="created_at"),
+    )
+
+
 def _object_path(kind: str, byte_sha256: str) -> Any:
     return OBJECTS_ROOT / kind / f"{byte_sha256}.json"
 
@@ -1676,8 +1694,7 @@ class SystemStore:
         del mainline_artifact
 
         catalog_sha = self.put_contract_catalog()
-        assembly_id = _domain_identity(
-            "system.generation_assembly",
+        assembly_id = generation_assembly_identity(
             generation_state=generation_state,
             release_id=release_ref["artifact_id"],
             readiness_id=readiness_ref["artifact_id"],
@@ -2190,6 +2207,7 @@ class SystemStore:
                 store=self,
                 verified_generation=verified,
                 deployed_release_ref=deployed_release_ref,
+                validation_mode="PRE_CAS_CURRENT",
             )
         except SystemError as exc:
             raise SystemActivationAuthorizationError(
@@ -2257,6 +2275,7 @@ class SystemStore:
                 store=self,
                 verified_generation=locked_generation,
                 deployed_release_ref=deployed_release_ref,
+                validation_mode="PRE_CAS_CURRENT",
             )
 
         result = self._storage._commit_initial_activation(
@@ -2327,6 +2346,7 @@ class SystemStore:
             from quant_investor.migration.errors import UnifiedCutoverError
             from quant_investor.migration.migration import validate_permanent_marker
             from quant_investor.migration.authority import (
+                _git_blob,
                 validate_final_cutover_authorization_closure,
             )
             from .activation import (
@@ -2349,9 +2369,25 @@ class SystemStore:
             )
             generation = self._verify_generation(
                 initial_pointer["generation_id"],
-                deployed_release_ref=deployed_ref,
                 validation_level="stat",
             )
+            if generation["manifest"]["payload"]["release_manifest_ref"] != deployed_ref:
+                raise SystemMigrationClosureError(
+                    "initial generation/deployed release binding is invalid"
+                )
+            final_authorization = validate_final_cutover_authorization_closure(
+                final_authorization_stored.data,
+                repository_root=self.workspace_root,
+                object_resolver=self.get_object,
+                deployed_release_ref=deployed_ref,
+                validation_mode="HISTORICAL",
+            )
+            _mode, _blob, assembler_raw = _git_blob(
+                self.workspace_root,
+                final_authorization["payload"]["final_integration_commit"],
+                "quant_investor/factors/governance/production.py",
+            )
+            historical_assembler_sha256 = hashlib.sha256(assembler_raw).hexdigest()
             from quant_investor.factors.governance.production import (
                 validate_production_bootstrap_generation_closure,
             )
@@ -2361,18 +2397,13 @@ class SystemStore:
                     store=self,
                     verified_generation=generation,
                     deployed_release_ref=deployed_ref,
+                    validation_mode="HISTORICAL",
+                    historical_assembler_sha256=historical_assembler_sha256,
                 )
             except SystemError as exc:
                 raise SystemMigrationClosureError(
                     "initial generation production bootstrap closure is invalid"
                 ) from exc
-            final_authorization = validate_final_cutover_authorization_closure(
-                final_authorization_stored.data,
-                repository_root=self.workspace_root,
-                object_resolver=self.get_object,
-                deployed_release_ref=deployed_ref,
-                validation_mode="HISTORICAL",
-            )
             validated_authorization, expected_marker = validate_activation_authorization(
                 authorization_stored.data,
                 final_cutover_authorization=final_authorization_stored.data,
@@ -2637,6 +2668,7 @@ __all__ = [
     "SOURCE_FORMAT_MEDIA_TYPES",
     "SUSPENDED_READINESS_KIND",
     "SystemStore",
+    "generation_assembly_identity",
     "object_ref_for_artifact",
     "validate_object_ref",
 ]

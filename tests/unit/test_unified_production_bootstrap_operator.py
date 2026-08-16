@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from datetime import date, datetime, timedelta, timezone
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,7 @@ import pyarrow as pa
 import pytest
 
 from quant_investor.contracts import canonical_json_bytes, seal_artifact
+from quant_investor.cli.unified import system_activate, system_status, system_verify
 from quant_investor.factors.governance import (
     BLEND_W75_CONTROL,
     BLEND_W80,
@@ -29,7 +31,9 @@ from quant_investor.market.exchange_calendar_official import (
 from quant_investor.system import (
     SystemActivationAuthorizationError,
     SystemContractError,
+    SystemError,
     SystemPreconditionError,
+    SystemSecurityError,
     SystemStore,
     decode_assembly_request,
     installed_code_manifest_sha256,
@@ -44,7 +48,9 @@ from tests.unit.test_unified_system_bootstrap import (
 )
 from quant_investor.factors.governance.source import role_schema
 from quant_investor.market.fundamental_incremental import stage_successor_generation
+from quant_investor.mainline import build_mainline_candidate
 from tests.unit.test_fundamental_incremental_successor import _path_backed_case
+from tests.unit.test_unified_mainline import _candidate_dependencies
 
 SYMBOLS = ["000001.SZ", "000002.SZ", "600000.SH", "600001.SH"]
 
@@ -696,6 +702,7 @@ def _replace_synthetic_calendar_capture(
 
 def _request(
     *,
+    workspace_root: Path,
     release_ref: dict[str, str],
     files: dict[str, dict[str, str] | list[dict[str, str]]],
     operation_id: str = "production-bootstrap-test",
@@ -703,11 +710,15 @@ def _request(
     payload: dict[str, Any] = {
         "bootstrap_operation_id": operation_id,
         "state": "SEALED",
-        "source_root_id": "production-bootstrap-source-test",
+        "source_root_id": SystemStore(workspace_root).source_root_id,
         "release_manifest_ref": release_ref,
         "skill_tree_sha256": "1" * 64,
         "automation_semantic_sha256": "2" * 64,
-        "source_blockers": ["FUNDAMENTAL_SOURCE_STALE"],
+        "source_blockers": [
+            "FUNDAMENTAL_HISTORY_MIXED",
+            "FUNDAMENTAL_HISTORY_NOT_HOMOGENEOUS",
+            "FUNDAMENTAL_LEGACY_DIRECT_READER_PROVENANCE_LIMITED",
+        ],
         "trusted_at": BASE,
         **files,
     }
@@ -719,7 +730,7 @@ def _request(
 def test_production_bootstrap_materializes_and_offline_verifies(tmp_path: Path) -> None:
     workspace, release_ref = _seed_workspace(tmp_path)
     input_root = tmp_path / "sealed-inputs"
-    raw = _request(release_ref=release_ref, files=_inputs(input_root))
+    raw = _request(workspace_root=workspace, release_ref=release_ref, files=_inputs(input_root))
 
     result = assemble_production_bootstrap(
         workspace_root=workspace,
@@ -763,31 +774,92 @@ def test_production_bootstrap_materializes_and_offline_verifies(tmp_path: Path) 
 
 def test_production_bootstrap_receipt_allows_exact_isolated_initial_activation(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     workspace, release_ref = _seed_workspace(tmp_path)
     input_root = tmp_path / "sealed-inputs"
     result = assemble_production_bootstrap(
         workspace_root=workspace,
         input_root=input_root,
-        request_raw=_request(release_ref=release_ref, files=_inputs(input_root)),
+        request_raw=_request(
+            workspace_root=workspace, release_ref=release_ref, files=_inputs(input_root)
+        ),
     )
-    store = SystemStore(
-        workspace,
-        source_root=result["source_root"],
-        source_root_id="production-bootstrap-source-test",
-    )
+    store = SystemStore(workspace)
     prepared = prepare_initial_activation(
         store,
         result["generation"],
         release_ref,
     )
+    command_root = workspace / "activation-inputs"
+    command_root.mkdir(mode=0o700)
 
-    activated = store.activate_initial_generation(**prepared)
+    def command_input(name: str, raw: bytes) -> tuple[str, str]:
+        path = command_root / name
+        path.write_bytes(raw)
+        path.chmod(0o600)
+        return str(path.relative_to(workspace)), hashlib.sha256(raw).hexdigest()
 
-    assert activated["activation"]["cas_performed"] is True
+    receipt_path, receipt_sha = command_input(
+        "migration-receipt.json", prepared["migration_receipt_raw"]
+    )
+    final_path, final_sha = command_input(
+        "final-authorization.json", prepared["final_cutover_authorization_raw"]
+    )
+    authorization_path, authorization_sha = command_input(
+        "activation-authorization.json", prepared["activation_authorization_raw"]
+    )
+    pointer_path, pointer_sha = command_input(
+        "target-pointer.json", prepared["target_active_pointer_raw"]
+    )
+    release_raw = canonical_json_bytes(release_ref)
+    release_path, release_sha = command_input("deployed-release-ref.json", release_raw)
+    activated = system_activate(
+        workspace_root=str(workspace),
+        generation_id=result["generation_id"],
+        expected_pointer_sha256="EMPTY",
+        migration_receipt_path=receipt_path,
+        expected_migration_receipt_sha256=receipt_sha,
+        final_cutover_authorization_path=final_path,
+        expected_final_cutover_authorization_sha256=final_sha,
+        activation_authorization_path=authorization_path,
+        expected_activation_authorization_sha256=authorization_sha,
+        target_active_pointer_path=pointer_path,
+        expected_target_active_pointer_sha256=pointer_sha,
+        deployed_release_ref_path=release_path,
+        expected_deployed_release_ref_sha256=release_sha,
+    )
+
+    assert activated["cas_performed"] is True
     assert activated["generation_state"] == "OPERATIONAL"
-    assert activated["factor_status"]["payload"]["readiness"] == "READY"
-    assert activated["migration_completion"]["marker"]["payload"]["status"] == "COMPLETE"
+    status = system_status(
+        workspace_root=str(workspace),
+        deployed_release_ref_path=release_path,
+        expected_deployed_release_ref_sha256=release_sha,
+    )
+    verified = system_verify(
+        workspace_root=str(workspace),
+        generation_id=None,
+        deployed_release_ref_path=release_path,
+        expected_deployed_release_ref_sha256=release_sha,
+    )
+    active = SystemStore(workspace).read_active(deployed_release_ref=release_ref)
+    assert status["capabilities"] == {
+        "factor": "READY",
+        "investment": "BLOCKED",
+        "mainline": "UNINITIALIZED",
+        "system": "PARTIAL",
+    }
+    assert verified["status"] == "VERIFIED"
+    assert active is not None
+    assert active["factor_status"]["payload"]["readiness"] == "READY"
+    assert active["migration_completion"]["marker"]["payload"]["status"] == "COMPLETE"
+
+    import quant_investor.system.store as store_module
+
+    monkeypatch.setattr(store_module, "installed_code_manifest_sha256", lambda: "f" * 64)
+    historical = SystemStore(workspace).verify_migration_completion()
+    assert historical["marker"]["payload"]["status"] == "COMPLETE"
 
 
 def test_production_bootstrap_receipt_binding_mutations_block_initial_activation(
@@ -798,13 +870,11 @@ def test_production_bootstrap_receipt_binding_mutations_block_initial_activation
     result = assemble_production_bootstrap(
         workspace_root=workspace,
         input_root=input_root,
-        request_raw=_request(release_ref=release_ref, files=_inputs(input_root)),
+        request_raw=_request(
+            workspace_root=workspace, release_ref=release_ref, files=_inputs(input_root)
+        ),
     )
-    store = SystemStore(
-        workspace,
-        source_root=result["source_root"],
-        source_root_id="production-bootstrap-source-test",
-    )
+    store = SystemStore(workspace)
     receipt = store.get_object(result["production_bootstrap_receipt_ref"])
     assembly_request = store.get_object(result["assembly_request_ref"])
     base_kwargs = decode_assembly_request(assembly_request)
@@ -847,6 +917,21 @@ def test_production_bootstrap_receipt_binding_mutations_block_initial_activation
         ),
         lambda payload: payload.__setitem__("emergency_controller_sha256", "f" * 64),
         lambda payload: payload.__setitem__("assembler_code_sha256", "e" * 64),
+        lambda payload: payload.__setitem__("expected_assembly_id", "d" * 64),
+        lambda payload: payload.__setitem__(
+            "source_blockers",
+            [
+                "FUNDAMENTAL_HISTORY_MIXED",
+                "FUNDAMENTAL_LEGACY_DIRECT_READER_PROVENANCE_LIMITED",
+            ],
+        ),
+        lambda payload: payload.__setitem__(
+            "fundamental_machine_states",
+            {
+                **payload["fundamental_machine_states"],
+                "homogeneous_history_ready": True,
+            },
+        ),
         mutate_statistics,
     ]
     for mutate in mutations:
@@ -860,6 +945,40 @@ def test_production_bootstrap_receipt_binding_mutations_block_initial_activation
             store.activate_initial_generation(**prepared)
         assert not (workspace / "results/system/_active.json").exists()
         assert not (workspace / "results/system/_migration_complete.json").exists()
+
+    drifted_generation = store.assemble_generation(
+        **{**base_kwargs, "created_at": "2026-08-14T00:00:02Z"}
+    )
+    assert drifted_generation["generation_id"] != result["generation_id"]
+    drifted_prepared = prepare_initial_activation(store, drifted_generation, release_ref)
+    with pytest.raises(
+        SystemActivationAuthorizationError,
+        match="lacks valid production bootstrap closure",
+    ):
+        store.activate_initial_generation(**drifted_prepared)
+    replayed = store.assemble_generation(**base_kwargs)
+    assert replayed["generation_id"] == result["generation_id"]
+
+    evidence, decision, portfolio = _candidate_dependencies()
+    candidate_ref = store.put_object(
+        build_mainline_candidate(
+            strategy_id="research-strategy",
+            as_of=BASE,
+            evidence_bundle=evidence,
+            decision=decision,
+            portfolio=portfolio,
+            result={"summary": "must remain outside initial Factor authority"},
+        )
+    )
+    mainline_generation = store.assemble_generation(
+        **{**base_kwargs, "mainline_ref": candidate_ref}
+    )
+    mainline_prepared = prepare_initial_activation(store, mainline_generation, release_ref)
+    with pytest.raises(
+        SystemActivationAuthorizationError,
+        match="lacks valid production bootstrap closure",
+    ):
+        store.activate_initial_generation(**mainline_prepared)
 
     wrong_kind_generation = store.assemble_generation(
         **{**base_kwargs, "research_refs": [release_ref]}
@@ -890,13 +1009,11 @@ def test_production_source_drift_after_receipt_blocks_before_initial_cas(
     result = assemble_production_bootstrap(
         workspace_root=workspace,
         input_root=input_root,
-        request_raw=_request(release_ref=release_ref, files=_inputs(input_root)),
+        request_raw=_request(
+            workspace_root=workspace, release_ref=release_ref, files=_inputs(input_root)
+        ),
     )
-    store = SystemStore(
-        workspace,
-        source_root=result["source_root"],
-        source_root_id="production-bootstrap-source-test",
-    )
+    store = SystemStore(workspace)
     receipt = store.get_object(result["production_bootstrap_receipt_ref"])
     raw_market_row = next(
         row
@@ -904,7 +1021,7 @@ def test_production_source_drift_after_receipt_blocks_before_initial_cas(
         if row["field"] == "market_table_file_refs"
     )
     source = store.get_object(raw_market_row["source_object_ref"])
-    source_path = Path(result["source_root"]) / source["payload"]["relative_path"]
+    source_path = workspace / source["payload"]["relative_path"]
     source_path.write_bytes(source_path.read_bytes() + b"tamper")
     source_path.chmod(0o600)
     prepared = prepare_initial_activation(
@@ -920,11 +1037,76 @@ def test_production_source_drift_after_receipt_blocks_before_initial_cas(
     assert not (workspace / "results/system/_migration_complete.json").exists()
 
 
+@pytest.mark.parametrize("mutation", ["mode", "hardlink", "symlink"])
+def test_production_source_descriptor_security_drift_blocks_before_initial_cas(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    workspace, release_ref = _seed_workspace(tmp_path)
+    input_root = tmp_path / "sealed-inputs"
+    result = assemble_production_bootstrap(
+        workspace_root=workspace,
+        input_root=input_root,
+        request_raw=_request(
+            workspace_root=workspace,
+            release_ref=release_ref,
+            files=_inputs(input_root),
+        ),
+    )
+    store = SystemStore(workspace)
+    prepared = prepare_initial_activation(store, result["generation"], release_ref)
+    receipt = store.get_object(result["production_bootstrap_receipt_ref"])
+    raw_market_row = next(
+        row
+        for row in receipt["payload"]["input_source_rows"]
+        if row["field"] == "market_table_file_refs"
+    )
+    source = store.get_object(raw_market_row["source_object_ref"])
+    source_path = workspace / source["payload"]["relative_path"]
+    if mutation == "mode":
+        source_path.chmod(0o640)
+    elif mutation == "hardlink":
+        os.link(source_path, source_path.parent / "unexpected-hardlink.parquet")
+    else:
+        replacement = source_path.parent / "replacement.parquet"
+        replacement.write_bytes(source_path.read_bytes())
+        replacement.chmod(0o600)
+        source_path.unlink()
+        source_path.symlink_to(replacement.name)
+
+    with pytest.raises(SystemError):
+        store.activate_initial_generation(**prepared)
+    assert not (workspace / "results/system/_active.json").exists()
+    assert not (workspace / "results/system/_migration_complete.json").exists()
+
+
+def test_production_bootstrap_rejects_parquet_replay_over_row_bound(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace, release_ref = _seed_workspace(tmp_path)
+    input_root = tmp_path / "sealed-inputs"
+    files = _inputs(input_root)
+    monkeypatch.setattr(production_module, "MAXIMUM_DECODED_SOURCE_ROWS", 1)
+
+    with pytest.raises(SystemSecurityError, match="row/cell bounds"):
+        assemble_production_bootstrap(
+            workspace_root=workspace,
+            input_root=input_root,
+            request_raw=_request(
+                workspace_root=workspace,
+                release_ref=release_ref,
+                files=files,
+            ),
+        )
+    assert not (workspace / "results/system/generations").exists()
+
+
 def test_production_bootstrap_rejects_input_drift(tmp_path: Path) -> None:
     workspace, release_ref = _seed_workspace(tmp_path)
     input_root = tmp_path / "sealed-inputs"
     files = _inputs(input_root)
-    raw = _request(release_ref=release_ref, files=files)
+    raw = _request(workspace_root=workspace, release_ref=release_ref, files=files)
     _write(root=input_root, relative="closure/market_pointer.json", raw=b'{"drift":true}')
 
     with pytest.raises(Exception, match="exact hash"):
@@ -933,6 +1115,82 @@ def test_production_bootstrap_rejects_input_drift(tmp_path: Path) -> None:
             input_root=input_root,
             request_raw=raw,
         )
+
+
+@pytest.mark.parametrize(
+    "declared",
+    [
+        [],
+        ["FUNDAMENTAL_HISTORY_MIXED"],
+        [
+            "FUNDAMENTAL_HISTORY_MIXED",
+            "FUNDAMENTAL_HISTORY_NOT_HOMOGENEOUS",
+            "FUNDAMENTAL_LEGACY_DIRECT_READER_PROVENANCE_LIMITED",
+            "FUNDAMENTAL_SOURCE_FAKE",
+        ],
+    ],
+)
+def test_production_bootstrap_requires_exact_machine_derived_source_blockers(
+    tmp_path: Path,
+    declared: list[str],
+) -> None:
+    workspace, release_ref = _seed_workspace(tmp_path)
+    input_root = tmp_path / "sealed-inputs"
+    request = json.loads(
+        _request(
+            workspace_root=workspace,
+            release_ref=release_ref,
+            files=_inputs(input_root),
+        )
+    )
+    request["payload"]["source_blockers"] = sorted(declared)
+    altered = canonical_json_bytes(
+        seal_artifact(
+            "system.bootstrap_operator_request",
+            request["payload"],
+            created_at=BASE,
+        )
+    )
+
+    with pytest.raises(SystemContractError, match="machine projection"):
+        assemble_production_bootstrap(
+            workspace_root=workspace,
+            input_root=input_root,
+            request_raw=altered,
+        )
+    assert not (workspace / "results/system/generations").exists()
+    assert not (workspace / "results/system/_active.json").exists()
+
+
+def test_production_bootstrap_rejects_operator_selected_source_root_identity(
+    tmp_path: Path,
+) -> None:
+    workspace, release_ref = _seed_workspace(tmp_path)
+    input_root = tmp_path / "sealed-inputs"
+    request = json.loads(
+        _request(
+            workspace_root=workspace,
+            release_ref=release_ref,
+            files=_inputs(input_root),
+        )
+    )
+    request["payload"]["source_root_id"] = "operator-selected-root"
+    altered = canonical_json_bytes(
+        seal_artifact(
+            "system.bootstrap_operator_request",
+            request["payload"],
+            created_at=BASE,
+        )
+    )
+
+    with pytest.raises(SystemContractError, match="source root identity"):
+        assemble_production_bootstrap(
+            workspace_root=workspace,
+            input_root=input_root,
+            request_raw=altered,
+        )
+    assert not (workspace / "data/private/system_source_staging").exists()
+    assert not (workspace / "results/system/generations").exists()
 
 
 def test_production_bootstrap_rejects_non_strict_market(tmp_path: Path) -> None:
@@ -944,7 +1202,7 @@ def test_production_bootstrap_rejects_non_strict_market(tmp_path: Path) -> None:
     pq.write_table(table, bad_path)
     bad_path.chmod(0o600)
     files["market_table_file_refs"] = [_byte_ref(input_root, "closure/market-2026.parquet")]
-    raw = _request(release_ref=release_ref, files=files)
+    raw = _request(workspace_root=workspace, release_ref=release_ref, files=files)
 
     with pytest.raises((SystemContractError, ValueError), match="schema|column"):
         assemble_production_bootstrap(
@@ -969,7 +1227,7 @@ def test_production_bootstrap_rejects_constant_active_signals(tmp_path: Path) ->
         RAW_MARKET_SCHEMA,
     )
     files["market_table_file_refs"] = [_byte_ref(input_root, "closure/market-2026.parquet")]
-    raw = _request(release_ref=release_ref, files=files)
+    raw = _request(workspace_root=workspace, release_ref=release_ref, files=files)
 
     with pytest.raises(FactorGovernanceError, match="constant"):
         assemble_production_bootstrap(
@@ -1000,7 +1258,7 @@ def test_production_bootstrap_rejects_unofficial_calendar_authority(
         canonical_json_bytes(tampered),
     )
     files["calendar_manifest_file_ref"] = _byte_ref(input_root, "closure/calendar_manifest.json")
-    raw = _request(release_ref=release_ref, files=files)
+    raw = _request(workspace_root=workspace, release_ref=release_ref, files=files)
 
     with pytest.raises(SystemContractError, match="source authority"):
         assemble_production_bootstrap(
@@ -1065,7 +1323,7 @@ def test_production_bootstrap_requires_explicit_daily_open_closed_evidence(
         assemble_production_bootstrap(
             workspace_root=workspace,
             input_root=input_root,
-            request_raw=_request(release_ref=release_ref, files=files),
+            request_raw=_request(workspace_root=workspace, release_ref=release_ref, files=files),
         )
     assert not (workspace / "results/system/objects/system.production_bootstrap_receipt").exists()
     assert not (workspace / "results/system/generations").exists()
@@ -1091,7 +1349,7 @@ def test_production_bootstrap_rejects_unadmitted_synthetic_calendar_body(
         assemble_production_bootstrap(
             workspace_root=workspace,
             input_root=input_root,
-            request_raw=_request(release_ref=release_ref, files=files),
+            request_raw=_request(workspace_root=workspace, release_ref=release_ref, files=files),
         )
     assert not (workspace / "results/system/objects/system.production_bootstrap_receipt").exists()
     assert not (workspace / "results/system/generations").exists()
@@ -1117,7 +1375,7 @@ def test_production_bootstrap_rejects_synthetic_daily_date_gap(tmp_path: Path) -
         assemble_production_bootstrap(
             workspace_root=workspace,
             input_root=input_root,
-            request_raw=_request(release_ref=release_ref, files=files),
+            request_raw=_request(workspace_root=workspace, release_ref=release_ref, files=files),
         )
 
 
@@ -1143,7 +1401,7 @@ def test_production_bootstrap_rejects_cross_exchange_calendar_disagreement(
         assemble_production_bootstrap(
             workspace_root=workspace,
             input_root=input_root,
-            request_raw=_request(release_ref=release_ref, files=files),
+            request_raw=_request(workspace_root=workspace, release_ref=release_ref, files=files),
         )
 
 
@@ -1168,7 +1426,7 @@ def test_production_bootstrap_rejects_unsupported_official_session_hours(
         assemble_production_bootstrap(
             workspace_root=workspace,
             input_root=input_root,
-            request_raw=_request(release_ref=release_ref, files=files),
+            request_raw=_request(workspace_root=workspace, release_ref=release_ref, files=files),
         )
 
 
@@ -1219,7 +1477,7 @@ def test_production_bootstrap_rejects_decoder_code_identity_drift(tmp_path: Path
         assemble_production_bootstrap(
             workspace_root=workspace,
             input_root=input_root,
-            request_raw=_request(release_ref=release_ref, files=files),
+            request_raw=_request(workspace_root=workspace, release_ref=release_ref, files=files),
         )
 
 
@@ -1240,7 +1498,7 @@ def test_production_bootstrap_rejects_fundamental_table_manifest_drift(
         assemble_production_bootstrap(
             workspace_root=workspace,
             input_root=input_root,
-            request_raw=_request(release_ref=release_ref, files=files),
+            request_raw=_request(workspace_root=workspace, release_ref=release_ref, files=files),
         )
 
 
@@ -1265,7 +1523,7 @@ def test_production_bootstrap_rejects_fundamental_wrong_parquet_schema(
         assemble_production_bootstrap(
             workspace_root=workspace,
             input_root=input_root,
-            request_raw=_request(release_ref=release_ref, files=files),
+            request_raw=_request(workspace_root=workspace, release_ref=release_ref, files=files),
         )
 
 
@@ -1299,7 +1557,7 @@ def test_production_bootstrap_rejects_homogeneous_v1_fundamental_claim(
         assemble_production_bootstrap(
             workspace_root=workspace,
             input_root=input_root,
-            request_raw=_request(release_ref=release_ref, files=files),
+            request_raw=_request(workspace_root=workspace, release_ref=release_ref, files=files),
         )
 
 
@@ -1318,7 +1576,7 @@ def test_production_bootstrap_requires_complete_fundamental_evidence_fileset(
         assemble_production_bootstrap(
             workspace_root=workspace,
             input_root=input_root,
-            request_raw=_request(release_ref=release_ref, files=files),
+            request_raw=_request(workspace_root=workspace, release_ref=release_ref, files=files),
         )
 
 
@@ -1337,14 +1595,14 @@ def test_production_bootstrap_rejects_fundamental_target_binding_drift(
         assemble_production_bootstrap(
             workspace_root=workspace,
             input_root=input_root,
-            request_raw=_request(release_ref=release_ref, files=files),
+            request_raw=_request(workspace_root=workspace, release_ref=release_ref, files=files),
         )
 
 
 def test_production_bootstrap_requires_empty_pointer(tmp_path: Path) -> None:
     workspace, release_ref = _seed_workspace(tmp_path)
     input_root = tmp_path / "sealed-inputs"
-    raw = _request(release_ref=release_ref, files=_inputs(input_root))
+    raw = _request(workspace_root=workspace, release_ref=release_ref, files=_inputs(input_root))
     active = workspace / "results/system/_active.json"
     active.write_bytes(b"{}")
     active.chmod(0o600)

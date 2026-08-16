@@ -52,6 +52,14 @@ assembler reconstructs the canonical layout under owner-only staging and
 replays predecessor, target-source, derivation, readiness, resource, provider,
 table and response-evidence bindings. A homogeneous v1 claim, partial fileset,
 or market/PIT/Fundamental cutoff drift fails before generation publication.
+The staging directory is always the workspace-relative
+`data/private/system_source_staging/<operation-id>` authority beneath the
+default `SystemStore`; the request's `source_root_id` is only an assertion of
+that System-derived identity and cannot select another root. The detached
+production receipt binds the complete acyclic generation intent, including
+timestamp, assembly identity, catalog, mandatory-null migration tombstones and
+`mainline_ref = null`. Source blockers are the exact repository-owned
+projection of replayed Fundamental machine states, never operator labels.
 
 ## Mapping template
 

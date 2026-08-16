@@ -193,6 +193,13 @@ requires current HEAD/tree and a clean checkout to equal the frozen release.
 activation but deliberately does not require future HEAD to remain pinned to
 the initial release. This preserves the permanent marker across legitimate
 descendant releases without weakening the first-CAS gate.
+The initial production-bootstrap receipt follows the same split:
+`PRE_CAS_CURRENT` replays the current installed release, assembler bytes and
+all strict source semantics, while `HISTORICAL` obtains the original assembler
+blob from the final authorization's frozen Git commit and verifies the anchored
+generation without comparing it to a later installed release. Historical
+source files remain exact-hash checked; historical code is read as bytes and is
+never executed.
 
 The production calendar decoder registry is intentionally empty in this
 release. No SSE, SZSE, or BSE response format has yet been admitted from a

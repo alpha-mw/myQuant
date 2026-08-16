@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 import hashlib
 import math
+import re
 from typing import Any, Final
 
 import pandas as pd
@@ -495,7 +496,15 @@ def _validate_bootstrap_json_documents(
     decoded: Mapping[str, Any],
     documents: Mapping[str, Any],
 ) -> None:
-    if documents["decision_source"]["payload"]["relative_path"] != _BOOTSTRAP_DECISION_PATH:
+    decision_path = documents["decision_source"]["payload"]["relative_path"]
+    production_staging_pattern = re.compile(
+        r"^data/private/system_source_staging/"
+        r"[A-Za-z0-9][A-Za-z0-9._:-]{0,199}/" + re.escape(_BOOTSTRAP_DECISION_PATH) + r"$"
+    )
+    if decision_path != _BOOTSTRAP_DECISION_PATH and (
+        type(decision_path) is not str
+        or production_staging_pattern.fullmatch(decision_path) is None
+    ):
         raise FactorGovernanceError("Bootstrap decision source path differs")
     implementation_rows = manifest["payload"]["implementation_rows"]
     expected_tree = {

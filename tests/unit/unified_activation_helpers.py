@@ -59,7 +59,21 @@ def _test_final_authorization(
                 __import__("quant_investor.migration.authority", fromlist=["x"]).__file__
             ).read_bytes()
         )
-        _git(root, "add", "-f", ".authority-anchor", runner.relative_to(root).as_posix())
+        assembler = root / "quant_investor/factors/governance/production.py"
+        assembler.parent.mkdir(parents=True, exist_ok=True)
+        assembler.write_bytes(
+            Path(
+                __import__("quant_investor.factors.governance.production", fromlist=["x"]).__file__
+            ).read_bytes()
+        )
+        _git(
+            root,
+            "add",
+            "-f",
+            ".authority-anchor",
+            runner.relative_to(root).as_posix(),
+            assembler.relative_to(root).as_posix(),
+        )
         _git(root, "commit", "-q", "-m", "authority test anchor")
     commit = _git(root, "rev-parse", "HEAD^{commit}").decode().strip()
     tree = _git(root, "rev-parse", "HEAD^{tree}").decode().strip()
@@ -137,6 +151,19 @@ def _test_final_authorization(
     )
     runner_mode, _runner_kind, runner_blob_and_path = runner_ls_tree.split(" ", 2)
     runner_blob, runner_path = runner_blob_and_path.split("\t", 1)
+    assembler_ls_tree = (
+        _git(
+            root,
+            "ls-tree",
+            "HEAD",
+            "--",
+            "quant_investor/factors/governance/production.py",
+        )
+        .decode()
+        .strip()
+    )
+    assembler_mode, _assembler_kind, assembler_blob_and_path = assembler_ls_tree.split(" ", 2)
+    assembler_blob, assembler_path = assembler_blob_and_path.split("\t", 1)
     inventory_rows = sorted(
         [
             {"path": path, "mode": mode, "git_blob_oid": blob},
@@ -144,6 +171,11 @@ def _test_final_authorization(
                 "path": runner_path,
                 "mode": runner_mode,
                 "git_blob_oid": runner_blob,
+            },
+            {
+                "path": assembler_path,
+                "mode": assembler_mode,
+                "git_blob_oid": assembler_blob,
             },
         ],
         key=lambda row: row["path"],
