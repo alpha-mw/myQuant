@@ -49,7 +49,8 @@ def _test_final_authorization(
     created_at: str,
 ) -> dict[str, Any]:
     root = store.workspace_root
-    if not (root / ".git").exists():
+    existing_checkout = (root / ".git").exists()
+    if not existing_checkout:
         _git(root, "init", "-q")
         _git(root, "config", "user.name", "Unified Test")
         _git(root, "config", "user.email", "unified-test@example.invalid")
@@ -87,16 +88,58 @@ def _test_final_authorization(
         _git(root, "commit", "-q", "-m", "prospective adoption fixture")
     commit = _git(root, "rev-parse", "HEAD^{commit}").decode().strip()
     tree = _git(root, "rev-parse", "HEAD^{tree}").decode().strip()
-    baseline_commit = _git(root, "rev-parse", "HEAD^").decode().strip()
+    if existing_checkout:
+        adoption_commit = ""
+        for candidate_raw in _git(root, "rev-list", "--first-parent", commit).splitlines():
+            candidate = candidate_raw.decode("ascii")
+            try:
+                delta = _git(
+                    root,
+                    "diff-tree",
+                    "--no-commit-id",
+                    "--name-status",
+                    "-r",
+                    "--no-renames",
+                    f"{candidate}^",
+                    candidate,
+                ).decode("utf-8")
+            except subprocess.CalledProcessError:
+                continue
+            rows = [line.split("\t", 1) for line in delta.splitlines() if line]
+            if len(rows) == 22 and all(status in {"A", "M"} for status, _path in rows):
+                adoption_commit = candidate
+                break
+        if not adoption_commit:
+            raise AssertionError("test checkout has no exact 22-path adoption commit")
+    else:
+        adoption_commit = commit
+    adoption_tree = _git(root, "rev-parse", f"{adoption_commit}^{{tree}}").decode().strip()
+    baseline_commit = _git(root, "rev-parse", f"{adoption_commit}^").decode().strip()
     baseline_tree = _git(root, "rev-parse", f"{baseline_commit}^{{tree}}").decode().strip()
-    ls_tree = _git(root, "ls-tree", "HEAD", "--", ".authority-anchor").decode().strip()
+    anchor_relative = "pyproject.toml" if existing_checkout else ".authority-anchor"
+    ls_tree = _git(root, "ls-tree", "HEAD", "--", anchor_relative).decode().strip()
     mode, _kind, blob_and_path = ls_tree.split(" ", 2)
     blob, path = blob_and_path.split("\t", 1)
     anchor_raw = _git(root, "cat-file", "blob", blob)
-    disposition = build_legacy_source_disposition(
-        disposition_id="test-legacy-custody",
-        source_commit=baseline_commit,
-        rows=[
+    if existing_checkout:
+        source_ls_tree = (
+            _git(root, "ls-tree", baseline_commit, "--", anchor_relative).decode().strip()
+        )
+        _source_mode, _source_kind, source_blob_and_path = source_ls_tree.split(" ", 2)
+        source_blob, source_path = source_blob_and_path.split("\t", 1)
+        disposition_rows = [
+            {
+                "source_path": source_path,
+                "source_blob_oid": source_blob,
+                "classification": "PORTED_TO_STABLE",
+                "stable_target_path": path,
+                "stable_target_blob_oid": blob,
+                "behavior_test_selector": "test_two_root_release_identity_closure",
+                "reason": "test release metadata remains bound to the stable final tree",
+            }
+        ]
+    else:
+        disposition_rows = [
             {
                 "source_path": path,
                 "source_blob_oid": blob,
@@ -106,7 +149,11 @@ def _test_final_authorization(
                 "behavior_test_selector": "test_active_v17_zero_reachability",
                 "reason": "test anchor is custody-only and unreachable",
             }
-        ],
+        ]
+    disposition = build_legacy_source_disposition(
+        disposition_id="test-legacy-custody",
+        source_commit=baseline_commit,
+        rows=disposition_rows,
         created_at=created_at,
     )
     disposition_ref = store.put_object(disposition)
@@ -130,22 +177,30 @@ def _test_final_authorization(
     )
     assembler_mode, _assembler_kind, assembler_blob_and_path = assembler_ls_tree.split(" ", 2)
     assembler_blob, assembler_path = assembler_blob_and_path.split("\t", 1)
-    inventory_rows: list[dict[str, str]] = []
-    for raw_entry in _git(root, "ls-tree", "-rz", "--full-tree", commit).split(b"\0"):
-        if not raw_entry:
-            continue
-        header, path_raw = raw_entry.split(b"\t", 1)
-        entry_mode, entry_kind, entry_oid = header.split(b" ", 2)
-        if entry_kind != b"blob":
-            continue
-        inventory_rows.append(
-            {
-                "path": path_raw.decode("utf-8"),
-                "mode": entry_mode.decode("ascii"),
-                "git_blob_oid": entry_oid.decode("ascii"),
-            }
-        )
+
+    def inventory_for(revision: str) -> list[dict[str, str]]:
+        result: list[dict[str, str]] = []
+        for raw_entry in _git(root, "ls-tree", "-rz", "--full-tree", revision).split(b"\0"):
+            if not raw_entry:
+                continue
+            header, path_raw = raw_entry.split(b"\t", 1)
+            entry_mode, entry_kind, entry_oid = header.split(b" ", 2)
+            if entry_kind != b"blob":
+                continue
+            result.append(
+                {
+                    "path": path_raw.decode("utf-8"),
+                    "mode": entry_mode.decode("ascii"),
+                    "git_blob_oid": entry_oid.decode("ascii"),
+                }
+            )
+        return result
+
+    inventory_rows = inventory_for(commit)
     inventory_sha = hashlib.sha256(canonical_json_bytes(inventory_rows)).hexdigest()
+    adoption_inventory_sha = hashlib.sha256(
+        canonical_json_bytes(inventory_for(adoption_commit))
+    ).hexdigest()
     gate_evidence: list[dict[str, Any]] = []
     runner_raw = _git(root, "show", f"{commit}:quant_investor/migration/authority.py")
     executable = Path(sys.executable).resolve()
@@ -264,33 +319,70 @@ def _test_final_authorization(
             "observed_at": "2026-08-14T00:00:01Z",
         },
     ]
+    adoption_readbacks = [
+        {
+            "commit": adoption_commit,
+            "tree": adoption_tree,
+            "status_porcelain_sha256": hashlib.sha256(b"").hexdigest(),
+            "path_inventory_sha256": adoption_inventory_sha,
+            "observed_at": created_at,
+        },
+        {
+            "commit": adoption_commit,
+            "tree": adoption_tree,
+            "status_porcelain_sha256": hashlib.sha256(b"").hexdigest(),
+            "path_inventory_sha256": adoption_inventory_sha,
+            "observed_at": "2026-08-14T00:00:01Z",
+        },
+    ]
+    delta = _git(
+        root,
+        "diff-tree",
+        "--no-commit-id",
+        "--name-status",
+        "-r",
+        "--no-renames",
+        baseline_commit,
+        adoption_commit,
+    ).decode("utf-8")
+    delta_rows = sorted(line.split("\t", 1) for line in delta.splitlines() if line)
+    assert len(delta_rows) == 22
     adopted_rows: list[dict[str, Any]] = []
-    disposition_rows: list[dict[str, Any]] = []
-    for index in range(22):
-        adopted_path = f"adopted/path-{index:02d}.txt"
-        adopted_ls_tree = _git(root, "ls-tree", "HEAD", "--", adopted_path).decode().strip()
+    adoption_disposition_rows: list[dict[str, Any]] = []
+    for index, (status_code, adopted_path) in enumerate(delta_rows):
+        adopted_ls_tree = (
+            _git(root, "ls-tree", adoption_commit, "--", adopted_path).decode().strip()
+        )
         adopted_mode, _adopted_kind, adopted_blob_and_path = adopted_ls_tree.split(" ", 2)
         adopted_blob, observed_path = adopted_blob_and_path.split("\t", 1)
         adopted_raw = _git(root, "cat-file", "blob", adopted_blob)
         adopted_rows.append(
             {
                 "path": observed_path,
-                "status": "ADDED",
+                "status": {"A": "ADDED", "M": "MODIFIED"}[status_code],
                 "mode": adopted_mode,
                 "size": len(adopted_raw),
                 "git_blob_oid": adopted_blob,
                 "byte_sha256": hashlib.sha256(adopted_raw).hexdigest(),
             }
         )
-        disposition_rows.append(
+        final_ls_tree = _git(root, "ls-tree", commit, "--", observed_path).decode().strip()
+        _final_mode, _final_kind, final_blob_and_path = final_ls_tree.split(" ", 2)
+        final_blob, final_path = final_blob_and_path.split("\t", 1)
+        exact = final_blob == adopted_blob and final_path == observed_path
+        adoption_disposition_rows.append(
             {
                 "path": observed_path,
                 "partition": "TASK_ORIGIN" if index < 17 else "ORPHAN",
-                "decision": "EXACT_PRESERVED",
-                "target_path": observed_path,
-                "target_blob_oid": adopted_blob,
+                "decision": "EXACT_PRESERVED" if exact else "REPAIRED_IN_FINAL_INTEGRATION",
+                "target_path": final_path,
+                "target_blob_oid": final_blob,
                 "behavior_test_selector": f"test_adopted_path_{index:02d}",
-                "reason": "test adoption path is exactly preserved in the frozen tree",
+                "reason": (
+                    "test adoption path is exactly preserved in the frozen tree"
+                    if exact
+                    else "test adoption path is explicitly repaired in the frozen tree"
+                ),
             }
         )
     gate_refs = sorted(
@@ -309,13 +401,13 @@ def _test_final_authorization(
         thread_id="01a00138-7152-7722-8dbd-8c9bd184273d",
         accepted_baseline_commit=baseline_commit,
         accepted_baseline_tree=baseline_tree,
-        adoption_commit=commit,
-        adoption_tree=tree,
+        adoption_commit=adoption_commit,
+        adoption_tree=adoption_tree,
         adoption_parent=baseline_commit,
         path_rows=adopted_rows,
         task_origin_paths=[row["path"] for row in adopted_rows[:17]],
         orphan_paths=[row["path"] for row in adopted_rows[17:]],
-        disposition_rows=disposition_rows,
+        disposition_rows=adoption_disposition_rows,
         focused_test_rows=[
             {
                 "command": "pytest test authority fixture",
@@ -331,7 +423,7 @@ def _test_final_authorization(
             "completed_at": created_at,
             "final_message_sha256": hashlib.sha256(b"test task final").hexdigest(),
         },
-        readback_rows=readbacks,
+        readback_rows=adoption_readbacks,
         user_authorization_basis="explicit test prospective-adoption authorization",
         writer_ended=True,
         main_clean=True,
@@ -353,8 +445,8 @@ def _test_final_authorization(
         "final_integration_tree": tree,
         "ancestry_rows": sorted(
             [
-                {"ancestor": baseline_commit, "descendant": commit, "proved": True},
-                {"ancestor": commit, "descendant": commit, "proved": True},
+                {"ancestor": ancestor, "descendant": commit, "proved": True}
+                for ancestor in sorted({baseline_commit, adoption_commit, commit})
             ],
             key=lambda row: (row["ancestor"], row["descendant"]),
         ),
