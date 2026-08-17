@@ -925,6 +925,7 @@ def _request(
     release_ref: dict[str, str],
     files: dict[str, dict[str, str] | list[dict[str, str]]],
     operation_id: str = "production-bootstrap-test",
+    trusted_at: str = BASE,
 ) -> bytes:
     payload: dict[str, Any] = {
         "bootstrap_operation_id": operation_id,
@@ -938,11 +939,11 @@ def _request(
             "FUNDAMENTAL_HISTORY_NOT_HOMOGENEOUS",
             "FUNDAMENTAL_LEGACY_DIRECT_READER_PROVENANCE_LIMITED",
         ],
-        "trusted_at": BASE,
+        "trusted_at": trusted_at,
         **files,
     }
     return canonical_json_bytes(
-        seal_artifact("system.bootstrap_operator_request", payload, created_at=BASE)
+        seal_artifact("system.bootstrap_operator_request", payload, created_at=trusted_at)
     )
 
 

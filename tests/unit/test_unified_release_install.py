@@ -363,6 +363,7 @@ def test_frozen_release_build_install_and_exact_origin_replay(
             release_ref=release_ref,
             files=files,
             operation_id="installed-two-root-provider-bootstrap",
+            trusted_at=capture_result["capture_execution"]["payload"]["observed_completed_at"],
         ),
     )
     assert assembled["status"] == "OFFLINE_VERIFIED"
