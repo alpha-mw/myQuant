@@ -30,10 +30,15 @@ from quant_investor.market.tushare_calendar_authority import (
     build_trusted_provider_calendar_compilation,
     capture_trusted_provider_calendar_evidence,
     decode_trade_cal_documentation,
+    validate_published_trusted_provider_calendar_capture_failure_root,
+    validate_trusted_provider_calendar_capture_failure,
     validate_trusted_provider_calendar_compilation,
     validate_trusted_provider_calendar_capture_transaction,
 )
-from quant_investor.market.tushare_transport import replay_tushare_response_bytes
+from quant_investor.market.tushare_transport import (
+    TushareHttpsError,
+    replay_tushare_response_bytes,
+)
 from quant_investor.system import (
     SystemContractError,
     SystemPreconditionError,
@@ -60,11 +65,15 @@ CUTOFF = date(2025, 7, 1)
 def test_execution_and_success_sealers_have_one_production_writer() -> None:
     assert "build_trusted_provider_calendar_capture_execution" not in calendar_authority.__all__
     assert "build_trusted_provider_calendar_capture_success" not in calendar_authority.__all__
+    assert "build_trusted_provider_calendar_capture_failure" not in calendar_authority.__all__
+    assert "publish_trusted_provider_calendar_capture_failure" not in calendar_authority.__all__
     source = inspect.getsource(calendar_authority)
     tree = ast.parse(source)
     targets = {
         "_build_trusted_provider_calendar_capture_execution",
+        "_build_trusted_provider_calendar_capture_failure",
         "_build_trusted_provider_calendar_capture_success",
+        "_publish_trusted_provider_calendar_capture_failure",
     }
     callers: dict[str, set[str]] = {target: set() for target in targets}
     for node in tree.body:
@@ -84,7 +93,14 @@ def test_execution_and_success_sealers_have_one_production_writer() -> None:
         "_build_trusted_provider_calendar_capture_success": {
             "capture_trusted_provider_calendar_evidence"
         },
+        "_build_trusted_provider_calendar_capture_failure": {"_publish_capture_failure_root"},
+        "_publish_trusted_provider_calendar_capture_failure": {"_raise_recorded_capture_failure"},
     }
+    assert {
+        "CAPTURE_FAILURE_KIND",
+        "validate_published_trusted_provider_calendar_capture_failure_root",
+        "validate_trusted_provider_calendar_capture_failure",
+    } <= set(calendar_authority.__all__)
 
 
 def _docs(*, output_exchange_text: str = "SSE上交所 SZSE深交所") -> bytes:
@@ -467,6 +483,75 @@ def test_capture_failure_never_calls_network_before_release_closure(
     assert network_called is False
 
 
+def test_calendar_capture_cli_reports_immutable_failure_reference(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from quant_investor.cli.main import main
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(mode=0o700)
+    request_raw = canonical_json_bytes({"release": "input"})
+    request_path = workspace / "release-install-input.json"
+    request_path.write_bytes(request_raw)
+    request_path.chmod(0o600)
+    failure_ref = {
+        "relative_path": "cli-capture.failure/capture-failure.json",
+        "byte_sha256": "1" * 64,
+    }
+
+    def fail_capture(**_: Any) -> dict[str, Any]:
+        error = SystemPreconditionError(
+            "recorded capture failure",
+            code="TRUSTED_PROVIDER_CALENDAR_DOCUMENTATION_FETCH_FAILED",
+        )
+        error.public_fields = {
+            "capture_failure_id": "tushare-calendar-failure-cli",
+            "capture_failure_root": str(tmp_path / "cli-capture.failure"),
+            "capture_failure_file_ref": failure_ref,
+            "success_root_published": False,
+        }
+        raise error
+
+    monkeypatch.setattr(
+        calendar_authority,
+        "capture_trusted_provider_calendar_evidence",
+        fail_capture,
+    )
+    with pytest.raises(SystemExit) as caught:
+        main(
+            [
+                "system",
+                "calendar-capture",
+                "--workspace-root",
+                str(workspace),
+                "--capture-parent",
+                str(tmp_path),
+                "--capture-root-name",
+                "cli-capture",
+                "--cutoff-date",
+                CUTOFF.isoformat(),
+                "--release-repository-root",
+                str(tmp_path),
+                "--release-install-input",
+                request_path.name,
+                "--expected-release-install-input-sha256",
+                hashlib.sha256(request_raw).hexdigest(),
+            ]
+        )
+    assert caught.value.code == 2
+    output = json.loads(capsys.readouterr().out)
+    assert output == {
+        "status": "BLOCKED",
+        "blocker_code": "TRUSTED_PROVIDER_CALENDAR_DOCUMENTATION_FETCH_FAILED",
+        "capture_failure_id": "tushare-calendar-failure-cli",
+        "capture_failure_root": str(tmp_path / "cli-capture.failure"),
+        "capture_failure_file_ref": failure_ref,
+        "success_root_published": False,
+    }
+
+
 def _fake_release_install_closure(
     tmp_path: Path,
     *,
@@ -522,6 +607,388 @@ def _fake_release_install_closure(
         "import_origin": evidence["payload"]["import_origin"],
     }
     return exact_input, release, {"evidence": evidence, "verification": verification}
+
+
+def _patch_capture_release_closure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> bytes:
+    exact_input, release, closure = _fake_release_install_closure(tmp_path)
+
+    def fake_release_components(raw: bytes, **_: Any):
+        assert raw == exact_input
+        return closure["evidence"], release, closure["verification"]
+
+    monkeypatch.setattr(
+        calendar_authority,
+        "_release_install_components",
+        fake_release_components,
+    )
+    return exact_input
+
+
+def _assert_recorded_capture_failure(
+    *,
+    parent: Path,
+    caught: pytest.ExceptionInfo[SystemPreconditionError],
+    capture_root_name: str,
+    expected_code: str,
+    success_root_published: bool,
+) -> dict[str, Any]:
+    assert caught.value.code == expected_code
+    public = caught.value.public_fields
+    assert public["success_root_published"] is success_root_published
+    assert public["capture_failure_root"] == str(parent / f"{capture_root_name}.failure")
+    reference = public["capture_failure_file_ref"]
+    failure_raw = (parent / reference["relative_path"]).read_bytes()
+    failure = validate_trusted_provider_calendar_capture_failure(failure_raw)
+    assert failure["payload"] == {
+        "capture_failure_id": public["capture_failure_id"],
+        "state": "FAILED",
+        "capture_root_name": capture_root_name,
+        "failed_at": failure["created_at"],
+        "error_code": expected_code,
+        "success_root_published": success_root_published,
+        "published_root_device": failure["payload"]["published_root_device"],
+        "published_root_inode": failure["payload"]["published_root_inode"],
+    }
+    assert (
+        validate_published_trusted_provider_calendar_capture_failure_root(
+            capture_parent=parent,
+            capture_failure=failure,
+            capture_failure_file_ref=reference,
+        )
+        == failure_raw
+    )
+    assert sorted(path.name for path in (parent / f"{capture_root_name}.failure").iterdir()) == [
+        "capture-failure.json"
+    ]
+    assert b"secret" not in failure_raw.lower()
+    assert b"authorization" not in failure_raw.lower()
+    return failure
+
+
+@pytest.mark.parametrize(
+    ("failure_stage", "expected_code", "expected_calls"),
+    [
+        (
+            "DOCS",
+            "TRUSTED_PROVIDER_CALENDAR_DOCUMENTATION_FETCH_FAILED",
+            [],
+        ),
+        (
+            "SSE",
+            "TRUSTED_PROVIDER_CALENDAR_SSE_TUSHARE_TRANSPORT_ERROR",
+            ["SSE"],
+        ),
+        (
+            "SZSE",
+            "TRUSTED_PROVIDER_CALENDAR_SZSE_TUSHARE_TRANSPORT_ERROR",
+            ["SSE", "SZSE"],
+        ),
+        (
+            "BSE",
+            "TRUSTED_PROVIDER_CALENDAR_BSE_TUSHARE_TRANSPORT_ERROR",
+            ["SSE", "SZSE", "BSE"],
+        ),
+    ],
+)
+def test_post_release_capture_failures_publish_sanitized_sibling_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_stage: str,
+    expected_code: str,
+    expected_calls: list[str],
+) -> None:
+    parent = tmp_path / "captures"
+    parent.mkdir(mode=0o700)
+    exact_input = _patch_capture_release_closure(tmp_path, monkeypatch)
+    calls: list[str] = []
+    secret = "do-not-retain-this-secret"
+
+    if failure_stage == "DOCS":
+
+        def docs_failure():
+            raise SystemPreconditionError(f"documentation failed {secret}")
+
+        monkeypatch.setattr(
+            calendar_authority,
+            "_official_documentation_fetch",
+            docs_failure,
+        )
+    else:
+        monkeypatch.setattr(
+            calendar_authority,
+            "_official_documentation_fetch",
+            lambda: (
+                _docs(),
+                200,
+                {"content-type": "text/html; charset=utf-8"},
+                True,
+                [],
+            ),
+        )
+
+    class FakeClient:
+        def __init__(self, **_: Any) -> None:
+            pass
+
+        def request(self, *, api_name: str, params: dict[str, str], **_: Any):
+            exchange = params["exchange"]
+            calls.append(exchange)
+            if exchange == failure_stage:
+                raise TushareHttpsError("TUSHARE_TRANSPORT_ERROR")
+            return replay_tushare_response_bytes(
+                _provider_raw(exchange),
+                api_name=api_name,
+                expected_fields=EXPECTED_FIELDS,
+                strict_decimal_decode=True,
+            )
+
+    monkeypatch.setattr(calendar_authority, "OfficialTushareHttpsClient", FakeClient)
+    with pytest.raises(SystemPreconditionError) as caught:
+        capture_trusted_provider_calendar_evidence(
+            capture_parent=parent,
+            capture_root_name=f"capture-{failure_stage.lower()}",
+            cutoff_date=CUTOFF.isoformat(),
+            release_install_input_raw=exact_input,
+            expected_release_install_input_sha256=hashlib.sha256(exact_input).hexdigest(),
+            release_repository_root=tmp_path,
+        )
+    _assert_recorded_capture_failure(
+        parent=parent,
+        caught=caught,
+        capture_root_name=f"capture-{failure_stage.lower()}",
+        expected_code=expected_code,
+        success_root_published=False,
+    )
+    assert calls == expected_calls
+    assert not (parent / f"capture-{failure_stage.lower()}").exists()
+
+
+@pytest.mark.parametrize(
+    "documentation_error",
+    [
+        SystemPreconditionError("TRUSTED_PROVIDER_DOCUMENTATION_HTTP_FAILED"),
+        SystemSecurityError("TRUSTED_PROVIDER_DOCUMENTATION_TLS_FAILED"),
+        SystemSecurityError("TRUSTED_PROVIDER_DOCUMENTATION_REDIRECT_BLOCKED"),
+    ],
+)
+def test_documentation_http_tls_and_redirect_failures_are_terminally_recorded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    documentation_error: Exception,
+) -> None:
+    parent = tmp_path / "captures"
+    parent.mkdir(mode=0o700)
+    exact_input = _patch_capture_release_closure(tmp_path, monkeypatch)
+
+    def fail_documentation():
+        raise documentation_error
+
+    monkeypatch.setattr(
+        calendar_authority,
+        "_official_documentation_fetch",
+        fail_documentation,
+    )
+    root_name = "capture-docs-" + documentation_error.args[0].lower().replace("_", "-")
+    with pytest.raises(SystemPreconditionError) as caught:
+        capture_trusted_provider_calendar_evidence(
+            capture_parent=parent,
+            capture_root_name=root_name,
+            cutoff_date=CUTOFF.isoformat(),
+            release_install_input_raw=exact_input,
+            expected_release_install_input_sha256=hashlib.sha256(exact_input).hexdigest(),
+            release_repository_root=tmp_path,
+        )
+    _assert_recorded_capture_failure(
+        parent=parent,
+        caught=caught,
+        capture_root_name=root_name,
+        expected_code="TRUSTED_PROVIDER_CALENDAR_DOCUMENTATION_FETCH_FAILED",
+        success_root_published=False,
+    )
+
+
+@pytest.mark.parametrize(
+    ("fault", "success_root_published", "success_marker_exists"),
+    [
+        ("PRE_RENAME", False, False),
+        ("POST_RENAME", True, False),
+        ("POST_SUCCESS_MARKER", True, True),
+    ],
+)
+def test_publication_failure_records_exact_publication_state_without_repair(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fault: str,
+    success_root_published: bool,
+    success_marker_exists: bool,
+) -> None:
+    parent = tmp_path / "captures"
+    parent.mkdir(mode=0o700)
+    exact_input = _patch_capture_release_closure(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        calendar_authority,
+        "_official_documentation_fetch",
+        lambda: (
+            _docs(),
+            200,
+            {"content-type": "text/html; charset=utf-8"},
+            True,
+            [],
+        ),
+    )
+
+    class FakeClient:
+        def __init__(self, **_: Any) -> None:
+            pass
+
+        def request(self, *, api_name: str, params: dict[str, str], **_: Any):
+            return replay_tushare_response_bytes(
+                _provider_raw(params["exchange"]),
+                api_name=api_name,
+                expected_fields=EXPECTED_FIELDS,
+                strict_decimal_decode=True,
+            )
+
+    monkeypatch.setattr(calendar_authority, "OfficialTushareHttpsClient", FakeClient)
+    original_rename = calendar_authority._rename_no_replace
+    original_read = calendar_authority._read_directory_files
+    rename_calls = 0
+    read_calls = 0
+
+    def fail_first_rename(parent_fd: int, source: str, target: str) -> None:
+        nonlocal rename_calls
+        rename_calls += 1
+        if fault == "PRE_RENAME" and rename_calls == 1:
+            raise SystemSecurityError("sensitive pre-rename failure")
+        original_rename(parent_fd, source, target)
+
+    def fail_selected_read(*args: Any, **kwargs: Any) -> None:
+        nonlocal read_calls
+        read_calls += 1
+        fail_at = 2 if fault == "POST_RENAME" else 3
+        if fault != "PRE_RENAME" and read_calls == fail_at:
+            raise SystemSecurityError("sensitive post-publication failure")
+        original_read(*args, **kwargs)
+
+    monkeypatch.setattr(calendar_authority, "_rename_no_replace", fail_first_rename)
+    monkeypatch.setattr(calendar_authority, "_read_directory_files", fail_selected_read)
+    root_name = f"capture-{fault.lower().replace('_', '-')}"
+    with pytest.raises(SystemPreconditionError) as caught:
+        capture_trusted_provider_calendar_evidence(
+            capture_parent=parent,
+            capture_root_name=root_name,
+            cutoff_date=CUTOFF.isoformat(),
+            release_install_input_raw=exact_input,
+            expected_release_install_input_sha256=hashlib.sha256(exact_input).hexdigest(),
+            release_repository_root=tmp_path,
+        )
+    _assert_recorded_capture_failure(
+        parent=parent,
+        caught=caught,
+        capture_root_name=root_name,
+        expected_code="TRUSTED_PROVIDER_CALENDAR_PUBLICATION_FAILED",
+        success_root_published=success_root_published,
+    )
+    success_root = parent / root_name
+    assert success_root.exists() is success_root_published
+    assert (success_root / "capture-success.json").exists() is success_marker_exists
+    before = (
+        {path.name: path.read_bytes() for path in success_root.iterdir()}
+        if success_root.exists()
+        else {}
+    )
+    validate_published_trusted_provider_calendar_capture_failure_root(
+        capture_parent=parent,
+        capture_failure=json.loads(
+            (parent / f"{root_name}.failure/{calendar_authority._FAILURE_LEAF}").read_bytes()
+        ),
+        capture_failure_file_ref=caught.value.public_fields["capture_failure_file_ref"],
+    )
+    after = (
+        {path.name: path.read_bytes() for path in success_root.iterdir()}
+        if success_root.exists()
+        else {}
+    )
+    assert after == before
+
+
+@pytest.mark.parametrize(
+    ("fault", "expected_code"),
+    [
+        ("DOCUMENTATION_DECODER", "TRUSTED_PROVIDER_CALENDAR_EVIDENCE_INVALID"),
+        (
+            "PROVIDER_REPLAY",
+            "TRUSTED_PROVIDER_CALENDAR_SSE_TUSHARE_RESPONSE_INVALID",
+        ),
+    ],
+)
+def test_decode_failures_publish_only_sanitized_failure_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fault: str,
+    expected_code: str,
+) -> None:
+    parent = tmp_path / "captures"
+    parent.mkdir(mode=0o700)
+    exact_input = _patch_capture_release_closure(tmp_path, monkeypatch)
+    docs = (
+        b"not a valid trade-cal documentation contract"
+        if fault == "DOCUMENTATION_DECODER"
+        else _docs()
+    )
+    monkeypatch.setattr(
+        calendar_authority,
+        "_official_documentation_fetch",
+        lambda: (
+            docs,
+            200,
+            {"content-type": "text/html; charset=utf-8"},
+            True,
+            [],
+        ),
+    )
+
+    class FakeClient:
+        def __init__(self, **_: Any) -> None:
+            pass
+
+        def request(self, *, api_name: str, params: dict[str, str], **_: Any):
+            raw = (
+                b'{"authorization":"sensitive","broken":true}'
+                if fault == "PROVIDER_REPLAY" and params["exchange"] == "SSE"
+                else _provider_raw(params["exchange"])
+            )
+            return replay_tushare_response_bytes(
+                raw,
+                api_name=api_name,
+                expected_fields=EXPECTED_FIELDS,
+                strict_decimal_decode=True,
+            )
+
+    monkeypatch.setattr(calendar_authority, "OfficialTushareHttpsClient", FakeClient)
+    root_name = f"capture-{fault.lower().replace('_', '-')}"
+    with pytest.raises(SystemPreconditionError) as caught:
+        capture_trusted_provider_calendar_evidence(
+            capture_parent=parent,
+            capture_root_name=root_name,
+            cutoff_date=CUTOFF.isoformat(),
+            release_install_input_raw=exact_input,
+            expected_release_install_input_sha256=hashlib.sha256(exact_input).hexdigest(),
+            release_repository_root=tmp_path,
+        )
+    failure = _assert_recorded_capture_failure(
+        parent=parent,
+        caught=caught,
+        capture_root_name=root_name,
+        expected_code=expected_code,
+        success_root_published=False,
+    )
+    encoded = canonical_json_bytes(failure).lower()
+    assert b"sensitive" not in encoded
+    assert b"broken" not in encoded
 
 
 def test_public_capture_publishes_success_last_with_exact_owner_only_tree(
@@ -815,6 +1282,57 @@ def test_rehomed_execution_and_success_artifacts_cannot_enter_production(
     assert not (workspace / "results/system/_active.json").exists()
 
 
+def test_failure_artifact_or_mixed_success_root_cannot_enter_production(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace, input_root, release_ref, files, capture = _captured_provider_production_case(
+        tmp_path,
+        monkeypatch,
+    )
+    failure = calendar_authority._publish_trusted_provider_calendar_capture_failure(
+        capture_parent=input_root,
+        capture_root_name=capture["capture_transaction"]["payload"]["capture_root_name"],
+        failed_at=CREATED_AT,
+        error_code="TRUSTED_PROVIDER_CALENDAR_SUCCESS_VALIDATION_FAILED",
+        success_root_published=True,
+    )
+    original_success_ref = files["trusted_provider_calendar_capture_success_file_ref"]
+    files["trusted_provider_calendar_capture_success_file_ref"] = failure[
+        "capture_failure_file_ref"
+    ]
+    with pytest.raises((SystemContractError, SystemPreconditionError, SystemSecurityError)):
+        assemble_production_bootstrap(
+            workspace_root=workspace,
+            input_root=input_root,
+            request_raw=_request(
+                workspace_root=workspace,
+                release_ref=release_ref,
+                files=files,
+                operation_id="provider-production-failure-substitution",
+            ),
+        )
+    files["trusted_provider_calendar_capture_success_file_ref"] = original_success_ref
+    shutil.rmtree(Path(failure["capture_failure_root"]))
+    success_root = input_root / capture["capture_transaction"]["payload"]["capture_root_name"]
+    mixed_leaf = success_root / "capture-failure.json"
+    mixed_leaf.write_bytes(canonical_json_bytes(failure["capture_failure"]))
+    mixed_leaf.chmod(0o600)
+    with pytest.raises(SystemSecurityError, match="topology differs"):
+        assemble_production_bootstrap(
+            workspace_root=workspace,
+            input_root=input_root,
+            request_raw=_request(
+                workspace_root=workspace,
+                release_ref=release_ref,
+                files=files,
+                operation_id="provider-production-mixed-root",
+            ),
+        )
+    assert not (workspace / "results/system/_active.json").exists()
+    assert not (workspace / "results/system/_migration_complete.json").exists()
+
+
 def test_capture_publication_is_no_replace_with_exactly_one_winner(tmp_path: Path) -> None:
     parent = tmp_path / "captures"
     parent.mkdir(mode=0o700)
@@ -878,6 +1396,216 @@ def test_capture_publication_rejects_unsafe_parent_mode(tmp_path: Path) -> None:
             success_builder=lambda _completed, _root_stat: b"success",
         )
     assert not (parent / "blocked").exists()
+
+
+def _publish_failure_case(parent: Path, root_name: str = "failed-capture") -> dict[str, Any]:
+    return calendar_authority._publish_trusted_provider_calendar_capture_failure(
+        capture_parent=parent,
+        capture_root_name=root_name,
+        failed_at=CREATED_AT,
+        error_code="TRUSTED_PROVIDER_CALENDAR_DOCUMENTATION_FETCH_FAILED",
+        success_root_published=False,
+    )
+
+
+def test_failure_builder_rejects_tamper_sensitive_code_and_rehoming(
+    tmp_path: Path,
+) -> None:
+    parent = tmp_path / "captures"
+    parent.mkdir(mode=0o700)
+    result = _publish_failure_case(parent)
+    failure = result["capture_failure"]
+    validate_trusted_provider_calendar_capture_failure(failure)
+    tampered = json.loads(canonical_json_bytes(failure))
+    tampered["payload"]["success_root_published"] = True
+    with pytest.raises(SystemContractError):
+        validate_trusted_provider_calendar_capture_failure(tampered)
+    with pytest.raises(SystemSecurityError, match="sensitive"):
+        calendar_authority._build_trusted_provider_calendar_capture_failure(
+            capture_root_name="sensitive-code",
+            failed_at=CREATED_AT,
+            error_code="AUTHORIZATION_SECRET",
+            success_root_published=False,
+            published_root_device=1,
+            published_root_inode=1,
+        )
+    rehomed = tmp_path / "rehomed"
+    rehomed.mkdir(mode=0o700)
+    shutil.copytree(
+        parent / "failed-capture.failure",
+        rehomed / "failed-capture.failure",
+    )
+    with pytest.raises(SystemSecurityError, match="root identity differs"):
+        validate_published_trusted_provider_calendar_capture_failure_root(
+            capture_parent=rehomed,
+            capture_failure=failure,
+            capture_failure_file_ref=result["capture_failure_file_ref"],
+        )
+
+
+def test_failure_publication_rejects_symlink_targets_and_ancestors(
+    tmp_path: Path,
+) -> None:
+    real_parent = tmp_path / "real"
+    real_parent.mkdir(mode=0o700)
+    linked_parent = tmp_path / "linked"
+    linked_parent.symlink_to(real_parent, target_is_directory=True)
+    with pytest.raises(SystemSecurityError, match="traversal is unsafe"):
+        _publish_failure_case(linked_parent, "symlink-ancestor")
+    target = tmp_path / "target"
+    target.mkdir(mode=0o700)
+    (real_parent / "symlink-target.failure").symlink_to(
+        target,
+        target_is_directory=True,
+    )
+    with pytest.raises(SystemPreconditionError, match="destination exists"):
+        _publish_failure_case(real_parent, "symlink-target")
+    assert not any(
+        path.name.startswith(".symlink-target.failure.staging") for path in real_parent.iterdir()
+    )
+
+
+@pytest.mark.parametrize("mutation", ["LEAF_MODE", "ROOT_MODE", "HARDLINK", "OWNER"])
+def test_failure_readback_rejects_mode_link_and_owner_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    parent = tmp_path / "captures"
+    parent.mkdir(mode=0o700)
+    result = _publish_failure_case(parent, f"failure-{mutation.lower()}")
+    root = Path(result["capture_failure_root"])
+    leaf = root / "capture-failure.json"
+    if mutation == "LEAF_MODE":
+        leaf.chmod(0o644)
+    elif mutation == "ROOT_MODE":
+        root.chmod(0o755)
+    elif mutation == "HARDLINK":
+        os.link(leaf, tmp_path / "failure-hardlink-copy")
+    else:
+        monkeypatch.setattr(calendar_authority.os, "geteuid", lambda: os.getuid() + 1)
+    with pytest.raises(SystemSecurityError, match="unsafe"):
+        validate_published_trusted_provider_calendar_capture_failure_root(
+            capture_parent=parent,
+            capture_failure=result["capture_failure"],
+            capture_failure_file_ref=result["capture_failure_file_ref"],
+        )
+
+
+def test_failure_readback_rejects_path_inode_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent = tmp_path / "captures"
+    parent.mkdir(mode=0o700)
+    result = _publish_failure_case(parent, "failure-inode-race")
+    original_stat = calendar_authority.os.stat
+
+    def drifted_stat(path: Any, *args: Any, **kwargs: Any):
+        observed = original_stat(path, *args, **kwargs)
+        if path == "capture-failure.json" and kwargs.get("follow_symlinks") is False:
+            values = list(observed)
+            values[1] += 1
+            return os.stat_result(values)
+        return observed
+
+    monkeypatch.setattr(calendar_authority.os, "stat", drifted_stat)
+    with pytest.raises(SystemSecurityError, match="readback differs"):
+        validate_published_trusted_provider_calendar_capture_failure_root(
+            capture_parent=parent,
+            capture_failure=result["capture_failure"],
+            capture_failure_file_ref=result["capture_failure_file_ref"],
+        )
+
+
+def test_failure_root_rejects_success_marker_or_extra_topology(tmp_path: Path) -> None:
+    parent = tmp_path / "captures"
+    parent.mkdir(mode=0o700)
+    result = _publish_failure_case(parent, "failure-mixed-topology")
+    root = Path(result["capture_failure_root"])
+    extra = root / "capture-success.json"
+    extra.write_bytes(b"not-success")
+    extra.chmod(0o600)
+    with pytest.raises(SystemSecurityError, match="topology differs"):
+        validate_published_trusted_provider_calendar_capture_failure_root(
+            capture_parent=parent,
+            capture_failure=result["capture_failure"],
+            capture_failure_file_ref=result["capture_failure_file_ref"],
+        )
+
+
+def test_failure_publication_has_exactly_one_concurrent_winner(tmp_path: Path) -> None:
+    parent = tmp_path / "captures"
+    parent.mkdir(mode=0o700)
+
+    def publish() -> str:
+        try:
+            _publish_failure_case(parent, "failure-one-winner")
+        except SystemPreconditionError:
+            return "BLOCKED"
+        return "PUBLISHED"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = sorted(executor.map(lambda _: publish(), range(2)))
+    assert outcomes == ["BLOCKED", "PUBLISHED"]
+
+
+def test_failed_capture_retry_requires_fresh_success_root_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent = tmp_path / "captures"
+    parent.mkdir(mode=0o700)
+    exact_input = _patch_capture_release_closure(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        calendar_authority,
+        "_official_documentation_fetch",
+        lambda: (_ for _ in ()).throw(SystemPreconditionError("docs unavailable")),
+    )
+
+    def capture(root_name: str) -> dict[str, Any]:
+        return capture_trusted_provider_calendar_evidence(
+            capture_parent=parent,
+            capture_root_name=root_name,
+            cutoff_date=CUTOFF.isoformat(),
+            release_install_input_raw=exact_input,
+            expected_release_install_input_sha256=hashlib.sha256(exact_input).hexdigest(),
+            release_repository_root=tmp_path,
+        )
+
+    with pytest.raises(SystemPreconditionError):
+        capture("retry-name")
+    with pytest.raises(SystemPreconditionError, match="failure destination exists"):
+        capture("retry-name")
+
+    monkeypatch.setattr(
+        calendar_authority,
+        "_official_documentation_fetch",
+        lambda: (
+            _docs(),
+            200,
+            {"content-type": "text/html; charset=utf-8"},
+            True,
+            [],
+        ),
+    )
+
+    class FakeClient:
+        def __init__(self, **_: Any) -> None:
+            pass
+
+        def request(self, *, api_name: str, params: dict[str, str], **_: Any):
+            return replay_tushare_response_bytes(
+                _provider_raw(params["exchange"]),
+                api_name=api_name,
+                expected_fields=EXPECTED_FIELDS,
+                strict_decimal_decode=True,
+            )
+
+    monkeypatch.setattr(calendar_authority, "OfficialTushareHttpsClient", FakeClient)
+    assert capture("retry-name-fresh")["status"] == "CAPTURED"
+    assert (parent / "retry-name.failure").is_dir()
+    assert (parent / "retry-name-fresh/capture-success.json").is_file()
 
 
 def test_builder_only_provider_artifacts_cannot_enter_production(tmp_path) -> None:

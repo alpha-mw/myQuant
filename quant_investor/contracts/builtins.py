@@ -1728,6 +1728,8 @@ SYSTEM_TRUSTED_PROVIDER_CALENDAR_CAPTURE_FAILURE_FIELDS: Final = frozenset(
         "failed_at",
         "error_code",
         "success_root_published",
+        "published_root_device",
+        "published_root_inode",
     }
 )
 SYSTEM_TRUSTED_PROVIDER_CALENDAR_CAPTURE_FAILURE_CONTRACT: Final = _exact_contract(

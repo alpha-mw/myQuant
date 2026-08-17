@@ -23,7 +23,7 @@ import re
 import secrets
 import ssl
 import stat
-from typing import Any, Final
+from typing import Any, Final, NoReturn
 
 from quant_investor.contracts import (
     ContractError,
@@ -98,6 +98,9 @@ _SAFE_HEADERS: Final = frozenset(
 )
 _SHA_RE: Final = re.compile(r"^[0-9a-f]{64}$")
 _ID_RE: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
+_FAILURE_CODE_RE: Final = re.compile(r"^[A-Z][A-Z0-9_]{0,159}$")
+_FAILURE_ROOT_SUFFIX: Final = ".failure"
+_FAILURE_LEAF: Final = "capture-failure.json"
 _CALENDAR_RESPONSE_MAX_BYTES: Final = 4 * 1024 * 1024
 _CALENDAR_AGGREGATE_MAX_BYTES: Final = 16 * 1024 * 1024
 _OPERATOR_SPEC: Final = {
@@ -111,6 +114,31 @@ _OPERATOR_SPEC: Final = {
 }
 
 RawResolver = Callable[[Mapping[str, Any]], bytes]
+
+
+_CAPTURE_FAILURE_PHASE_CODES: Final = {
+    "DOCUMENTATION_FETCH": "TRUSTED_PROVIDER_CALENDAR_DOCUMENTATION_FETCH_FAILED",
+    "PROVIDER_SSE": "TRUSTED_PROVIDER_CALENDAR_SSE_REQUEST_FAILED",
+    "PROVIDER_SZSE": "TRUSTED_PROVIDER_CALENDAR_SZSE_REQUEST_FAILED",
+    "PROVIDER_BSE": "TRUSTED_PROVIDER_CALENDAR_BSE_REQUEST_FAILED",
+    "EVIDENCE_BUILD": "TRUSTED_PROVIDER_CALENDAR_EVIDENCE_INVALID",
+    "PUBLICATION": "TRUSTED_PROVIDER_CALENDAR_PUBLICATION_FAILED",
+    "SUCCESS_VALIDATION": "TRUSTED_PROVIDER_CALENDAR_SUCCESS_VALIDATION_FAILED",
+}
+_TUSHARE_FAILURE_CODES: Final = frozenset(
+    {
+        "TUSHARE_API_ERROR",
+        "TUSHARE_CLIENT_CONFIG_INVALID",
+        "TUSHARE_ENDPOINT_BLOCKED",
+        "TUSHARE_HTTP_STATUS_ERROR",
+        "TUSHARE_REDIRECT_BLOCKED",
+        "TUSHARE_REQUEST_INVALID",
+        "TUSHARE_RESPONSE_INVALID",
+        "TUSHARE_RESPONSE_TOO_LARGE",
+        "TUSHARE_TOKEN_MISSING",
+        "TUSHARE_TRANSPORT_ERROR",
+    }
+)
 
 
 def _sha256(raw: bytes) -> str:
@@ -129,6 +157,33 @@ def compiler_ast_sha256() -> str:
 def _identifier(value: Any, *, label: str) -> str:
     if type(value) is not str or _ID_RE.fullmatch(value) is None:
         raise SystemContractError(f"{label} is not a canonical identifier")
+    return value
+
+
+def _capture_root_name(value: Any) -> str:
+    root_name = _identifier(value, label="capture_root_name")
+    if (
+        "/" in root_name
+        or root_name.startswith(".")
+        or len(root_name) + len(_FAILURE_ROOT_SUFFIX) > 200
+    ):
+        raise SystemSecurityError("trusted-provider capture root name is invalid")
+    return root_name
+
+
+def _failure_root_name(capture_root_name: str) -> str:
+    return _identifier(
+        _capture_root_name(capture_root_name) + _FAILURE_ROOT_SUFFIX,
+        label="capture_failure_root_name",
+    )
+
+
+def _failure_code(value: Any) -> str:
+    if type(value) is not str or _FAILURE_CODE_RE.fullmatch(value) is None:
+        raise SystemContractError("capture failure error code is not controlled")
+    lowered = value.casefold()
+    if any(secret in lowered for secret in ("authorization", "bearer", "secret", "token=")):
+        raise SystemSecurityError("capture failure error code is sensitive")
     return value
 
 
@@ -1605,7 +1660,7 @@ def _build_trusted_provider_calendar_capture_success(
             "capture_success_id": "tushare-calendar-success-" + _sha256(canonical_json_bytes(body)),
             **body,
         },
-        created_at=body["observed_completed_at"],
+        created_at=str(body["observed_completed_at"]),
     )
     return validate_trusted_provider_calendar_capture_success(
         artifact,
@@ -1667,6 +1722,91 @@ def validate_trusted_provider_calendar_capture_success(
     identity = identity_body.pop("capture_success_id")
     if identity != "tushare-calendar-success-" + _sha256(canonical_json_bytes(identity_body)):
         raise SystemContractError("trusted-provider capture success identity differs")
+    return artifact
+
+
+def _build_trusted_provider_calendar_capture_failure(
+    *,
+    capture_root_name: str,
+    failed_at: str,
+    error_code: str,
+    success_root_published: bool,
+    published_root_device: int,
+    published_root_inode: int,
+) -> dict[str, Any]:
+    """Seal the only non-sensitive terminal record for a failed capture.
+
+    A failure document is diagnostic custody only.  It can never substitute
+    for the success-last execution/root evidence required by production
+    assembly.
+    """
+
+    root_name = _capture_root_name(capture_root_name)
+    timestamp = _timestamp(failed_at, label="failed_at")
+    code = _failure_code(error_code)
+    if type(success_root_published) is not bool:
+        raise SystemContractError("success_root_published is not boolean")
+    if (
+        type(published_root_device) is not int
+        or published_root_device < 0
+        or type(published_root_inode) is not int
+        or published_root_inode <= 0
+    ):
+        raise SystemSecurityError("capture failure root identity is invalid")
+    body = {
+        "state": "FAILED",
+        "capture_root_name": root_name,
+        "failed_at": timestamp,
+        "error_code": code,
+        "success_root_published": success_root_published,
+        "published_root_device": published_root_device,
+        "published_root_inode": published_root_inode,
+    }
+    artifact = seal_artifact(
+        CAPTURE_FAILURE_KIND,
+        {
+            "capture_failure_id": "tushare-calendar-failure-" + _sha256(canonical_json_bytes(body)),
+            **body,
+        },
+        created_at=timestamp,
+    )
+    return validate_trusted_provider_calendar_capture_failure(artifact)
+
+
+def validate_trusted_provider_calendar_capture_failure(
+    document: Mapping[str, Any] | bytes,
+) -> dict[str, Any]:
+    artifact = _artifact(document, CAPTURE_FAILURE_KIND)
+    payload = artifact["payload"]
+    root_name = _capture_root_name(payload["capture_root_name"])
+    failed_at = _timestamp(payload["failed_at"], label="failed_at")
+    code = _failure_code(payload["error_code"])
+    published = payload["success_root_published"]
+    device = payload["published_root_device"]
+    inode = payload["published_root_inode"]
+    if (
+        type(published) is not bool
+        or payload["state"] != "FAILED"
+        or type(device) is not int
+        or device < 0
+        or type(inode) is not int
+        or inode <= 0
+    ):
+        raise SystemContractError("trusted-provider capture failure state differs")
+    if artifact["created_at"] != failed_at:
+        raise SystemContractError("trusted-provider capture failure time differs")
+    body = {
+        "state": "FAILED",
+        "capture_root_name": root_name,
+        "failed_at": failed_at,
+        "error_code": code,
+        "success_root_published": published,
+        "published_root_device": device,
+        "published_root_inode": inode,
+    }
+    expected_id = "tushare-calendar-failure-" + _sha256(canonical_json_bytes(body))
+    if payload["capture_failure_id"] != expected_id:
+        raise SystemContractError("trusted-provider capture failure identity differs")
     return artifact
 
 
@@ -1765,6 +1905,9 @@ def _open_pinned_absolute_directory(path: Path) -> int:
             descriptor = child
         _verify_owner_directory(os.fstat(descriptor), exact_mode=True)
         return descriptor
+    except OSError as exc:
+        os.close(descriptor)
+        raise SystemSecurityError("trusted-provider capture parent traversal is unsafe") from exc
     except BaseException:
         os.close(descriptor)
         raise
@@ -1966,6 +2109,16 @@ def validate_published_trusted_provider_calendar_capture_root(
     parent_fd = _open_pinned_absolute_directory(parent)
     root_fd: int | None = None
     try:
+        try:
+            os.stat(
+                _failure_root_name(root_name),
+                dir_fd=parent_fd,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            pass
+        else:
+            raise SystemPreconditionError("trusted-provider capture has terminal failure evidence")
         root_fd = os.open(
             root_name,
             os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
@@ -2095,6 +2248,16 @@ def _publish_capture_tree(
             pass
         else:
             raise SystemPreconditionError("trusted-provider capture destination exists")
+        try:
+            os.stat(
+                _failure_root_name(root_name),
+                dir_fd=parent_fd,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            pass
+        else:
+            raise SystemPreconditionError("trusted-provider capture failure destination exists")
         os.mkdir(staging, mode=0o700, dir_fd=parent_fd)
         staging_fd = os.open(
             staging,
@@ -2134,6 +2297,12 @@ def _publish_capture_tree(
         )
         os.fsync(parent_fd)
         return success_raw
+    except BaseException as exc:
+        try:
+            setattr(exc, "_trusted_provider_capture_root_published", published)
+        except BaseException:
+            pass
+        raise
     finally:
         if final_fd is not None:
             os.close(final_fd)
@@ -2164,6 +2333,243 @@ def _publish_capture_tree(
         os.close(parent_fd)
 
 
+def _publish_capture_failure_root(
+    *,
+    parent: Path,
+    capture_root_name: str,
+    failed_at: str,
+    error_code: str,
+    success_root_published: bool,
+) -> dict[str, Any]:
+    """Atomically publish one exact owner-only sibling failure root."""
+
+    success_root_name = _capture_root_name(capture_root_name)
+    failure_root_name = _failure_root_name(success_root_name)
+    parent_fd = _open_pinned_absolute_directory(parent)
+    parent_identity = _directory_identity(os.fstat(parent_fd))
+    lock_fd: int | None = None
+    staging_fd: int | None = None
+    final_fd: int | None = None
+    staging = f".{failure_root_name}.staging-{os.getpid()}-{secrets.token_hex(8)}"
+    published = False
+    try:
+        lock_fd = _open_capture_lock(parent_fd)
+        os.fchmod(lock_fd, 0o600)
+        _verify_owner_file(os.fstat(lock_fd))
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        lock_path_stat = os.stat(
+            ".tushare-calendar-capture.lock",
+            dir_fd=parent_fd,
+            follow_symlinks=False,
+        )
+        if _stat_identity(lock_path_stat) != _stat_identity(os.fstat(lock_fd)):
+            raise SystemSecurityError("trusted-provider capture lock path drifted")
+        try:
+            os.stat(failure_root_name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise SystemPreconditionError("trusted-provider capture failure destination exists")
+        os.mkdir(staging, mode=0o700, dir_fd=parent_fd)
+        staging_fd = os.open(
+            staging,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=parent_fd,
+        )
+        os.fchmod(staging_fd, 0o700)
+        staging_stat = os.fstat(staging_fd)
+        _verify_owner_directory(staging_stat, exact_mode=True)
+        if staging_stat.st_dev != os.fstat(parent_fd).st_dev:
+            raise SystemSecurityError("trusted-provider capture failure crosses a device")
+        failure = _build_trusted_provider_calendar_capture_failure(
+            capture_root_name=success_root_name,
+            failed_at=failed_at,
+            error_code=error_code,
+            success_root_published=success_root_published,
+            published_root_device=staging_stat.st_dev,
+            published_root_inode=staging_stat.st_ino,
+        )
+        failure_raw = canonical_json_bytes(failure)
+        failure_ref = _file_reference(failure_root_name, _FAILURE_LEAF, failure_raw)
+        _write_fd_leaf(staging_fd, _FAILURE_LEAF, failure_raw)
+        _read_directory_files(staging_fd, expected={_FAILURE_LEAF: failure_raw})
+        os.fsync(staging_fd)
+        staging_identity = _stat_identity(os.fstat(staging_fd))
+        if _directory_identity(os.fstat(parent_fd)) != parent_identity:
+            raise SystemSecurityError("trusted-provider capture parent drifted")
+        _rename_no_replace(parent_fd, staging, failure_root_name)
+        published = True
+        os.fsync(parent_fd)
+        final_fd = os.open(
+            failure_root_name,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=parent_fd,
+        )
+        final_stat = os.fstat(final_fd)
+        _verify_owner_directory(final_stat, exact_mode=True)
+        if _stat_identity(final_stat) != staging_identity:
+            raise SystemSecurityError("trusted-provider capture failure directory inode drifted")
+        _read_directory_files(final_fd, expected={_FAILURE_LEAF: failure_raw})
+        os.fsync(final_fd)
+        os.fsync(parent_fd)
+        return {
+            "status": "FAILED",
+            "capture_failure_root": str(parent / failure_root_name),
+            "capture_failure": failure,
+            "capture_failure_file_ref": failure_ref,
+        }
+    finally:
+        if final_fd is not None:
+            os.close(final_fd)
+        if staging_fd is not None:
+            os.close(staging_fd)
+        if lock_fd is not None:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            finally:
+                os.close(lock_fd)
+        if not published:
+            try:
+                cleanup_fd = os.open(
+                    staging,
+                    os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+                    dir_fd=parent_fd,
+                )
+                try:
+                    with os.scandir(cleanup_fd) as entries:
+                        names = [entry.name for entry in entries]
+                    for name in names:
+                        os.unlink(name, dir_fd=cleanup_fd)
+                finally:
+                    os.close(cleanup_fd)
+                os.rmdir(staging, dir_fd=parent_fd)
+            except FileNotFoundError:
+                pass
+        os.close(parent_fd)
+
+
+def validate_published_trusted_provider_calendar_capture_failure_root(
+    *,
+    capture_parent: str | os.PathLike[str],
+    capture_failure: Mapping[str, Any] | bytes,
+    capture_failure_file_ref: Mapping[str, Any],
+) -> bytes:
+    """Replay the exact one-leaf failure topology without touching success."""
+
+    failure = validate_trusted_provider_calendar_capture_failure(capture_failure)
+    success_root_name = failure["payload"]["capture_root_name"]
+    failure_root_name = _failure_root_name(success_root_name)
+    reference = _file_ref(
+        capture_failure_file_ref,
+        label="capture_failure_file_ref",
+    )
+    if reference["relative_path"] != f"{failure_root_name}/{_FAILURE_LEAF}":
+        raise SystemContractError("trusted-provider capture failure topology differs")
+    expected_raw = canonical_json_bytes(failure)
+    if reference["byte_sha256"] != _sha256(expected_raw):
+        raise SystemSecurityError("trusted-provider capture failure SHA differs")
+    parent_fd = _open_pinned_absolute_directory(Path(capture_parent))
+    root_fd: int | None = None
+    try:
+        root_fd = os.open(
+            failure_root_name,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=parent_fd,
+        )
+        root_stat = os.fstat(root_fd)
+        _verify_owner_directory(root_stat, exact_mode=True)
+        if (
+            failure["payload"]["published_root_device"] != root_stat.st_dev
+            or failure["payload"]["published_root_inode"] != root_stat.st_ino
+        ):
+            raise SystemSecurityError("trusted-provider capture failure root identity differs")
+        with os.scandir(root_fd) as entries:
+            names = sorted(entry.name for entry in entries)
+        if names != [_FAILURE_LEAF]:
+            raise SystemSecurityError("trusted-provider capture failure directory topology differs")
+        observed = _read_ref_leaf(
+            root_fd,
+            leaf=_FAILURE_LEAF,
+            expected_sha256=reference["byte_sha256"],
+        )
+        if observed != expected_raw:
+            raise SystemSecurityError("trusted-provider capture failure bytes differ")
+        return observed
+    finally:
+        if root_fd is not None:
+            os.close(root_fd)
+        os.close(parent_fd)
+
+
+def _publish_trusted_provider_calendar_capture_failure(
+    *,
+    capture_parent: str | os.PathLike[str],
+    capture_root_name: str,
+    failed_at: str,
+    error_code: str,
+    success_root_published: bool,
+) -> dict[str, Any]:
+    """Build, publish, and read back one terminal capture failure."""
+
+    parent = Path(capture_parent)
+    result = _publish_capture_failure_root(
+        parent=parent,
+        capture_root_name=capture_root_name,
+        failed_at=failed_at,
+        error_code=error_code,
+        success_root_published=success_root_published,
+    )
+    validate_published_trusted_provider_calendar_capture_failure_root(
+        capture_parent=parent,
+        capture_failure=result["capture_failure"],
+        capture_failure_file_ref=result["capture_failure_file_ref"],
+    )
+    return result
+
+
+def _controlled_capture_failure_code(exc: BaseException, *, phase: str) -> str:
+    phase_code = _CAPTURE_FAILURE_PHASE_CODES.get(
+        phase,
+        "TRUSTED_PROVIDER_CALENDAR_CAPTURE_FAILED",
+    )
+    if isinstance(exc, TushareHttpsError) and exc.code in _TUSHARE_FAILURE_CODES:
+        exchange = phase.removeprefix("PROVIDER_")
+        if phase in {"PROVIDER_SSE", "PROVIDER_SZSE", "PROVIDER_BSE"}:
+            return _failure_code(f"TRUSTED_PROVIDER_CALENDAR_{exchange}_{exc.code}")
+        return _failure_code(exc.code)
+    return _failure_code(phase_code)
+
+
+def _raise_recorded_capture_failure(
+    *,
+    parent: Path,
+    capture_root_name: str,
+    phase: str,
+    exc: BaseException,
+    success_root_published: bool,
+) -> NoReturn:
+    code = _controlled_capture_failure_code(exc, phase=phase)
+    result = _publish_trusted_provider_calendar_capture_failure(
+        capture_parent=parent,
+        capture_root_name=capture_root_name,
+        failed_at=_utc_now(),
+        error_code=code,
+        success_root_published=success_root_published,
+    )
+    failure = result["capture_failure"]
+    recorded = SystemPreconditionError(
+        "trusted-provider calendar capture failed with immutable evidence",
+        code=code,
+    )
+    recorded.public_fields = {
+        "capture_failure_id": failure["payload"]["capture_failure_id"],
+        "capture_failure_root": result["capture_failure_root"],
+        "capture_failure_file_ref": result["capture_failure_file_ref"],
+        "success_root_published": success_root_published,
+    }
+    raise recorded from exc
+
+
 def capture_trusted_provider_calendar_evidence(  # noqa: C901
     *,
     capture_parent: str | os.PathLike[str],
@@ -2178,9 +2584,7 @@ def capture_trusted_provider_calendar_evidence(  # noqa: C901
     parent = Path(capture_parent)
     if not parent.is_absolute():
         raise SystemSecurityError("trusted-provider capture parent must be absolute")
-    root_name = _identifier(capture_root_name, label="capture_root_name")
-    if "/" in root_name or root_name.startswith("."):
-        raise SystemSecurityError("trusted-provider capture root name is invalid")
+    root_name = _capture_root_name(capture_root_name)
     expected_input_sha = _sha(
         expected_release_install_input_sha256,
         label="expected_release_install_input_sha256",
@@ -2197,6 +2601,8 @@ def capture_trusted_provider_calendar_evidence(  # noqa: C901
     cutoff = _date(cutoff_date, label="cutoff_date")
     if cutoff < RUNTIME_START_DATE:
         raise SystemPreconditionError("trusted-provider capture cutoff is invalid")
+    phase = "DOCUMENTATION_FETCH"
+    success_root_published = False
     try:
         docs_raw, docs_status, docs_headers, docs_tls, docs_redirects = (
             _official_documentation_fetch()
@@ -2212,6 +2618,7 @@ def capture_trusted_provider_calendar_evidence(  # noqa: C901
         aggregate = len(docs_raw)
         responses: dict[str, Any] = {}
         for exchange in (*DIRECT_EXCHANGES, *PROBE_EXCHANGES):
+            phase = f"PROVIDER_{exchange}"
             parameters = {
                 "end_date": cutoff.strftime("%Y%m%d"),
                 "exchange": exchange,
@@ -2230,6 +2637,7 @@ def capture_trusted_provider_calendar_evidence(  # noqa: C901
                 raise SystemSecurityError("trusted-provider aggregate capture bound exceeded")
             raw_values[exchange] = raw
             responses[exchange] = parameters
+        phase = "EVIDENCE_BUILD"
         captured_at = _utc_now()
         docs_ref = _file_reference(root_name, "documentation.raw", docs_raw)
         release_input_ref = _file_reference(
@@ -2359,12 +2767,15 @@ def capture_trusted_provider_calendar_evidence(  # noqa: C901
                 )
             )
 
+        phase = "PUBLICATION"
         success_raw = _publish_capture_tree(
             parent=parent,
             root_name=root_name,
             files=files,
             success_builder=success_builder,
         )
+        success_root_published = True
+        phase = "SUCCESS_VALIDATION"
         success = validate_trusted_provider_calendar_capture_success(
             success_raw,
             capture_transaction_file_ref=transaction_ref,
@@ -2388,12 +2799,18 @@ def capture_trusted_provider_calendar_evidence(  # noqa: C901
             "trusted_provider_calendar_capture_file_refs": capture_refs,
             "network_call_count": 4,
         }
-    except (SystemContractError, SystemPreconditionError, SystemSecurityError):
-        raise
-    except TushareHttpsError as exc:
-        raise SystemPreconditionError(exc.code) from exc
     except BaseException as exc:
-        raise SystemPreconditionError("TRUSTED_PROVIDER_CALENDAR_CAPTURE_FAILED") from exc
+        success_root_published = bool(
+            success_root_published
+            or getattr(exc, "_trusted_provider_capture_root_published", False)
+        )
+        _raise_recorded_capture_failure(
+            parent=parent,
+            capture_root_name=root_name,
+            phase=phase,
+            exc=exc,
+            success_root_published=success_root_published,
+        )
 
 
 __all__ = [
@@ -2401,6 +2818,7 @@ __all__ = [
     "AUTHORITY_TIER",
     "CAPABILITY_KIND",
     "CAPTURE_EXECUTION_KIND",
+    "CAPTURE_FAILURE_KIND",
     "CAPTURE_KIND",
     "CAPTURE_SUCCESS_KIND",
     "COMPILATION_KIND",
@@ -2424,9 +2842,11 @@ __all__ = [
     "decode_trade_cal_documentation",
     "validate_calendar_authority_policy",
     "validate_published_trusted_provider_calendar_capture_root",
+    "validate_published_trusted_provider_calendar_capture_failure_root",
     "validate_trusted_provider_calendar_capability",
     "validate_trusted_provider_calendar_capture",
     "validate_trusted_provider_calendar_capture_execution",
+    "validate_trusted_provider_calendar_capture_failure",
     "validate_trusted_provider_calendar_capture_success",
     "validate_trusted_provider_calendar_capture_transaction",
     "validate_trusted_provider_calendar_compilation",

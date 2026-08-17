@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Final
+from typing import Any, Final
 
 
 class SystemError(RuntimeError):
@@ -13,7 +13,7 @@ class SystemError(RuntimeError):
 
     def __init__(self, detail: str, *, code: str | None = None) -> None:
         self.code = code or self.default_code
-        self.public_fields: dict[str, str] = {}
+        self.public_fields: dict[str, Any] = {}
         super().__init__(f"{self.code}:{detail}")
 
 

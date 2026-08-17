@@ -267,6 +267,22 @@ than cryptographic remote-peer identity. Project-authored JSON,
 weekday/holiday inference, bars, Macro data, and legacy V17 calendars remain
 forbidden.
 
+Every capture failure after release/install closure publishes only a sanitized
+terminal artifact in the sibling `<capture-root>.failure` directory. That
+directory is a no-replace, owner-only `0700` root containing exactly one
+owner-only `0600` `capture-failure.json`; the artifact binds its directory
+device/inode, the requested success-root name, a controlled error code, the
+failure time, and whether this invocation actually completed the success-root
+rename. It never retains exception text, tokens, headers, provider bodies, or
+credentials. Existence of a pre-existing directory does not establish that the
+success root was published. Failure publication never edits, deletes, repairs,
+or completes the requested success root, and neither a failure artifact nor a
+failure root is admissible where production requires the exact success marker.
+The sibling failure root makes even an otherwise complete success root
+inadmissible for that single-use name.
+The success/failure root pair is single-use; retry requires a fresh capture-root
+name.
+
 An official decoder admission must bind the exchange and evidence role to the
 exact HTTPS endpoint/query contract (or, for a notice body, to the exact body
 URL carried by a validated notice-index entry), redirect policy, real
