@@ -49,8 +49,11 @@ def _test_final_authorization(
     created_at: str,
 ) -> dict[str, Any]:
     root = store.workspace_root
-    existing_checkout = (root / ".git").exists()
-    if not existing_checkout:
+    repository_exists = (root / ".git").exists()
+    real_checkout = repository_exists and bool(
+        _git(root, "ls-tree", "HEAD", "--", "pyproject.toml").strip()
+    )
+    if not repository_exists:
         _git(root, "init", "-q")
         _git(root, "config", "user.name", "Unified Test")
         _git(root, "config", "user.email", "unified-test@example.invalid")
@@ -88,7 +91,7 @@ def _test_final_authorization(
         _git(root, "commit", "-q", "-m", "prospective adoption fixture")
     commit = _git(root, "rev-parse", "HEAD^{commit}").decode().strip()
     tree = _git(root, "rev-parse", "HEAD^{tree}").decode().strip()
-    if existing_checkout:
+    if real_checkout:
         adoption_commit = ""
         for candidate_raw in _git(root, "rev-list", "--first-parent", commit).splitlines():
             candidate = candidate_raw.decode("ascii")
@@ -116,12 +119,12 @@ def _test_final_authorization(
     adoption_tree = _git(root, "rev-parse", f"{adoption_commit}^{{tree}}").decode().strip()
     baseline_commit = _git(root, "rev-parse", f"{adoption_commit}^").decode().strip()
     baseline_tree = _git(root, "rev-parse", f"{baseline_commit}^{{tree}}").decode().strip()
-    anchor_relative = "pyproject.toml" if existing_checkout else ".authority-anchor"
+    anchor_relative = "pyproject.toml" if real_checkout else ".authority-anchor"
     ls_tree = _git(root, "ls-tree", "HEAD", "--", anchor_relative).decode().strip()
     mode, _kind, blob_and_path = ls_tree.split(" ", 2)
     blob, path = blob_and_path.split("\t", 1)
     anchor_raw = _git(root, "cat-file", "blob", blob)
-    if existing_checkout:
+    if real_checkout:
         source_ls_tree = (
             _git(root, "ls-tree", baseline_commit, "--", anchor_relative).decode().strip()
         )
