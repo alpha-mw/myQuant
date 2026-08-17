@@ -50,8 +50,12 @@ substitute.
 `system calendar-capture` is the installed-release-only, read-only network
 entrypoint for the `TRUSTED_PROVIDER_DEGRADED` route. It atomically retains the
 official Tushare `trade_cal` documentation plus exact SSE, SZSE, and BSE probe
-responses and seals an all-leaves capture transaction. The production request
-must bind that exact transaction; isolated raw/capture files are insufficient.
+responses and seals an all-leaves capture transaction, installed-release
+execution receipt, and success marker. The command requires the exact
+release-install input path and SHA; caller-supplied timestamps or transport
+objects are not accepted. The production request must bind that transaction,
+execution receipt, success marker, and release-install input; isolated
+raw/capture files are insufficient.
 The BSE response must be exact-empty and confers no direct calendar authority.
 No provider write, broker, order, trade, funds, portfolio, Strategy
 Record, System pointer, generation, or activation write is reachable from this
@@ -67,7 +71,8 @@ admissions, and complete notice-index/page/body closures.
 `TRUSTED_PROVIDER_DEGRADED` uses a detached
 `system.trusted_provider_calendar_compilation`, provider capability artifact,
 exact three-response capture set, the immutable four-call capture transaction,
-policy artifact, runtime JSON and strict Parquet. Official and provider fields
+installed-release execution receipt, terminal success marker, policy artifact,
+runtime JSON and strict Parquet. Official and provider fields
 are mandatory tombstones for the route
 that is not selected; mixed, missing, duplicated, or old topology fails. The
 assembler reruns the selected decoder and requires regenerated JSON and

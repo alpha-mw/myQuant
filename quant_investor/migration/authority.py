@@ -1408,9 +1408,13 @@ def _seal_final_cutover_authorization(  # noqa: C901
     main_checkout_adoption_ref: Mapping[str, Any],
     legacy_disposition_ref: Mapping[str, Any],
     deployed_release_ref: Mapping[str, Any],
+    production_generation_manifest_ref: Mapping[str, Any],
+    production_bootstrap_receipt_ref: Mapping[str, Any],
     calendar_authority_policy_ref: Mapping[str, Any],
     calendar_compilation_ref: Mapping[str, Any],
     calendar_capability_ref: Mapping[str, Any] | None,
+    calendar_capture_execution_ref: Mapping[str, Any] | None,
+    calendar_authorization_basis: Mapping[str, Any],
     calendar_source_limitations: Sequence[str],
     release_commit: str,
     release_tree: str,
@@ -1472,7 +1476,11 @@ def _seal_final_cutover_authorization(  # noqa: C901
         limitations != sorted(set(limitations))
         or any(type(value) is not str or not value for value in limitations)
         or not (
-            (limitations == [] and calendar_capability_ref is None)
+            (
+                limitations == []
+                and calendar_capability_ref is None
+                and calendar_capture_execution_ref is None
+            )
             or (
                 limitations
                 == [
@@ -1480,10 +1488,51 @@ def _seal_final_cutover_authorization(  # noqa: C901
                     "CALENDAR_AUTHORITY_DEGRADED",
                 ]
                 and calendar_capability_ref is not None
+                and calendar_capture_execution_ref is not None
             )
         )
     ):
         raise SystemPreconditionError("calendar final authorization route differs")
+    from quant_investor.system.bootstrap_receipt import (
+        validate_calendar_authorization_basis,
+    )
+
+    normalized_calendar_basis = validate_calendar_authorization_basis(
+        dict(calendar_authorization_basis)
+    )
+    normalized_policy_ref = validate_object_ref(
+        calendar_authority_policy_ref,
+        label="calendar_authority_policy_ref",
+    )
+    normalized_compilation_ref = validate_object_ref(
+        calendar_compilation_ref,
+        label="calendar_compilation_ref",
+    )
+    normalized_capability_ref = (
+        None
+        if calendar_capability_ref is None
+        else validate_object_ref(
+            calendar_capability_ref,
+            label="calendar_capability_ref",
+        )
+    )
+    normalized_execution_ref = (
+        None
+        if calendar_capture_execution_ref is None
+        else validate_object_ref(
+            calendar_capture_execution_ref,
+            label="calendar_capture_execution_ref",
+        )
+    )
+    if normalized_calendar_basis != {
+        "authority_route": normalized_calendar_basis["authority_route"],
+        "policy_ref": normalized_policy_ref,
+        "compilation_ref": normalized_compilation_ref,
+        "capability_ref": normalized_capability_ref,
+        "capture_execution_ref": normalized_execution_ref,
+        "source_limitations": limitations,
+    }:
+        raise SystemPreconditionError("calendar final authorization basis differs")
     return seal_artifact(
         FINAL_AUTHORIZATION_KIND,
         {
@@ -1508,22 +1557,19 @@ def _seal_final_cutover_authorization(  # noqa: C901
             "deployed_release_ref": validate_object_ref(
                 deployed_release_ref, label="deployed_release_ref"
             ),
-            "calendar_authority_policy_ref": validate_object_ref(
-                calendar_authority_policy_ref,
-                label="calendar_authority_policy_ref",
+            "production_generation_manifest_ref": validate_object_ref(
+                production_generation_manifest_ref,
+                label="production_generation_manifest_ref",
             ),
-            "calendar_compilation_ref": validate_object_ref(
-                calendar_compilation_ref,
-                label="calendar_compilation_ref",
+            "production_bootstrap_receipt_ref": validate_object_ref(
+                production_bootstrap_receipt_ref,
+                label="production_bootstrap_receipt_ref",
             ),
-            "calendar_capability_ref": (
-                None
-                if calendar_capability_ref is None
-                else validate_object_ref(
-                    calendar_capability_ref,
-                    label="calendar_capability_ref",
-                )
-            ),
+            "calendar_authority_policy_ref": normalized_policy_ref,
+            "calendar_compilation_ref": normalized_compilation_ref,
+            "calendar_capability_ref": normalized_capability_ref,
+            "calendar_capture_execution_ref": normalized_execution_ref,
+            "calendar_authorization_basis": normalized_calendar_basis,
             "calendar_source_limitations": limitations,
             "calendar_policy_authorized": True,
             "release_commit": _git_oid(release_commit, label="release_commit"),
@@ -1562,10 +1608,8 @@ def build_final_cutover_authorization(  # noqa: C901
     main_checkout_adoption_ref: Mapping[str, Any],
     legacy_disposition_ref: Mapping[str, Any],
     deployed_release_ref: Mapping[str, Any],
-    calendar_authority_policy_ref: Mapping[str, Any],
-    calendar_compilation_ref: Mapping[str, Any],
-    calendar_capability_ref: Mapping[str, Any] | None,
-    calendar_source_limitations: Sequence[str],
+    production_generation_manifest: Mapping[str, Any] | bytes,
+    production_bootstrap_receipt: Mapping[str, Any] | bytes,
     release_commit: str,
     release_tree: str,
     final_integration_commit: str,
@@ -1601,6 +1645,30 @@ def build_final_cutover_authorization(  # noqa: C901
         )
     rows.sort(key=lambda row: row["gate_id"])
     _validate_preflight_rows(rows)
+    try:
+        generation_manifest = validate_artifact(
+            production_generation_manifest,
+            expected_kind="system.generation_manifest",
+        )
+    except ContractError as exc:
+        raise SystemContractError("production generation manifest is invalid") from exc
+    from quant_investor.system.bootstrap_receipt import (
+        validate_production_bootstrap_receipt,
+    )
+
+    production_receipt = validate_production_bootstrap_receipt(production_bootstrap_receipt)
+    receipt_ref = object_ref_for_artifact(production_receipt)
+    manifest_payload = generation_manifest["payload"]
+    receipt_payload = production_receipt["payload"]
+    normalized_release = validate_object_ref(deployed_release_ref, label="deployed_release_ref")
+    if (
+        manifest_payload["generation_state"] != "OPERATIONAL"
+        or manifest_payload["mainline_ref"] is not None
+        or manifest_payload["release_manifest_ref"] != normalized_release
+        or manifest_payload["research_refs"] != [receipt_ref]
+        or receipt_payload["deployed_release_ref"] != normalized_release
+    ):
+        raise SystemPreconditionError("final authorization production generation differs")
     return _seal_final_cutover_authorization(
         final_authorization_id=final_authorization_id,
         accepted_baseline_commit=accepted_baseline_commit,
@@ -1610,10 +1678,14 @@ def build_final_cutover_authorization(  # noqa: C901
         main_checkout_adoption_ref=main_checkout_adoption_ref,
         legacy_disposition_ref=legacy_disposition_ref,
         deployed_release_ref=deployed_release_ref,
-        calendar_authority_policy_ref=calendar_authority_policy_ref,
-        calendar_compilation_ref=calendar_compilation_ref,
-        calendar_capability_ref=calendar_capability_ref,
-        calendar_source_limitations=calendar_source_limitations,
+        production_generation_manifest_ref=object_ref_for_artifact(generation_manifest),
+        production_bootstrap_receipt_ref=receipt_ref,
+        calendar_authority_policy_ref=receipt_payload["calendar_authority_policy_ref"],
+        calendar_compilation_ref=receipt_payload["calendar_compilation_ref"],
+        calendar_capability_ref=receipt_payload["calendar_capability_ref"],
+        calendar_capture_execution_ref=receipt_payload["calendar_capture_execution_ref"],
+        calendar_authorization_basis=receipt_payload["calendar_authorization_basis"],
+        calendar_source_limitations=receipt_payload["calendar_source_limitations"],
         release_commit=release_commit,
         release_tree=release_tree,
         final_integration_commit=commit,
@@ -1648,9 +1720,13 @@ def validate_final_cutover_authorization(
         main_checkout_adoption_ref=payload["main_checkout_adoption_ref"],
         legacy_disposition_ref=payload["legacy_disposition_ref"],
         deployed_release_ref=payload["deployed_release_ref"],
+        production_generation_manifest_ref=payload["production_generation_manifest_ref"],
+        production_bootstrap_receipt_ref=payload["production_bootstrap_receipt_ref"],
         calendar_authority_policy_ref=payload["calendar_authority_policy_ref"],
         calendar_compilation_ref=payload["calendar_compilation_ref"],
         calendar_capability_ref=payload["calendar_capability_ref"],
+        calendar_capture_execution_ref=payload["calendar_capture_execution_ref"],
+        calendar_authorization_basis=payload["calendar_authorization_basis"],
         calendar_source_limitations=payload["calendar_source_limitations"],
         release_commit=payload["release_commit"],
         release_tree=payload["release_tree"],
@@ -1714,12 +1790,50 @@ def validate_final_cutover_authorization_closure(  # noqa: C901
         raise SystemPreconditionError("authorized deployed release kind is invalid")
     if object_ref_for_artifact(release) != normalized_release:
         raise SystemPreconditionError("deployed release exact object differs")
+    from quant_investor.system.bootstrap_receipt import (
+        validate_production_bootstrap_receipt,
+    )
+
+    receipt_ref = validate_object_ref(
+        payload["production_bootstrap_receipt_ref"],
+        label="production_bootstrap_receipt_ref",
+    )
+    resolved_receipt = dict(object_resolver(receipt_ref))
+    if validation_mode == "PRE_CAS_CURRENT":
+        production_receipt = validate_production_bootstrap_receipt(resolved_receipt)
+    else:
+        production_receipt = resolved_receipt
+        if (
+            production_receipt.get("kind") != "system.production_bootstrap_receipt"
+            or type(production_receipt.get("payload")) is not dict
+        ):
+            raise SystemPreconditionError("historical production bootstrap receipt is invalid")
+    receipt_payload = production_receipt["payload"]
+    if (
+        object_ref_for_artifact(production_receipt) != receipt_ref
+        or receipt_payload["deployed_release_ref"] != normalized_release
+        or payload["calendar_authority_policy_ref"]
+        != receipt_payload["calendar_authority_policy_ref"]
+        or payload["calendar_compilation_ref"] != receipt_payload["calendar_compilation_ref"]
+        or payload["calendar_capability_ref"] != receipt_payload["calendar_capability_ref"]
+        or payload["calendar_capture_execution_ref"]
+        != receipt_payload["calendar_capture_execution_ref"]
+        or payload["calendar_authorization_basis"]
+        != receipt_payload["calendar_authorization_basis"]
+        or payload["calendar_source_limitations"] != receipt_payload["calendar_source_limitations"]
+    ):
+        raise SystemPreconditionError("final authorization production receipt differs")
     calendar_refs = [
         payload["calendar_authority_policy_ref"],
         payload["calendar_compilation_ref"],
         *(
             [payload["calendar_capability_ref"]]
             if payload["calendar_capability_ref"] is not None
+            else []
+        ),
+        *(
+            [payload["calendar_capture_execution_ref"]]
+            if payload["calendar_capture_execution_ref"] is not None
             else []
         ),
     ]

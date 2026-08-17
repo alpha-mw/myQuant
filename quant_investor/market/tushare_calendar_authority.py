@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import ast
 from collections.abc import Callable, Mapping, Sequence
+import ctypes
 from datetime import date, datetime, time, timedelta, timezone
+import errno
 import hashlib
 from html.parser import HTMLParser
 import http.client
@@ -27,6 +29,7 @@ from quant_investor.contracts import (
     ContractError,
     canonical_json_bytes,
     get_contract,
+    parse_canonical_json_bytes,
     seal_artifact,
     validate_artifact,
 )
@@ -34,6 +37,11 @@ from quant_investor.system.errors import (
     SystemContractError,
     SystemPreconditionError,
     SystemSecurityError,
+    SystemStorageError,
+)
+from quant_investor.system.release_install import (
+    validate_release_install_evidence,
+    verify_release_install_input,
 )
 from quant_investor.system.store import object_ref_for_artifact, validate_object_ref
 
@@ -50,6 +58,8 @@ CAPTURE_KIND: Final = "system.trusted_provider_calendar_capture"
 CAPABILITY_KIND: Final = "system.trusted_provider_calendar_capability"
 COMPILATION_KIND: Final = "system.trusted_provider_calendar_compilation"
 CAPTURE_TRANSACTION_KIND: Final = "system.trusted_provider_calendar_capture_transaction"
+CAPTURE_EXECUTION_KIND: Final = "system.trusted_provider_calendar_capture_execution"
+CAPTURE_SUCCESS_KIND: Final = "system.trusted_provider_calendar_capture_success"
 CAPTURE_FAILURE_KIND: Final = "system.trusted_provider_calendar_capture_failure"
 OFFICIAL_COMPILATION_KIND: Final = "system.exchange_calendar_compilation"
 AUTHORITY_ROUTE: Final = "TRUSTED_PROVIDER_DEGRADED"
@@ -66,6 +76,7 @@ DIRECT_EXCHANGES: Final = ("SSE", "SZSE")
 PROBE_EXCHANGES: Final = ("BSE",)
 PROJECTED_EXCHANGES: Final = ("BSE",)
 PROJECTION_SOURCE_EXCHANGES: Final = ("SSE", "SZSE")
+DEGRADED_PIT_EXCHANGES: Final = ("BSE", "SSE", "SZSE")
 SOURCE_LIMITATIONS: Final = (
     "BSE_CALENDAR_POLICY_PROJECTED_FROM_SSE_SZSE",
     "CALENDAR_AUTHORITY_DEGRADED",
@@ -87,9 +98,19 @@ _SAFE_HEADERS: Final = frozenset(
 )
 _SHA_RE: Final = re.compile(r"^[0-9a-f]{64}$")
 _ID_RE: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
+_CALENDAR_RESPONSE_MAX_BYTES: Final = 4 * 1024 * 1024
+_CALENDAR_AGGREGATE_MAX_BYTES: Final = 16 * 1024 * 1024
+_OPERATOR_SPEC: Final = {
+    "api_name": API_NAME,
+    "documentation_url": DOCS_URL,
+    "endpoint_url": OFFICIAL_TUSHARE_URL,
+    "exchange_ids": [*DIRECT_EXCHANGES, *PROBE_EXCHANGES],
+    "expected_fields": list(EXPECTED_FIELDS),
+    "per_response_max_bytes": _CALENDAR_RESPONSE_MAX_BYTES,
+    "aggregate_max_bytes": _CALENDAR_AGGREGATE_MAX_BYTES,
+}
 
 RawResolver = Callable[[Mapping[str, Any]], bytes]
-DocumentationFetcher = Callable[[], tuple[bytes, int, Mapping[str, str], bool, Sequence[str]]]
 
 
 def _sha256(raw: bytes) -> str:
@@ -423,11 +444,16 @@ def build_calendar_authority_policy(
     created_at: str,
     authority_route: str = AUTHORITY_ROUTE,
     pit_exchange_ids: Sequence[str] = (),
+    provider_capability: Mapping[str, Any] | bytes | None = None,
 ) -> dict[str, Any]:
     _timestamp(created_at, label="created_at")
+    capability_ref = None
+    if provider_capability is not None:
+        capability_ref = object_ref_for_artifact(_artifact(provider_capability, CAPABILITY_KIND))
     body = build_policy_payload(
         authority_route=authority_route,
         pit_exchange_ids=pit_exchange_ids,
+        provider_capability_ref=capability_ref,
     )
     identity = "calendar-policy-" + _sha256(canonical_json_bytes(body))
     return validate_calendar_authority_policy(
@@ -448,9 +474,11 @@ def validate_calendar_authority_policy(
     payload = artifact["payload"]
     route = payload.get("authority_route")
     if route == AUTHORITY_ROUTE:
-        expected = build_policy_payload()
+        expected = build_policy_payload(
+            provider_capability_ref=payload.get("provider_capability_ref")
+        )
     elif route == "EXCHANGE_OFFICIAL":
-        exchanges = payload.get("direct_provider_calendar_exchange_ids")
+        exchanges = payload.get("direct_exchange_official_calendar_exchange_ids")
         if type(exchanges) is not list:
             raise SystemContractError("official calendar policy exchange set is invalid")
         expected = build_policy_payload(
@@ -463,9 +491,14 @@ def validate_calendar_authority_policy(
         raise SystemContractError("calendar authority policy semantics differ")
     if "production_allowed" in payload or "compilation_ref" in payload:
         raise SystemContractError("calendar policy may not self-authorize or create a cycle")
-    if pit_exchange_ids is not None and payload["direct_provider_calendar_exchange_ids"] != list(
-        pit_exchange_ids
-    ):
+    policy_scope = sorted(
+        {
+            *payload["direct_exchange_official_calendar_exchange_ids"],
+            *payload["direct_provider_calendar_exchange_ids"],
+            *payload["policy_projected_calendar_exchange_ids"],
+        }
+    )
+    if pit_exchange_ids is not None and policy_scope != list(pit_exchange_ids):
         raise SystemContractError("calendar policy/PIT exchange set differs")
     identity_body = dict(payload)
     identity = identity_body.pop("calendar_authority_policy_id")
@@ -478,8 +511,17 @@ def build_policy_payload(
     *,
     authority_route: str = AUTHORITY_ROUTE,
     pit_exchange_ids: Sequence[str] = (),
+    provider_capability_ref: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     if authority_route == AUTHORITY_ROUTE:
+        capability_ref = validate_object_ref(
+            provider_capability_ref,
+            label="provider_capability_ref",
+        )
+        if capability_ref["kind"] != CAPABILITY_KIND or (
+            pit_exchange_ids and list(pit_exchange_ids) != list(DEGRADED_PIT_EXCHANGES)
+        ):
+            raise SystemContractError("degraded calendar policy scope/capability differs")
         return {
             "state": "SEALED",
             "authority_route": AUTHORITY_ROUTE,
@@ -487,9 +529,11 @@ def build_policy_payload(
             "authority_tier": AUTHORITY_TIER,
             "confidence": CONFIDENCE,
             "expected_compilation_kind": COMPILATION_KIND,
+            "direct_exchange_official_calendar_exchange_ids": [],
             "direct_provider_calendar_exchange_ids": list(DIRECT_EXCHANGES),
             "unsupported_or_undocumented_probe_exchange_ids": list(PROBE_EXCHANGES),
             "policy_projected_calendar_exchange_ids": list(PROJECTED_EXCHANGES),
+            "provider_capability_ref": capability_ref,
             "source_limitations": list(SOURCE_LIMITATIONS),
             "requires_explicit_final_cutover_authorization": True,
             "user_authorization_basis": POLICY_USER_AUTHORIZATION_BASIS,
@@ -516,9 +560,11 @@ def build_policy_payload(
         "authority_tier": "TIER_2_EXCHANGE_OFFICIAL",
         "confidence": "OFFICIAL",
         "expected_compilation_kind": OFFICIAL_COMPILATION_KIND,
-        "direct_provider_calendar_exchange_ids": exchanges,
+        "direct_exchange_official_calendar_exchange_ids": exchanges,
+        "direct_provider_calendar_exchange_ids": [],
         "unsupported_or_undocumented_probe_exchange_ids": [],
         "policy_projected_calendar_exchange_ids": [],
+        "provider_capability_ref": None,
         "source_limitations": [],
         "requires_explicit_final_cutover_authorization": True,
         "user_authorization_basis": "EXCHANGE_OFFICIAL_SOURCE_CLOSURE",
@@ -649,16 +695,26 @@ def build_trusted_provider_calendar_capture(  # noqa: C901
         raise SystemContractError("trusted-provider request parameters differ")
     if exchange in DIRECT_EXCHANGES:
         rows = _normalized_calendar_rows(response.rows)
-        if any(row["exchange_id"] != exchange for row in rows):
+        if (
+            response.provider_reported_count != 0
+            or response.item_count <= 0
+            or response.reported_count != response.item_count
+            or response.has_more
+            or any(row["exchange_id"] != exchange for row in rows)
+        ):
             raise SystemContractError("trusted-provider direct response exchange differs")
         _validate_finite_pretrade_chain(rows, capture_start=capture_start, cutoff=cutoff)
-        if response.has_more or not rows:
-            raise SystemPreconditionError("trusted-provider direct response is incomplete")
         evidence_role = "DIRECT_PROVIDER_CALENDAR"
         authority_conferred = True
         projection = rows
     else:
-        if response.rows or response.item_count != 0 or response.has_more:
+        if (
+            response.provider_reported_count != 0
+            or response.reported_count != 0
+            or response.rows
+            or response.item_count != 0
+            or response.has_more
+        ):
             raise SystemPreconditionError("BSE capability probe must be exact-empty")
         evidence_role = "PROVIDER_CAPABILITY_PROBE"
         authority_conferred = False
@@ -771,13 +827,25 @@ def validate_trusted_provider_calendar_capture(  # noqa: C901
         raise SystemContractError("trusted-provider request date binding differs")
     if exchange in DIRECT_EXCHANGES:
         projection = _normalized_calendar_rows(response.rows)
-        if any(row["exchange_id"] != exchange for row in projection):
+        if (
+            response.provider_reported_count != 0
+            or response.item_count <= 0
+            or response.reported_count != response.item_count
+            or response.has_more
+            or any(row["exchange_id"] != exchange for row in projection)
+        ):
             raise SystemContractError("trusted-provider direct response exchange differs")
         _validate_finite_pretrade_chain(projection, capture_start=capture_start, cutoff=cutoff)
         expected_role = "DIRECT_PROVIDER_CALENDAR"
         expected_authority = True
     else:
-        if response.rows or response.item_count != 0 or response.has_more:
+        if (
+            response.provider_reported_count != 0
+            or response.reported_count != 0
+            or response.rows
+            or response.item_count != 0
+            or response.has_more
+        ):
             raise SystemPreconditionError("BSE capability probe must be exact-empty")
         projection = []
         expected_role = "PROVIDER_CAPABILITY_PROBE"
@@ -972,12 +1040,12 @@ def build_trusted_provider_calendar_compilation(  # noqa: C901
     release = validate_object_ref(release_ref, label="release_ref")
     if release["kind"] != "system.release":
         raise SystemContractError("trusted-provider release authority differs")
-    exchanges = list(pit_exchange_ids)
-    if (
-        exchanges != sorted(set(exchanges))
-        or not exchanges
-        or any(exchange not in {"SSE", "SZSE", "BSE"} for exchange in exchanges)
+    if policy_artifact["payload"]["provider_capability_ref"] != object_ref_for_artifact(
+        capability_artifact
     ):
+        raise SystemContractError("trusted-provider policy/capability binding differs")
+    exchanges = list(pit_exchange_ids)
+    if exchanges != list(DEGRADED_PIT_EXCHANGES):
         raise SystemContractError("PIT exchange set is not canonical")
     cutoff = _date(cutoff_date, label="cutoff_date")
     capture_start = RUNTIME_START_DATE - timedelta(days=CAPTURE_PREHISTORY_DAYS)
@@ -1196,6 +1264,382 @@ def calendar_source_limitations(
     return list(limitations)
 
 
+def _release_install_components(
+    raw: bytes,
+    *,
+    repository_root: str | os.PathLike[str],
+    require_current_operator: bool = False,
+    historical: bool = False,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    if type(raw) is not bytes or not raw or len(raw) > 64 * 1024 * 1024:
+        raise SystemSecurityError("release install input is absent or exceeds its bound")
+    try:
+        value = parse_canonical_json_bytes(raw)
+    except ContractError as exc:
+        raise SystemContractError("release install input is not canonical") from exc
+    if type(value) is not dict or set(value) != {
+        "release_install_evidence",
+        "deployed_release",
+    }:
+        raise SystemContractError("release install input fields are not exact")
+    evidence = validate_release_install_evidence(value["release_install_evidence"])
+    release = _artifact(value["deployed_release"], "system.release")
+    if historical:
+        payload = evidence["payload"]
+        verification = {
+            "state": "PASS",
+            "release_ref": payload["release_ref"],
+            "source_archive_sha256": payload["source_archive"]["byte_sha256"],
+            "wheel_sha256": payload["wheel"]["byte_sha256"],
+            "code_tree_sha256": payload["code_tree_sha256"],
+            "installed_code_manifest_sha256": payload["installed_code_manifest_sha256"],
+            "contract_catalog_sha256": payload["contract_catalog_sha256"],
+            "import_origin": payload["import_origin"],
+        }
+    else:
+        verification = verify_release_install_input(raw, repository_root=repository_root)
+    if (
+        verification.get("state") != "PASS"
+        or verification.get("release_ref") != object_ref_for_artifact(release)
+        or evidence["payload"]["release_ref"] != object_ref_for_artifact(release)
+    ):
+        raise SystemPreconditionError("release install closure did not pass")
+    if require_current_operator:
+        expected_operator = (
+            Path(verification["import_origin"]).resolve(strict=True).parent
+            / "market"
+            / "tushare_calendar_authority.py"
+        ).resolve(strict=True)
+        if Path(__file__).resolve(strict=True) != expected_operator:
+            raise SystemPreconditionError("calendar capture is not running installed release")
+    return evidence, release, verification
+
+
+def _rooted_file_refs(
+    values: Sequence[Mapping[str, Any]],
+    *,
+    root_name: str,
+    label: str,
+) -> list[dict[str, str]]:
+    refs = [_file_ref(value, label=f"{label}[{ordinal}]") for ordinal, value in enumerate(values)]
+    if (
+        refs != sorted(refs, key=lambda row: row["relative_path"])
+        or len({row["relative_path"] for row in refs}) != len(refs)
+        or any(not row["relative_path"].startswith(f"{root_name}/") for row in refs)
+    ):
+        raise SystemContractError(f"{label} topology differs")
+    return refs
+
+
+def build_trusted_provider_calendar_capture_execution(
+    *,
+    capture_root_name: str,
+    release_install_input_raw: bytes,
+    release_install_input_file_ref: Mapping[str, Any],
+    repository_root: str | os.PathLike[str],
+    documentation_raw_file_ref: Mapping[str, Any],
+    capability_file_ref: Mapping[str, Any],
+    policy_file_ref: Mapping[str, Any],
+    provider_raw_file_refs: Sequence[Mapping[str, Any]],
+    provider_capture_file_refs: Sequence[Mapping[str, Any]],
+    capture_transaction_file_ref: Mapping[str, Any],
+    observed_started_at: str,
+    observed_completed_at: str,
+) -> dict[str, Any]:
+    root_name = _identifier(capture_root_name, label="capture_root_name")
+    if "/" in root_name or root_name.startswith("."):
+        raise SystemSecurityError("trusted-provider capture root name is invalid")
+    input_ref = _file_ref(
+        release_install_input_file_ref,
+        label="release_install_input_file_ref",
+    )
+    if input_ref["relative_path"] != f"{root_name}/release-install-input.json" or input_ref[
+        "byte_sha256"
+    ] != _sha256(release_install_input_raw):
+        raise SystemSecurityError("release install input file binding differs")
+    evidence, release, verification = _release_install_components(
+        release_install_input_raw,
+        repository_root=repository_root,
+        require_current_operator=True,
+    )
+    started = _timestamp(observed_started_at, label="observed_started_at")
+    completed = _timestamp(observed_completed_at, label="observed_completed_at")
+    if completed < started:
+        raise SystemContractError("trusted-provider capture time order differs")
+    docs_ref = _file_ref(
+        documentation_raw_file_ref,
+        label="documentation_raw_file_ref",
+    )
+    capability_ref = _file_ref(capability_file_ref, label="capability_file_ref")
+    policy_ref = _file_ref(policy_file_ref, label="policy_file_ref")
+    transaction_ref = _file_ref(
+        capture_transaction_file_ref,
+        label="capture_transaction_file_ref",
+    )
+    raw_refs = _rooted_file_refs(
+        provider_raw_file_refs,
+        root_name=root_name,
+        label="provider_raw_file_refs",
+    )
+    capture_refs = _rooted_file_refs(
+        provider_capture_file_refs,
+        root_name=root_name,
+        label="provider_capture_file_refs",
+    )
+    scalar_refs = [docs_ref, capability_ref, policy_ref, transaction_ref, input_ref]
+    if any(not row["relative_path"].startswith(f"{root_name}/") for row in scalar_refs):
+        raise SystemContractError("trusted-provider execution root binding differs")
+    evidence_payload = evidence["payload"]
+    body = {
+        "state": "EXECUTED",
+        "capture_root_name": root_name,
+        "deployed_release_ref": object_ref_for_artifact(release),
+        "release_install_input_file_ref": input_ref,
+        "release_install_evidence_ref": object_ref_for_artifact(evidence),
+        "release_install_verification_sha256": _sha256(canonical_json_bytes(verification)),
+        "final_commit": evidence_payload["final_commit"],
+        "final_tree": evidence_payload["final_tree"],
+        "wheel_sha256": verification["wheel_sha256"],
+        "installed_code_manifest_sha256": verification["installed_code_manifest_sha256"],
+        "contract_catalog_sha256": verification["contract_catalog_sha256"],
+        "installed_import_origin": verification["import_origin"],
+        "operator_relative_path": COMPILER_RELATIVE_PATH,
+        "operator_code_sha256": compiler_code_sha256(),
+        "operator_ast_sha256": compiler_ast_sha256(),
+        "documentation_raw_file_ref": docs_ref,
+        "capability_file_ref": capability_ref,
+        "policy_file_ref": policy_ref,
+        "provider_raw_file_refs": raw_refs,
+        "provider_capture_file_refs": capture_refs,
+        "capture_transaction_file_ref": transaction_ref,
+        "network_call_count": 4,
+        "operation_spec": dict(_OPERATOR_SPEC),
+        "observed_started_at": started,
+        "observed_completed_at": completed,
+        "source_limitations": list(SOURCE_LIMITATIONS),
+    }
+    artifact = seal_artifact(
+        CAPTURE_EXECUTION_KIND,
+        {
+            "capture_execution_id": "tushare-calendar-execution-"
+            + _sha256(canonical_json_bytes(body)),
+            **body,
+        },
+        created_at=completed,
+    )
+    return validate_trusted_provider_calendar_capture_execution(
+        artifact,
+        release_install_input_raw=release_install_input_raw,
+        repository_root=repository_root,
+        documentation_raw_file_ref=docs_ref,
+        capability_file_ref=capability_ref,
+        policy_file_ref=policy_ref,
+        provider_raw_file_refs=raw_refs,
+        provider_capture_file_refs=capture_refs,
+        capture_transaction_file_ref=transaction_ref,
+    )
+
+
+def validate_trusted_provider_calendar_capture_execution(
+    document: Mapping[str, Any] | bytes,
+    *,
+    release_install_input_raw: bytes,
+    repository_root: str | os.PathLike[str],
+    documentation_raw_file_ref: Mapping[str, Any],
+    capability_file_ref: Mapping[str, Any],
+    policy_file_ref: Mapping[str, Any],
+    provider_raw_file_refs: Sequence[Mapping[str, Any]],
+    provider_capture_file_refs: Sequence[Mapping[str, Any]],
+    capture_transaction_file_ref: Mapping[str, Any],
+    historical: bool = False,
+) -> dict[str, Any]:
+    artifact = _artifact(document, CAPTURE_EXECUTION_KIND)
+    payload = artifact["payload"]
+    root_name = _identifier(payload["capture_root_name"], label="capture_root_name")
+    input_ref = _file_ref(
+        payload["release_install_input_file_ref"],
+        label="release_install_input_file_ref",
+    )
+    if (
+        "/" in root_name
+        or root_name.startswith(".")
+        or input_ref["relative_path"] != f"{root_name}/release-install-input.json"
+        or input_ref["byte_sha256"] != _sha256(release_install_input_raw)
+    ):
+        raise SystemSecurityError("capture execution input binding differs")
+    evidence, release, verification = _release_install_components(
+        release_install_input_raw,
+        repository_root=repository_root,
+        historical=historical,
+    )
+    docs_ref = _file_ref(
+        documentation_raw_file_ref,
+        label="documentation_raw_file_ref",
+    )
+    capability_ref = _file_ref(capability_file_ref, label="capability_file_ref")
+    policy_ref = _file_ref(policy_file_ref, label="policy_file_ref")
+    transaction_ref = _file_ref(
+        capture_transaction_file_ref,
+        label="capture_transaction_file_ref",
+    )
+    raw_refs = _rooted_file_refs(
+        provider_raw_file_refs,
+        root_name=root_name,
+        label="provider_raw_file_refs",
+    )
+    capture_refs = _rooted_file_refs(
+        provider_capture_file_refs,
+        root_name=root_name,
+        label="provider_capture_file_refs",
+    )
+    verification_sha = _sha256(canonical_json_bytes(verification))
+    evidence_payload = evidence["payload"]
+    expected = {
+        "state": "EXECUTED",
+        "deployed_release_ref": object_ref_for_artifact(release),
+        "release_install_evidence_ref": object_ref_for_artifact(evidence),
+        "release_install_verification_sha256": verification_sha,
+        "final_commit": evidence_payload["final_commit"],
+        "final_tree": evidence_payload["final_tree"],
+        "wheel_sha256": verification["wheel_sha256"],
+        "installed_code_manifest_sha256": verification["installed_code_manifest_sha256"],
+        "contract_catalog_sha256": verification["contract_catalog_sha256"],
+        "installed_import_origin": verification["import_origin"],
+        "operator_relative_path": COMPILER_RELATIVE_PATH,
+        "documentation_raw_file_ref": docs_ref,
+        "capability_file_ref": capability_ref,
+        "policy_file_ref": policy_ref,
+        "provider_raw_file_refs": raw_refs,
+        "provider_capture_file_refs": capture_refs,
+        "capture_transaction_file_ref": transaction_ref,
+        "network_call_count": 4,
+        "operation_spec": dict(_OPERATOR_SPEC),
+        "source_limitations": list(SOURCE_LIMITATIONS),
+    }
+    if any(payload[field] != value for field, value in expected.items()):
+        raise SystemContractError("trusted-provider capture execution binding differs")
+    started = _timestamp(payload["observed_started_at"], label="observed_started_at")
+    completed = _timestamp(
+        payload["observed_completed_at"],
+        label="observed_completed_at",
+    )
+    if completed < started or artifact["created_at"] != completed:
+        raise SystemContractError("trusted-provider capture execution time differs")
+    if not historical and (
+        payload["operator_code_sha256"] != compiler_code_sha256()
+        or payload["operator_ast_sha256"] != compiler_ast_sha256()
+    ):
+        raise SystemSecurityError("trusted-provider capture operator drifted")
+    _sha(payload["operator_code_sha256"], label="operator_code_sha256")
+    _sha(payload["operator_ast_sha256"], label="operator_ast_sha256")
+    identity_body = dict(payload)
+    identity = identity_body.pop("capture_execution_id")
+    if identity != "tushare-calendar-execution-" + _sha256(canonical_json_bytes(identity_body)):
+        raise SystemContractError("trusted-provider capture execution identity differs")
+    return artifact
+
+
+def build_trusted_provider_calendar_capture_success(
+    *,
+    capture_root_name: str,
+    capture_transaction_file_ref: Mapping[str, Any],
+    capture_execution_file_ref: Mapping[str, Any],
+    published_leaf_file_refs: Sequence[Mapping[str, Any]],
+    observed_completed_at: str,
+) -> dict[str, Any]:
+    root_name = _identifier(capture_root_name, label="capture_root_name")
+    transaction_ref = _file_ref(
+        capture_transaction_file_ref,
+        label="capture_transaction_file_ref",
+    )
+    execution_ref = _file_ref(
+        capture_execution_file_ref,
+        label="capture_execution_file_ref",
+    )
+    leaves = _rooted_file_refs(
+        published_leaf_file_refs,
+        root_name=root_name,
+        label="published_leaf_file_refs",
+    )
+    if transaction_ref not in leaves or execution_ref not in leaves:
+        raise SystemContractError("capture success omits authority leaves")
+    body = {
+        "state": "COMPLETE",
+        "capture_root_name": root_name,
+        "capture_transaction_file_ref": transaction_ref,
+        "capture_execution_file_ref": execution_ref,
+        "published_leaf_file_refs": leaves,
+        "published_leaves_sha256": _sha256(canonical_json_bytes(leaves)),
+        "observed_completed_at": _timestamp(
+            observed_completed_at,
+            label="observed_completed_at",
+        ),
+    }
+    artifact = seal_artifact(
+        CAPTURE_SUCCESS_KIND,
+        {
+            "capture_success_id": "tushare-calendar-success-" + _sha256(canonical_json_bytes(body)),
+            **body,
+        },
+        created_at=body["observed_completed_at"],
+    )
+    return validate_trusted_provider_calendar_capture_success(
+        artifact,
+        capture_transaction_file_ref=transaction_ref,
+        capture_execution_file_ref=execution_ref,
+        published_leaf_file_refs=leaves,
+    )
+
+
+def validate_trusted_provider_calendar_capture_success(
+    document: Mapping[str, Any] | bytes,
+    *,
+    capture_transaction_file_ref: Mapping[str, Any],
+    capture_execution_file_ref: Mapping[str, Any],
+    published_leaf_file_refs: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    artifact = _artifact(document, CAPTURE_SUCCESS_KIND)
+    payload = artifact["payload"]
+    root_name = _identifier(payload["capture_root_name"], label="capture_root_name")
+    transaction_ref = _file_ref(
+        capture_transaction_file_ref,
+        label="capture_transaction_file_ref",
+    )
+    execution_ref = _file_ref(
+        capture_execution_file_ref,
+        label="capture_execution_file_ref",
+    )
+    leaves = _rooted_file_refs(
+        published_leaf_file_refs,
+        root_name=root_name,
+        label="published_leaf_file_refs",
+    )
+    expected = {
+        "state": "COMPLETE",
+        "capture_transaction_file_ref": transaction_ref,
+        "capture_execution_file_ref": execution_ref,
+        "published_leaf_file_refs": leaves,
+        "published_leaves_sha256": _sha256(canonical_json_bytes(leaves)),
+    }
+    if (
+        any(payload[field] != value for field, value in expected.items())
+        or transaction_ref not in leaves
+        or execution_ref not in leaves
+    ):
+        raise SystemContractError("trusted-provider capture success binding differs")
+    completed = _timestamp(
+        payload["observed_completed_at"],
+        label="observed_completed_at",
+    )
+    if artifact["created_at"] != completed:
+        raise SystemContractError("trusted-provider capture success time differs")
+    identity_body = dict(payload)
+    identity = identity_body.pop("capture_success_id")
+    if identity != "tushare-calendar-success-" + _sha256(canonical_json_bytes(identity_body)):
+        raise SystemContractError("trusted-provider capture success identity differs")
+    return artifact
+
+
 def _official_documentation_fetch() -> tuple[bytes, int, Mapping[str, str], bool, Sequence[str]]:
     connection: http.client.HTTPSConnection | None = None
     try:
@@ -1236,93 +1680,290 @@ def _official_documentation_fetch() -> tuple[bytes, int, Mapping[str, str], bool
                 pass
 
 
-def _secure_parent(path: Path) -> None:
-    try:
-        metadata = os.lstat(path)
-    except OSError as exc:
-        raise SystemSecurityError("trusted-provider capture parent is unavailable") from exc
-    if (
-        not stat.S_ISDIR(metadata.st_mode)
-        or stat.S_ISLNK(metadata.st_mode)
-        or metadata.st_uid != os.geteuid()
-        or stat.S_IMODE(metadata.st_mode) != 0o700
-    ):
-        raise SystemSecurityError("trusted-provider capture parent is not owner-only")
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _write_leaf_once(
-    root: Path,
-    relative: str,
-    raw: bytes,
-    *,
-    reference_prefix: str | None = None,
-) -> dict[str, str]:
-    target = root / relative
-    target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    current = root
-    for part in Path(relative).parts[:-1]:
-        current = current / part
-        os.chmod(current, 0o700, follow_symlinks=False)
-    descriptor = os.open(
-        target,
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
-        0o600,
+def _stat_identity(value: os.stat_result) -> tuple[int, int, int, int, int, int]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_uid,
+        value.st_nlink,
+        value.st_size,
     )
+
+
+def _directory_identity(value: os.stat_result) -> tuple[int, int, int, int]:
+    return (value.st_dev, value.st_ino, value.st_mode, value.st_uid)
+
+
+def _verify_owner_directory(value: os.stat_result, *, exact_mode: bool) -> None:
+    mode = stat.S_IMODE(value.st_mode)
+    if not stat.S_ISDIR(value.st_mode):
+        raise SystemSecurityError("trusted-provider capture directory is unsafe")
+    if exact_mode:
+        if value.st_uid != os.geteuid() or mode != 0o700:
+            raise SystemSecurityError("trusted-provider capture directory is unsafe")
+        return
+    root_sticky_directory = value.st_uid == 0 and bool(mode & stat.S_ISVTX)
+    if value.st_uid not in {0, os.geteuid()} or (mode & 0o022 and not root_sticky_directory):
+        raise SystemSecurityError("trusted-provider capture ancestor is unsafe")
+
+
+def _verify_owner_file(value: os.stat_result) -> None:
+    if (
+        not stat.S_ISREG(value.st_mode)
+        or value.st_uid != os.geteuid()
+        or value.st_nlink != 1
+        or stat.S_IMODE(value.st_mode) != 0o600
+    ):
+        raise SystemSecurityError("trusted-provider capture file is unsafe")
+
+
+def _open_pinned_absolute_directory(path: Path) -> int:
+    if not path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts[1:]):
+        raise SystemSecurityError("trusted-provider capture parent must be canonical absolute")
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open("/", flags)
     try:
+        for part in path.parts[1:]:
+            child = os.open(part, flags, dir_fd=descriptor)
+            _verify_owner_directory(os.fstat(child), exact_mode=False)
+            os.close(descriptor)
+            descriptor = child
+        _verify_owner_directory(os.fstat(descriptor), exact_mode=True)
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _read_fd_exact(descriptor: int, *, expected: bytes) -> None:
+    before = os.fstat(descriptor)
+    _verify_owner_file(before)
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    chunks: list[bytes] = []
+    total = 0
+    while total <= len(expected):
+        chunk = os.read(descriptor, min(1024 * 1024, len(expected) + 1 - total))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+    after = os.fstat(descriptor)
+    if _stat_identity(before) != _stat_identity(after) or b"".join(chunks) != expected:
+        raise SystemSecurityError("trusted-provider capture descriptor readback differs")
+
+
+def _write_fd_leaf(directory_fd: int, leaf: str, raw: bytes) -> None:
+    if "/" in leaf or leaf in {"", ".", ".."} or type(raw) is not bytes or not raw:
+        raise SystemSecurityError("trusted-provider capture leaf is invalid")
+    flags = (
+        os.O_RDWR
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    descriptor = os.open(leaf, flags, 0o600, dir_fd=directory_fd)
+    try:
+        os.fchmod(descriptor, 0o600)
         view = memoryview(raw)
         while view:
             written = os.write(descriptor, view)
             if written <= 0:
-                raise SystemSecurityError("trusted-provider capture write made no progress")
+                raise SystemStorageError("trusted-provider capture write made no progress")
             view = view[written:]
         os.fsync(descriptor)
+        _read_fd_exact(descriptor, expected=raw)
+        path_stat = os.stat(leaf, dir_fd=directory_fd, follow_symlinks=False)
+        if _stat_identity(path_stat) != _stat_identity(os.fstat(descriptor)):
+            raise SystemSecurityError("trusted-provider capture leaf path drifted")
     finally:
         os.close(descriptor)
-    metadata = os.lstat(target)
-    if (
-        not stat.S_ISREG(metadata.st_mode)
-        or stat.S_ISLNK(metadata.st_mode)
-        or metadata.st_uid != os.geteuid()
-        or metadata.st_nlink != 1
-        or stat.S_IMODE(metadata.st_mode) != 0o600
-        or target.read_bytes() != raw
-    ):
-        raise SystemSecurityError("trusted-provider capture leaf readback failed")
-    return _file_ref(
-        {
-            "relative_path": (
-                relative if reference_prefix is None else f"{reference_prefix}/{relative}"
-            ),
-            "byte_sha256": _sha256(raw),
-        },
-        label="captured leaf",
-    )
 
 
-def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+def _read_directory_files(
+    directory_fd: int,
+    *,
+    expected: Mapping[str, bytes],
+) -> None:
+    with os.scandir(directory_fd) as entries:
+        names = sorted(entry.name for entry in entries)
+    if names != sorted(expected):
+        raise SystemSecurityError("trusted-provider capture directory topology differs")
+    for leaf, raw in sorted(expected.items()):
+        descriptor = os.open(
+            leaf,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+            dir_fd=directory_fd,
+        )
+        try:
+            _read_fd_exact(descriptor, expected=raw)
+            path_stat = os.stat(leaf, dir_fd=directory_fd, follow_symlinks=False)
+            if _stat_identity(path_stat) != _stat_identity(os.fstat(descriptor)):
+                raise SystemSecurityError("trusted-provider capture path identity differs")
+        finally:
+            os.close(descriptor)
+
+
+def _rename_no_replace(parent_fd: int, source: str, target: str) -> None:
+    library = ctypes.CDLL(None, use_errno=True)
+    result: int
+    if hasattr(library, "renameatx_np"):
+        function = library.renameatx_np
+        function.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        function.restype = ctypes.c_int
+        result = function(parent_fd, source.encode(), parent_fd, target.encode(), 0x00000004)
+    elif hasattr(library, "renameat2"):
+        function = library.renameat2
+        function.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        function.restype = ctypes.c_int
+        result = function(parent_fd, source.encode(), parent_fd, target.encode(), 1)
+    else:
+        raise SystemSecurityError("atomic no-replace rename is unavailable")
+    if result != 0:
+        observed = ctypes.get_errno()
+        if observed in {errno.EEXIST, errno.ENOTEMPTY}:
+            raise SystemPreconditionError("trusted-provider capture destination exists")
+        raise SystemStorageError("trusted-provider capture no-replace publication failed")
+
+
+def _file_reference(root_name: str, leaf: str, raw: bytes) -> dict[str, str]:
+    return {
+        "relative_path": f"{root_name}/{leaf}",
+        "byte_sha256": _sha256(raw),
+    }
+
+
+def _open_capture_lock(parent_fd: int) -> int:
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    for _attempt in range(3):
+        try:
+            return os.open(
+                ".tushare-calendar-capture.lock",
+                flags,
+                0o600,
+                dir_fd=parent_fd,
+            )
+        except FileNotFoundError:
+            continue
+    raise SystemStorageError("trusted-provider capture lock could not be opened")
+
+
+def _publish_capture_tree(
+    *,
+    parent: Path,
+    root_name: str,
+    files: Mapping[str, bytes],
+    success_builder: Callable[[str], bytes],
+) -> bytes:
+    parent_fd = _open_pinned_absolute_directory(parent)
+    parent_identity = _directory_identity(os.fstat(parent_fd))
+    lock_fd: int | None = None
+    staging_fd: int | None = None
+    final_fd: int | None = None
+    staging = f".{root_name}.staging-{os.getpid()}-{secrets.token_hex(8)}"
+    published = False
     try:
-        os.fsync(descriptor)
+        lock_fd = _open_capture_lock(parent_fd)
+        os.fchmod(lock_fd, 0o600)
+        _verify_owner_file(os.fstat(lock_fd))
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        lock_path_stat = os.stat(
+            ".tushare-calendar-capture.lock",
+            dir_fd=parent_fd,
+            follow_symlinks=False,
+        )
+        if _stat_identity(lock_path_stat) != _stat_identity(os.fstat(lock_fd)):
+            raise SystemSecurityError("trusted-provider capture lock path drifted")
+        try:
+            os.stat(root_name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise SystemPreconditionError("trusted-provider capture destination exists")
+        os.mkdir(staging, mode=0o700, dir_fd=parent_fd)
+        staging_fd = os.open(
+            staging,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=parent_fd,
+        )
+        os.fchmod(staging_fd, 0o700)
+        _verify_owner_directory(os.fstat(staging_fd), exact_mode=True)
+        if os.fstat(staging_fd).st_dev != os.fstat(parent_fd).st_dev:
+            raise SystemSecurityError("trusted-provider capture crosses a device")
+        for leaf, raw in sorted(files.items()):
+            _write_fd_leaf(staging_fd, leaf, raw)
+        _read_directory_files(staging_fd, expected=files)
+        os.fsync(staging_fd)
+        staging_identity = _stat_identity(os.fstat(staging_fd))
+        if _directory_identity(os.fstat(parent_fd)) != parent_identity:
+            raise SystemSecurityError("trusted-provider capture parent drifted")
+        _rename_no_replace(parent_fd, staging, root_name)
+        published = True
+        os.fsync(parent_fd)
+        final_fd = os.open(
+            root_name,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=parent_fd,
+        )
+        if _stat_identity(os.fstat(final_fd)) != staging_identity:
+            raise SystemSecurityError("trusted-provider capture directory inode drifted")
+        _read_directory_files(final_fd, expected=files)
+        success_raw = success_builder(_utc_now())
+        if type(success_raw) is not bytes or not success_raw:
+            raise SystemSecurityError("trusted-provider capture success bytes are invalid")
+        _write_fd_leaf(final_fd, "capture-success.json", success_raw)
+        os.fsync(final_fd)
+        _read_directory_files(
+            final_fd,
+            expected={**files, "capture-success.json": success_raw},
+        )
+        os.fsync(parent_fd)
+        return success_raw
     finally:
-        os.close(descriptor)
-
-
-def _capture_readback(root: Path, expected_refs: Sequence[Mapping[str, Any]]) -> None:
-    observed_device = os.lstat(root).st_dev
-    for reference in expected_refs:
-        normalized = _file_ref(reference, label="capture readback ref")
-        path = root / normalized["relative_path"]
-        metadata = os.lstat(path)
-        if (
-            metadata.st_dev != observed_device
-            or not stat.S_ISREG(metadata.st_mode)
-            or stat.S_ISLNK(metadata.st_mode)
-            or metadata.st_uid != os.geteuid()
-            or metadata.st_nlink != 1
-            or stat.S_IMODE(metadata.st_mode) != 0o600
-            or _sha256(path.read_bytes()) != normalized["byte_sha256"]
-        ):
-            raise SystemSecurityError("trusted-provider capture final readback failed")
+        if final_fd is not None:
+            os.close(final_fd)
+        if staging_fd is not None:
+            os.close(staging_fd)
+        if lock_fd is not None:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            finally:
+                os.close(lock_fd)
+        if not published:
+            try:
+                cleanup_fd = os.open(
+                    staging,
+                    os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+                    dir_fd=parent_fd,
+                )
+                try:
+                    with os.scandir(cleanup_fd) as entries:
+                        names = [entry.name for entry in entries]
+                    for name in names:
+                        os.unlink(name, dir_fd=cleanup_fd)
+                finally:
+                    os.close(cleanup_fd)
+                os.rmdir(staging, dir_fd=parent_fd)
+            except FileNotFoundError:
+                pass
+        os.close(parent_fd)
 
 
 def capture_trusted_provider_calendar_evidence(  # noqa: C901
@@ -1330,78 +1971,48 @@ def capture_trusted_provider_calendar_evidence(  # noqa: C901
     capture_parent: str | os.PathLike[str],
     capture_root_name: str,
     cutoff_date: str,
-    captured_at: str,
-    client: OfficialTushareHttpsClient | Any | None = None,
-    documentation_fetcher: DocumentationFetcher | None = None,
+    release_install_input_raw: bytes,
+    expected_release_install_input_sha256: str,
+    repository_root: str | os.PathLike[str],
 ) -> dict[str, Any]:
-    """Publish one all-or-nothing docs + SSE/SZSE/BSE capture transaction.
-
-    The caller must use an installed, non-editable release.  This function
-    writes only beneath the explicitly supplied owner-only capture parent.
-    """
+    """Capture through the fixed production operator and publish exact evidence."""
 
     parent = Path(capture_parent)
     if not parent.is_absolute():
         raise SystemSecurityError("trusted-provider capture parent must be absolute")
-    parent = parent.resolve(strict=True)
-    _secure_parent(parent)
     root_name = _identifier(capture_root_name, label="capture_root_name")
     if "/" in root_name or root_name.startswith("."):
         raise SystemSecurityError("trusted-provider capture root name is invalid")
-    final_root = parent / root_name
-    if final_root.exists():
-        raise SystemPreconditionError("trusted-provider capture destination already exists")
+    expected_input_sha = _sha(
+        expected_release_install_input_sha256,
+        label="expected_release_install_input_sha256",
+    )
+    if _sha256(release_install_input_raw) != expected_input_sha:
+        raise SystemSecurityError("release install input SHA differs")
+    observed_started_at = _utc_now()
+    _release_install_components(
+        release_install_input_raw,
+        repository_root=repository_root,
+        require_current_operator=True,
+    )
     capture_start = RUNTIME_START_DATE - timedelta(days=CAPTURE_PREHISTORY_DAYS)
     cutoff = _date(cutoff_date, label="cutoff_date")
-    timestamp = _timestamp(captured_at, label="captured_at")
     if cutoff < RUNTIME_START_DATE:
         raise SystemPreconditionError("trusted-provider capture cutoff is invalid")
-    staging = parent / f".{root_name}.staging-{os.getpid()}-{secrets.token_hex(8)}"
-    failure = parent / f".{root_name}.failed-{os.getpid()}-{secrets.token_hex(8)}"
-    lock_path = parent / ".tushare-calendar-capture.lock"
-    lock_descriptor = os.open(
-        lock_path,
-        os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
-        0o600,
-    )
-    os.chmod(lock_path, 0o600, follow_symlinks=False)
-    os.mkdir(staging, mode=0o700)
-    leaves: list[dict[str, str]] = []
-    network_calls = 0
     try:
-        fcntl.flock(lock_descriptor, fcntl.LOCK_EX)
-        if final_root.exists():
-            raise SystemPreconditionError("trusted-provider capture lost exact-once race")
-        fetcher = documentation_fetcher or _official_documentation_fetch
-        docs_raw, docs_status, docs_headers, docs_tls, docs_redirects = fetcher()
-        network_calls += 1
-        if len(docs_raw) > 4 * 1024 * 1024:
+        docs_raw, docs_status, docs_headers, docs_tls, docs_redirects = (
+            _official_documentation_fetch()
+        )
+        if type(docs_raw) is not bytes or not docs_raw or len(docs_raw) > 4 * 1024 * 1024:
             raise SystemSecurityError("trusted-provider documentation exceeds capture bound")
-        docs_ref = _write_leaf_once(
-            staging,
-            "raw/trade-cal-documentation.html",
-            docs_raw,
-            reference_prefix=root_name,
-        )
-        leaves.append(docs_ref)
-        capability = build_trusted_provider_calendar_capability(
-            docs_raw=docs_raw,
-            docs_raw_file_ref=docs_ref,
-            docs_captured_at=timestamp,
-            docs_http_status=docs_status,
-            docs_tls_verified=docs_tls,
-            docs_redirect_chain=docs_redirects,
-            docs_response_headers=docs_headers,
-            created_at=timestamp,
-        )
-        policy = build_calendar_authority_policy(created_at=timestamp)
-        provider = client or OfficialTushareHttpsClient(
+        provider = OfficialTushareHttpsClient(
             strict_decimal_decode=True,
             max_response_items=2_000,
+            max_response_bytes=_CALENDAR_RESPONSE_MAX_BYTES,
         )
-        raw_refs: list[dict[str, str]] = []
-        capture_refs: list[dict[str, str]] = []
+        raw_values: dict[str, bytes] = {}
         aggregate = len(docs_raw)
+        responses: dict[str, Any] = {}
         for exchange in (*DIRECT_EXCHANGES, *PROBE_EXCHANGES):
             parameters = {
                 "end_date": cutoff.strftime("%Y%m%d"),
@@ -1413,146 +2024,182 @@ def capture_trusted_provider_calendar_evidence(  # noqa: C901
                 params=parameters,
                 expected_fields=EXPECTED_FIELDS,
             )
-            network_calls += 1
             raw = response.raw_body
-            if len(raw) > 4 * 1024 * 1024:
+            if type(raw) is not bytes or not raw or len(raw) > _CALENDAR_RESPONSE_MAX_BYTES:
                 raise SystemSecurityError("trusted-provider response exceeds capture bound")
             aggregate += len(raw)
-            if aggregate > 16 * 1024 * 1024:
+            if aggregate > _CALENDAR_AGGREGATE_MAX_BYTES:
                 raise SystemSecurityError("trusted-provider aggregate capture bound exceeded")
-            raw_ref = _write_leaf_once(
-                staging,
-                f"raw/trade-cal-{exchange.lower()}.json",
+            raw_values[exchange] = raw
+            responses[exchange] = parameters
+        captured_at = _utc_now()
+        docs_ref = _file_reference(root_name, "documentation.raw", docs_raw)
+        release_input_ref = _file_reference(
+            root_name,
+            "release-install-input.json",
+            release_install_input_raw,
+        )
+        capability = build_trusted_provider_calendar_capability(
+            docs_raw=docs_raw,
+            docs_raw_file_ref=docs_ref,
+            docs_captured_at=captured_at,
+            docs_http_status=docs_status,
+            docs_tls_verified=docs_tls,
+            docs_redirect_chain=docs_redirects,
+            docs_response_headers=docs_headers,
+            created_at=captured_at,
+        )
+        capability_raw = canonical_json_bytes(capability)
+        capability_ref = _file_reference(root_name, "capability.json", capability_raw)
+        policy = build_calendar_authority_policy(
+            created_at=captured_at,
+            pit_exchange_ids=DEGRADED_PIT_EXCHANGES,
+            provider_capability=capability,
+        )
+        policy_raw = canonical_json_bytes(policy)
+        policy_ref = _file_reference(root_name, "policy.json", policy_raw)
+        raw_refs: list[dict[str, str]] = []
+        capture_refs: list[dict[str, str]] = []
+        captures: dict[str, bytes] = {}
+        for exchange in (*DIRECT_EXCHANGES, *PROBE_EXCHANGES):
+            raw = raw_values[exchange]
+            raw_ref = _file_reference(
+                root_name,
+                f"response-{exchange.lower()}.raw",
                 raw,
-                reference_prefix=root_name,
             )
-            leaves.append(raw_ref)
-            raw_refs.append(raw_ref)
             capture = build_trusted_provider_calendar_capture(
                 exchange_id=exchange,
                 raw=raw,
                 raw_file_ref=raw_ref,
                 capability=capability,
                 docs_raw=docs_raw,
-                captured_at=timestamp,
+                captured_at=captured_at,
                 capture_start_date=capture_start.isoformat(),
                 cutoff_date=cutoff.isoformat(),
-                request_parameters_sanitized=parameters,
+                request_parameters_sanitized=responses[exchange],
                 response_headers={},
-                created_at=timestamp,
+                created_at=captured_at,
             )
-            capture_ref = _write_leaf_once(
-                staging,
-                f"artifacts/trade-cal-{exchange.lower()}-capture.json",
-                canonical_json_bytes(capture),
-                reference_prefix=root_name,
+            capture_raw = canonical_json_bytes(capture)
+            capture_ref = _file_reference(
+                root_name,
+                f"capture-{exchange.lower()}.json",
+                capture_raw,
             )
-            leaves.append(capture_ref)
+            raw_refs.append(raw_ref)
             capture_refs.append(capture_ref)
-        capability_ref = _write_leaf_once(
-            staging,
-            "artifacts/trade-cal-capability.json",
-            canonical_json_bytes(capability),
-            reference_prefix=root_name,
-        )
-        policy_ref = _write_leaf_once(
-            staging,
-            "artifacts/calendar-authority-policy.json",
-            canonical_json_bytes(policy),
-            reference_prefix=root_name,
-        )
-        leaves.extend((capability_ref, policy_ref))
-        raw_refs = sorted(raw_refs, key=lambda row: row["relative_path"])
-        capture_refs = sorted(capture_refs, key=lambda row: row["relative_path"])
-        if network_calls != 4:
-            raise SystemPreconditionError("trusted-provider capture call count differs")
+            captures[exchange] = capture_raw
+        raw_refs.sort(key=lambda row: row["relative_path"])
+        capture_refs.sort(key=lambda row: row["relative_path"])
         transaction = build_trusted_provider_calendar_capture_transaction(
             capture_root_name=root_name,
             capture_start_date=capture_start.isoformat(),
             cutoff_date=cutoff.isoformat(),
-            captured_at=timestamp,
+            captured_at=captured_at,
             documentation_raw_file_ref=docs_ref,
             capability_file_ref=capability_ref,
             policy_file_ref=policy_ref,
             provider_raw_file_refs=raw_refs,
             provider_capture_file_refs=capture_refs,
         )
-        transaction_ref = _write_leaf_once(
-            staging,
+        transaction_raw = canonical_json_bytes(transaction)
+        transaction_ref = _file_reference(
+            root_name,
             "capture-transaction.json",
-            canonical_json_bytes(transaction),
-            reference_prefix=root_name,
+            transaction_raw,
         )
-        leaves.append(transaction_ref)
-        for directory in sorted(
-            (path for path in staging.rglob("*") if path.is_dir()), reverse=True
-        ):
-            _fsync_directory(directory)
-        _fsync_directory(staging)
-        if os.lstat(staging).st_dev != os.lstat(parent).st_dev or final_root.exists():
-            raise SystemSecurityError("trusted-provider capture publication device drifted")
-        os.rename(staging, final_root)
-        _fsync_directory(parent)
-        _capture_readback(parent, leaves)
+        observed_completed_at = _utc_now()
+        execution = build_trusted_provider_calendar_capture_execution(
+            capture_root_name=root_name,
+            release_install_input_raw=release_install_input_raw,
+            release_install_input_file_ref=release_input_ref,
+            repository_root=repository_root,
+            documentation_raw_file_ref=docs_ref,
+            capability_file_ref=capability_ref,
+            policy_file_ref=policy_ref,
+            provider_raw_file_refs=raw_refs,
+            provider_capture_file_refs=capture_refs,
+            capture_transaction_file_ref=transaction_ref,
+            observed_started_at=observed_started_at,
+            observed_completed_at=observed_completed_at,
+        )
+        execution_raw = canonical_json_bytes(execution)
+        execution_ref = _file_reference(root_name, "capture-execution.json", execution_raw)
+        files = {
+            "documentation.raw": docs_raw,
+            "release-install-input.json": release_install_input_raw,
+            "capability.json": capability_raw,
+            "policy.json": policy_raw,
+            "response-sse.raw": raw_values["SSE"],
+            "response-szse.raw": raw_values["SZSE"],
+            "response-bse.raw": raw_values["BSE"],
+            "capture-sse.json": captures["SSE"],
+            "capture-szse.json": captures["SZSE"],
+            "capture-bse.json": captures["BSE"],
+            "capture-transaction.json": transaction_raw,
+            "capture-execution.json": execution_raw,
+        }
+        published_refs = sorted(
+            (_file_reference(root_name, leaf, raw) for leaf, raw in files.items()),
+            key=lambda row: row["relative_path"],
+        )
+
+        def success_builder(observed_completed_at: str) -> bytes:
+            return canonical_json_bytes(
+                build_trusted_provider_calendar_capture_success(
+                    capture_root_name=root_name,
+                    capture_transaction_file_ref=transaction_ref,
+                    capture_execution_file_ref=execution_ref,
+                    published_leaf_file_refs=published_refs,
+                    observed_completed_at=observed_completed_at,
+                )
+            )
+
+        success_raw = _publish_capture_tree(
+            parent=parent,
+            root_name=root_name,
+            files=files,
+            success_builder=success_builder,
+        )
+        success = validate_trusted_provider_calendar_capture_success(
+            success_raw,
+            capture_transaction_file_ref=transaction_ref,
+            capture_execution_file_ref=execution_ref,
+            published_leaf_file_refs=published_refs,
+        )
+        success_ref = _file_reference(root_name, "capture-success.json", success_raw)
         return {
             "status": "CAPTURED",
-            "capture_root": str(final_root),
+            "capture_root": str(parent / root_name),
             "capture_transaction": transaction,
             "capture_transaction_file_ref": transaction_ref,
+            "capture_execution": execution,
+            "capture_execution_file_ref": execution_ref,
+            "capture_success": success,
+            "capture_success_file_ref": success_ref,
+            "release_install_input_file_ref": release_input_ref,
             "calendar_authority_policy_file_ref": policy_ref,
             "trusted_provider_calendar_capability_file_ref": capability_ref,
             "trusted_provider_calendar_raw_file_refs": [docs_ref, *raw_refs],
             "trusted_provider_calendar_capture_file_refs": capture_refs,
-            "network_call_count": network_calls,
+            "network_call_count": 4,
         }
+    except (SystemContractError, SystemPreconditionError, SystemSecurityError):
+        raise
+    except TushareHttpsError as exc:
+        raise SystemPreconditionError(exc.code) from exc
     except BaseException as exc:
-        error_code = (
-            exc.code
-            if isinstance(exc, TushareHttpsError)
-            else "TRUSTED_PROVIDER_CALENDAR_CAPTURE_FAILED"
-        )
-        if staging.exists():
-            failure_body = {
-                "state": "FAILED_INADMISSIBLE",
-                "capture_root_name": root_name,
-                "failed_at": timestamp,
-                "error_code": error_code,
-                "success_root_published": False,
-            }
-            failure_artifact = seal_artifact(
-                CAPTURE_FAILURE_KIND,
-                {
-                    "capture_failure_id": "tushare-calendar-failure-"
-                    + _sha256(canonical_json_bytes(failure_body)),
-                    **failure_body,
-                },
-                created_at=timestamp,
-            )
-            try:
-                _write_leaf_once(
-                    staging,
-                    "capture-failure.json",
-                    canonical_json_bytes(failure_artifact),
-                )
-                _fsync_directory(staging)
-                if not failure.exists():
-                    os.rename(staging, failure)
-                    _fsync_directory(parent)
-            except BaseException:
-                pass
         raise SystemPreconditionError("TRUSTED_PROVIDER_CALENDAR_CAPTURE_FAILED") from exc
-    finally:
-        try:
-            fcntl.flock(lock_descriptor, fcntl.LOCK_UN)
-        finally:
-            os.close(lock_descriptor)
 
 
 __all__ = [
     "AUTHORITY_ROUTE",
     "AUTHORITY_TIER",
     "CAPABILITY_KIND",
+    "CAPTURE_EXECUTION_KIND",
     "CAPTURE_KIND",
+    "CAPTURE_SUCCESS_KIND",
     "COMPILATION_KIND",
     "DIRECT_EXCHANGES",
     "DOCS_URL",
@@ -1565,6 +2212,8 @@ __all__ = [
     "build_calendar_authority_policy",
     "build_trusted_provider_calendar_capability",
     "build_trusted_provider_calendar_capture",
+    "build_trusted_provider_calendar_capture_execution",
+    "build_trusted_provider_calendar_capture_success",
     "build_trusted_provider_calendar_capture_transaction",
     "build_trusted_provider_calendar_compilation",
     "calendar_source_limitations",
@@ -1575,6 +2224,8 @@ __all__ = [
     "validate_calendar_authority_policy",
     "validate_trusted_provider_calendar_capability",
     "validate_trusted_provider_calendar_capture",
+    "validate_trusted_provider_calendar_capture_execution",
+    "validate_trusted_provider_calendar_capture_success",
     "validate_trusted_provider_calendar_capture_transaction",
     "validate_trusted_provider_calendar_compilation",
 ]

@@ -398,14 +398,13 @@ def _build_parser() -> argparse.ArgumentParser:
     system_calendar_capture_parser.add_argument("--capture-parent", required=True)
     system_calendar_capture_parser.add_argument("--capture-root-name", required=True)
     system_calendar_capture_parser.add_argument("--cutoff-date", required=True)
-    system_calendar_capture_parser.add_argument("--captured-at", required=True)
     system_calendar_capture_parser.add_argument(
-        "--release-install-evidence",
+        "--release-install-input",
         required=True,
         type=_workspace_relative_canonical_path,
     )
     system_calendar_capture_parser.add_argument(
-        "--expected-release-install-evidence-sha256",
+        "--expected-release-install-input-sha256",
         required=True,
         type=_sha256_argument,
     )
@@ -959,11 +958,8 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
                 capture_parent=args.capture_parent,
                 capture_root_name=args.capture_root_name,
                 cutoff_date=args.cutoff_date,
-                captured_at=args.captured_at,
-                release_install_evidence_path=args.release_install_evidence,
-                expected_release_install_evidence_sha256=(
-                    args.expected_release_install_evidence_sha256
-                ),
+                release_install_input_path=args.release_install_input,
+                expected_release_install_input_sha256=(args.expected_release_install_input_sha256),
             )
         )
         return

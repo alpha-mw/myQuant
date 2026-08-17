@@ -11,6 +11,7 @@ from typing import Any
 from quant_investor.contracts import canonical_json_bytes, contract_catalog_sha256
 from quant_investor.migration.authority import (
     _GATE_SPECS,
+    _seal_final_cutover_authorization,
     _seal_cutover_gate_evidence,
     REQUIRED_FINAL_PREFLIGHT_GATES,
     build_final_cutover_authorization,
@@ -23,8 +24,9 @@ from quant_investor.migration.migration import (
     build_pre_cas_migration_receipt,
 )
 from quant_investor.system.activation import build_activation_authorization
+from quant_investor.system.bootstrap_receipt import build_production_bootstrap_receipt
 from quant_investor.system.release_install import build_release_install_evidence
-from quant_investor.system.store import SystemStore
+from quant_investor.system.store import SystemStore, object_ref_for_artifact
 
 from test_unified_migration_custody import _inventory, _workspace
 
@@ -42,10 +44,8 @@ def _test_final_authorization(
     store: SystemStore,
     release_ref: dict[str, str],
     *,
-    calendar_authority_policy_ref: dict[str, str],
-    calendar_compilation_ref: dict[str, str],
-    calendar_capability_ref: dict[str, str] | None,
-    calendar_source_limitations: list[str],
+    production_generation_manifest: dict[str, Any],
+    production_bootstrap_receipt: dict[str, Any],
     created_at: str,
 ) -> dict[str, Any]:
     root = store.workspace_root
@@ -338,37 +338,65 @@ def _test_final_authorization(
         created_at=created_at,
     )
     adoption_ref = store.put_object(adoption)
-    final_authorization = build_final_cutover_authorization(
-        final_authorization_id="test-final-cutover",
-        accepted_baseline_commit=baseline_commit,
-        historical_integration_commit=baseline_commit,
-        historical_dirty_evidence_ref=release_ref,
-        concurrent_task_handoff_ref=None,
-        main_checkout_adoption_ref=adoption_ref,
-        legacy_disposition_ref=disposition_ref,
-        deployed_release_ref=release_ref,
-        calendar_authority_policy_ref=calendar_authority_policy_ref,
-        calendar_compilation_ref=calendar_compilation_ref,
-        calendar_capability_ref=calendar_capability_ref,
-        calendar_source_limitations=calendar_source_limitations,
-        release_commit=commit,
-        release_tree=tree,
-        final_integration_commit=commit,
-        final_integration_tree=tree,
-        ancestry_rows=sorted(
+    common = {
+        "final_authorization_id": "test-final-cutover",
+        "accepted_baseline_commit": baseline_commit,
+        "historical_integration_commit": baseline_commit,
+        "historical_dirty_evidence_ref": release_ref,
+        "concurrent_task_handoff_ref": None,
+        "main_checkout_adoption_ref": adoption_ref,
+        "legacy_disposition_ref": disposition_ref,
+        "deployed_release_ref": release_ref,
+        "release_commit": commit,
+        "release_tree": tree,
+        "final_integration_commit": commit,
+        "final_integration_tree": tree,
+        "ancestry_rows": sorted(
             [
                 {"ancestor": baseline_commit, "descendant": commit, "proved": True},
                 {"ancestor": commit, "descendant": commit, "proved": True},
             ],
             key=lambda row: (row["ancestor"], row["descendant"]),
         ),
-        excluded_commit_rows=[],
-        final_worktree_inventory_sha256=inventory_sha,
-        clean_checkout_readback_rows=readbacks,
-        user_authorization_basis="explicit test-only activation authorization",
-        preflight_evidence=gate_evidence,
-        created_at=created_at,
-    )
+        "excluded_commit_rows": [],
+        "final_worktree_inventory_sha256": inventory_sha,
+        "clean_checkout_readback_rows": readbacks,
+        "user_authorization_basis": "explicit test-only activation authorization",
+        "created_at": created_at,
+    }
+    production_receipt_ref = store.put_object(production_bootstrap_receipt)
+    if production_generation_manifest["payload"]["research_refs"] == [production_receipt_ref]:
+        final_authorization = build_final_cutover_authorization(
+            **common,
+            production_generation_manifest=production_generation_manifest,
+            production_bootstrap_receipt=production_bootstrap_receipt,
+            preflight_evidence=gate_evidence,
+        )
+    else:
+        receipt_payload = production_bootstrap_receipt["payload"]
+        final_authorization = _seal_final_cutover_authorization(
+            **common,
+            production_generation_manifest_ref=object_ref_for_artifact(
+                production_generation_manifest
+            ),
+            production_bootstrap_receipt_ref=production_receipt_ref,
+            calendar_authority_policy_ref=receipt_payload["calendar_authority_policy_ref"],
+            calendar_compilation_ref=receipt_payload["calendar_compilation_ref"],
+            calendar_capability_ref=receipt_payload["calendar_capability_ref"],
+            calendar_capture_execution_ref=receipt_payload["calendar_capture_execution_ref"],
+            calendar_authorization_basis=receipt_payload["calendar_authorization_basis"],
+            calendar_source_limitations=receipt_payload["calendar_source_limitations"],
+            preflight_rows=sorted(
+                [
+                    {
+                        "gate_id": evidence["payload"]["gate_id"],
+                        "evidence_ref": object_ref_for_artifact(evidence),
+                    }
+                    for evidence in gate_evidence
+                ],
+                key=lambda row: row["gate_id"],
+            ),
+        )
     store.put_object(final_authorization)
     return final_authorization
 
@@ -437,22 +465,91 @@ def prepare_initial_activation(
     research_refs = generation["manifest"]["payload"]["research_refs"]
     if calendar_binding_receipt_ref is not None or research_refs:
         production_receipt_ref = calendar_binding_receipt_ref or research_refs[0]
-        production_receipt = store.get_object(production_receipt_ref)["payload"]
+        production_receipt_document = store.get_object(production_receipt_ref)
     else:
         source_refs = generation["manifest"]["payload"]["factor_source_object_refs"]
-        production_receipt = {
-            "calendar_authority_policy_ref": source_refs[0],
-            "calendar_compilation_ref": source_refs[1],
-            "calendar_capability_ref": None,
-            "calendar_source_limitations": [],
+        basis = {
+            "authority_route": "EXCHANGE_OFFICIAL",
+            "policy_ref": source_refs[0],
+            "compilation_ref": source_refs[1],
+            "capability_ref": None,
+            "capture_execution_ref": None,
+            "source_limitations": [],
         }
+        production_receipt_document = build_production_bootstrap_receipt(
+            bootstrap_operator_request_ref=source_refs[0],
+            source_root_id="test-isolated-pointer-protocol",
+            input_source_rows=[
+                {
+                    "field": "calendar_authority_policy_file_ref",
+                    "ordinal": 0,
+                    "input_file_ref": {
+                        "relative_path": "test/calendar-policy.json",
+                        "byte_sha256": source_refs[0]["byte_sha256"],
+                    },
+                    "source_object_ref": source_refs[0],
+                }
+            ],
+            deployed_release_ref=release_ref,
+            calendar_authority_policy_ref=source_refs[0],
+            calendar_compilation_ref=source_refs[1],
+            calendar_capability_ref=None,
+            calendar_capture_execution_ref=None,
+            calendar_authorization_basis=basis,
+            calendar_source_limitations=[],
+            release_code_manifest_sha256=store.get_object(release_ref)["payload"][
+                "code_manifest_sha256"
+            ],
+            generation_created_at=generation["manifest"]["created_at"],
+            expected_assembly_id=generation["manifest"]["payload"]["assembly_id"],
+            generation_intent_sha256="1" * 64,
+            source_refs=generation["manifest"]["payload"]["source_refs"],
+            factor_source_object_refs=source_refs,
+            factor_policy_ref=generation["manifest"]["payload"]["factor_policy_ref"],
+            factor_evidence_refs=generation["manifest"]["payload"]["factor_evidence_refs"],
+            factor_active_set_ref=generation["manifest"]["payload"]["factor_active_set_ref"],
+            factor_validation_attestation_ref=generation["manifest"]["payload"][
+                "factor_validation_attestation_ref"
+            ],
+            readiness_matrix_ref=generation["manifest"]["payload"]["readiness_matrix_ref"],
+            emergency_controller_sha256=generation["manifest"]["payload"][
+                "emergency_controller_sha256"
+            ],
+            skill_tree_sha256=generation["manifest"]["payload"]["skill_tree_sha256"],
+            automation_semantic_sha256=generation["manifest"]["payload"][
+                "automation_semantic_sha256"
+            ],
+            source_blockers=[
+                "FUNDAMENTAL_HISTORY_MIXED",
+                "FUNDAMENTAL_HISTORY_NOT_HOMOGENEOUS",
+                "FUNDAMENTAL_LEGACY_DIRECT_READER_PROVENANCE_LIMITED",
+            ],
+            fundamental_machine_states={
+                "mixed": True,
+                "legacy_direct_reader_provenance": "limited",
+                "binding_aware_research_ready": True,
+                "homogeneous_history_ready": False,
+            },
+            signal_statistics=[
+                {
+                    "factor_id": "pv_low_dollar_volume_5d",
+                    "finite_count": 2,
+                    "distinct_finite_count": 2,
+                },
+                {
+                    "factor_id": "pv_blend_volstab19x2_mom90_amihud5_w80",
+                    "finite_count": 2,
+                    "distinct_finite_count": 2,
+                },
+            ],
+            assembler_code_sha256="2" * 64,
+            created_at=prepared_at,
+        )
     final_authorization = _test_final_authorization(
         store,
         release_ref,
-        calendar_authority_policy_ref=production_receipt["calendar_authority_policy_ref"],
-        calendar_compilation_ref=production_receipt["calendar_compilation_ref"],
-        calendar_capability_ref=production_receipt["calendar_capability_ref"],
-        calendar_source_limitations=production_receipt["calendar_source_limitations"],
+        production_generation_manifest=generation["manifest"],
+        production_bootstrap_receipt=production_receipt_document,
         created_at=prepared_at,
     )
     authorization = build_activation_authorization(

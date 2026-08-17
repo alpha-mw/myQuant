@@ -42,10 +42,30 @@ def _isolate_pointer_protocol_from_production_source_gate(
 ) -> None:
     """These tests exercise suspension mechanics, not source admission."""
 
+    def isolated_receipt(**kwargs: Any) -> dict[str, Any]:
+        sources = kwargs["verified_generation"]["manifest"]["payload"]["factor_source_object_refs"]
+        return {
+            "payload": {
+                "calendar_authority_policy_ref": sources[0],
+                "calendar_compilation_ref": sources[1],
+                "calendar_capability_ref": None,
+                "calendar_capture_execution_ref": None,
+                "calendar_authorization_basis": {
+                    "authority_route": "EXCHANGE_OFFICIAL",
+                    "policy_ref": sources[0],
+                    "compilation_ref": sources[1],
+                    "capability_ref": None,
+                    "capture_execution_ref": None,
+                    "source_limitations": [],
+                },
+                "calendar_source_limitations": [],
+            }
+        }
+
     monkeypatch.setattr(
         production_module,
         "validate_production_bootstrap_generation_closure",
-        lambda **_kwargs: {},
+        isolated_receipt,
     )
 
 

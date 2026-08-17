@@ -28,9 +28,100 @@ from quant_investor.migration.authority import (
     _seal_cutover_gate_evidence,
 )
 from quant_investor.system import SystemContractError, SystemPreconditionError
+from quant_investor.system.bootstrap_receipt import build_production_bootstrap_receipt
 from quant_investor.system.store import object_ref_for_artifact
 
 BASE = "2026-08-16T00:00:00Z"
+
+
+def _production_target(reference: dict[str, str]) -> tuple[dict, dict]:
+    basis = {
+        "authority_route": "EXCHANGE_OFFICIAL",
+        "policy_ref": reference,
+        "compilation_ref": reference,
+        "capability_ref": None,
+        "capture_execution_ref": None,
+        "source_limitations": [],
+    }
+    receipt = build_production_bootstrap_receipt(
+        bootstrap_operator_request_ref=reference,
+        source_root_id="authority-evidence-test-source",
+        input_source_rows=[
+            {
+                "field": "calendar_authority_policy_file_ref",
+                "ordinal": 0,
+                "input_file_ref": {
+                    "relative_path": "calendar/policy.json",
+                    "byte_sha256": "1" * 64,
+                },
+                "source_object_ref": reference,
+            }
+        ],
+        deployed_release_ref=reference,
+        calendar_authority_policy_ref=reference,
+        calendar_compilation_ref=reference,
+        calendar_capability_ref=None,
+        calendar_capture_execution_ref=None,
+        calendar_authorization_basis=basis,
+        calendar_source_limitations=[],
+        release_code_manifest_sha256="2" * 64,
+        generation_created_at=BASE,
+        expected_assembly_id="3" * 64,
+        generation_intent_sha256="4" * 64,
+        source_refs=[reference],
+        factor_source_object_refs=[reference],
+        factor_policy_ref=reference,
+        factor_evidence_refs=[reference],
+        factor_active_set_ref=reference,
+        factor_validation_attestation_ref=reference,
+        readiness_matrix_ref=reference,
+        emergency_controller_sha256="5" * 64,
+        skill_tree_sha256="6" * 64,
+        automation_semantic_sha256="7" * 64,
+        source_blockers=[
+            "FUNDAMENTAL_HISTORY_MIXED",
+            "FUNDAMENTAL_HISTORY_NOT_HOMOGENEOUS",
+            "FUNDAMENTAL_LEGACY_DIRECT_READER_PROVENANCE_LIMITED",
+        ],
+        fundamental_machine_states={
+            "mixed": True,
+            "legacy_direct_reader_provenance": "limited",
+            "binding_aware_research_ready": True,
+            "homogeneous_history_ready": False,
+        },
+        signal_statistics=[
+            {"factor_id": "factor-a", "finite_count": 2, "distinct_finite_count": 2},
+            {"factor_id": "factor-b", "finite_count": 2, "distinct_finite_count": 2},
+        ],
+        assembler_code_sha256="8" * 64,
+        created_at=BASE,
+    )
+    receipt_ref = object_ref_for_artifact(receipt)
+    manifest = seal_artifact(
+        "system.generation_manifest",
+        {
+            "assembly_id": "3" * 64,
+            "generation_state": "OPERATIONAL",
+            "contract_catalog_sha256": "9" * 64,
+            "release_manifest_ref": reference,
+            "source_refs": [reference],
+            "factor_source_object_refs": [reference],
+            "factor_policy_ref": reference,
+            "factor_evidence_refs": [reference],
+            "factor_active_set_ref": reference,
+            "factor_validation_attestation_ref": reference,
+            "mainline_ref": None,
+            "research_refs": [receipt_ref],
+            "migration_receipt_ref": None,
+            "migration_marker_ref": None,
+            "skill_tree_sha256": "6" * 64,
+            "automation_semantic_sha256": "7" * 64,
+            "readiness_matrix_ref": reference,
+            "emergency_controller_sha256": "5" * 64,
+        },
+        created_at=BASE,
+    )
+    return manifest, receipt
 
 
 def _readbacks(commit: str, tree: str) -> list[dict[str, object]]:
@@ -423,6 +514,7 @@ def test_final_cutover_authorization_is_machine_derived_from_passed_gates() -> N
     adoption = _adoption(gate_evidence)
     assert validate_main_checkout_adoption(adoption) == adoption
     adoption_ref = object_ref_for_artifact(adoption)
+    production_manifest, production_receipt = _production_target(handoff_ref)
     authorization = build_final_cutover_authorization(
         final_authorization_id="unified-final-cutover",
         accepted_baseline_commit="a" * 40,
@@ -432,10 +524,8 @@ def test_final_cutover_authorization_is_machine_derived_from_passed_gates() -> N
         main_checkout_adoption_ref=adoption_ref,
         legacy_disposition_ref=disposition_ref,
         deployed_release_ref=handoff_ref,
-        calendar_authority_policy_ref=handoff_ref,
-        calendar_compilation_ref=handoff_ref,
-        calendar_capability_ref=None,
-        calendar_source_limitations=[],
+        production_generation_manifest=production_manifest,
+        production_bootstrap_receipt=production_receipt,
         release_commit="4" * 40,
         release_tree="5" * 40,
         final_integration_commit="4" * 40,
@@ -466,10 +556,8 @@ def test_final_cutover_authorization_is_machine_derived_from_passed_gates() -> N
             main_checkout_adoption_ref=adoption_ref,
             legacy_disposition_ref=disposition_ref,
             deployed_release_ref=handoff_ref,
-            calendar_authority_policy_ref=handoff_ref,
-            calendar_compilation_ref=handoff_ref,
-            calendar_capability_ref=None,
-            calendar_source_limitations=[],
+            production_generation_manifest=production_manifest,
+            production_bootstrap_receipt=production_receipt,
             release_commit="4" * 40,
             release_tree="5" * 40,
             final_integration_commit="4" * 40,

@@ -478,10 +478,7 @@ def replay_tushare_response_bytes(
     if (
         not fields
         or len(fields) != len(set(fields))
-        or any(
-            type(field) is not str or _FIELD_RE.fullmatch(field) is None
-            for field in fields
-        )
+        or any(type(field) is not str or _FIELD_RE.fullmatch(field) is None for field in fields)
     ):
         _fail("TUSHARE_RESPONSE_INVALID")
     return _decode_response(
@@ -502,6 +499,7 @@ class OfficialTushareHttpsClient:
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         strict_decimal_decode: bool = False,
         max_response_items: int = MAX_CONTAINER_ITEMS,
+        max_response_bytes: int = MAX_RESPONSE_BYTES,
     ) -> None:
         if (
             type(timeout_seconds) not in {int, float}
@@ -517,9 +515,12 @@ class OfficialTushareHttpsClient:
             or not 1 <= max_response_items <= _MAX_CONFIGURED_RESPONSE_ITEMS
         ):
             _fail("TUSHARE_CLIENT_CONFIG_INVALID")
+        if type(max_response_bytes) is not int or not 1 <= max_response_bytes <= MAX_RESPONSE_BYTES:
+            _fail("TUSHARE_CLIENT_CONFIG_INVALID")
         self._timeout_seconds = float(timeout_seconds)
         self._strict_decimal_decode = strict_decimal_decode
         self._max_response_items = max_response_items
+        self._max_response_bytes = max_response_bytes
 
     def _prepare_request(
         self,
@@ -589,8 +590,8 @@ class OfficialTushareHttpsClient:
                 _fail("TUSHARE_REDIRECT_BLOCKED")
             if status != 200:
                 _fail("TUSHARE_HTTP_STATUS_ERROR")
-            raw = response.read(MAX_RESPONSE_BYTES + 1)
-            if len(raw) > MAX_RESPONSE_BYTES:
+            raw = response.read(self._max_response_bytes + 1)
+            if len(raw) > self._max_response_bytes:
                 _fail("TUSHARE_RESPONSE_TOO_LARGE")
             return raw
         except TushareHttpsError:

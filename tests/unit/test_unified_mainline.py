@@ -752,10 +752,30 @@ def test_real_operational_generation_returns_only_generation_bound_result(
 ) -> None:
     # This test exercises Mainline state transitions below the independently
     # tested production-source admission boundary.
+    def isolated_receipt(**kwargs: Any) -> dict[str, Any]:
+        sources = kwargs["verified_generation"]["manifest"]["payload"]["factor_source_object_refs"]
+        return {
+            "payload": {
+                "calendar_authority_policy_ref": sources[0],
+                "calendar_compilation_ref": sources[1],
+                "calendar_capability_ref": None,
+                "calendar_capture_execution_ref": None,
+                "calendar_authorization_basis": {
+                    "authority_route": "EXCHANGE_OFFICIAL",
+                    "policy_ref": sources[0],
+                    "compilation_ref": sources[1],
+                    "capability_ref": None,
+                    "capture_execution_ref": None,
+                    "source_limitations": [],
+                },
+                "calendar_source_limitations": [],
+            }
+        }
+
     monkeypatch.setattr(
         production_module,
         "validate_production_bootstrap_generation_closure",
-        lambda **_kwargs: {},
+        isolated_receipt,
     )
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir(mode=0o700)

@@ -78,6 +78,8 @@ from quant_investor.market.tushare_calendar_authority import (
     SOURCE_LIMITATIONS as TRUSTED_PROVIDER_CALENDAR_SOURCE_LIMITATIONS,
     validate_calendar_authority_policy,
     validate_trusted_provider_calendar_capability,
+    validate_trusted_provider_calendar_capture_execution,
+    validate_trusted_provider_calendar_capture_success,
     validate_trusted_provider_calendar_compilation,
     validate_trusted_provider_calendar_capture_transaction,
 )
@@ -144,6 +146,9 @@ BOOTSTRAP_OPERATOR_REQUEST_FIELDS: Final = frozenset(
         "trusted_provider_calendar_capture_file_refs",
         "trusted_provider_calendar_capability_file_ref",
         "trusted_provider_calendar_capture_transaction_file_ref",
+        "trusted_provider_calendar_capture_execution_file_ref",
+        "trusted_provider_calendar_capture_success_file_ref",
+        "trusted_provider_release_install_input_file_ref",
         "fundamental_pointer_file_ref",
         "fundamental_generation_manifest_file_ref",
         "fundamental_table_file_refs",
@@ -182,6 +187,9 @@ _CALENDAR_INPUT_BYTE_LIMITS: Final = {
     "trusted_provider_calendar_capture_file_refs": 1024**2,
     "trusted_provider_calendar_capability_file_ref": 1024**2,
     "trusted_provider_calendar_capture_transaction_file_ref": 1024**2,
+    "trusted_provider_calendar_capture_execution_file_ref": 2 * 1024**2,
+    "trusted_provider_calendar_capture_success_file_ref": 2 * 1024**2,
+    "trusted_provider_release_install_input_file_ref": 64 * 1024**2,
     "calendar_authority_policy_file_ref": 1024**2,
     "calendar_runtime_json_file_ref": 16 * 1024**2,
     "calendar_compilation_file_ref": 16 * 1024**2,
@@ -318,6 +326,9 @@ def _calendar_reference_rows(
     for field in (
         "trusted_provider_calendar_capability_file_ref",
         "trusted_provider_calendar_capture_transaction_file_ref",
+        "trusted_provider_calendar_capture_execution_file_ref",
+        "trusted_provider_calendar_capture_success_file_ref",
+        "trusted_provider_release_install_input_file_ref",
     ):
         reference = normalized[field]
         if reference is not None:
@@ -449,6 +460,33 @@ def validate_bootstrap_operator_request(  # noqa: C901
             label="trusted_provider_calendar_capture_transaction_file_ref",
         )
     )
+    execution_value = payload["trusted_provider_calendar_capture_execution_file_ref"]
+    provider_calendar_execution = (
+        None
+        if execution_value is None
+        else _file_ref(
+            execution_value,
+            label="trusted_provider_calendar_capture_execution_file_ref",
+        )
+    )
+    success_value = payload["trusted_provider_calendar_capture_success_file_ref"]
+    provider_calendar_success = (
+        None
+        if success_value is None
+        else _file_ref(
+            success_value,
+            label="trusted_provider_calendar_capture_success_file_ref",
+        )
+    )
+    release_input_value = payload["trusted_provider_release_install_input_file_ref"]
+    provider_release_input = (
+        None
+        if release_input_value is None
+        else _file_ref(
+            release_input_value,
+            label="trusted_provider_release_install_input_file_ref",
+        )
+    )
     official_present = all(
         (
             official_calendar_raw,
@@ -470,12 +508,18 @@ def validate_bootstrap_operator_request(  # noqa: C901
         and len(provider_calendar_captures) == 3
         and provider_calendar_capability is not None
         and provider_calendar_transaction is not None
+        and provider_calendar_execution is not None
+        and provider_calendar_success is not None
+        and provider_release_input is not None
     )
     provider_absent = (
         not provider_calendar_raw
         and not provider_calendar_captures
         and provider_calendar_capability is None
         and provider_calendar_transaction is None
+        and provider_calendar_execution is None
+        and provider_calendar_success is None
+        and provider_release_input is None
     )
     if not ((official_present and provider_absent) or (official_absent and provider_present)):
         raise SystemContractError("calendar authority route tombstones are not exact")
@@ -509,6 +553,13 @@ def validate_bootstrap_operator_request(  # noqa: C901
         all_paths.append(provider_calendar_capability["relative_path"])
     if provider_calendar_transaction is not None:
         all_paths.append(provider_calendar_transaction["relative_path"])
+    for reference in (
+        provider_calendar_execution,
+        provider_calendar_success,
+        provider_release_input,
+    ):
+        if reference is not None:
+            all_paths.append(reference["relative_path"])
     if len(all_paths) != len(set(all_paths)):
         raise SystemContractError("bootstrap input paths must be globally unique")
     return {
@@ -532,6 +583,9 @@ def validate_bootstrap_operator_request(  # noqa: C901
         "trusted_provider_calendar_capture_file_refs": provider_calendar_captures,
         "trusted_provider_calendar_capability_file_ref": provider_calendar_capability,
         "trusted_provider_calendar_capture_transaction_file_ref": (provider_calendar_transaction),
+        "trusted_provider_calendar_capture_execution_file_ref": provider_calendar_execution,
+        "trusted_provider_calendar_capture_success_file_ref": provider_calendar_success,
+        "trusted_provider_release_install_input_file_ref": provider_release_input,
         "market_table_file_refs": market_tables,
         "fundamental_table_file_refs": fundamental_tables,
         "fundamental_evidence_file_refs": fundamental_evidence,
@@ -1414,6 +1468,9 @@ def _copy_request_inputs(  # noqa: C901
     for field in (
         "trusted_provider_calendar_capability_file_ref",
         "trusted_provider_calendar_capture_transaction_file_ref",
+        "trusted_provider_calendar_capture_execution_file_ref",
+        "trusted_provider_calendar_capture_success_file_ref",
+        "trusted_provider_release_install_input_file_ref",
     ):
         reference = normalized[field]
         if reference is not None:
@@ -2497,6 +2554,7 @@ def _validate_calendar_compilation_closure(  # noqa: C901
     cohort_symbols: Sequence[str],
     source_projection: Mapping[str, Any],
     release_ref: Mapping[str, Any],
+    repository_root: Path,
     store: SystemStore | None = None,
     observed_inputs: Mapping[tuple[str, int], Mapping[str, Any]] | None = None,
     validation_mode: str = "PRE_CAS_CURRENT",
@@ -2512,6 +2570,9 @@ def _validate_calendar_compilation_closure(  # noqa: C901
         if field in {
             "trusted_provider_calendar_capability_file_ref",
             "trusted_provider_calendar_capture_transaction_file_ref",
+            "trusted_provider_calendar_capture_execution_file_ref",
+            "trusted_provider_calendar_capture_success_file_ref",
+            "trusted_provider_release_install_input_file_ref",
         }:
             return _copied_path(copied, field)
         return _copied_paths(copied, field)[ordinal]
@@ -2561,6 +2622,9 @@ def _validate_calendar_compilation_closure(  # noqa: C901
         if field in normalized["files"] or field in {
             "trusted_provider_calendar_capability_file_ref",
             "trusted_provider_calendar_capture_transaction_file_ref",
+            "trusted_provider_calendar_capture_execution_file_ref",
+            "trusted_provider_calendar_capture_success_file_ref",
+            "trusted_provider_release_install_input_file_ref",
         }:
             relative = _copied_path(copied, field)
         else:
@@ -2598,6 +2662,21 @@ def _validate_calendar_compilation_closure(  # noqa: C901
     if transaction_ref is not None:
         raw_by_ref[canonical_json_bytes(transaction_ref)] = source_bytes(
             "trusted_provider_calendar_capture_transaction_file_ref"
+        )
+    execution_ref = normalized["trusted_provider_calendar_capture_execution_file_ref"]
+    if execution_ref is not None:
+        raw_by_ref[canonical_json_bytes(execution_ref)] = source_bytes(
+            "trusted_provider_calendar_capture_execution_file_ref"
+        )
+    success_ref = normalized["trusted_provider_calendar_capture_success_file_ref"]
+    if success_ref is not None:
+        raw_by_ref[canonical_json_bytes(success_ref)] = source_bytes(
+            "trusted_provider_calendar_capture_success_file_ref"
+        )
+    release_input_ref = normalized["trusted_provider_release_install_input_file_ref"]
+    if release_input_ref is not None:
+        raw_by_ref[canonical_json_bytes(release_input_ref)] = source_bytes(
+            "trusted_provider_release_install_input_file_ref"
         )
 
     def raw_resolver(reference: Mapping[str, Any]) -> bytes:
@@ -2682,6 +2761,7 @@ def _validate_calendar_compilation_closure(  # noqa: C901
                 index_closure_documents=index_documents,
                 raw_resolver=raw_resolver,
                 expected_release_ref=release_ref,
+                expected_policy_ref=object_ref_for_artifact(policy),
             )
         elif validation_mode == "HISTORICAL":
             compilation_payload = compilation_document.get("payload")
@@ -2693,6 +2773,7 @@ def _validate_calendar_compilation_closure(  # noqa: C901
             compilation = validate_historical_compilation_envelope(
                 compilation_document,
                 expected_release_ref=release_ref,
+                expected_policy_ref=object_ref_for_artifact(policy),
                 expected_compiler_code_sha256=historical_compiler_sha,
             )
         else:
@@ -2700,7 +2781,13 @@ def _validate_calendar_compilation_closure(  # noqa: C901
         source_limitations: list[str] = []
         expected_kind = "system.exchange_calendar_compilation"
     elif route == TRUSTED_PROVIDER_CALENDAR_ROUTE:
-        if capability_ref is None or transaction_ref is None:
+        if (
+            capability_ref is None
+            or transaction_ref is None
+            or execution_ref is None
+            or success_ref is None
+            or release_input_ref is None
+        ):
             raise SystemContractError("trusted-provider authority tombstone is invalid")
         capability_raw = source_bytes("trusted_provider_calendar_capability_file_ref")
         capability_document = _parse_source_json(
@@ -2750,6 +2837,60 @@ def _validate_calendar_compilation_closure(  # noqa: C901
             ],
             provider_capture_file_refs=normalized["trusted_provider_calendar_capture_file_refs"],
         )
+        execution_document = _parse_source_json(
+            source_bytes("trusted_provider_calendar_capture_execution_file_ref"),
+            label="trusted_provider_calendar_capture_execution_file_ref",
+        )
+        release_install_input_raw = source_bytes("trusted_provider_release_install_input_file_ref")
+        validate_trusted_provider_calendar_capture_execution(
+            execution_document,
+            release_install_input_raw=release_install_input_raw,
+            repository_root=repository_root,
+            documentation_raw_file_ref=_file_ref(
+                docs_ref,
+                label="provider docs raw_file_ref",
+            ),
+            capability_file_ref=capability_ref,
+            policy_file_ref=normalized["files"]["calendar_authority_policy_file_ref"],
+            provider_raw_file_refs=[
+                _file_ref(
+                    document["payload"]["raw_file_ref"],
+                    label="provider calendar raw_file_ref",
+                )
+                for document in capture_documents
+            ],
+            provider_capture_file_refs=normalized["trusted_provider_calendar_capture_file_refs"],
+            capture_transaction_file_ref=transaction_ref,
+            historical=validation_mode == "HISTORICAL",
+        )
+        success_document = _parse_source_json(
+            source_bytes("trusted_provider_calendar_capture_success_file_ref"),
+            label="trusted_provider_calendar_capture_success_file_ref",
+        )
+        published_refs = sorted(
+            [
+                _file_ref(docs_ref, label="provider docs raw_file_ref"),
+                capability_ref,
+                normalized["files"]["calendar_authority_policy_file_ref"],
+                *normalized["trusted_provider_calendar_raw_file_refs"][1:],
+                *normalized["trusted_provider_calendar_capture_file_refs"],
+                transaction_ref,
+                execution_ref,
+                release_input_ref,
+            ],
+            key=lambda row: row["relative_path"],
+        )
+        validate_trusted_provider_calendar_capture_success(
+            success_document,
+            capture_transaction_file_ref=transaction_ref,
+            capture_execution_file_ref=execution_ref,
+            published_leaf_file_refs=published_refs,
+        )
+        if (
+            success_document["payload"]["observed_completed_at"]
+            < execution_document["payload"]["observed_completed_at"]
+        ):
+            raise SystemContractError("trusted-provider capture success precedes execution")
         if validation_mode not in {"PRE_CAS_CURRENT", "HISTORICAL"}:
             raise SystemContractError("calendar validation mode is invalid")
         compilation = validate_trusted_provider_calendar_compilation(
@@ -2812,6 +2953,9 @@ def _receipt_input_source_rows(  # noqa: C901
     for field in (
         "trusted_provider_calendar_capability_file_ref",
         "trusted_provider_calendar_capture_transaction_file_ref",
+        "trusted_provider_calendar_capture_execution_file_ref",
+        "trusted_provider_calendar_capture_success_file_ref",
+        "trusted_provider_release_install_input_file_ref",
     ):
         if normalized[field] is not None:
             expected_scalar.add(field)
@@ -2869,6 +3013,24 @@ def _receipt_input_source_rows(  # noqa: C901
                 ),
             }
         )
+    for field in (
+        "trusted_provider_calendar_capture_execution_file_ref",
+        "trusted_provider_calendar_capture_success_file_ref",
+        "trusted_provider_release_install_input_file_ref",
+    ):
+        reference = normalized[field]
+        if reference is not None:
+            rows.append(
+                {
+                    "field": field,
+                    "ordinal": 0,
+                    "input_file_ref": dict(reference),
+                    "source_object_ref": validate_object_ref(
+                        scalar_refs[field],
+                        label=f"{field} source object",
+                    ),
+                }
+            )
     for field in sorted(expected_lists):
         inputs = normalized[field]
         sources = list_refs[field]
@@ -2910,6 +3072,14 @@ def _receipt_copied_paths(  # noqa: C901
         expected[("trusted_provider_calendar_capture_transaction_file_ref", 0)] = dict(
             transaction_ref
         )
+    for field in (
+        "trusted_provider_calendar_capture_execution_file_ref",
+        "trusted_provider_calendar_capture_success_file_ref",
+        "trusted_provider_release_install_input_file_ref",
+    ):
+        reference = normalized[field]
+        if reference is not None:
+            expected[(field, 0)] = dict(reference)
     for field in (
         "official_calendar_raw_file_refs",
         "official_calendar_capture_file_refs",
@@ -2968,6 +3138,9 @@ def _receipt_copied_paths(  # noqa: C901
         if field in normalized["files"] or field in {
             "trusted_provider_calendar_capability_file_ref",
             "trusted_provider_calendar_capture_transaction_file_ref",
+            "trusted_provider_calendar_capture_execution_file_ref",
+            "trusted_provider_calendar_capture_success_file_ref",
+            "trusted_provider_release_install_input_file_ref",
         }:
             copied[field] = payload["relative_path"]
         else:
@@ -3145,6 +3318,24 @@ def _validate_operational_source_topology(
                 in observed_inputs
                 else []
             ),
+            *[
+                (role, scalar(field))
+                for role, field in (
+                    (
+                        "provider-capture-execution",
+                        "trusted_provider_calendar_capture_execution_file_ref",
+                    ),
+                    (
+                        "provider-capture-success",
+                        "trusted_provider_calendar_capture_success_file_ref",
+                    ),
+                    (
+                        "provider-release-install-input",
+                        "trusted_provider_release_install_input_file_ref",
+                    ),
+                )
+                if (field, 0) in observed_inputs
+            ],
         ],
     )
     market_top = _exact_source_bundle(
@@ -3229,6 +3420,8 @@ _INITIAL_PRODUCTION_RECEIPT_FIELDS: Final = PRODUCTION_BOOTSTRAP_RECEIPT_FIELDS 
     "calendar_authority_policy_ref",
     "calendar_compilation_ref",
     "calendar_capability_ref",
+    "calendar_capture_execution_ref",
+    "calendar_authorization_basis",
     "calendar_source_limitations",
 }
 
@@ -3735,6 +3928,18 @@ def _validate_production_bootstrap_generation_closure(  # noqa: C901
             "trusted_provider_calendar_capture_transaction_file_ref",
             "capture transaction",
         ),
+        (
+            "trusted_provider_calendar_capture_execution_file_ref",
+            "capture execution",
+        ),
+        (
+            "trusted_provider_calendar_capture_success_file_ref",
+            "capture success",
+        ),
+        (
+            "trusted_provider_release_install_input_file_ref",
+            "release install input",
+        ),
     ):
         reference = normalized[field]
         if reference is not None and copied[field] != str(
@@ -3748,6 +3953,7 @@ def _validate_production_bootstrap_generation_closure(  # noqa: C901
         cohort_symbols=source_projection["all_pit_symbols"],
         source_projection=source_projection,
         release_ref=release_ref,
+        repository_root=store.workspace_root,
         store=store,
         observed_inputs=observed_inputs,
         validation_mode=validation_mode,
@@ -3755,13 +3961,26 @@ def _validate_production_bootstrap_generation_closure(  # noqa: C901
     expected_capability_ref = observed_inputs.get(
         ("trusted_provider_calendar_capability_file_ref", 0)
     )
+    expected_execution_ref = observed_inputs.get(
+        ("trusted_provider_calendar_capture_execution_file_ref", 0)
+    )
     expected_limitations = list(calendar_compilation["payload"].get("source_limitations", []))
+    expected_calendar_basis = {
+        "authority_route": calendar_compilation["payload"]["authority_route"],
+        "policy_ref": observed_inputs[("calendar_authority_policy_file_ref", 0)],
+        "compilation_ref": observed_inputs[("calendar_compilation_file_ref", 0)],
+        "capability_ref": expected_capability_ref,
+        "capture_execution_ref": expected_execution_ref,
+        "source_limitations": expected_limitations,
+    }
     if (
         payload["calendar_authority_policy_ref"]
         != observed_inputs[("calendar_authority_policy_file_ref", 0)]
         or payload["calendar_compilation_ref"]
         != observed_inputs[("calendar_compilation_file_ref", 0)]
         or payload["calendar_capability_ref"] != expected_capability_ref
+        or payload["calendar_capture_execution_ref"] != expected_execution_ref
+        or payload["calendar_authorization_basis"] != expected_calendar_basis
         or payload["calendar_source_limitations"] != expected_limitations
     ):
         raise SystemContractError("production receipt calendar authority binding differs")
@@ -3942,6 +4161,7 @@ def assemble_production_bootstrap(  # noqa: C901
         cohort_symbols=source_projection["all_pit_symbols"],
         source_projection=source_projection,
         release_ref=release_ref,
+        repository_root=workspace,
     )
     if (
         source_projection["all_pit_symbols"] != materialized["scope_symbols"]
@@ -4216,6 +4436,42 @@ def assemble_production_bootstrap(  # noqa: C901
             media_type="application/json",
             created_at=created_at,
         )
+    calendar_execution_ref: dict[str, str] | None = None
+    if normalized["trusted_provider_calendar_capture_execution_file_ref"] is not None:
+        calendar_execution_ref = _source(
+            store,
+            _copied_path(
+                copied,
+                "trusted_provider_calendar_capture_execution_file_ref",
+            ),
+            source_format="JSON",
+            media_type="application/json",
+            created_at=created_at,
+        )
+    calendar_success_ref: dict[str, str] | None = None
+    if normalized["trusted_provider_calendar_capture_success_file_ref"] is not None:
+        calendar_success_ref = _source(
+            store,
+            _copied_path(
+                copied,
+                "trusted_provider_calendar_capture_success_file_ref",
+            ),
+            source_format="JSON",
+            media_type="application/json",
+            created_at=created_at,
+        )
+    provider_release_input_ref: dict[str, str] | None = None
+    if normalized["trusted_provider_release_install_input_file_ref"] is not None:
+        provider_release_input_ref = _source(
+            store,
+            _copied_path(
+                copied,
+                "trusted_provider_release_install_input_file_ref",
+            ),
+            source_format="JSON",
+            media_type="application/json",
+            created_at=created_at,
+        )
     market_table_refs = [
         _source(
             store,
@@ -4307,6 +4563,21 @@ def assemble_production_bootstrap(  # noqa: C901
             *(
                 [("provider-capture-transaction", calendar_transaction_ref)]
                 if calendar_transaction_ref is not None
+                else []
+            ),
+            *(
+                [("provider-capture-execution", calendar_execution_ref)]
+                if calendar_execution_ref is not None
+                else []
+            ),
+            *(
+                [("provider-capture-success", calendar_success_ref)]
+                if calendar_success_ref is not None
+                else []
+            ),
+            *(
+                [("provider-release-install-input", provider_release_input_ref)]
+                if provider_release_input_ref is not None
                 else []
             ),
         ],
@@ -4409,6 +4680,29 @@ def assemble_production_bootstrap(  # noqa: C901
                 if calendar_transaction_ref is not None
                 else {}
             ),
+            **(
+                {
+                    "trusted_provider_calendar_capture_execution_file_ref": (
+                        calendar_execution_ref
+                    ),
+                }
+                if calendar_execution_ref is not None
+                else {}
+            ),
+            **(
+                {
+                    "trusted_provider_calendar_capture_success_file_ref": (calendar_success_ref),
+                }
+                if calendar_success_ref is not None
+                else {}
+            ),
+            **(
+                {
+                    "trusted_provider_release_install_input_file_ref": (provider_release_input_ref),
+                }
+                if provider_release_input_ref is not None
+                else {}
+            ),
         },
         list_refs={
             **calendar_list_refs,
@@ -4425,6 +4719,17 @@ def assemble_production_bootstrap(  # noqa: C901
         calendar_authority_policy_ref=raw_objects["calendar_authority_policy_file_ref"],
         calendar_compilation_ref=raw_objects["calendar_compilation_file_ref"],
         calendar_capability_ref=calendar_capability_ref,
+        calendar_capture_execution_ref=calendar_execution_ref,
+        calendar_authorization_basis={
+            "authority_route": calendar_compilation["payload"]["authority_route"],
+            "policy_ref": raw_objects["calendar_authority_policy_file_ref"],
+            "compilation_ref": raw_objects["calendar_compilation_file_ref"],
+            "capability_ref": calendar_capability_ref,
+            "capture_execution_ref": calendar_execution_ref,
+            "source_limitations": list(
+                calendar_compilation["payload"].get("source_limitations", [])
+            ),
+        },
         calendar_source_limitations=list(
             calendar_compilation["payload"].get("source_limitations", [])
         ),

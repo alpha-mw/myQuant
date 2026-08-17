@@ -40,6 +40,8 @@ PRODUCTION_BOOTSTRAP_RECEIPT_FIELDS: Final = frozenset(
         "calendar_authority_policy_ref",
         "calendar_compilation_ref",
         "calendar_capability_ref",
+        "calendar_capture_execution_ref",
+        "calendar_authorization_basis",
         "calendar_source_limitations",
         "release_code_manifest_sha256",
         "generation_created_at",
@@ -76,6 +78,16 @@ FUNDAMENTAL_SOURCE_BLOCKERS: Final = (
 )
 _SHA256_RE: Final = re.compile(r"^[0-9a-f]{64}$")
 _IDENTIFIER_RE: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
+CALENDAR_AUTHORIZATION_BASIS_FIELDS: Final = frozenset(
+    {
+        "authority_route",
+        "policy_ref",
+        "compilation_ref",
+        "capability_ref",
+        "capture_execution_ref",
+        "source_limitations",
+    }
+)
 
 
 def _sha(value: Any, *, label: str) -> str:
@@ -229,6 +241,55 @@ def _statistics(value: Any) -> list[dict[str, Any]]:
     return rows
 
 
+def validate_calendar_authorization_basis(value: Any) -> dict[str, Any]:
+    if type(value) is not dict or set(value) != CALENDAR_AUTHORIZATION_BASIS_FIELDS:
+        raise SystemContractError("calendar authorization basis fields are not exact")
+    route = value["authority_route"]
+    if route not in {"EXCHANGE_OFFICIAL", "TRUSTED_PROVIDER_DEGRADED"}:
+        raise SystemContractError("calendar authorization basis route is invalid")
+    policy_ref = validate_object_ref(value["policy_ref"], label="calendar basis policy_ref")
+    compilation_ref = validate_object_ref(
+        value["compilation_ref"],
+        label="calendar basis compilation_ref",
+    )
+    capability_ref = value["capability_ref"]
+    execution_ref = value["capture_execution_ref"]
+    if capability_ref is not None:
+        capability_ref = validate_object_ref(
+            capability_ref,
+            label="calendar basis capability_ref",
+        )
+    if execution_ref is not None:
+        execution_ref = validate_object_ref(
+            execution_ref,
+            label="calendar basis capture_execution_ref",
+        )
+    limitations = value["source_limitations"]
+    if (
+        type(limitations) is not list
+        or any(type(row) is not str or not row for row in limitations)
+        or limitations != sorted(set(limitations))
+    ):
+        raise SystemContractError("calendar authorization basis limitations differ")
+    degraded = [
+        "BSE_CALENDAR_POLICY_PROJECTED_FROM_SSE_SZSE",
+        "CALENDAR_AUTHORITY_DEGRADED",
+    ]
+    if route == "EXCHANGE_OFFICIAL":
+        if capability_ref is not None or execution_ref is not None or limitations:
+            raise SystemContractError("official calendar authorization basis is not exact")
+    elif capability_ref is None or execution_ref is None or limitations != degraded:
+        raise SystemContractError("degraded calendar authorization basis is incomplete")
+    return {
+        "authority_route": route,
+        "policy_ref": policy_ref,
+        "compilation_ref": compilation_ref,
+        "capability_ref": capability_ref,
+        "capture_execution_ref": execution_ref,
+        "source_limitations": list(limitations),
+    }
+
+
 def validate_production_bootstrap_receipt(  # noqa: C901
     document: Mapping[str, Any] | bytes,
 ) -> dict[str, Any]:
@@ -265,6 +326,14 @@ def validate_production_bootstrap_receipt(  # noqa: C901
             payload["calendar_capability_ref"],
             label="calendar_capability_ref",
         )
+    if payload["calendar_capture_execution_ref"] is not None:
+        validate_object_ref(
+            payload["calendar_capture_execution_ref"],
+            label="calendar_capture_execution_ref",
+        )
+    authorization_basis = validate_calendar_authorization_basis(
+        payload["calendar_authorization_basis"]
+    )
     limitations = payload["calendar_source_limitations"]
     if (
         type(limitations) is not list
@@ -277,10 +346,26 @@ def validate_production_bootstrap_receipt(  # noqa: C901
         "CALENDAR_AUTHORITY_DEGRADED",
     ]
     if not (
-        (limitations == [] and payload["calendar_capability_ref"] is None)
-        or (limitations == degraded_limitations and payload["calendar_capability_ref"] is not None)
+        (
+            limitations == []
+            and payload["calendar_capability_ref"] is None
+            and payload["calendar_capture_execution_ref"] is None
+        )
+        or (
+            limitations == degraded_limitations
+            and payload["calendar_capability_ref"] is not None
+            and payload["calendar_capture_execution_ref"] is not None
+        )
     ):
         raise SystemContractError("calendar authority route/limitations differ")
+    if (
+        authorization_basis["policy_ref"] != payload["calendar_authority_policy_ref"]
+        or authorization_basis["compilation_ref"] != payload["calendar_compilation_ref"]
+        or authorization_basis["capability_ref"] != payload["calendar_capability_ref"]
+        or authorization_basis["capture_execution_ref"] != payload["calendar_capture_execution_ref"]
+        or authorization_basis["source_limitations"] != limitations
+    ):
+        raise SystemContractError("calendar authorization basis/receipt differs")
     _sha(payload["release_code_manifest_sha256"], label="release_code_manifest_sha256")
     _timestamp(payload["generation_created_at"], label="generation_created_at")
     _sha(payload["expected_assembly_id"], label="expected_assembly_id")
@@ -348,6 +433,8 @@ def build_production_bootstrap_receipt(
     calendar_authority_policy_ref: Mapping[str, Any],
     calendar_compilation_ref: Mapping[str, Any],
     calendar_capability_ref: Mapping[str, Any] | None,
+    calendar_capture_execution_ref: Mapping[str, Any] | None,
+    calendar_authorization_basis: Mapping[str, Any],
     calendar_source_limitations: Sequence[str],
     release_code_manifest_sha256: str,
     generation_created_at: str,
@@ -381,6 +468,12 @@ def build_production_bootstrap_receipt(
         "calendar_compilation_ref": dict(calendar_compilation_ref),
         "calendar_capability_ref": (
             None if calendar_capability_ref is None else dict(calendar_capability_ref)
+        ),
+        "calendar_capture_execution_ref": (
+            None if calendar_capture_execution_ref is None else dict(calendar_capture_execution_ref)
+        ),
+        "calendar_authorization_basis": validate_calendar_authorization_basis(
+            dict(calendar_authorization_basis)
         ),
         "calendar_source_limitations": list(calendar_source_limitations),
         "release_code_manifest_sha256": release_code_manifest_sha256,
@@ -427,4 +520,5 @@ __all__ = [
     "build_production_bootstrap_receipt",
     "production_generation_intent_sha256",
     "validate_production_bootstrap_receipt",
+    "validate_calendar_authorization_basis",
 ]

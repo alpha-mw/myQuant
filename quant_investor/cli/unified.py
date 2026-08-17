@@ -210,38 +210,27 @@ def system_calendar_capture(
     capture_parent: str,
     capture_root_name: str,
     cutoff_date: str,
-    captured_at: str,
-    release_install_evidence_path: str,
-    expected_release_install_evidence_sha256: str,
+    release_install_input_path: str,
+    expected_release_install_input_sha256: str,
 ) -> dict[str, Any]:
     """Capture one immutable Tushare Tier-1 calendar transaction."""
 
-    import quant_investor
     from quant_investor.market.tushare_calendar_authority import (
         capture_trusted_provider_calendar_evidence,
     )
-    from quant_investor.system import SystemPreconditionError
-    from quant_investor.system.release_install import validate_release_install_evidence
 
-    evidence_raw, _ = _request(
+    release_input_raw, _ = _request(
         workspace_root=workspace_root,
-        request_path=release_install_evidence_path,
-        expected_request_sha256=expected_release_install_evidence_sha256,
+        request_path=release_install_input_path,
+        expected_request_sha256=expected_release_install_input_sha256,
     )
-    evidence = validate_release_install_evidence(evidence_raw)
-    payload = evidence["payload"]
-    current_origin = Path(quant_investor.__file__).resolve(strict=True)
-    if (
-        payload["editable_install"] is not False
-        or payload["source_tree_import"] is not False
-        or Path(payload["import_origin"]).resolve(strict=True) != current_origin
-    ):
-        raise SystemPreconditionError("CALENDAR_CAPTURE_INSTALL_ORIGIN_UNVERIFIED")
     return capture_trusted_provider_calendar_evidence(
         capture_parent=capture_parent,
         capture_root_name=capture_root_name,
         cutoff_date=cutoff_date,
-        captured_at=captured_at,
+        release_install_input_raw=release_input_raw,
+        expected_release_install_input_sha256=expected_release_install_input_sha256,
+        repository_root=workspace_root,
     )
 
 

@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta, timezone
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
+import os
+from pathlib import Path
+import stat
 from typing import Any
 
 import pytest
 
+import quant_investor.market.tushare_calendar_authority as calendar_authority
 from quant_investor.contracts import canonical_json_bytes, seal_artifact
 from quant_investor.market.exchange_calendar_closure import (
     runtime_json_bytes,
@@ -26,7 +31,12 @@ from quant_investor.market.tushare_calendar_authority import (
     validate_trusted_provider_calendar_capture_transaction,
 )
 from quant_investor.market.tushare_transport import replay_tushare_response_bytes
-from quant_investor.system import SystemContractError, SystemPreconditionError
+from quant_investor.system import (
+    SystemContractError,
+    SystemPreconditionError,
+    SystemSecurityError,
+)
+from quant_investor.system.release_install import build_release_install_evidence
 from quant_investor.system.store import object_ref_for_artifact
 from tests.unit.test_unified_production_bootstrap_operator import (
     _byte_ref,
@@ -195,7 +205,11 @@ def _case() -> dict[str, Any]:
         "json_ref": json_ref,
         "market_sessions": [row["date"] for row in runtime if row["status"] == "OPEN"],
         "parquet_ref": parquet_ref,
-        "policy": build_calendar_authority_policy(created_at=CREATED_AT),
+        "policy": build_calendar_authority_policy(
+            created_at=CREATED_AT,
+            pit_exchange_ids=["BSE", "SSE", "SZSE"],
+            provider_capability=capability,
+        ),
         "raw_by_ref": raw_by_ref,
         "release_ref": object_ref_for_artifact(release),
     }
@@ -318,6 +332,36 @@ def test_bse_nonempty_probe_cannot_confer_direct_calendar_authority() -> None:
         )
 
 
+def test_direct_provider_literal_count_must_remain_zero() -> None:
+    case = _case()
+    value = json.loads(_provider_raw("SSE"))
+    value["data"]["count"] = len(value["data"]["items"])
+    raw = json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    with pytest.raises(SystemContractError, match="direct response exchange differs"):
+        build_trusted_provider_calendar_capture(
+            exchange_id="SSE",
+            raw=raw,
+            raw_file_ref=_ref("raw/sse-nonzero-count.json", raw),
+            capability=case["capability"],
+            docs_raw=case["docs"],
+            captured_at=CREATED_AT,
+            capture_start_date=CAPTURE_START.isoformat(),
+            cutoff_date=CUTOFF.isoformat(),
+            request_parameters_sanitized={
+                "end_date": CUTOFF.strftime("%Y%m%d"),
+                "exchange": "SSE",
+                "start_date": CAPTURE_START.strftime("%Y%m%d"),
+            },
+            response_headers={"content-type": "application/json"},
+            created_at=CREATED_AT,
+        )
+
+
 def test_market_bar_on_provider_closed_date_blocks_without_calendar_mutation() -> None:
     case = _case()
     closed = next(row["date"] for row in _runtime() if row["status"] == "CLOSED")
@@ -340,34 +384,139 @@ def test_market_bar_on_provider_closed_date_blocks_without_calendar_mutation() -
         )
 
 
-def test_capture_transaction_is_four_call_atomic_and_secret_free(tmp_path) -> None:
+def test_public_capture_api_has_no_caller_time_or_transport_injection() -> None:
+    import inspect
+
+    parameters = inspect.signature(capture_trusted_provider_calendar_evidence).parameters
+    assert "captured_at" not in parameters
+    assert "client" not in parameters
+    assert "documentation_fetcher" not in parameters
+    assert {
+        "capture_parent",
+        "capture_root_name",
+        "cutoff_date",
+        "release_install_input_raw",
+        "expected_release_install_input_sha256",
+        "repository_root",
+    } == set(parameters)
+
+
+def test_capture_failure_never_calls_network_before_release_closure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     parent = tmp_path / "captures"
     parent.mkdir(mode=0o700)
+    network_called = False
+
+    def forbidden_fetch():
+        nonlocal network_called
+        network_called = True
+        raise AssertionError("network must not run")
+
+    monkeypatch.setattr(
+        "quant_investor.market.tushare_calendar_authority._official_documentation_fetch",
+        forbidden_fetch,
+    )
+    invalid = canonical_json_bytes({"not": "release-install-input"})
+    with pytest.raises(SystemContractError, match="fields are not exact"):
+        capture_trusted_provider_calendar_evidence(
+            capture_parent=parent,
+            capture_root_name="capture-fails",
+            cutoff_date=CUTOFF.isoformat(),
+            release_install_input_raw=invalid,
+            expected_release_install_input_sha256=hashlib.sha256(invalid).hexdigest(),
+            repository_root=tmp_path,
+        )
+    assert not (parent / "capture-fails").exists()
+    assert network_called is False
+
+
+def _fake_release_install_closure(tmp_path: Path) -> tuple[bytes, dict[str, Any], dict[str, Any]]:
+    release = seal_artifact(
+        "system.release",
+        {
+            "release_id": "installed-calendar-capture-test",
+            "state": "OPERATIONAL",
+            "code_sha256": "1" * 64,
+            "wheel_sha256": "2" * 64,
+            "code_manifest_sha256": "3" * 64,
+        },
+        created_at=CREATED_AT,
+    )
+    archive = tmp_path / "release.tar.gz"
+    wheel = tmp_path / "release.whl"
+    archive.write_bytes(b"archive")
+    wheel.write_bytes(b"wheel")
+    evidence = build_release_install_evidence(
+        final_commit="4" * 40,
+        final_tree="5" * 40,
+        code_tree_sha256_value="6" * 64,
+        git_code_manifest_sha256_value="7" * 64,
+        release_ref=object_ref_for_artifact(release),
+        source_archive={
+            "path": str(archive),
+            "byte_sha256": hashlib.sha256(b"archive").hexdigest(),
+            "size": len(b"archive"),
+        },
+        wheel={
+            "path": str(wheel),
+            "byte_sha256": hashlib.sha256(b"wheel").hexdigest(),
+            "size": len(b"wheel"),
+        },
+        install_root=str(tmp_path / "installed"),
+        python_executable=str(tmp_path / "installed/bin/python"),
+        python_executable_sha256="8" * 64,
+        import_origin=str(tmp_path / "installed/quant_investor/__init__.py"),
+        installed_code_manifest_sha256="9" * 64,
+        contract_catalog_sha256_value="a" * 64,
+        lockfile_sha256="b" * 64,
+        created_at=CREATED_AT,
+    )
+    exact_input = canonical_json_bytes(
+        {"release_install_evidence": evidence, "deployed_release": release}
+    )
+    verification = {
+        "wheel_sha256": evidence["payload"]["wheel"]["byte_sha256"],
+        "installed_code_manifest_sha256": evidence["payload"]["installed_code_manifest_sha256"],
+        "contract_catalog_sha256": evidence["payload"]["contract_catalog_sha256"],
+        "import_origin": evidence["payload"]["import_origin"],
+    }
+    return exact_input, release, {"evidence": evidence, "verification": verification}
+
+
+def test_public_capture_publishes_success_last_with_exact_owner_only_tree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent = tmp_path / "captures"
+    parent.mkdir(mode=0o700)
+    exact_input, release, closure = _fake_release_install_closure(tmp_path)
+    calls: list[tuple[str, dict[str, str]]] = []
+
+    def fake_release_components(raw: bytes, **_: Any):
+        assert raw == exact_input
+        return closure["evidence"], release, closure["verification"]
 
     class FakeClient:
-        def __init__(self) -> None:
-            self.calls: list[str] = []
+        def __init__(self, **kwargs: Any) -> None:
+            assert kwargs["max_response_bytes"] == 4 * 1024 * 1024
+            assert kwargs["max_response_items"] == 2_000
 
-        def request(self, *, api_name: str, params: dict[str, str], expected_fields):
-            assert api_name == "trade_cal"
-            assert tuple(expected_fields) == EXPECTED_FIELDS
-            exchange = params["exchange"]
-            self.calls.append(exchange)
+        def request(self, *, api_name: str, params: dict[str, str], **_: Any):
+            calls.append((api_name, dict(params)))
             return replay_tushare_response_bytes(
-                _provider_raw(exchange),
-                api_name="trade_cal",
+                _provider_raw(params["exchange"]),
+                api_name=api_name,
                 expected_fields=EXPECTED_FIELDS,
                 strict_decimal_decode=True,
             )
 
-    client = FakeClient()
-    result = capture_trusted_provider_calendar_evidence(
-        capture_parent=parent,
-        capture_root_name="capture-20250801",
-        cutoff_date=CUTOFF.isoformat(),
-        captured_at=CREATED_AT,
-        client=client,
-        documentation_fetcher=lambda: (
+    monkeypatch.setattr(calendar_authority, "_release_install_components", fake_release_components)
+    monkeypatch.setattr(
+        calendar_authority,
+        "_official_documentation_fetch",
+        lambda: (
             _docs(),
             200,
             {"content-type": "text/html; charset=utf-8"},
@@ -375,51 +524,120 @@ def test_capture_transaction_is_four_call_atomic_and_secret_free(tmp_path) -> No
             [],
         ),
     )
-    assert result["network_call_count"] == 4
-    assert client.calls == ["SSE", "SZSE", "BSE"]
-    capture_root = parent / "capture-20250801"
-    assert capture_root.is_dir()
-    assert not list(parent.glob(".capture-20250801.staging-*"))
-    combined = b"".join(path.read_bytes() for path in capture_root.rglob("*") if path.is_file())
-    assert b"TUSHARE_TOKEN" not in combined
-    assert b"token" not in combined.lower()
-    assert all(
-        (path.stat().st_mode & 0o777) == 0o600 for path in capture_root.rglob("*") if path.is_file()
+    monkeypatch.setattr(calendar_authority, "OfficialTushareHttpsClient", FakeClient)
+
+    result = capture_trusted_provider_calendar_evidence(
+        capture_parent=parent,
+        capture_root_name="capture-success",
+        cutoff_date=CUTOFF.isoformat(),
+        release_install_input_raw=exact_input,
+        expected_release_install_input_sha256=hashlib.sha256(exact_input).hexdigest(),
+        repository_root=tmp_path,
+    )
+
+    root = parent / "capture-success"
+    assert result["status"] == "CAPTURED"
+    assert [exchange for _, params in calls for exchange in [params["exchange"]]] == [
+        "SSE",
+        "SZSE",
+        "BSE",
+    ]
+    assert stat.S_IMODE(root.stat().st_mode) == 0o700
+    leaves = sorted(path.name for path in root.iterdir())
+    assert leaves == sorted(
+        [
+            "capability.json",
+            "capture-bse.json",
+            "capture-execution.json",
+            "capture-sse.json",
+            "capture-success.json",
+            "capture-szse.json",
+            "capture-transaction.json",
+            "documentation.raw",
+            "policy.json",
+            "release-install-input.json",
+            "response-bse.raw",
+            "response-sse.raw",
+            "response-szse.raw",
+        ]
+    )
+    for leaf in root.iterdir():
+        observed = leaf.stat()
+        assert stat.S_IMODE(observed.st_mode) == 0o600
+        assert observed.st_nlink == 1
+        assert b"token" not in leaf.read_bytes().lower()
+    assert (
+        result["capture_success"]["payload"]["observed_completed_at"]
+        >= result["capture_execution"]["payload"]["observed_completed_at"]
     )
 
 
-def test_capture_failure_never_publishes_success_root(tmp_path) -> None:
+def test_capture_publication_is_no_replace_with_exactly_one_winner(tmp_path: Path) -> None:
     parent = tmp_path / "captures"
     parent.mkdir(mode=0o700)
+    files = {"payload.raw": b"payload"}
 
-    class FailingClient:
-        def request(self, **kwargs):
-            del kwargs
-            raise RuntimeError("provider cells must never escape")
+    def publish() -> str:
+        try:
+            calendar_authority._publish_capture_tree(
+                parent=parent,
+                root_name="one-winner",
+                files=files,
+                success_builder=lambda _: b"success",
+            )
+        except SystemPreconditionError:
+            return "BLOCKED"
+        return "PUBLISHED"
 
-    with pytest.raises(SystemPreconditionError, match="CAPTURE_FAILED"):
-        capture_trusted_provider_calendar_evidence(
-            capture_parent=parent,
-            capture_root_name="capture-fails",
-            cutoff_date=CUTOFF.isoformat(),
-            captured_at=CREATED_AT,
-            client=FailingClient(),
-            documentation_fetcher=lambda: (
-                _docs(),
-                200,
-                {"content-type": "text/html; charset=utf-8"},
-                True,
-                [],
-            ),
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = sorted(executor.map(lambda _: publish(), range(2)))
+    assert outcomes == ["BLOCKED", "PUBLISHED"]
+    assert (parent / "one-winner/payload.raw").read_bytes() == b"payload"
+    assert (parent / "one-winner/capture-success.json").read_bytes() == b"success"
+
+
+def test_post_rename_readback_failure_leaves_no_success_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent = tmp_path / "captures"
+    parent.mkdir(mode=0o700)
+    original = calendar_authority._read_directory_files
+    readbacks = 0
+
+    def fail_after_rename(*args: Any, **kwargs: Any) -> None:
+        nonlocal readbacks
+        readbacks += 1
+        if readbacks == 2:
+            raise SystemSecurityError("forced post-rename readback failure")
+        original(*args, **kwargs)
+
+    monkeypatch.setattr(calendar_authority, "_read_directory_files", fail_after_rename)
+    with pytest.raises(SystemSecurityError, match="forced post-rename"):
+        calendar_authority._publish_capture_tree(
+            parent=parent,
+            root_name="incomplete",
+            files={"payload.raw": b"payload"},
+            success_builder=lambda _: b"success",
         )
-    assert not (parent / "capture-fails").exists()
-    failures = list(parent.glob(".capture-fails.failed-*"))
-    assert len(failures) == 1
-    failure_raw = (failures[0] / "capture-failure.json").read_bytes()
-    assert b"provider cells" not in failure_raw
+    assert (parent / "incomplete/payload.raw").read_bytes() == b"payload"
+    assert not (parent / "incomplete/capture-success.json").exists()
 
 
-def test_production_bootstrap_accepts_only_sealed_provider_route(tmp_path) -> None:
+def test_capture_publication_rejects_unsafe_parent_mode(tmp_path: Path) -> None:
+    parent = tmp_path / "unsafe"
+    parent.mkdir(mode=0o755)
+    with pytest.raises(SystemSecurityError, match="directory is unsafe"):
+        calendar_authority._publish_capture_tree(
+            parent=parent,
+            root_name="blocked",
+            files={"payload.raw": b"payload"},
+            success_builder=lambda _: b"success",
+        )
+    assert not (parent / "blocked").exists()
+
+
+def test_builder_only_provider_artifacts_cannot_enter_production(tmp_path) -> None:
     production_cutoff = date(2026, 8, 7)
     workspace, release_ref = _seed_workspace(tmp_path)
     input_root = tmp_path / "sealed-provider-inputs"
@@ -437,7 +655,11 @@ def test_production_bootstrap_accepts_only_sealed_provider_route(tmp_path) -> No
         docs_response_headers={"content-type": "text/html; charset=utf-8"},
         created_at="2026-08-14T00:00:00Z",
     )
-    policy = build_calendar_authority_policy(created_at="2026-08-14T00:00:00Z")
+    policy = build_calendar_authority_policy(
+        created_at="2026-08-14T00:00:00Z",
+        pit_exchange_ids=["BSE", "SSE", "SZSE"],
+        provider_capability=capability,
+    )
     raw_by_ref: dict[bytes, bytes] = {canonical_json_bytes(docs_ref): docs}
     raw_refs = [docs_ref]
     capture_paths: list[str] = []
@@ -497,7 +719,7 @@ def test_production_bootstrap_accepts_only_sealed_provider_route(tmp_path) -> No
         docs_raw=docs,
         raw_resolver=raw_resolver,
         release_ref=release_ref,
-        pit_exchange_ids=["SSE", "SZSE"],
+        pit_exchange_ids=["BSE", "SSE", "SZSE"],
         market_session_dates=market_sessions,
         cutoff_date=production_cutoff.isoformat(),
         calendar_json_file_ref=json_ref,
@@ -538,19 +760,15 @@ def test_production_bootstrap_accepts_only_sealed_provider_route(tmp_path) -> No
         input_root,
         transaction_path,
     )
-    result = assemble_production_bootstrap(
-        workspace_root=workspace,
-        input_root=input_root,
-        request_raw=_request(
+    with pytest.raises(SystemContractError, match="route tombstones are not exact"):
+        assemble_production_bootstrap(
             workspace_root=workspace,
-            release_ref=release_ref,
-            files=files,
-            operation_id="provider-production-bootstrap",
-        ),
-    )
-    assert result["generation"]["generation_state"] == "OPERATIONAL"
-    assert result["generation"]["calendar_authority_confidence"] == "DEGRADED"
-    assert result["generation"]["calendar_authority_route"] == ("TRUSTED_PROVIDER_DEGRADED")
-    receipt = result["generation"]["research"][0]["payload"]
-    assert receipt["calendar_source_limitations"] == list(SOURCE_LIMITATIONS)
-    assert receipt["calendar_capability_ref"] is not None
+            input_root=input_root,
+            request_raw=_request(
+                workspace_root=workspace,
+                release_ref=release_ref,
+                files=files,
+                operation_id="provider-production-bootstrap",
+            ),
+        )
+    assert not (workspace / "results/system/_active.json").exists()

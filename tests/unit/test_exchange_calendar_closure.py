@@ -17,6 +17,9 @@ from quant_investor.market.exchange_calendar_closure import (
     runtime_parquet_bytes,
     validate_exchange_calendar_compilation,
 )
+from quant_investor.market.tushare_calendar_authority import (
+    build_calendar_authority_policy,
+)
 from quant_investor.system import (
     SystemContractError,
     SystemPreconditionError,
@@ -391,8 +394,15 @@ def _case(
         },
         created_at=BASE,
     )
+    policy = build_calendar_authority_policy(
+        created_at=BASE,
+        authority_route="EXCHANGE_OFFICIAL",
+        pit_exchange_ids=list(exchanges),
+    )
     return {
         "release_ref": object_ref_for_artifact(release),
+        "policy": policy,
+        "policy_ref": object_ref_for_artifact(policy),
         "captures": captures,
         "admissions": admissions,
         "indexes": indexes,
@@ -415,6 +425,7 @@ def _build(case: dict[str, Any]) -> dict[str, Any]:
         coverage_start_date=case["coverage"].isoformat(),
         cutoff_date=case["cutoff"].isoformat(),
         release_ref=case["release_ref"],
+        policy_ref=case["policy_ref"],
         pit_exchange_ids=case["exchanges"],
         market_session_dates=case["market_sessions"],
         capture_documents=case["captures"],
@@ -664,6 +675,7 @@ def _build_with_default_wiring(case: dict[str, Any]) -> dict[str, Any]:
         coverage_start_date=case["coverage"].isoformat(),
         cutoff_date=case["cutoff"].isoformat(),
         release_ref=case["release_ref"],
+        policy_ref=case["policy_ref"],
         pit_exchange_ids=case["exchanges"],
         market_session_dates=case["market_sessions"],
         capture_documents=case["captures"],
@@ -689,6 +701,7 @@ def test_native_closure_replays_three_exchanges_and_exact_outputs() -> None:
             index_closure_documents=case["indexes"],
             raw_resolver=case["raw_resolver"],
             expected_release_ref=case["release_ref"],
+            expected_policy_ref=case["policy_ref"],
             decoder=_decoder,
             admission_resolver=lambda exchange, role, category: case["admission_by_subject"][
                 (exchange, role, category)
@@ -749,6 +762,7 @@ def test_default_category_dispatch_supports_multiple_exact_indexed_body_urls(
             index_closure_documents=case["indexes"],
             raw_resolver=case["raw_resolver"],
             expected_release_ref=case["release_ref"],
+            expected_policy_ref=case["policy_ref"],
         )
         == artifact
     )

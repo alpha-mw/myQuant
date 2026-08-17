@@ -249,10 +249,12 @@ order, trade, or funds authority.
 The installed-release capture command is `system calendar-capture`. It makes
 exactly one documentation GET plus three `trade_cal` reads, retains no token or
 credential-bearing request body, and publishes an owner-only capture root only
-after all raw bytes, artifacts, directory fsyncs, and no-follow readbacks pass.
-An incomplete transaction is moved to a distinct `FAILED_INADMISSIBLE` root
-and can never be repaired or admitted. Project-authored JSON, weekday/holiday
-inference, bars, Macro data, and legacy V17 calendars remain forbidden.
+after the exact release-install input has replayed and all raw bytes, artifacts,
+directory fsyncs, and no-follow readbacks pass. The success marker is created
+only after the no-replace rename and post-rename readback. A published root
+without that marker is permanently inadmissible and cannot be repaired in
+place. Project-authored JSON, weekday/holiday inference, bars, Macro data, and
+legacy V17 calendars remain forbidden.
 
 An official decoder admission must bind the exchange and evidence role to the
 exact HTTPS endpoint/query contract (or, for a notice body, to the exact body

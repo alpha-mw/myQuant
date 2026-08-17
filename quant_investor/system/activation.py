@@ -43,6 +43,8 @@ ACTIVATION_AUTHORIZATION_FIELDS: Final = frozenset(
         "calendar_authority_policy_ref",
         "calendar_compilation_ref",
         "calendar_capability_ref",
+        "calendar_capture_execution_ref",
+        "calendar_authorization_basis",
         "calendar_source_limitations",
         "target_active_pointer",
         "target_active_pointer_ref",
@@ -171,6 +173,16 @@ def build_activation_authorization(
     normalized_release = validate_object_ref(deployed_release_ref, label="deployed_release_ref")
     if normalized_release != manifest["payload"].get("release_manifest_ref"):
         raise SystemActivationAuthorizationError("deployed release binding mismatch")
+    research_refs = manifest["payload"].get("research_refs")
+    if final_authorization["payload"]["production_generation_manifest_ref"] != artifact_exact_ref(
+        manifest
+    ) or (
+        research_refs
+        and research_refs != [final_authorization["payload"]["production_bootstrap_receipt_ref"]]
+    ):
+        raise SystemActivationAuthorizationError(
+            "final authorization does not bind the production target"
+        )
     if type(actor_uid) is not int or actor_uid < 0:
         raise SystemActivationAuthorizationError("actor_uid is invalid")
     prepared = _timestamp(prepared_at, label="prepared_at")
@@ -198,6 +210,12 @@ def build_activation_authorization(
         ],
         "calendar_compilation_ref": final_authorization["payload"]["calendar_compilation_ref"],
         "calendar_capability_ref": final_authorization["payload"]["calendar_capability_ref"],
+        "calendar_capture_execution_ref": final_authorization["payload"][
+            "calendar_capture_execution_ref"
+        ],
+        "calendar_authorization_basis": final_authorization["payload"][
+            "calendar_authorization_basis"
+        ],
         "calendar_source_limitations": final_authorization["payload"][
             "calendar_source_limitations"
         ],
@@ -274,6 +292,16 @@ def validate_activation_authorization(  # noqa: C901
     if type(pointer) is not dict or set(pointer) != _POINTER_FIELDS:
         raise SystemActivationAuthorizationError("target pointer fields are not exact")
     normalized_release = validate_object_ref(deployed_release_ref, label="deployed_release_ref")
+    research_refs = manifest["payload"].get("research_refs")
+    if final_authorization["payload"]["production_generation_manifest_ref"] != artifact_exact_ref(
+        manifest
+    ) or (
+        research_refs
+        and research_refs != [final_authorization["payload"]["production_bootstrap_receipt_ref"]]
+    ):
+        raise SystemActivationAuthorizationError(
+            "final authorization production target binding mismatch"
+        )
     prepared = _timestamp(payload["prepared_at"], label="prepared_at")
     activated = _timestamp(payload["activated_at"], label="activated_at")
     observed_now = now or datetime.now(timezone.utc)
@@ -298,6 +326,12 @@ def validate_activation_authorization(  # noqa: C901
         ],
         "calendar_compilation_ref": final_authorization["payload"]["calendar_compilation_ref"],
         "calendar_capability_ref": final_authorization["payload"]["calendar_capability_ref"],
+        "calendar_capture_execution_ref": final_authorization["payload"][
+            "calendar_capture_execution_ref"
+        ],
+        "calendar_authorization_basis": final_authorization["payload"][
+            "calendar_authorization_basis"
+        ],
         "calendar_source_limitations": final_authorization["payload"][
             "calendar_source_limitations"
         ],

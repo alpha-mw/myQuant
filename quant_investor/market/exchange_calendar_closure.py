@@ -139,6 +139,8 @@ _COMPILATION_FIELDS: Final = frozenset(
         "compiler_relative_path",
         "compiler_code_sha256",
         "compiler_ast_sha256",
+        "authority_route",
+        "policy_ref",
         "release_ref",
         "pit_exchange_ids",
         "market_session_dates_sha256",
@@ -1170,6 +1172,7 @@ def build_exchange_calendar_compilation(  # noqa: C901
     coverage_start_date: str,
     cutoff_date: str,
     release_ref: Mapping[str, Any],
+    policy_ref: Mapping[str, Any],
     pit_exchange_ids: Sequence[str],
     market_session_dates: Sequence[str],
     capture_documents: Sequence[Mapping[str, Any]],
@@ -1205,6 +1208,9 @@ def build_exchange_calendar_compilation(  # noqa: C901
     normalized_release = validate_object_ref(release_ref, label="release_ref")
     if normalized_release["kind"] != "system.release":
         raise SystemContractError("calendar compilation release authority kind differs")
+    normalized_policy = validate_object_ref(policy_ref, label="policy_ref")
+    if normalized_policy["kind"] != "system.calendar_authority_policy":
+        raise SystemContractError("calendar compilation policy authority kind differs")
     admissions: dict[bytes, Mapping[str, Any]] = {}
     for document in admission_documents:
         artifact = official.validate_decoder_admission(document)
@@ -1333,6 +1339,8 @@ def build_exchange_calendar_compilation(  # noqa: C901
         {
             "compilation_id": _identifier(compilation_id, label="compilation_id"),
             "state": "COMPILED",
+            "authority_route": "EXCHANGE_OFFICIAL",
+            "policy_ref": normalized_policy,
             "coverage_start_date": coverage.isoformat(),
             "cutoff_date": cutoff.isoformat(),
             "timezone": TIMEZONE,
@@ -1376,6 +1384,7 @@ def validate_exchange_calendar_compilation(
     index_closure_documents: Sequence[Mapping[str, Any]],
     raw_resolver: RawResolver,
     expected_release_ref: Mapping[str, Any],
+    expected_policy_ref: Mapping[str, Any],
     decoder: ProjectionDecoder = _default_decoder,
     admission_resolver: AdmissionResolver = official.decoder_admission,
     decoder_id_resolver: DecoderIdResolver = official.decoder_id,
@@ -1392,7 +1401,12 @@ def validate_exchange_calendar_compilation(
     if set(payload) != _COMPILATION_FIELDS:
         raise SystemContractError("exchange calendar compilation fields differ")
     release_ref = validate_object_ref(expected_release_ref, label="expected_release_ref")
-    if payload["release_ref"] != release_ref:
+    policy_ref = validate_object_ref(expected_policy_ref, label="expected_policy_ref")
+    if (
+        payload["release_ref"] != release_ref
+        or payload["authority_route"] != "EXCHANGE_OFFICIAL"
+        or payload["policy_ref"] != policy_ref
+    ):
         raise SystemContractError("calendar compilation release binding differs")
     if (
         payload["compiler_relative_path"] != COMPILER_RELATIVE_PATH
@@ -1405,6 +1419,7 @@ def validate_exchange_calendar_compilation(
         coverage_start_date=payload["coverage_start_date"],
         cutoff_date=payload["cutoff_date"],
         release_ref=release_ref,
+        policy_ref=policy_ref,
         pit_exchange_ids=pit_exchange_ids,
         market_session_dates=market_session_dates,
         capture_documents=capture_documents,
@@ -1429,6 +1444,7 @@ def validate_historical_compilation_envelope(
     document: Mapping[str, Any] | bytes,
     *,
     expected_release_ref: Mapping[str, Any],
+    expected_policy_ref: Mapping[str, Any],
     expected_compiler_code_sha256: str,
 ) -> dict[str, Any]:
     """Authenticate frozen initial bytes without executing descendant code.
@@ -1448,6 +1464,9 @@ def validate_historical_compilation_envelope(
         or payload["state"] != "COMPILED"
         or payload["release_ref"]
         != validate_object_ref(expected_release_ref, label="historical release_ref")
+        or payload["authority_route"] != "EXCHANGE_OFFICIAL"
+        or payload["policy_ref"]
+        != validate_object_ref(expected_policy_ref, label="historical policy_ref")
         or payload["compiler_relative_path"] != COMPILER_RELATIVE_PATH
         or payload["compiler_code_sha256"] != expected_compiler_code_sha256
         or payload["precedence_rules"] != PRECEDENCE_RULES

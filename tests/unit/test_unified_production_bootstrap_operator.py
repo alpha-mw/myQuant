@@ -354,13 +354,7 @@ def _finalize_input_refs(
     _write(
         root,
         "closure/calendar-authority-policy.json",
-        canonical_json_bytes(
-            build_calendar_authority_policy(
-                created_at=BASE,
-                authority_route="EXCHANGE_OFFICIAL",
-                pit_exchange_ids=["SSE", "SZSE"],
-            )
-        ),
+        canonical_json_bytes(calendar_case["policy"]),
     )
     scalars = {
         "exchange_calendar_file_ref": "strict/exchange_calendar.parquet",
@@ -396,6 +390,9 @@ def _finalize_input_refs(
     result["trusted_provider_calendar_capture_file_refs"] = []
     result["trusted_provider_calendar_capability_file_ref"] = None
     result["trusted_provider_calendar_capture_transaction_file_ref"] = None
+    result["trusted_provider_calendar_capture_execution_file_ref"] = None
+    result["trusted_provider_calendar_capture_success_file_ref"] = None
+    result["trusted_provider_release_install_input_file_ref"] = None
     result["market_table_file_refs"] = [_byte_ref(root, "closure/market-2026.parquet")]
     result["fundamental_table_file_refs"] = [
         _byte_ref(root, f"_fundamental_generations/staged_successor/{name}.parquet")
@@ -787,13 +784,7 @@ def _inputs(root: Path) -> dict[str, dict[str, str] | list[dict[str, str]]]:
     _write(
         root,
         "closure/calendar-authority-policy.json",
-        canonical_json_bytes(
-            build_calendar_authority_policy(
-                created_at=BASE,
-                authority_route="EXCHANGE_OFFICIAL",
-                pit_exchange_ids=["SSE", "SZSE"],
-            )
-        ),
+        canonical_json_bytes(calendar_case["policy"]),
     )
     scalars = {
         "exchange_calendar_file_ref": "strict/exchange_calendar.parquet",
@@ -833,6 +824,9 @@ def _inputs(root: Path) -> dict[str, dict[str, str] | list[dict[str, str]]]:
     result["trusted_provider_calendar_capture_file_refs"] = []
     result["trusted_provider_calendar_capability_file_ref"] = None
     result["trusted_provider_calendar_capture_transaction_file_ref"] = None
+    result["trusted_provider_calendar_capture_execution_file_ref"] = None
+    result["trusted_provider_calendar_capture_success_file_ref"] = None
+    result["trusted_provider_release_install_input_file_ref"] = None
     result["market_table_file_refs"] = [_byte_ref(root, "closure/market-2026.parquet")]
     result["fundamental_table_file_refs"] = [
         _byte_ref(root, f"_fundamental_generations/staged_successor/{name}.parquet")
@@ -978,6 +972,15 @@ def test_calendar_authority_routes_cannot_be_mixed(tmp_path: Path) -> None:
         "calendar_authority_policy_file_ref"
     ]
     files["trusted_provider_calendar_capture_transaction_file_ref"] = files[
+        "calendar_compilation_file_ref"
+    ]
+    files["trusted_provider_calendar_capture_execution_file_ref"] = files[
+        "calendar_compilation_file_ref"
+    ]
+    files["trusted_provider_calendar_capture_success_file_ref"] = files[
+        "calendar_compilation_file_ref"
+    ]
+    files["trusted_provider_release_install_input_file_ref"] = files[
         "calendar_compilation_file_ref"
     ]
     with pytest.raises(SystemContractError, match="route tombstones are not exact"):
@@ -1259,6 +1262,16 @@ def test_production_bootstrap_receipt_binding_mutations_block_initial_activation
             "calendar_capability_ref", result["production_bootstrap_receipt_ref"]
         ),
         lambda payload: payload.__setitem__(
+            "calendar_capture_execution_ref", result["production_bootstrap_receipt_ref"]
+        ),
+        lambda payload: payload.__setitem__(
+            "calendar_authorization_basis",
+            {
+                **payload["calendar_authorization_basis"],
+                "authority_route": "TRUSTED_PROVIDER_DEGRADED",
+            },
+        ),
+        lambda payload: payload.__setitem__(
             "calendar_source_limitations", ["CALENDAR_AUTHORITY_DEGRADED"]
         ),
         lambda payload: payload.__setitem__(
@@ -1293,7 +1306,11 @@ def test_production_bootstrap_receipt_binding_mutations_block_initial_activation
         mutated_ref = reseal(mutate)
         generation = store.assemble_generation(**{**base_kwargs, "research_refs": [mutated_ref]})
         with pytest.raises(
-            (SystemActivationAuthorizationError, SystemPreconditionError),
+            (
+                SystemActivationAuthorizationError,
+                SystemContractError,
+                SystemPreconditionError,
+            ),
         ):
             prepared = prepare_initial_activation(store, generation, release_ref)
             store.activate_initial_generation(**prepared)
@@ -1327,27 +1344,25 @@ def test_production_bootstrap_receipt_binding_mutations_block_initial_activation
     mainline_generation = store.assemble_generation(
         **{**base_kwargs, "mainline_ref": candidate_ref}
     )
-    mainline_prepared = prepare_initial_activation(store, mainline_generation, release_ref)
     with pytest.raises(
-        SystemActivationAuthorizationError,
-        match="lacks valid production bootstrap closure",
+        SystemPreconditionError,
+        match="production generation differs",
     ):
-        store.activate_initial_generation(**mainline_prepared)
+        prepare_initial_activation(store, mainline_generation, release_ref)
 
     wrong_kind_generation = store.assemble_generation(
         **{**base_kwargs, "research_refs": [release_ref]}
     )
-    wrong_kind_prepared = prepare_initial_activation(
-        store,
-        wrong_kind_generation,
-        release_ref,
-        calendar_binding_receipt_ref=result["production_bootstrap_receipt_ref"],
-    )
     with pytest.raises(
         SystemActivationAuthorizationError,
-        match="lacks valid production bootstrap closure",
+        match="does not bind the production target",
     ):
-        store.activate_initial_generation(**wrong_kind_prepared)
+        prepare_initial_activation(
+            store,
+            wrong_kind_generation,
+            release_ref,
+            calendar_binding_receipt_ref=result["production_bootstrap_receipt_ref"],
+        )
     with pytest.raises(SystemContractError, match="duplicate|sorted and unique"):
         store.assemble_generation(
             **{

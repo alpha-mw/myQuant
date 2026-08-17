@@ -2783,6 +2783,8 @@ class SystemStore:
                 "calendar_authority_policy_ref",
                 "calendar_compilation_ref",
                 "calendar_capability_ref",
+                "calendar_capture_execution_ref",
+                "calendar_authorization_basis",
                 "calendar_source_limitations",
             )
             if any(
@@ -2973,6 +2975,8 @@ class SystemStore:
                     "calendar_authority_policy_ref",
                     "calendar_compilation_ref",
                     "calendar_capability_ref",
+                    "calendar_capture_execution_ref",
+                    "calendar_authorization_basis",
                     "calendar_source_limitations",
                 ):
                     if field in production_receipt["payload"] and (
