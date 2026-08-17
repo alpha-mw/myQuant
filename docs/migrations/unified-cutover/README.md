@@ -267,14 +267,24 @@ than cryptographic remote-peer identity. Project-authored JSON,
 weekday/holiday inference, bars, Macro data, and legacy V17 calendars remain
 forbidden.
 
+Deterministic request validation occurs before release/install closure: the
+cutoff must be in range, capture-root names ending in `.failure` in any case are
+reserved, and the requested success/failure pair must both be absent under the
+pinned-parent publication lock. Invalid input or reuse therefore performs no
+release replay or HTTPS call and consumes no capture name. Publication repeats
+the absence check under the same lock to close the post-preflight race.
+
 Every capture failure after release/install closure publishes only a sanitized
 terminal artifact in the sibling `<capture-root>.failure` directory. That
 directory is a no-replace, owner-only `0700` root containing exactly one
 owner-only `0600` `capture-failure.json`; the artifact binds its directory
 device/inode, the requested success-root name, a controlled error code, the
 failure time, and whether this invocation actually completed the success-root
-rename. It never retains exception text, tokens, headers, provider bodies, or
-credentials. Existence of a pre-existing directory does not establish that the
+rename. Rename-boundary faults are reconciled by comparing the pinned staging
+device/inode with the no-follow target entry; an indeterminate identity fails
+closed without claiming either publication state. It never retains exception
+text, tokens, headers, provider bodies, or credentials. Existence of a
+pre-existing directory does not establish that the
 success root was published. Failure publication never edits, deletes, repairs,
 or completes the requested success root, and neither a failure artifact nor a
 failure root is admissible where production requires the exact success marker.

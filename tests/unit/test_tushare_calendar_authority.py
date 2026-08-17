@@ -43,6 +43,7 @@ from quant_investor.system import (
     SystemContractError,
     SystemPreconditionError,
     SystemSecurityError,
+    SystemStorageError,
     SystemStore,
 )
 from quant_investor.system.release_install import build_release_install_evidence
@@ -101,6 +102,34 @@ def test_execution_and_success_sealers_have_one_production_writer() -> None:
         "validate_published_trusted_provider_calendar_capture_failure_root",
         "validate_trusted_provider_calendar_capture_failure",
     } <= set(calendar_authority.__all__)
+
+
+@pytest.mark.parametrize("root_name", ["run.failure", "run.FAILURE", "run.FaIlUrE"])
+def test_capture_root_namespace_reserves_failure_suffix(
+    tmp_path: Path,
+    root_name: str,
+) -> None:
+    parent = tmp_path / "captures"
+    parent.mkdir(mode=0o700)
+    with pytest.raises(SystemSecurityError, match="root name is invalid"):
+        calendar_authority._capture_root_name(root_name)
+    with pytest.raises(SystemSecurityError, match="root name is invalid"):
+        calendar_authority._publish_capture_tree(
+            parent=parent,
+            root_name=root_name,
+            files={"payload.raw": b"payload"},
+            success_builder=lambda _completed, _root_stat: b"success",
+        )
+    with pytest.raises(SystemSecurityError, match="root name is invalid"):
+        calendar_authority._build_trusted_provider_calendar_capture_failure(
+            capture_root_name=root_name,
+            failed_at=CREATED_AT,
+            error_code="TRUSTED_PROVIDER_CALENDAR_DOCUMENTATION_FETCH_FAILED",
+            success_root_published=False,
+            published_root_device=1,
+            published_root_inode=1,
+        )
+    assert list(parent.iterdir()) == []
 
 
 def _docs(*, output_exchange_text: str = "SSE上交所 SZSE深交所") -> bytes:
@@ -668,6 +697,44 @@ def _assert_recorded_capture_failure(
     return failure
 
 
+def test_invalid_cutoff_is_rejected_before_release_or_network_and_consumes_no_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent = tmp_path / "captures"
+    parent.mkdir(mode=0o700)
+    exact_input = b"release-input"
+    release_calls = 0
+    documentation_calls = 0
+
+    def forbidden_release(*_: Any, **__: Any):
+        nonlocal release_calls
+        release_calls += 1
+        raise AssertionError("release closure must not run")
+
+    def forbidden_documentation():
+        nonlocal documentation_calls
+        documentation_calls += 1
+        raise AssertionError("network must not run")
+
+    monkeypatch.setattr(calendar_authority, "_release_install_components", forbidden_release)
+    monkeypatch.setattr(
+        calendar_authority, "_official_documentation_fetch", forbidden_documentation
+    )
+    with pytest.raises(SystemPreconditionError, match="cutoff is invalid"):
+        capture_trusted_provider_calendar_evidence(
+            capture_parent=parent,
+            capture_root_name="invalid-cutoff",
+            cutoff_date="2023-12-31",
+            release_install_input_raw=exact_input,
+            expected_release_install_input_sha256=hashlib.sha256(exact_input).hexdigest(),
+            release_repository_root=tmp_path,
+        )
+    assert release_calls == 0
+    assert documentation_calls == 0
+    assert list(parent.iterdir()) == []
+
+
 @pytest.mark.parametrize(
     ("failure_stage", "expected_code", "expected_calls"),
     [
@@ -810,10 +877,44 @@ def test_documentation_http_tls_and_redirect_failures_are_terminally_recorded(
     )
 
 
+def test_arbitrary_exception_cannot_forge_success_publication_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent = tmp_path / "captures"
+    parent.mkdir(mode=0o700)
+    exact_input = _patch_capture_release_closure(tmp_path, monkeypatch)
+    forged = SystemPreconditionError("sensitive forged publication state")
+    setattr(forged, "_trusted_provider_capture_root_published", True)
+    monkeypatch.setattr(
+        calendar_authority,
+        "_official_documentation_fetch",
+        lambda: (_ for _ in ()).throw(forged),
+    )
+    with pytest.raises(SystemPreconditionError) as caught:
+        capture_trusted_provider_calendar_evidence(
+            capture_parent=parent,
+            capture_root_name="forged-publication-state",
+            cutoff_date=CUTOFF.isoformat(),
+            release_install_input_raw=exact_input,
+            expected_release_install_input_sha256=hashlib.sha256(exact_input).hexdigest(),
+            release_repository_root=tmp_path,
+        )
+    failure = _assert_recorded_capture_failure(
+        parent=parent,
+        caught=caught,
+        capture_root_name="forged-publication-state",
+        expected_code="TRUSTED_PROVIDER_CALENDAR_DOCUMENTATION_FETCH_FAILED",
+        success_root_published=False,
+    )
+    assert b"sensitive" not in canonical_json_bytes(failure).lower()
+
+
 @pytest.mark.parametrize(
     ("fault", "success_root_published", "success_marker_exists"),
     [
         ("PRE_RENAME", False, False),
+        ("RENAME_COMPLETED_THEN_RAISED", True, False),
         ("POST_RENAME", True, False),
         ("POST_SUCCESS_MARKER", True, True),
     ],
@@ -864,12 +965,14 @@ def test_publication_failure_records_exact_publication_state_without_repair(
         if fault == "PRE_RENAME" and rename_calls == 1:
             raise SystemSecurityError("sensitive pre-rename failure")
         original_rename(parent_fd, source, target)
+        if fault == "RENAME_COMPLETED_THEN_RAISED" and rename_calls == 1:
+            raise KeyboardInterrupt("sensitive rename-boundary interrupt")
 
     def fail_selected_read(*args: Any, **kwargs: Any) -> None:
         nonlocal read_calls
         read_calls += 1
         fail_at = 2 if fault == "POST_RENAME" else 3
-        if fault != "PRE_RENAME" and read_calls == fail_at:
+        if fault in {"POST_RENAME", "POST_SUCCESS_MARKER"} and read_calls == fail_at:
             raise SystemSecurityError("sensitive post-publication failure")
         original_read(*args, **kwargs)
 
@@ -1374,15 +1477,190 @@ def test_post_rename_readback_failure_leaves_no_success_marker(
         original(*args, **kwargs)
 
     monkeypatch.setattr(calendar_authority, "_read_directory_files", fail_after_rename)
-    with pytest.raises(SystemSecurityError, match="forced post-rename"):
+    with pytest.raises(calendar_authority._CapturePublicationFailure) as caught:
         calendar_authority._publish_capture_tree(
             parent=parent,
             root_name="incomplete",
             files={"payload.raw": b"payload"},
             success_builder=lambda _completed, _root_stat: b"success",
         )
+    assert caught.value.success_root_published is True
+    assert isinstance(caught.value.cause, SystemSecurityError)
+    assert "forced post-rename" in str(caught.value.cause)
+    assert "forced post-rename" not in str(caught.value)
     assert (parent / "incomplete/payload.raw").read_bytes() == b"payload"
     assert not (parent / "incomplete/capture-success.json").exists()
+
+
+def test_rename_boundary_inode_mismatch_is_ambiguous_and_not_cleaned(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent = tmp_path / "captures"
+    parent.mkdir(mode=0o700)
+    original_rename = calendar_authority._rename_no_replace
+
+    def replace_target_after_rename(parent_fd: int, source: str, target: str) -> None:
+        original_rename(parent_fd, source, target)
+        os.rename(
+            target,
+            f"{target}.displaced",
+            src_dir_fd=parent_fd,
+            dst_dir_fd=parent_fd,
+        )
+        os.mkdir(target, mode=0o700, dir_fd=parent_fd)
+        raise KeyboardInterrupt("sensitive ambiguous rename boundary")
+
+    monkeypatch.setattr(
+        calendar_authority,
+        "_rename_no_replace",
+        replace_target_after_rename,
+    )
+    with pytest.raises(calendar_authority._CapturePublicationFailure) as caught:
+        calendar_authority._publish_capture_tree(
+            parent=parent,
+            root_name="ambiguous-boundary",
+            files={"payload.raw": b"payload"},
+            success_builder=lambda _completed, _root_stat: b"success",
+        )
+    assert caught.value.success_root_published is None
+    assert isinstance(caught.value.cause, SystemStorageError)
+    assert (parent / "ambiguous-boundary").is_dir()
+    assert (parent / "ambiguous-boundary.displaced/payload.raw").read_bytes() == b"payload"
+    assert not (parent / "ambiguous-boundary.failure").exists()
+
+
+def test_public_capture_does_not_seal_false_state_for_ambiguous_rename(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent = tmp_path / "captures"
+    parent.mkdir(mode=0o700)
+    exact_input = _patch_capture_release_closure(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        calendar_authority,
+        "_official_documentation_fetch",
+        lambda: (
+            _docs(),
+            200,
+            {"content-type": "text/html; charset=utf-8"},
+            True,
+            [],
+        ),
+    )
+
+    class FakeClient:
+        def __init__(self, **_: Any) -> None:
+            pass
+
+        def request(self, *, api_name: str, params: dict[str, str], **_: Any):
+            return replay_tushare_response_bytes(
+                _provider_raw(params["exchange"]),
+                api_name=api_name,
+                expected_fields=EXPECTED_FIELDS,
+                strict_decimal_decode=True,
+            )
+
+    monkeypatch.setattr(calendar_authority, "OfficialTushareHttpsClient", FakeClient)
+    original_rename = calendar_authority._rename_no_replace
+
+    def replace_target_after_rename(parent_fd: int, source: str, target: str) -> None:
+        original_rename(parent_fd, source, target)
+        os.rename(
+            target,
+            f"{target}.displaced",
+            src_dir_fd=parent_fd,
+            dst_dir_fd=parent_fd,
+        )
+        os.mkdir(target, mode=0o700, dir_fd=parent_fd)
+        raise KeyboardInterrupt("sensitive public ambiguity")
+
+    monkeypatch.setattr(
+        calendar_authority,
+        "_rename_no_replace",
+        replace_target_after_rename,
+    )
+    with pytest.raises(SystemStorageError, match="outcome is ambiguous"):
+        capture_trusted_provider_calendar_evidence(
+            capture_parent=parent,
+            capture_root_name="public-ambiguous",
+            cutoff_date=CUTOFF.isoformat(),
+            release_install_input_raw=exact_input,
+            expected_release_install_input_sha256=hashlib.sha256(exact_input).hexdigest(),
+            release_repository_root=tmp_path,
+        )
+    assert not (parent / "public-ambiguous.failure").exists()
+
+
+def test_failure_publication_rename_boundary_preserves_published_inode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent = tmp_path / "captures"
+    parent.mkdir(mode=0o700)
+    original_rename = calendar_authority._rename_no_replace
+
+    def rename_then_interrupt(parent_fd: int, source: str, target: str) -> None:
+        original_rename(parent_fd, source, target)
+        raise KeyboardInterrupt("sensitive failure publication boundary")
+
+    monkeypatch.setattr(
+        calendar_authority,
+        "_rename_no_replace",
+        rename_then_interrupt,
+    )
+    with pytest.raises(KeyboardInterrupt, match="failure publication boundary"):
+        _publish_failure_case(parent, "failure-boundary")
+    failure_root = parent / "failure-boundary.failure"
+    failure_raw = (failure_root / calendar_authority._FAILURE_LEAF).read_bytes()
+    failure = validate_trusted_provider_calendar_capture_failure(failure_raw)
+    failure_ref = {
+        "relative_path": "failure-boundary.failure/capture-failure.json",
+        "byte_sha256": hashlib.sha256(failure_raw).hexdigest(),
+    }
+    assert (
+        validate_published_trusted_provider_calendar_capture_failure_root(
+            capture_parent=parent,
+            capture_failure=failure,
+            capture_failure_file_ref=failure_ref,
+        )
+        == failure_raw
+    )
+    assert not any(
+        path.name.startswith(".failure-boundary.failure.staging-") for path in parent.iterdir()
+    )
+
+
+def test_failure_publication_inode_mismatch_is_ambiguous_and_not_cleaned(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent = tmp_path / "captures"
+    parent.mkdir(mode=0o700)
+    original_rename = calendar_authority._rename_no_replace
+
+    def replace_target_after_rename(parent_fd: int, source: str, target: str) -> None:
+        original_rename(parent_fd, source, target)
+        os.rename(
+            target,
+            f"{target}.displaced",
+            src_dir_fd=parent_fd,
+            dst_dir_fd=parent_fd,
+        )
+        os.mkdir(target, mode=0o700, dir_fd=parent_fd)
+        raise KeyboardInterrupt("sensitive failure ambiguity")
+
+    monkeypatch.setattr(
+        calendar_authority,
+        "_rename_no_replace",
+        replace_target_after_rename,
+    )
+    with pytest.raises(SystemStorageError, match="outcome is ambiguous"):
+        _publish_failure_case(parent, "failure-ambiguous")
+    assert (parent / "failure-ambiguous.failure").is_dir()
+    assert (
+        parent / "failure-ambiguous.failure.displaced" / calendar_authority._FAILURE_LEAF
+    ).is_file()
 
 
 def test_capture_publication_rejects_unsafe_parent_mode(tmp_path: Path) -> None:
@@ -1557,10 +1835,25 @@ def test_failed_capture_retry_requires_fresh_success_root_name(
     parent = tmp_path / "captures"
     parent.mkdir(mode=0o700)
     exact_input = _patch_capture_release_closure(tmp_path, monkeypatch)
+    patched_release = calendar_authority._release_install_components
+    release_calls = 0
+    documentation_calls = 0
+
+    def counted_release(*args: Any, **kwargs: Any):
+        nonlocal release_calls
+        release_calls += 1
+        return patched_release(*args, **kwargs)
+
+    def unavailable_documentation():
+        nonlocal documentation_calls
+        documentation_calls += 1
+        raise SystemPreconditionError("docs unavailable")
+
+    monkeypatch.setattr(calendar_authority, "_release_install_components", counted_release)
     monkeypatch.setattr(
         calendar_authority,
         "_official_documentation_fetch",
-        lambda: (_ for _ in ()).throw(SystemPreconditionError("docs unavailable")),
+        unavailable_documentation,
     )
 
     def capture(root_name: str) -> dict[str, Any]:
@@ -1575,19 +1868,26 @@ def test_failed_capture_retry_requires_fresh_success_root_name(
 
     with pytest.raises(SystemPreconditionError):
         capture("retry-name")
+    assert (release_calls, documentation_calls) == (1, 1)
     with pytest.raises(SystemPreconditionError, match="failure destination exists"):
         capture("retry-name")
+    assert (release_calls, documentation_calls) == (1, 1)
 
-    monkeypatch.setattr(
-        calendar_authority,
-        "_official_documentation_fetch",
-        lambda: (
+    def available_documentation():
+        nonlocal documentation_calls
+        documentation_calls += 1
+        return (
             _docs(),
             200,
             {"content-type": "text/html; charset=utf-8"},
             True,
             [],
-        ),
+        )
+
+    monkeypatch.setattr(
+        calendar_authority,
+        "_official_documentation_fetch",
+        available_documentation,
     )
 
     class FakeClient:
@@ -1604,6 +1904,7 @@ def test_failed_capture_retry_requires_fresh_success_root_name(
 
     monkeypatch.setattr(calendar_authority, "OfficialTushareHttpsClient", FakeClient)
     assert capture("retry-name-fresh")["status"] == "CAPTURED"
+    assert (release_calls, documentation_calls) == (4, 2)
     assert (parent / "retry-name.failure").is_dir()
     assert (parent / "retry-name-fresh/capture-success.json").is_file()
 

@@ -116,6 +116,20 @@ _OPERATOR_SPEC: Final = {
 RawResolver = Callable[[Mapping[str, Any]], bytes]
 
 
+class _CapturePublicationFailure(RuntimeError):
+    """Carry one descriptor-derived publication fact without leaking cause text."""
+
+    def __init__(
+        self,
+        *,
+        cause: BaseException,
+        success_root_published: bool | None,
+    ) -> None:
+        self.cause = cause
+        self.success_root_published = success_root_published
+        super().__init__("trusted-provider capture publication failed")
+
+
 _CAPTURE_FAILURE_PHASE_CODES: Final = {
     "DOCUMENTATION_FETCH": "TRUSTED_PROVIDER_CALENDAR_DOCUMENTATION_FETCH_FAILED",
     "PROVIDER_SSE": "TRUSTED_PROVIDER_CALENDAR_SSE_REQUEST_FAILED",
@@ -165,6 +179,7 @@ def _capture_root_name(value: Any) -> str:
     if (
         "/" in root_name
         or root_name.startswith(".")
+        or root_name.casefold().endswith(_FAILURE_ROOT_SUFFIX)
         or len(root_name) + len(_FAILURE_ROOT_SUFFIX) > 200
     ):
         raise SystemSecurityError("trusted-provider capture root name is invalid")
@@ -965,7 +980,7 @@ def validate_trusted_provider_calendar_capture_transaction(
         or payload["provider_capture_file_refs"] != capture_refs
     ):
         raise SystemContractError("trusted-provider capture transaction binding differs")
-    _identifier(payload["capture_root_name"], label="capture_root_name")
+    _capture_root_name(payload["capture_root_name"])
     capture_start = _date(payload["capture_start_date"], label="capture_start_date")
     cutoff = _date(payload["cutoff_date"], label="cutoff_date")
     _timestamp(payload["captured_at"], label="captured_at")
@@ -1023,10 +1038,7 @@ def build_trusted_provider_calendar_capture_transaction(
     )
     body = {
         "state": "COMPLETE",
-        "capture_root_name": _identifier(
-            capture_root_name,
-            label="capture_root_name",
-        ),
+        "capture_root_name": _capture_root_name(capture_root_name),
         "capture_start_date": _date(
             capture_start_date,
             label="capture_start_date",
@@ -1401,9 +1413,7 @@ def _build_trusted_provider_calendar_capture_execution(
     observed_started_at: str,
     observed_completed_at: str,
 ) -> dict[str, Any]:
-    root_name = _identifier(capture_root_name, label="capture_root_name")
-    if "/" in root_name or root_name.startswith("."):
-        raise SystemSecurityError("trusted-provider capture root name is invalid")
+    root_name = _capture_root_name(capture_root_name)
     input_ref = _file_ref(
         release_install_input_file_ref,
         label="release_install_input_file_ref",
@@ -1512,17 +1522,14 @@ def validate_trusted_provider_calendar_capture_execution(
 ) -> dict[str, Any]:
     artifact = _artifact(document, CAPTURE_EXECUTION_KIND)
     payload = artifact["payload"]
-    root_name = _identifier(payload["capture_root_name"], label="capture_root_name")
+    root_name = _capture_root_name(payload["capture_root_name"])
     input_ref = _file_ref(
         payload["release_install_input_file_ref"],
         label="release_install_input_file_ref",
     )
-    if (
-        "/" in root_name
-        or root_name.startswith(".")
-        or input_ref["relative_path"] != f"{root_name}/release-install-input.json"
-        or input_ref["byte_sha256"] != _sha256(release_install_input_raw)
-    ):
+    if input_ref["relative_path"] != f"{root_name}/release-install-input.json" or input_ref[
+        "byte_sha256"
+    ] != _sha256(release_install_input_raw):
         raise SystemSecurityError("capture execution input binding differs")
     release_root_value = payload.get("release_repository_root")
     if type(release_root_value) is not str:
@@ -1617,7 +1624,7 @@ def _build_trusted_provider_calendar_capture_success(
     published_root_inode: int,
     observed_completed_at: str,
 ) -> dict[str, Any]:
-    root_name = _identifier(capture_root_name, label="capture_root_name")
+    root_name = _capture_root_name(capture_root_name)
     transaction_ref = _file_ref(
         capture_transaction_file_ref,
         label="capture_transaction_file_ref",
@@ -1679,7 +1686,7 @@ def validate_trusted_provider_calendar_capture_success(
 ) -> dict[str, Any]:
     artifact = _artifact(document, CAPTURE_SUCCESS_KIND)
     payload = artifact["payload"]
-    root_name = _identifier(payload["capture_root_name"], label="capture_root_name")
+    root_name = _capture_root_name(payload["capture_root_name"])
     transaction_ref = _file_ref(
         capture_transaction_file_ref,
         label="capture_transaction_file_ref",
@@ -2040,9 +2047,7 @@ def validate_published_trusted_provider_calendar_capture_root(
 
     execution = _artifact(capture_execution, CAPTURE_EXECUTION_KIND)
     execution_payload = execution["payload"]
-    root_name = _identifier(execution_payload["capture_root_name"], label="capture_root_name")
-    if "/" in root_name or root_name.startswith("."):
-        raise SystemSecurityError("trusted-provider capture root name is invalid")
+    root_name = _capture_root_name(execution_payload["capture_root_name"])
     execution_ref = _file_ref(
         capture_execution_file_ref,
         label="capture_execution_file_ref",
@@ -2194,6 +2199,76 @@ def _rename_no_replace(parent_fd: int, source: str, target: str) -> None:
         raise SystemStorageError("trusted-provider capture no-replace publication failed")
 
 
+def _entry_inode_identity(parent_fd: int, name: str) -> tuple[int, int] | None:
+    try:
+        observed = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    return (observed.st_dev, observed.st_ino)
+
+
+def _reconcile_no_replace_publication(
+    *,
+    parent_fd: int,
+    staging_name: str,
+    target_name: str,
+    staging_inode_identity: tuple[int, int],
+) -> bool:
+    """Prove whether this invocation's pinned staging inode was renamed."""
+
+    source_identity = _entry_inode_identity(parent_fd, staging_name)
+    target_identity = _entry_inode_identity(parent_fd, target_name)
+    if target_identity == staging_inode_identity and source_identity is None:
+        return True
+    if target_identity is None and source_identity == staging_inode_identity:
+        return False
+    raise SystemStorageError("trusted-provider capture publication outcome is ambiguous")
+
+
+def _assert_capture_destinations_absent(parent_fd: int, root_name: str) -> None:
+    root_name = _capture_root_name(root_name)
+    for candidate, label in (
+        (root_name, "destination"),
+        (_failure_root_name(root_name), "failure destination"),
+    ):
+        try:
+            os.stat(candidate, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        raise SystemPreconditionError(f"trusted-provider capture {label} exists")
+
+
+def _preflight_capture_destinations(*, parent: Path, root_name: str) -> None:
+    """Reject used capture names under the publication lock before external work."""
+
+    root_name = _capture_root_name(root_name)
+    parent_fd = _open_pinned_absolute_directory(parent)
+    parent_identity = _directory_identity(os.fstat(parent_fd))
+    lock_fd: int | None = None
+    try:
+        lock_fd = _open_capture_lock(parent_fd)
+        os.fchmod(lock_fd, 0o600)
+        _verify_owner_file(os.fstat(lock_fd))
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        lock_path_stat = os.stat(
+            ".tushare-calendar-capture.lock",
+            dir_fd=parent_fd,
+            follow_symlinks=False,
+        )
+        if _stat_identity(lock_path_stat) != _stat_identity(os.fstat(lock_fd)):
+            raise SystemSecurityError("trusted-provider capture lock path drifted")
+        if _directory_identity(os.fstat(parent_fd)) != parent_identity:
+            raise SystemSecurityError("trusted-provider capture parent drifted")
+        _assert_capture_destinations_absent(parent_fd, root_name)
+    finally:
+        if lock_fd is not None:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            finally:
+                os.close(lock_fd)
+        os.close(parent_fd)
+
+
 def _file_reference(root_name: str, leaf: str, raw: bytes) -> dict[str, str]:
     return {
         "relative_path": f"{root_name}/{leaf}",
@@ -2223,6 +2298,7 @@ def _publish_capture_tree(
     files: Mapping[str, bytes],
     success_builder: Callable[[str, os.stat_result], bytes],
 ) -> bytes:
+    root_name = _capture_root_name(root_name)
     parent_fd = _open_pinned_absolute_directory(parent)
     parent_identity = _directory_identity(os.fstat(parent_fd))
     lock_fd: int | None = None
@@ -2230,6 +2306,9 @@ def _publish_capture_tree(
     final_fd: int | None = None
     staging = f".{root_name}.staging-{os.getpid()}-{secrets.token_hex(8)}"
     published = False
+    publication_ambiguous = False
+    rename_attempted = False
+    staging_inode_identity: tuple[int, int] | None = None
     try:
         lock_fd = _open_capture_lock(parent_fd)
         os.fchmod(lock_fd, 0o600)
@@ -2242,22 +2321,7 @@ def _publish_capture_tree(
         )
         if _stat_identity(lock_path_stat) != _stat_identity(os.fstat(lock_fd)):
             raise SystemSecurityError("trusted-provider capture lock path drifted")
-        try:
-            os.stat(root_name, dir_fd=parent_fd, follow_symlinks=False)
-        except FileNotFoundError:
-            pass
-        else:
-            raise SystemPreconditionError("trusted-provider capture destination exists")
-        try:
-            os.stat(
-                _failure_root_name(root_name),
-                dir_fd=parent_fd,
-                follow_symlinks=False,
-            )
-        except FileNotFoundError:
-            pass
-        else:
-            raise SystemPreconditionError("trusted-provider capture failure destination exists")
+        _assert_capture_destinations_absent(parent_fd, root_name)
         os.mkdir(staging, mode=0o700, dir_fd=parent_fd)
         staging_fd = os.open(
             staging,
@@ -2273,8 +2337,10 @@ def _publish_capture_tree(
         _read_directory_files(staging_fd, expected=files)
         os.fsync(staging_fd)
         staging_identity = _stat_identity(os.fstat(staging_fd))
+        staging_inode_identity = staging_identity[:2]
         if _directory_identity(os.fstat(parent_fd)) != parent_identity:
             raise SystemSecurityError("trusted-provider capture parent drifted")
+        rename_attempted = True
         _rename_no_replace(parent_fd, staging, root_name)
         published = True
         os.fsync(parent_fd)
@@ -2298,10 +2364,30 @@ def _publish_capture_tree(
         os.fsync(parent_fd)
         return success_raw
     except BaseException as exc:
-        try:
-            setattr(exc, "_trusted_provider_capture_root_published", published)
-        except BaseException:
-            pass
+        if rename_attempted:
+            if staging_inode_identity is None:
+                publication_ambiguous = True
+                raise _CapturePublicationFailure(
+                    cause=exc,
+                    success_root_published=None,
+                ) from exc
+            try:
+                published = _reconcile_no_replace_publication(
+                    parent_fd=parent_fd,
+                    staging_name=staging,
+                    target_name=root_name,
+                    staging_inode_identity=staging_inode_identity,
+                )
+            except SystemStorageError as reconcile_error:
+                publication_ambiguous = True
+                raise _CapturePublicationFailure(
+                    cause=reconcile_error,
+                    success_root_published=None,
+                ) from exc
+            raise _CapturePublicationFailure(
+                cause=exc,
+                success_root_published=published,
+            ) from exc
         raise
     finally:
         if final_fd is not None:
@@ -2313,7 +2399,7 @@ def _publish_capture_tree(
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
             finally:
                 os.close(lock_fd)
-        if not published:
+        if not published and not publication_ambiguous:
             try:
                 cleanup_fd = os.open(
                     staging,
@@ -2352,6 +2438,9 @@ def _publish_capture_failure_root(
     final_fd: int | None = None
     staging = f".{failure_root_name}.staging-{os.getpid()}-{secrets.token_hex(8)}"
     published = False
+    publication_ambiguous = False
+    rename_attempted = False
+    staging_inode_identity: tuple[int, int] | None = None
     try:
         lock_fd = _open_capture_lock(parent_fd)
         os.fchmod(lock_fd, 0o600)
@@ -2395,8 +2484,10 @@ def _publish_capture_failure_root(
         _read_directory_files(staging_fd, expected={_FAILURE_LEAF: failure_raw})
         os.fsync(staging_fd)
         staging_identity = _stat_identity(os.fstat(staging_fd))
+        staging_inode_identity = staging_identity[:2]
         if _directory_identity(os.fstat(parent_fd)) != parent_identity:
             raise SystemSecurityError("trusted-provider capture parent drifted")
+        rename_attempted = True
         _rename_no_replace(parent_fd, staging, failure_root_name)
         published = True
         os.fsync(parent_fd)
@@ -2418,6 +2509,26 @@ def _publish_capture_failure_root(
             "capture_failure": failure,
             "capture_failure_file_ref": failure_ref,
         }
+    except BaseException as exc:
+        if rename_attempted:
+            if staging_inode_identity is None:
+                publication_ambiguous = True
+                raise SystemStorageError(
+                    "trusted-provider capture failure publication outcome is ambiguous"
+                ) from exc
+            try:
+                published = _reconcile_no_replace_publication(
+                    parent_fd=parent_fd,
+                    staging_name=staging,
+                    target_name=failure_root_name,
+                    staging_inode_identity=staging_inode_identity,
+                )
+            except SystemStorageError as reconcile_error:
+                publication_ambiguous = True
+                raise SystemStorageError(
+                    "trusted-provider capture failure publication outcome is ambiguous"
+                ) from reconcile_error
+        raise
     finally:
         if final_fd is not None:
             os.close(final_fd)
@@ -2428,7 +2539,7 @@ def _publish_capture_failure_root(
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
             finally:
                 os.close(lock_fd)
-        if not published:
+        if not published and not publication_ambiguous:
             try:
                 cleanup_fd = os.open(
                     staging,
@@ -2591,16 +2702,17 @@ def capture_trusted_provider_calendar_evidence(  # noqa: C901
     )
     if _sha256(release_install_input_raw) != expected_input_sha:
         raise SystemSecurityError("release install input SHA differs")
-    observed_started_at = _utc_now()
+    capture_start = RUNTIME_START_DATE - timedelta(days=CAPTURE_PREHISTORY_DAYS)
+    cutoff = _date(cutoff_date, label="cutoff_date")
+    if cutoff < RUNTIME_START_DATE:
+        raise SystemPreconditionError("trusted-provider capture cutoff is invalid")
+    _preflight_capture_destinations(parent=parent, root_name=root_name)
     _release_install_components(
         release_install_input_raw,
         repository_root=release_repository_root,
         require_current_operator=True,
     )
-    capture_start = RUNTIME_START_DATE - timedelta(days=CAPTURE_PREHISTORY_DAYS)
-    cutoff = _date(cutoff_date, label="cutoff_date")
-    if cutoff < RUNTIME_START_DATE:
-        raise SystemPreconditionError("trusted-provider capture cutoff is invalid")
+    observed_started_at = _utc_now()
     phase = "DOCUMENTATION_FETCH"
     success_root_published = False
     try:
@@ -2800,10 +2912,12 @@ def capture_trusted_provider_calendar_evidence(  # noqa: C901
             "network_call_count": 4,
         }
     except BaseException as exc:
-        success_root_published = bool(
-            success_root_published
-            or getattr(exc, "_trusted_provider_capture_root_published", False)
-        )
+        if isinstance(exc, _CapturePublicationFailure):
+            if exc.success_root_published is None:
+                raise SystemStorageError(
+                    "trusted-provider capture publication outcome is ambiguous"
+                ) from exc.cause
+            success_root_published = exc.success_root_published
         _raise_recorded_capture_failure(
             parent=parent,
             capture_root_name=root_name,
