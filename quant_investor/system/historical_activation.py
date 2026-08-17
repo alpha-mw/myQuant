@@ -14,6 +14,7 @@ from datetime import datetime
 import hashlib
 from pathlib import Path, PurePosixPath
 import re
+from types import MappingProxyType
 from typing import Any, Final
 
 from quant_investor.contracts import canonical_json_bytes, parse_canonical_json_bytes
@@ -58,6 +59,24 @@ INITIAL_CUTOVER_GATE_EVIDENCE_CONTRACT_SHA256: Final = (
 )
 INITIAL_RELEASE_INSTALL_EVIDENCE_CONTRACT_SHA256: Final = (
     "90a88a66b80883aa857815db2afb05296fd79bb0a8380b434754d37bf8ab5d3d"
+)
+
+# These are interpretation rules for the immutable first activation, not the
+# descendant process's current source registry.  Keep them here beside the
+# other frozen first-activation schemas so ordinary future refactors cannot
+# make an authentic initial graph unreadable.
+INITIAL_ASSEMBLER_MODULE_PATH: Final = "quant_investor/factors/governance/production.py"
+INITIAL_HISTORICAL_SOURCE_MAX_BYTES: Final = 1024 * 1024 * 1024 * 1024
+INITIAL_SOURCE_FORMAT_MEDIA_TYPES: Final = MappingProxyType(
+    {
+        "BINARY": ("application/octet-stream", ()),
+        "CSV": ("text/csv", (".csv",)),
+        "JSON": ("application/json", (".json",)),
+        "JSONL": ("application/x-ndjson", (".jsonl",)),
+        "PARQUET": ("application/vnd.apache.parquet", (".parquet",)),
+        "PYTHON": ("text/x-python", (".py",)),
+        "TEXT": ("text/plain", (".txt",)),
+    }
 )
 
 INITIAL_GATE_RUNNER_ID: Final = "myquant.system.final-cutover-gate-runner"
@@ -617,6 +636,15 @@ def validate_frozen_object_ref(
     if dispatch is not None and dispatch.get((kind, normalized["contract_sha256"])) is None:
         raise SystemContractError(f"{label} contract pair is not initial-catalog anchored")
     return normalized
+
+
+def validate_initial_assembler_module_path(value: Any) -> str:
+    """Return the one frozen, canonical Git path for the initial assembler."""
+
+    path = _path(value, label="historical assembler_module_path")
+    if path != INITIAL_ASSEMBLER_MODULE_PATH:
+        raise SystemContractError("historical assembler module path differs")
+    return path
 
 
 def frozen_object_ref(artifact: Mapping[str, Any]) -> dict[str, str]:

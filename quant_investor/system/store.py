@@ -50,6 +50,13 @@ from .errors import (
     SystemStorageError,
 )
 from .release import installed_code_manifest_sha256
+from .historical_activation import (
+    INITIAL_ASSEMBLER_MODULE_PATH,
+    INITIAL_HISTORICAL_SOURCE_MAX_BYTES,
+    INITIAL_SOURCE_FORMAT_MEDIA_TYPES,
+    validate_frozen_object_ref,
+    validate_initial_assembler_module_path,
+)
 from .storage import (
     ACTIVE_POINTER_PATH,
     ACTIVATION_AUTHORIZATIONS_ROOT,
@@ -553,7 +560,11 @@ class SystemStore:
         if semantic != hashlib.sha256(canonical_json_bytes(preimage)).hexdigest():
             raise SystemContractError("historical artifact semantic SHA differs")
         if expected_ref is not None:
-            ref = validate_object_ref(expected_ref, label="historical object ref")
+            ref = validate_frozen_object_ref(
+                expected_ref,
+                label="historical object ref",
+                dispatch=dispatch,
+            )
             observed = {
                 "kind": kind,
                 "contract_sha256": contract_sha,
@@ -571,7 +582,11 @@ class SystemStore:
         *,
         dispatch: Mapping[tuple[str, str], str],
     ) -> dict[str, Any]:
-        normalized = validate_object_ref(ref, label="historical object ref")
+        normalized = validate_frozen_object_ref(
+            ref,
+            label="historical object ref",
+            dispatch=dispatch,
+        )
         stored = self._storage.read(_object_path(normalized["kind"], normalized["byte_sha256"]))
         if stored.byte_sha256 != normalized["byte_sha256"]:
             raise SystemContractError("historical object byte hash differs")
@@ -585,16 +600,34 @@ class SystemStore:
             raise SystemContractError("historical source object is invalid")
         if payload.get("source_root_id") != self.source_root_id:
             raise SystemContractError("historical source root identity differs")
-        path, _media, _format = self._validate_source_metadata(
-            relative_path=payload.get("relative_path"),
-            media_type=payload.get("media_type"),
-            source_format=payload.get("source_format"),
+        path = _require_text(
+            payload.get("relative_path"), label="historical source_object.relative_path"
         )
+        parsed_path = PurePosixPath(path)
+        if (
+            parsed_path.is_absolute()
+            or str(parsed_path) != path
+            or "\\" in path
+            or any(part in {"", ".", ".."} for part in parsed_path.parts)
+        ):
+            raise SystemContractError("historical source object path is not canonical")
+        media = _require_text(
+            payload.get("media_type"), label="historical source_object.media_type"
+        )
+        format_name = _require_text(
+            payload.get("source_format"), label="historical source_object.source_format"
+        )
+        rule = INITIAL_SOURCE_FORMAT_MEDIA_TYPES.get(format_name)
+        if rule is None or media != rule[0]:
+            raise SystemContractError("historical source media/format binding is invalid")
+        suffixes = rule[1]
+        if suffixes and not path.lower().endswith(suffixes):
+            raise SystemContractError("historical source path/format binding is invalid")
         expected_sha = _require_sha256(
             payload.get("byte_sha256"), label="historical source byte SHA"
         )
         observed = self._source_storage.hash_workspace_file(
-            path, maximum_bytes=self.max_source_bytes
+            path, maximum_bytes=INITIAL_HISTORICAL_SOURCE_MAX_BYTES
         )
         if observed.byte_sha256 != expected_sha:
             raise SystemContractError("historical source bytes changed")
@@ -2929,7 +2962,6 @@ class SystemStore:
                 validate_final_cutover_authorization_closure,
             )
             from .historical_activation import (
-                validate_frozen_object_ref,
                 validate_initial_activation_authorization,
                 validate_initial_activation_bundle,
                 validate_initial_migration_receipt,
@@ -2970,10 +3002,11 @@ class SystemStore:
                 deployed_release_ref=deployed_ref,
                 validation_mode="HISTORICAL",
             )
+            assembler_path = validate_initial_assembler_module_path(INITIAL_ASSEMBLER_MODULE_PATH)
             _mode, _blob, assembler_raw = _git_blob(
                 self.workspace_root,
                 final_authorization["payload"]["final_integration_commit"],
-                "quant_investor/factors/governance/production.py",
+                assembler_path,
             )
             historical_assembler_sha256 = hashlib.sha256(assembler_raw).hexdigest()
             from quant_investor.factors.governance.production import (
@@ -3061,12 +3094,12 @@ class SystemStore:
         pointer = current["pointer"]
 
         if current["pointer_byte_sha256"] == completion["initial_pointer_byte_sha256"]:
-            anchored_release_ref = validate_object_ref(
+            anchored_release_ref = validate_frozen_object_ref(
                 completion["authorization"]["payload"]["deployed_release_ref"],
                 label="initial authorization deployed release ref",
             )
             if deployed_release_ref is not None:
-                requested_release_ref = validate_object_ref(
+                requested_release_ref = validate_frozen_object_ref(
                     deployed_release_ref,
                     label="deployed_release_ref",
                 )
@@ -3199,6 +3232,48 @@ class SystemStore:
         """Verify a named generation or report normal uninitialized active state."""
 
         if generation_id is not None:
+            normalized_id = _require_sha256(generation_id, label="generation_id")
+            chain = self._pointer_chain()
+            if chain and chain[-1]["pointer"]["generation_id"] == normalized_id:
+                try:
+                    return self.verify_generation(
+                        normalized_id,
+                        deployed_release_ref=deployed_release_ref,
+                    )
+                except SystemError:
+                    pass
+                completion = self.verify_migration_completion(chain)
+                historical = completion["initial_generation"]
+                anchored_release = validate_frozen_object_ref(
+                    completion["authorization"]["payload"]["deployed_release_ref"],
+                    label="initial authorization deployed release ref",
+                )
+                if (
+                    deployed_release_ref is not None
+                    and validate_frozen_object_ref(
+                        deployed_release_ref,
+                        label="deployed_release_ref",
+                    )
+                    != anchored_release
+                ):
+                    raise SystemContractError(
+                        "requested release differs from initial authorization"
+                    )
+                final_payload = completion["final_cutover_authorization"]["payload"]
+                return {
+                    **historical,
+                    "calendar_authority_route": final_payload.get(
+                        "calendar_authorization_basis", {}
+                    ).get("authority_route"),
+                    "calendar_authority_confidence": (
+                        "DEGRADED"
+                        if final_payload.get("calendar_source_limitations")
+                        else "OFFICIAL"
+                    ),
+                    "calendar_source_limitations": list(
+                        final_payload.get("calendar_source_limitations", [])
+                    ),
+                }
             return self.verify_generation(generation_id, deployed_release_ref=deployed_release_ref)
         active = self.read_active(deployed_release_ref=deployed_release_ref)
         if active is not None:

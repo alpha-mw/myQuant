@@ -76,6 +76,11 @@ is runtime authority only when the permanent initial-migration marker closes
 the detached receipt, final cutover authorization, prepared pointer bytes,
 initial generation, and deployed release. An operational pointer without that
 exact marker never grants Factor `ACTIVE` authority.
+Detached authority artifacts use content-addressed exact-once publication below
+an owner-only external root. Every directory component is opened without
+following symlinks; both fresh and idempotent leaves must be regular `0600`
+files owned by the effective UID with one hard link, and publication completes
+only after same-descriptor byte/inode readback and containing-directory fsync.
 
 System status is one of `UNINITIALIZED`, `PARTIAL`, `ACTIVE`, `BLOCKED`, or
 `SUSPENDED`. External routing is independently `ACTIVE`, `UNCONFIRMED`,

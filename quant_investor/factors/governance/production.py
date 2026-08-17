@@ -109,8 +109,11 @@ from quant_investor.system.bootstrap_receipt import (
 )
 from quant_investor.system.storage import ACTIVE_POINTER_PATH, MIGRATION_MARKER_PATH
 from quant_investor.system.historical_activation import (
+    INITIAL_ASSEMBLER_MODULE_PATH,
     INITIAL_PRODUCTION_RECEIPT_CONTRACT_SHA256,
     INITIAL_PRODUCTION_RECEIPT_FIELDS,
+    validate_frozen_object_ref,
+    validate_initial_assembler_module_path,
 )
 from quant_investor.system.store import (
     SystemStore,
@@ -3521,7 +3524,14 @@ def _validate_historical_production_bootstrap_generation_closure(  # noqa: C901
     if payload["production_bootstrap_receipt_id"] != expected_receipt_id:
         raise SystemContractError("historical production receipt identity differs")
 
-    release_ref = validate_object_ref(deployed_release_ref, label="historical deployed release")
+    dispatch = verified_generation.get("historical_contract_dispatch")
+    if type(dispatch) is not dict:
+        raise SystemContractError("historical contract dispatch is absent")
+    release_ref = validate_frozen_object_ref(
+        deployed_release_ref,
+        label="historical deployed release",
+        dispatch=dispatch,
+    )
     exact_manifest_bindings = {
         "deployed_release_ref": manifest_payload["release_manifest_ref"],
         "source_refs": manifest_payload["source_refs"],
@@ -3574,15 +3584,12 @@ def _validate_historical_production_bootstrap_generation_closure(  # noqa: C901
     ):
         raise SystemContractError("historical generation identity/intent differs")
     if (
-        payload["assembler_module_path"] != ASSEMBLER_MODULE_PATH
+        validate_initial_assembler_module_path(payload["assembler_module_path"])
+        != INITIAL_ASSEMBLER_MODULE_PATH
         or type(historical_assembler_sha256) is not str
         or payload["assembler_code_sha256"] != historical_assembler_sha256
     ):
         raise SystemContractError("historical assembler code identity differs")
-
-    dispatch = verified_generation.get("historical_contract_dispatch")
-    if type(dispatch) is not dict:
-        raise SystemContractError("historical contract dispatch is absent")
     request = store._historical_get_object(
         payload["bootstrap_operator_request_ref"], dispatch=dispatch
     )

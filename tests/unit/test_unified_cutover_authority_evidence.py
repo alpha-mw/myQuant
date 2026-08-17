@@ -5,6 +5,7 @@ import hashlib
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -28,7 +29,14 @@ from quant_investor.migration.authority import (
     _seal_final_cutover_authorization,
     _seal_cutover_gate_evidence,
 )
-from quant_investor.system import SystemContractError, SystemNotFound, SystemPreconditionError
+from quant_investor.system import (
+    SystemContractError,
+    SystemNotFound,
+    SystemPreconditionError,
+    SystemSecurityError,
+    SystemStorageError,
+)
+import quant_investor.migration.authority as authority_module
 from quant_investor.system.bootstrap_receipt import build_production_bootstrap_receipt
 from quant_investor.system.store import SystemStore, object_ref_for_artifact
 
@@ -494,6 +502,90 @@ def test_concurrent_handoff_requires_clean_stable_double_read(tmp_path: Path) ->
             main_clean=True,
             created_at=BASE,
         )
+
+
+def test_authority_publication_rejects_symlinked_directory_topology(tmp_path: Path) -> None:
+    artifact = _handoff()
+
+    real_ancestor = tmp_path / "real-ancestor"
+    real_ancestor.mkdir(mode=0o700)
+    linked_ancestor = tmp_path / "linked-ancestor"
+    linked_ancestor.symlink_to(real_ancestor, target_is_directory=True)
+    with pytest.raises(SystemSecurityError, match="no-follow directory"):
+        publish_authority_artifact(linked_ancestor / "authority", artifact)
+
+    real_root = tmp_path / "real-root"
+    real_root.mkdir(mode=0o700)
+    linked_root = tmp_path / "linked-root"
+    linked_root.symlink_to(real_root, target_is_directory=True)
+    with pytest.raises(SystemSecurityError, match="no-follow directory"):
+        publish_authority_artifact(linked_root, artifact)
+
+    authority_root = tmp_path / "authority-kind-link"
+    authority_root.mkdir(mode=0o700)
+    real_kind = tmp_path / "real-kind"
+    real_kind.mkdir(mode=0o700)
+    (authority_root / artifact["kind"]).symlink_to(real_kind, target_is_directory=True)
+    with pytest.raises(SystemSecurityError, match="no-follow directory"):
+        publish_authority_artifact(authority_root, artifact)
+
+
+@pytest.mark.parametrize("insecure_kind", ["symlink", "hardlink", "wrong-mode"])
+def test_authority_publication_rejects_exact_but_insecure_existing_leaf(
+    tmp_path: Path,
+    insecure_kind: str,
+) -> None:
+    artifact = _handoff()
+    raw = canonical_json_bytes(artifact)
+    digest = hashlib.sha256(raw).hexdigest()
+    root = tmp_path / insecure_kind
+    kind_root = root / artifact["kind"]
+    kind_root.mkdir(parents=True, mode=0o700)
+    root.chmod(0o700)
+    kind_root.chmod(0o700)
+    target = kind_root / f"{digest}.json"
+    source = tmp_path / f"{insecure_kind}-source.json"
+    source.write_bytes(raw)
+    source.chmod(0o600)
+    if insecure_kind == "symlink":
+        target.symlink_to(source)
+    elif insecure_kind == "hardlink":
+        target.hardlink_to(source)
+    else:
+        target.write_bytes(raw)
+        target.chmod(0o644)
+    with pytest.raises(SystemSecurityError, match="authority evidence leaf"):
+        publish_authority_artifact(root, artifact)
+
+
+def test_authority_publication_rejects_leaf_identity_change_during_readback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact = _handoff()
+    target = publish_authority_artifact(tmp_path / "authority", artifact)
+    original_stat = authority_module.os.stat
+
+    def changed_stat(path: object, *args: object, **kwargs: object) -> object:
+        observed = original_stat(path, *args, **kwargs)
+        if (
+            path == target.name
+            and kwargs.get("dir_fd") is not None
+            and kwargs.get("follow_symlinks") is False
+        ):
+            return SimpleNamespace(
+                st_dev=observed.st_dev,
+                st_ino=observed.st_ino + 1,
+                st_size=observed.st_size,
+                st_mode=observed.st_mode,
+                st_uid=observed.st_uid,
+                st_nlink=observed.st_nlink,
+            )
+        return observed
+
+    monkeypatch.setattr(authority_module.os, "stat", changed_stat)
+    with pytest.raises(SystemStorageError, match="readback"):
+        publish_authority_artifact(tmp_path / "authority", artifact)
 
 
 def test_legacy_disposition_blocks_unresolved_rows() -> None:

@@ -43,6 +43,8 @@ from quant_investor.system import (
     verify_emergency_controller,
 )
 from quant_investor.system.historical_activation import (
+    validate_frozen_object_ref,
+    validate_initial_assembler_module_path,
     validate_initial_cutover_gate_evidence,
     validate_initial_legacy_source_disposition,
     validate_initial_main_checkout_adoption,
@@ -288,7 +290,7 @@ def test_initial_marker_uses_frozen_schemas_after_descendant_contract_change(
     )
 
     def reject_current_schema(*_args: object, **_kwargs: object) -> None:
-        raise AssertionError("descendant current schema must not reinterpret initial marker")
+        raise SystemContractError("descendant current schema must not reinterpret initial marker")
 
     import quant_investor.migration.authority as authority_module
     import quant_investor.migration.migration as migration_module
@@ -313,6 +315,14 @@ def test_initial_marker_uses_frozen_schemas_after_descendant_contract_change(
     monkeypatch.setattr(authority_module, "_GATE_RUNNER_ID", "descendant-runner")
     monkeypatch.setattr(production_module, "INPUT_SOURCE_ROW_FIELDS", frozenset(), raising=False)
     monkeypatch.setattr(production_module, "FUNDAMENTAL_SOURCE_BLOCKERS", frozenset())
+    monkeypatch.setattr(
+        production_module,
+        "ASSEMBLER_MODULE_PATH",
+        "descendant/relocated/production.py",
+    )
+    monkeypatch.setattr(system_store_module, "validate_object_ref", reject_current_schema)
+    monkeypatch.setattr(system_store_module, "SOURCE_FORMAT_MEDIA_TYPES", {})
+    store.max_source_bytes = 1
     monkeypatch.setattr(migration_module, "validate_permanent_marker", reject_current_schema)
     monkeypatch.setattr(
         activation_module,
@@ -328,7 +338,8 @@ def test_initial_marker_uses_frozen_schemas_after_descendant_contract_change(
     readback = store.read_active()
     assert readback is not None
     assert readback["pointer"] == activated["pointer"]
-    assert readback["deployed_release_verified"] is True
+    assert readback["deployed_release_verified"] is False
+    assert readback["historical_release_verified"] is True
     assert readback["migration_completion"]["marker"]["payload"]["migration_replay_refused"] is True
     assert store.status()["state"] == "PARTIAL"
     import quant_investor.system as system_package
@@ -350,6 +361,33 @@ def test_initial_marker_uses_frozen_schemas_after_descendant_contract_change(
     )
     assert emergency["generation_state"] == "SYSTEM_SUSPENDED"
     assert emergency["factor_authority"] == "BLOCKED"
+
+
+def test_frozen_historical_primitives_reject_ref_source_and_assembler_tamper(
+    tmp_path: Path,
+) -> None:
+    closure, generation, _inputs = _case(tmp_path)
+    store = closure["store"]
+    malformed_ref = dict(generation["manifest_ref"])
+    malformed_ref.pop("byte_sha256")
+    with pytest.raises(SystemContractError, match="fields are not exact"):
+        validate_frozen_object_ref(malformed_ref, label="malformed historical ref")
+
+    with pytest.raises(SystemContractError, match="canonical relative path"):
+        validate_initial_assembler_module_path("../governance/production.py")
+    with pytest.raises(SystemContractError, match="module path differs"):
+        validate_initial_assembler_module_path("quant_investor/other/production.py")
+
+    source = copy.deepcopy(generation["factor_source_objects"][0])
+    source["payload"]["source_format"] = "PARQUET"
+    source["payload"]["media_type"] = "text/csv"
+    with pytest.raises(SystemContractError, match="media/format binding"):
+        store._verify_historical_source_object(source)
+
+    source["payload"]["media_type"] = "application/vnd.apache.parquet"
+    source["payload"]["relative_path"] = "historical/source.csv"
+    with pytest.raises(SystemContractError, match="path/format binding"):
+        store._verify_historical_source_object(source)
 
 
 def test_frozen_initial_nested_evidence_rejects_semantically_resealed_tamper(

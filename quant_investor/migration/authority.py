@@ -2265,73 +2265,219 @@ def validate_final_cutover_authorization_closure(  # noqa: C901
     return artifact
 
 
+_AUTHORITY_ARTIFACT_MAX_BYTES: Final = 64 * 1024 * 1024
+
+
+def _authority_directory_flags() -> int:
+    if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW"):
+        raise SystemSecurityError("authority evidence requires no-follow directory support")
+    return os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+
+def _open_authority_directory(
+    parent_fd: int,
+    name: str,
+    *,
+    create: bool,
+    owner_only: bool,
+    label: str,
+) -> int:
+    if not name or name in {".", ".."} or "/" in name or "\\" in name:
+        raise SystemSecurityError(f"{label} component is invalid")
+    flags = _authority_directory_flags()
+    try:
+        descriptor = os.open(name, flags, dir_fd=parent_fd)
+    except FileNotFoundError:
+        if not create:
+            raise SystemSecurityError(f"{label} parent is absent") from None
+        try:
+            os.mkdir(name, mode=0o700, dir_fd=parent_fd)
+        except FileExistsError:
+            pass
+        except OSError as exc:
+            raise SystemSecurityError(f"{label} could not be created") from exc
+        try:
+            descriptor = os.open(name, flags, dir_fd=parent_fd)
+        except OSError as exc:
+            raise SystemSecurityError(f"{label} is not a no-follow directory") from exc
+    except OSError as exc:
+        raise SystemSecurityError(f"{label} is not a no-follow directory") from exc
+    metadata = os.fstat(descriptor)
+    if not stat.S_ISDIR(metadata.st_mode):
+        os.close(descriptor)
+        raise SystemSecurityError(f"{label} is not a directory")
+    if owner_only and (metadata.st_uid != os.geteuid() or stat.S_IMODE(metadata.st_mode) != 0o700):
+        os.close(descriptor)
+        raise SystemSecurityError(f"{label} is not owner-only")
+    return descriptor
+
+
+def _open_authority_root(authority_root: str | os.PathLike[str]) -> tuple[Path, int]:
+    supplied = Path(authority_root)
+    if ".." in supplied.parts:
+        raise SystemSecurityError("authority evidence root is not canonical")
+    root = Path(os.path.abspath(os.fspath(supplied)))
+    if root == Path(root.anchor):
+        raise SystemSecurityError("authority evidence root is too broad")
+    descriptor = os.open(root.anchor, _authority_directory_flags())
+    try:
+        components = root.parts[1:]
+        for index, component in enumerate(components):
+            child = _open_authority_directory(
+                descriptor,
+                component,
+                create=index == len(components) - 1,
+                owner_only=index == len(components) - 1,
+                label=(
+                    "authority evidence root"
+                    if index == len(components) - 1
+                    else "authority evidence ancestor"
+                ),
+            )
+            os.close(descriptor)
+            descriptor = child
+        return root, descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def _authority_leaf_readback(
+    directory_fd: int,
+    filename: str,
+    expected: bytes,
+) -> None:
+    if len(expected) > _AUTHORITY_ARTIFACT_MAX_BYTES:
+        raise SystemSecurityError("authority evidence exceeds the byte bound")
+    flags = os.O_RDONLY | os.O_NOFOLLOW
+    try:
+        descriptor = os.open(filename, flags, dir_fd=directory_fd)
+    except FileNotFoundError:
+        raise
+    except OSError as exc:
+        raise SystemSecurityError("authority evidence leaf is not a no-follow file") from exc
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_uid != os.geteuid()
+            or stat.S_IMODE(before.st_mode) != 0o600
+            or before.st_nlink != 1
+            or before.st_size != len(expected)
+        ):
+            raise SystemSecurityError("authority evidence leaf custody is invalid")
+        chunks: list[bytes] = []
+        remaining = len(expected) + 1
+        while remaining > 0:
+            chunk = os.read(descriptor, min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        observed = b"".join(chunks)
+        after = os.fstat(descriptor)
+        path_metadata = os.stat(filename, dir_fd=directory_fd, follow_symlinks=False)
+        identity_before = (before.st_dev, before.st_ino, before.st_size)
+        identity_after = (after.st_dev, after.st_ino, after.st_size)
+        identity_path = (path_metadata.st_dev, path_metadata.st_ino, path_metadata.st_size)
+        if (
+            identity_before != identity_after
+            or identity_after != identity_path
+            or not stat.S_ISREG(path_metadata.st_mode)
+            or path_metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(path_metadata.st_mode) != 0o600
+            or path_metadata.st_nlink != 1
+            or observed != expected
+            or _sha256(observed) != _sha256(expected)
+        ):
+            raise SystemStorageError("authority evidence readback failed")
+    finally:
+        os.close(descriptor)
+
+
 def _publish_validated_authority_artifact(  # noqa: C901
     authority_root: str | os.PathLike[str], artifact: Mapping[str, Any]
 ) -> Path:
     kind = artifact["kind"]
+    if PurePosixPath(kind).parts != (kind,):
+        raise SystemSecurityError("authority evidence kind path is invalid")
     raw = canonical_json_bytes(artifact)
+    if len(raw) > _AUTHORITY_ARTIFACT_MAX_BYTES:
+        raise SystemSecurityError("authority evidence exceeds the byte bound")
     byte_sha = _sha256(raw)
-    root = Path(authority_root)
-    current = root
-    if current.exists():
-        metadata = os.lstat(current)
-        if (
-            not stat.S_ISDIR(metadata.st_mode)
-            or stat.S_ISLNK(metadata.st_mode)
-            or metadata.st_uid != os.geteuid()
-            or stat.S_IMODE(metadata.st_mode) != 0o700
-        ):
-            raise SystemSecurityError("authority evidence root is not owner-only")
-    else:
-        current.mkdir(parents=True, mode=0o700)
-        current.chmod(0o700)
-    kind_root = current / kind
-    if not kind_root.exists():
-        kind_root.mkdir(mode=0o700)
-    metadata = os.lstat(kind_root)
-    if (
-        not stat.S_ISDIR(metadata.st_mode)
-        or stat.S_ISLNK(metadata.st_mode)
-        or metadata.st_uid != os.geteuid()
-        or stat.S_IMODE(metadata.st_mode) != 0o700
-    ):
-        raise SystemSecurityError("authority evidence kind root is not owner-only")
-    target = kind_root / f"{byte_sha}.json"
-    if target.exists():
-        observed = target.read_bytes()
-        if observed != raw:
-            raise SystemStorageError("authority evidence exact-once conflict")
-        return target
-    temporary = kind_root / f".{byte_sha}.tmp-{os.getpid()}-{secrets.token_hex(8)}"
-    descriptor = os.open(
-        temporary,
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
-        0o600,
-    )
+    root, root_fd = _open_authority_root(authority_root)
+    kind_fd: int | None = None
+    temporary_name: str | None = None
     try:
-        view = memoryview(raw)
-        while view:
-            written = os.write(descriptor, view)
-            view = view[written:]
-        os.fsync(descriptor)
+        kind_fd = _open_authority_directory(
+            root_fd,
+            kind,
+            create=True,
+            owner_only=True,
+            label="authority evidence kind root",
+        )
+        filename = f"{byte_sha}.json"
+        try:
+            _authority_leaf_readback(kind_fd, filename, raw)
+            os.fsync(kind_fd)
+            return root / kind / filename
+        except FileNotFoundError:
+            pass
+
+        temporary_name = f".{byte_sha}.tmp-{os.getpid()}-{secrets.token_hex(8)}"
+        descriptor = os.open(
+            temporary_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=kind_fd,
+        )
+        try:
+            os.fchmod(descriptor, 0o600)
+            view = memoryview(raw)
+            while view:
+                written = os.write(descriptor, view)
+                if written <= 0:
+                    raise SystemStorageError("authority evidence write made no progress")
+                view = view[written:]
+            os.fsync(descriptor)
+            temporary_metadata = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(temporary_metadata.st_mode)
+                or temporary_metadata.st_uid != os.geteuid()
+                or stat.S_IMODE(temporary_metadata.st_mode) != 0o600
+                or temporary_metadata.st_nlink != 1
+                or temporary_metadata.st_size != len(raw)
+            ):
+                raise SystemSecurityError("authority temporary custody is invalid")
+        finally:
+            os.close(descriptor)
+        try:
+            os.link(
+                temporary_name,
+                filename,
+                src_dir_fd=kind_fd,
+                dst_dir_fd=kind_fd,
+                follow_symlinks=False,
+            )
+        except FileExistsError:
+            # A concurrent publisher may win.  Only its fully secured exact
+            # leaf can make this operation idempotently successful.
+            pass
+        finally:
+            os.unlink(temporary_name, dir_fd=kind_fd)
+            temporary_name = None
+        os.fsync(kind_fd)
+        _authority_leaf_readback(kind_fd, filename, raw)
+        return root / kind / filename
     finally:
-        os.close(descriptor)
-    try:
-        os.link(temporary, target, follow_symlinks=False)
-    except FileExistsError as exc:
-        raise SystemStorageError("authority evidence exact-once conflict") from exc
-    finally:
-        temporary.unlink(missing_ok=True)
-    os.chmod(target, 0o600, follow_symlinks=False)
-    metadata = os.lstat(target)
-    if (
-        metadata.st_uid != os.geteuid()
-        or metadata.st_nlink != 1
-        or stat.S_IMODE(metadata.st_mode) != 0o600
-        or target.read_bytes() != raw
-    ):
-        raise SystemStorageError("authority evidence readback failed")
-    return target
+        if temporary_name is not None and kind_fd is not None:
+            try:
+                os.unlink(temporary_name, dir_fd=kind_fd)
+            except FileNotFoundError:
+                pass
+        if kind_fd is not None:
+            os.close(kind_fd)
+        os.close(root_fd)
 
 
 def publish_authority_artifact(
