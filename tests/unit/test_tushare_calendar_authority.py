@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 import ast
 import hashlib
 import inspect
@@ -48,6 +49,7 @@ from quant_investor.system import (
 )
 from quant_investor.system.release_install import build_release_install_evidence
 from quant_investor.system.store import object_ref_for_artifact
+import quant_investor.factors.governance.production as factor_production
 from tests.unit.test_unified_production_bootstrap_operator import (
     _byte_ref,
     _inputs,
@@ -911,20 +913,13 @@ def test_arbitrary_exception_cannot_forge_success_publication_state(
 
 
 @pytest.mark.parametrize(
-    ("fault", "success_root_published", "success_marker_exists"),
-    [
-        ("PRE_RENAME", False, False),
-        ("RENAME_COMPLETED_THEN_RAISED", True, False),
-        ("POST_RENAME", True, False),
-        ("POST_SUCCESS_MARKER", True, True),
-    ],
+    "fault",
+    ["PRE_RENAME", "PRE_TERMINAL_READBACK"],
 )
-def test_publication_failure_records_exact_publication_state_without_repair(
+def test_pre_terminal_publication_failure_records_false_without_success_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     fault: str,
-    success_root_published: bool,
-    success_marker_exists: bool,
 ) -> None:
     parent = tmp_path / "captures"
     parent.mkdir(mode=0o700)
@@ -965,15 +960,12 @@ def test_publication_failure_records_exact_publication_state_without_repair(
         if fault == "PRE_RENAME" and rename_calls == 1:
             raise SystemSecurityError("sensitive pre-rename failure")
         original_rename(parent_fd, source, target)
-        if fault == "RENAME_COMPLETED_THEN_RAISED" and rename_calls == 1:
-            raise KeyboardInterrupt("sensitive rename-boundary interrupt")
 
     def fail_selected_read(*args: Any, **kwargs: Any) -> None:
         nonlocal read_calls
         read_calls += 1
-        fail_at = 2 if fault == "POST_RENAME" else 3
-        if fault in {"POST_RENAME", "POST_SUCCESS_MARKER"} and read_calls == fail_at:
-            raise SystemSecurityError("sensitive post-publication failure")
+        if fault == "PRE_TERMINAL_READBACK" and read_calls == 2:
+            raise SystemSecurityError("sensitive prepared-root failure")
         original_read(*args, **kwargs)
 
     monkeypatch.setattr(calendar_authority, "_rename_no_replace", fail_first_rename)
@@ -993,16 +985,10 @@ def test_publication_failure_records_exact_publication_state_without_repair(
         caught=caught,
         capture_root_name=root_name,
         expected_code="TRUSTED_PROVIDER_CALENDAR_PUBLICATION_FAILED",
-        success_root_published=success_root_published,
+        success_root_published=False,
     )
     success_root = parent / root_name
-    assert success_root.exists() is success_root_published
-    assert (success_root / "capture-success.json").exists() is success_marker_exists
-    before = (
-        {path.name: path.read_bytes() for path in success_root.iterdir()}
-        if success_root.exists()
-        else {}
-    )
+    assert not success_root.exists()
     validate_published_trusted_provider_calendar_capture_failure_root(
         capture_parent=parent,
         capture_failure=json.loads(
@@ -1010,12 +996,83 @@ def test_publication_failure_records_exact_publication_state_without_repair(
         ),
         capture_failure_file_ref=caught.value.public_fields["capture_failure_file_ref"],
     )
-    after = (
-        {path.name: path.read_bytes() for path in success_root.iterdir()}
-        if success_root.exists()
-        else {}
+
+
+@pytest.mark.parametrize("fault", ["RENAME_COMPLETED_THEN_RAISED", "POST_RENAME_READBACK"])
+def test_atomic_terminal_success_recovers_without_failure_sibling(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fault: str,
+) -> None:
+    parent = tmp_path / "captures"
+    parent.mkdir(mode=0o700)
+    exact_input = _patch_capture_release_closure(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        calendar_authority,
+        "_official_documentation_fetch",
+        lambda: (
+            _docs(),
+            200,
+            {"content-type": "text/html; charset=utf-8"},
+            True,
+            [],
+        ),
     )
-    assert after == before
+
+    class FakeClient:
+        def __init__(self, **_: Any) -> None:
+            pass
+
+        def request(self, *, api_name: str, params: dict[str, str], **_: Any):
+            return replay_tushare_response_bytes(
+                _provider_raw(params["exchange"]),
+                api_name=api_name,
+                expected_fields=EXPECTED_FIELDS,
+                strict_decimal_decode=True,
+            )
+
+    monkeypatch.setattr(calendar_authority, "OfficialTushareHttpsClient", FakeClient)
+    original_rename = calendar_authority._rename_no_replace
+    original_replay = calendar_authority._replay_terminal_success_root
+    rename_calls = 0
+    replay_calls = 0
+
+    def rename_fault(parent_fd: int, source: str, target: str) -> None:
+        nonlocal rename_calls
+        rename_calls += 1
+        original_rename(parent_fd, source, target)
+        if fault == "RENAME_COMPLETED_THEN_RAISED" and rename_calls == 1:
+            raise KeyboardInterrupt("sensitive rename-boundary interrupt")
+
+    def replay_fault(*args: Any, **kwargs: Any) -> None:
+        nonlocal replay_calls
+        replay_calls += 1
+        if fault == "POST_RENAME_READBACK" and replay_calls == 1:
+            raise SystemSecurityError("sensitive terminal readback interruption")
+        original_replay(*args, **kwargs)
+
+    monkeypatch.setattr(calendar_authority, "_rename_no_replace", rename_fault)
+    monkeypatch.setattr(calendar_authority, "_replay_terminal_success_root", replay_fault)
+    root_name = f"capture-{fault.lower().replace('_', '-')}"
+    result = capture_trusted_provider_calendar_evidence(
+        capture_parent=parent,
+        capture_root_name=root_name,
+        cutoff_date=CUTOFF.isoformat(),
+        release_install_input_raw=exact_input,
+        expected_release_install_input_sha256=hashlib.sha256(exact_input).hexdigest(),
+        release_repository_root=tmp_path,
+    )
+    assert result["status"] == "CAPTURED"
+    assert (parent / root_name / "capture-success.json").is_file()
+    assert not (parent / f"{root_name}.failure").exists()
+    with pytest.raises(SystemPreconditionError, match="destination exists"):
+        calendar_authority._publish_trusted_provider_calendar_capture_failure(
+            capture_parent=parent,
+            capture_root_name=root_name,
+            failed_at=CREATED_AT,
+            error_code="TRUSTED_PROVIDER_CALENDAR_SUCCESS_VALIDATION_FAILED",
+            success_root_published=True,
+        )
 
 
 @pytest.mark.parametrize(
@@ -1357,6 +1414,48 @@ def test_fixed_capture_root_enters_provider_production_assembly(
     assert not (workspace / "results/system/_active.json").exists()
 
 
+def test_production_assembly_copies_validated_capture_snapshot_without_reopen(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace, input_root, release_ref, files, capture = _captured_provider_production_case(
+        tmp_path,
+        monkeypatch,
+    )
+    reference = capture["trusted_provider_calendar_raw_file_refs"][0]
+    input_path = input_root / reference["relative_path"]
+    exact_raw = input_path.read_bytes()
+    original_validate = factor_production.validate_published_trusted_provider_calendar_capture_root
+
+    def validate_then_mutate(**kwargs: Any) -> dict[str, bytes]:
+        pinned = original_validate(**kwargs)
+        input_path.write_bytes(b"tampered after the pinned validation snapshot")
+        input_path.chmod(0o600)
+        return pinned
+
+    monkeypatch.setattr(
+        factor_production,
+        "validate_published_trusted_provider_calendar_capture_root",
+        validate_then_mutate,
+    )
+    result = assemble_production_bootstrap(
+        workspace_root=workspace,
+        input_root=input_root,
+        request_raw=_request(
+            workspace_root=workspace,
+            release_ref=release_ref,
+            files=files,
+            operation_id="provider-production-pinned-snapshot",
+        ),
+    )
+    assert result["status"] == "OFFLINE_VERIFIED"
+    copied_path = Path(result["source_root"]) / "calendar_replay" / reference["relative_path"]
+    assert copied_path.read_bytes() == exact_raw
+    assert hashlib.sha256(copied_path.read_bytes()).hexdigest() == reference["byte_sha256"]
+    assert input_path.read_bytes() != exact_raw
+    assert not (workspace / "results/system/_active.json").exists()
+
+
 def test_rehomed_execution_and_success_artifacts_cannot_enter_production(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1393,12 +1492,23 @@ def test_failure_artifact_or_mixed_success_root_cannot_enter_production(
         tmp_path,
         monkeypatch,
     )
+    success_root_name = capture["capture_transaction"]["payload"]["capture_root_name"]
+    with pytest.raises(SystemPreconditionError, match="destination exists"):
+        calendar_authority._publish_trusted_provider_calendar_capture_failure(
+            capture_parent=input_root,
+            capture_root_name=success_root_name,
+            failed_at=CREATED_AT,
+            error_code="TRUSTED_PROVIDER_CALENDAR_SUCCESS_VALIDATION_FAILED",
+            success_root_published=True,
+        )
+    assert not (input_root / f"{success_root_name}.failure").exists()
+
     failure = calendar_authority._publish_trusted_provider_calendar_capture_failure(
         capture_parent=input_root,
-        capture_root_name=capture["capture_transaction"]["payload"]["capture_root_name"],
+        capture_root_name="provider-production-failure-substitution",
         failed_at=CREATED_AT,
         error_code="TRUSTED_PROVIDER_CALENDAR_SUCCESS_VALIDATION_FAILED",
-        success_root_published=True,
+        success_root_published=False,
     )
     original_success_ref = files["trusted_provider_calendar_capture_success_file_ref"]
     files["trusted_provider_calendar_capture_success_file_ref"] = failure[
@@ -1416,8 +1526,7 @@ def test_failure_artifact_or_mixed_success_root_cannot_enter_production(
             ),
         )
     files["trusted_provider_calendar_capture_success_file_ref"] = original_success_ref
-    shutil.rmtree(Path(failure["capture_failure_root"]))
-    success_root = input_root / capture["capture_transaction"]["payload"]["capture_root_name"]
+    success_root = input_root / success_root_name
     mixed_leaf = success_root / "capture-failure.json"
     mixed_leaf.write_bytes(canonical_json_bytes(failure["capture_failure"]))
     mixed_leaf.chmod(0o600)
@@ -1460,7 +1569,71 @@ def test_capture_publication_is_no_replace_with_exactly_one_winner(tmp_path: Pat
     assert (parent / "one-winner/capture-success.json").read_bytes() == b"success"
 
 
-def test_post_rename_readback_failure_leaves_no_success_marker(
+def test_success_and_failure_publishers_have_one_terminal_outcome(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent = tmp_path / "captures"
+    parent.mkdir(mode=0o700)
+    success_visible = Event()
+    allow_success_replay = Event()
+    failure_started = Event()
+    original_replay = calendar_authority._replay_terminal_success_root
+
+    def paused_replay(*args: Any, **kwargs: Any) -> None:
+        success_visible.set()
+        assert allow_success_replay.wait(timeout=10)
+        original_replay(*args, **kwargs)
+
+    monkeypatch.setattr(calendar_authority, "_replay_terminal_success_root", paused_replay)
+
+    def publish_success() -> bytes:
+        return calendar_authority._publish_capture_tree(
+            parent=parent,
+            root_name="terminal-race",
+            files={"payload.raw": b"payload"},
+            success_builder=lambda _completed, _root_stat: b"success",
+        )
+
+    def publish_failure() -> dict[str, Any]:
+        failure_started.set()
+        return calendar_authority._publish_trusted_provider_calendar_capture_failure(
+            capture_parent=parent,
+            capture_root_name="terminal-race",
+            failed_at=CREATED_AT,
+            error_code="TRUSTED_PROVIDER_CALENDAR_PUBLICATION_FAILED",
+            success_root_published=False,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        success_future = executor.submit(publish_success)
+        assert success_visible.wait(timeout=10)
+        failure_future = executor.submit(publish_failure)
+        assert failure_started.wait(timeout=10)
+        assert (parent / "terminal-race/capture-success.json").read_bytes() == b"success"
+        assert not (parent / "terminal-race.failure").exists()
+        allow_success_replay.set()
+        assert success_future.result(timeout=10) == b"success"
+        with pytest.raises(SystemPreconditionError, match="destination exists"):
+            failure_future.result(timeout=10)
+    assert not (parent / "terminal-race.failure").exists()
+
+
+def test_terminal_failure_blocks_later_success_publication(tmp_path: Path) -> None:
+    parent = tmp_path / "captures"
+    parent.mkdir(mode=0o700)
+    _publish_failure_case(parent, "failure-first")
+    with pytest.raises(SystemPreconditionError, match="failure destination exists"):
+        calendar_authority._publish_capture_tree(
+            parent=parent,
+            root_name="failure-first",
+            files={"payload.raw": b"payload"},
+            success_builder=lambda _completed, _root_stat: b"success",
+        )
+    assert not (parent / "failure-first").exists()
+
+
+def test_pre_terminal_readback_failure_publishes_no_success_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1469,27 +1642,23 @@ def test_post_rename_readback_failure_leaves_no_success_marker(
     original = calendar_authority._read_directory_files
     readbacks = 0
 
-    def fail_after_rename(*args: Any, **kwargs: Any) -> None:
+    def fail_before_terminal_rename(*args: Any, **kwargs: Any) -> None:
         nonlocal readbacks
         readbacks += 1
         if readbacks == 2:
-            raise SystemSecurityError("forced post-rename readback failure")
+            raise SystemSecurityError("forced prepared-root readback failure")
         original(*args, **kwargs)
 
-    monkeypatch.setattr(calendar_authority, "_read_directory_files", fail_after_rename)
-    with pytest.raises(calendar_authority._CapturePublicationFailure) as caught:
+    monkeypatch.setattr(calendar_authority, "_read_directory_files", fail_before_terminal_rename)
+    with pytest.raises(SystemSecurityError, match="prepared-root"):
         calendar_authority._publish_capture_tree(
             parent=parent,
             root_name="incomplete",
             files={"payload.raw": b"payload"},
             success_builder=lambda _completed, _root_stat: b"success",
         )
-    assert caught.value.success_root_published is True
-    assert isinstance(caught.value.cause, SystemSecurityError)
-    assert "forced post-rename" in str(caught.value.cause)
-    assert "forced post-rename" not in str(caught.value)
-    assert (parent / "incomplete/payload.raw").read_bytes() == b"payload"
-    assert not (parent / "incomplete/capture-success.json").exists()
+    assert not (parent / "incomplete").exists()
+    assert not any(path.name.startswith(".incomplete.staging-") for path in parent.iterdir())
 
 
 def test_rename_boundary_inode_mismatch_is_ambiguous_and_not_cleaned(

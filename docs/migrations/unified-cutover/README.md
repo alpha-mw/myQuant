@@ -256,12 +256,15 @@ exactly one documentation GET plus three `trade_cal` reads, retains no token or
 credential-bearing request body, and publishes an owner-only capture root only
 after the exact release-install input has replayed against a separately named
 clean detached release checkout and all raw bytes, artifacts, directory fsyncs,
-and no-follow readbacks pass. The success marker is created only after the
-no-replace rename and post-rename readback; it binds the published directory
-device/inode. Production assembly reopens that same fixed thirteen-leaf root
-through one pinned descriptor, so a loose or rehomed execution/success document
-is inadmissible. A published root without that marker is permanently
-inadmissible and cannot be repaired in place. Tushare responses are not signed,
+and no-follow readbacks pass. The complete thirteen-leaf success root, including
+its success marker, is finalized and fsynced in staging before one atomic
+no-replace rename makes that terminal outcome visible. The marker binds the
+published directory device/inode. A lost rename acknowledgement or one-shot
+post-rename readback fault is recovered only by replaying that exact pinned
+inode and exact prepared bytes; an ambiguous identity fails closed. Production
+assembly copies the exact byte snapshot returned by validation of that same
+fixed root rather than reopening its leaves, so a loose, rehomed, or changed
+execution/success document is inadmissible. Tushare responses are not signed,
 so the receipt proves reviewed installed-code custody and exact bytes rather
 than cryptographic remote-peer identity. Project-authored JSON,
 weekday/holiday inference, bars, Macro data, and legacy V17 calendars remain
@@ -274,22 +277,23 @@ pinned-parent publication lock. Invalid input or reuse therefore performs no
 release replay or HTTPS call and consumes no capture name. Publication repeats
 the absence check under the same lock to close the post-preflight race.
 
-Every capture failure after release/install closure publishes only a sanitized
-terminal artifact in the sibling `<capture-root>.failure` directory. That
+Every pre-terminal capture failure after release/install closure publishes only
+a sanitized terminal artifact in the sibling `<capture-root>.failure`
+directory. That
 directory is a no-replace, owner-only `0700` root containing exactly one
 owner-only `0600` `capture-failure.json`; the artifact binds its directory
 device/inode, the requested success-root name, a controlled error code, the
-failure time, and whether this invocation actually completed the success-root
-rename. Rename-boundary faults are reconciled by comparing the pinned staging
-device/inode with the no-follow target entry; an indeterminate identity fails
-closed without claiming either publication state. It never retains exception
-text, tokens, headers, provider bodies, or credentials. Existence of a
+failure time, and the fact that the success-root rename did not complete.
+Success and failure publishers arbitrate under the same pinned-parent lock and
+both reject an existing terminal peer, so exactly one outcome can ever become
+visible for a capture name. Rename-boundary faults are reconciled by comparing
+the pinned staging device/inode with the no-follow target entry; an indeterminate
+identity fails closed without claiming either publication state. It never
+retains exception text, tokens, headers, provider bodies, or credentials. Existence of a
 pre-existing directory does not establish that the
 success root was published. Failure publication never edits, deletes, repairs,
 or completes the requested success root, and neither a failure artifact nor a
 failure root is admissible where production requires the exact success marker.
-The sibling failure root makes even an otherwise complete success root
-inadmissible for that single-use name.
 The success/failure root pair is single-use; retry requires a fresh capture-root
 name.
 

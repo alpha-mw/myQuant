@@ -2291,6 +2291,30 @@ def _open_capture_lock(parent_fd: int) -> int:
     raise SystemStorageError("trusted-provider capture lock could not be opened")
 
 
+def _replay_terminal_success_root(
+    *,
+    parent_fd: int,
+    root_name: str,
+    expected_inode_identity: tuple[int, int],
+    expected: Mapping[str, bytes],
+) -> None:
+    """Replay the complete atomically published success root by pinned inode."""
+
+    root_fd = os.open(
+        root_name,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+        dir_fd=parent_fd,
+    )
+    try:
+        root_stat = os.fstat(root_fd)
+        _verify_owner_directory(root_stat, exact_mode=True)
+        if _stat_identity(root_stat)[:2] != expected_inode_identity:
+            raise SystemSecurityError("trusted-provider capture directory inode drifted")
+        _read_directory_files(root_fd, expected=expected)
+    finally:
+        os.close(root_fd)
+
+
 def _publish_capture_tree(
     *,
     parent: Path,
@@ -2303,12 +2327,13 @@ def _publish_capture_tree(
     parent_identity = _directory_identity(os.fstat(parent_fd))
     lock_fd: int | None = None
     staging_fd: int | None = None
-    final_fd: int | None = None
     staging = f".{root_name}.staging-{os.getpid()}-{secrets.token_hex(8)}"
     published = False
     publication_ambiguous = False
     rename_attempted = False
     staging_inode_identity: tuple[int, int] | None = None
+    success_raw: bytes | None = None
+    complete_files: dict[str, bytes] | None = None
     try:
         lock_fd = _open_capture_lock(parent_fd)
         os.fchmod(lock_fd, 0o600)
@@ -2335,33 +2360,26 @@ def _publish_capture_tree(
         for leaf, raw in sorted(files.items()):
             _write_fd_leaf(staging_fd, leaf, raw)
         _read_directory_files(staging_fd, expected=files)
+        success_raw = success_builder(_utc_now(), os.fstat(staging_fd))
+        if type(success_raw) is not bytes or not success_raw:
+            raise SystemSecurityError("trusted-provider capture success bytes are invalid")
+        _write_fd_leaf(staging_fd, "capture-success.json", success_raw)
+        complete_files = {**files, "capture-success.json": success_raw}
+        _read_directory_files(staging_fd, expected=complete_files)
         os.fsync(staging_fd)
-        staging_identity = _stat_identity(os.fstat(staging_fd))
-        staging_inode_identity = staging_identity[:2]
+        staging_inode_identity = _stat_identity(os.fstat(staging_fd))[:2]
         if _directory_identity(os.fstat(parent_fd)) != parent_identity:
             raise SystemSecurityError("trusted-provider capture parent drifted")
         rename_attempted = True
         _rename_no_replace(parent_fd, staging, root_name)
         published = True
         os.fsync(parent_fd)
-        final_fd = os.open(
-            root_name,
-            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
-            dir_fd=parent_fd,
+        _replay_terminal_success_root(
+            parent_fd=parent_fd,
+            root_name=root_name,
+            expected_inode_identity=staging_inode_identity,
+            expected=complete_files,
         )
-        if _stat_identity(os.fstat(final_fd)) != staging_identity:
-            raise SystemSecurityError("trusted-provider capture directory inode drifted")
-        _read_directory_files(final_fd, expected=files)
-        success_raw = success_builder(_utc_now(), os.fstat(final_fd))
-        if type(success_raw) is not bytes or not success_raw:
-            raise SystemSecurityError("trusted-provider capture success bytes are invalid")
-        _write_fd_leaf(final_fd, "capture-success.json", success_raw)
-        os.fsync(final_fd)
-        _read_directory_files(
-            final_fd,
-            expected={**files, "capture-success.json": success_raw},
-        )
-        os.fsync(parent_fd)
         return success_raw
     except BaseException as exc:
         if rename_attempted:
@@ -2384,14 +2402,36 @@ def _publish_capture_tree(
                     cause=reconcile_error,
                     success_root_published=None,
                 ) from exc
+            if published:
+                if success_raw is None or complete_files is None:
+                    publication_ambiguous = True
+                    raise _CapturePublicationFailure(
+                        cause=SystemStorageError(
+                            "trusted-provider terminal success bytes are unavailable"
+                        ),
+                        success_root_published=None,
+                    ) from exc
+                try:
+                    os.fsync(parent_fd)
+                    _replay_terminal_success_root(
+                        parent_fd=parent_fd,
+                        root_name=root_name,
+                        expected_inode_identity=staging_inode_identity,
+                        expected=complete_files,
+                    )
+                except BaseException as replay_error:
+                    publication_ambiguous = True
+                    raise _CapturePublicationFailure(
+                        cause=replay_error,
+                        success_root_published=None,
+                    ) from exc
+                return success_raw
             raise _CapturePublicationFailure(
                 cause=exc,
                 success_root_published=published,
             ) from exc
         raise
     finally:
-        if final_fd is not None:
-            os.close(final_fd)
         if staging_fd is not None:
             os.close(staging_fd)
         if lock_fd is not None:
@@ -2453,12 +2493,7 @@ def _publish_capture_failure_root(
         )
         if _stat_identity(lock_path_stat) != _stat_identity(os.fstat(lock_fd)):
             raise SystemSecurityError("trusted-provider capture lock path drifted")
-        try:
-            os.stat(failure_root_name, dir_fd=parent_fd, follow_symlinks=False)
-        except FileNotFoundError:
-            pass
-        else:
-            raise SystemPreconditionError("trusted-provider capture failure destination exists")
+        _assert_capture_destinations_absent(parent_fd, success_root_name)
         os.mkdir(staging, mode=0o700, dir_fd=parent_fd)
         staging_fd = os.open(
             staging,
@@ -2916,6 +2951,10 @@ def capture_trusted_provider_calendar_evidence(  # noqa: C901
             if exc.success_root_published is None:
                 raise SystemStorageError(
                     "trusted-provider capture publication outcome is ambiguous"
+                ) from exc.cause
+            if exc.success_root_published:
+                raise SystemStorageError(
+                    "trusted-provider terminal success recovery did not return"
                 ) from exc.cause
             success_root_published = exc.success_root_published
         _raise_recorded_capture_failure(

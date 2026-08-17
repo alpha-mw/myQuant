@@ -1401,8 +1401,11 @@ def _copy_request_inputs(  # noqa: C901
     normalized: Mapping[str, Any],
     input_root: Path,
     staging_root: Path,
+    pinned_inputs: Mapping[str, bytes] | None = None,
 ) -> dict[str, list[str] | str]:
     calendar_bytes = 0
+    pinned = dict(pinned_inputs or {})
+    consumed_pinned: set[str] = set()
 
     def copy_one(field: str, reference: Mapping[str, str], target: Path) -> None:
         nonlocal calendar_bytes
@@ -1412,12 +1415,26 @@ def _copy_request_inputs(  # noqa: C901
             if remaining <= 0:
                 raise SystemSecurityError("calendar replay exceeds its aggregate copy bound")
             maximum = min(_CALENDAR_INPUT_BYTE_LIMITS[field], remaining)
-        size = _copy_verified_input(
-            input_root=input_root,
-            reference=reference,
-            target=target,
-            maximum_bytes=maximum,
-        )
+        relative_path = reference["relative_path"]
+        if relative_path in pinned:
+            raw = pinned[relative_path]
+            if (
+                type(raw) is not bytes
+                or not raw
+                or len(raw) > maximum
+                or _sha256(raw) != reference["byte_sha256"]
+            ):
+                raise SystemSecurityError("pinned bootstrap input binding differs")
+            _write_exact_once(target, raw)
+            size = len(raw)
+            consumed_pinned.add(relative_path)
+        else:
+            size = _copy_verified_input(
+                input_root=input_root,
+                reference=reference,
+                target=target,
+                maximum_bytes=maximum,
+            )
         if field in _CALENDAR_INPUT_BYTE_LIMITS:
             calendar_bytes += size
             if calendar_bytes > _MAXIMUM_CALENDAR_REPLAY_BYTES:
@@ -1499,6 +1516,8 @@ def _copy_request_inputs(  # noqa: C901
             copy_one(field, reference, target)
             rows.append(relative)
         copied[field] = rows
+    if consumed_pinned != set(pinned):
+        raise SystemSecurityError("validated pinned capture snapshot was not copied exactly")
     return copied
 
 
@@ -4083,6 +4102,7 @@ def assemble_production_bootstrap(  # noqa: C901
     _preflight_calendar_input_budget(normalized=normalized, input_root=inputs)
     provider_execution_ref = normalized["trusted_provider_calendar_capture_execution_file_ref"]
     provider_success_ref = normalized["trusted_provider_calendar_capture_success_file_ref"]
+    pinned_provider_inputs: dict[str, bytes] = {}
     if provider_execution_ref is not None and provider_success_ref is not None:
         execution_raw = _read_stable_bytes(
             _stable_input_path(inputs, provider_execution_ref),
@@ -4096,19 +4116,43 @@ def assemble_production_bootstrap(  # noqa: C901
                 "trusted_provider_calendar_capture_success_file_ref"
             ],
         )
-        validate_published_trusted_provider_calendar_capture_root(
+        validated_capture_bytes = validate_published_trusted_provider_calendar_capture_root(
             capture_parent=inputs,
             capture_execution=execution_raw,
             capture_execution_file_ref=provider_execution_ref,
             capture_success=success_raw,
             capture_success_file_ref=provider_success_ref,
         )
+        provider_references = [
+            *normalized["trusted_provider_calendar_raw_file_refs"],
+            *normalized["trusted_provider_calendar_capture_file_refs"],
+            normalized["files"]["calendar_authority_policy_file_ref"],
+            normalized["trusted_provider_calendar_capability_file_ref"],
+            normalized["trusted_provider_calendar_capture_transaction_file_ref"],
+            provider_execution_ref,
+            provider_success_ref,
+            normalized["trusted_provider_release_install_input_file_ref"],
+        ]
+        if any(reference is None for reference in provider_references):
+            raise SystemContractError("trusted-provider capture reference set is incomplete")
+        for reference in provider_references:
+            if reference is None:
+                raise SystemContractError("trusted-provider capture reference is absent")
+            relative_path = reference["relative_path"]
+            leaf = PurePosixPath(relative_path).name
+            raw = validated_capture_bytes.get(leaf)
+            if raw is None or relative_path in pinned_provider_inputs:
+                raise SystemSecurityError("validated capture snapshot topology differs")
+            pinned_provider_inputs[relative_path] = raw
+        if len(pinned_provider_inputs) != len(validated_capture_bytes):
+            raise SystemSecurityError("validated capture snapshot was not fully bound")
     staging = _ensure_staging_root(workspace, normalized["operation_id"])
 
     copied_local = _copy_request_inputs(
         normalized=normalized,
         input_root=inputs,
         staging_root=staging,
+        pinned_inputs=pinned_provider_inputs,
     )
     materialized = _materialize_market_and_pit(
         normalized=normalized,

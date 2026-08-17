@@ -57,9 +57,10 @@ release-install input path and SHA plus a distinct exact clean detached
 substituted for that release checkout. Caller-supplied timestamps or transport
 objects are not accepted. The production request must bind that transaction,
 execution receipt, success marker, release-install input, and the original
-owner-only capture-root inode. Assembly reopens the fixed thirteen-leaf root
-through one pinned no-follow descriptor before copying; isolated or rehomed
-raw/capture/receipt files are insufficient.
+owner-only capture-root inode. Assembly validates the fixed thirteen-leaf root
+through one pinned no-follow descriptor and copies only the exact returned byte
+snapshot; it never reopens provider leaves between validation and custody.
+Isolated, rehomed, or changed raw/capture/receipt files are insufficient.
 Tushare does not sign response bodies: this proves exact retained bytes,
 reviewed installed operator identity, and local custody topology, but it is not
 a cryptographic proof against a malicious same-UID process.
