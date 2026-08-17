@@ -422,6 +422,11 @@ def test_release_preparation_requires_exact_clean_detached_checkout(tmp_path: Pa
         check=True,
         stdin=subprocess.DEVNULL,
     )
+    subprocess.run(
+        ["git", "-C", str(repository), "switch", "-q", "-c", "attached-fixture"],
+        check=True,
+        stdin=subprocess.DEVNULL,
+    )
     commit = _git(repository, "rev-parse", "HEAD^{commit}")
     tree = _git(repository, "rev-parse", "HEAD^{tree}")
     release_root = tmp_path / "release"
