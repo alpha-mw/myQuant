@@ -18,6 +18,7 @@ import pytest
 from quant_investor.contracts import (
     ArtifactValidationError,
     canonical_json_bytes,
+    parse_canonical_json_bytes,
     seal_artifact,
 )
 from quant_investor.cli.unified import system_activate, system_status, system_verify
@@ -33,10 +34,8 @@ from quant_investor.factors.governance.production import (
 import quant_investor.factors.governance.production as production_module
 import quant_investor.market.fundamental_incremental as fundamental_incremental_module
 import quant_investor.market.exchange_calendar_closure as calendar_closure_module
+from quant_investor.migration import publish_final_cutover_authorization
 from quant_investor.market.exchange_calendar_official import decoder_code_sha256
-from quant_investor.market.tushare_calendar_authority import (
-    build_calendar_authority_policy,
-)
 from quant_investor.system import (
     SystemActivationAuthorizationError,
     SystemContractError,
@@ -411,7 +410,9 @@ def _finalize_input_refs(
     return result
 
 
-def _inputs(root: Path) -> dict[str, dict[str, str] | list[dict[str, str]]]:
+def _inputs(  # noqa: C901
+    root: Path,
+) -> dict[str, dict[str, str] | list[dict[str, str]]]:
     root.mkdir(mode=0o700)
     first = date(2024, 1, 2)
     cutoff = date(2026, 8, 7)
@@ -1401,6 +1402,47 @@ def test_production_source_drift_after_receipt_blocks_before_initial_cas(
 
     assert not (workspace / "results/system/_active.json").exists()
     assert not (workspace / "results/system/_migration_complete.json").exists()
+
+
+def test_final_authorization_publication_replays_production_source_closure(
+    tmp_path: Path,
+) -> None:
+    workspace, release_ref = _seed_workspace(tmp_path)
+    input_root = tmp_path / "sealed-inputs"
+    result = assemble_production_bootstrap(
+        workspace_root=workspace,
+        input_root=input_root,
+        request_raw=_request(
+            workspace_root=workspace, release_ref=release_ref, files=_inputs(input_root)
+        ),
+    )
+    store = SystemStore(workspace)
+    prepared = prepare_initial_activation(store, result["generation"], release_ref)
+    final = parse_canonical_json_bytes(
+        prepared["final_cutover_authorization_raw"], label="final authorization"
+    )
+    receipt = store.get_object(result["production_bootstrap_receipt_ref"])
+    market_row = next(
+        row
+        for row in receipt["payload"]["input_source_rows"]
+        if row["field"] == "market_table_file_refs"
+    )
+    source = store.get_object(market_row["source_object_ref"])
+    source_path = workspace / source["payload"]["relative_path"]
+    source_path.write_bytes(source_path.read_bytes() + b"publication-drift")
+    source_path.chmod(0o600)
+
+    authority_root = tmp_path / "authority"
+    with pytest.raises(SystemContractError, match="source|byte|binding"):
+        publish_final_cutover_authorization(
+            authority_root,
+            final,
+            repository_root=workspace,
+            system_store=store,
+            deployed_release_ref=release_ref,
+        )
+    assert not authority_root.exists()
+    assert not (workspace / "results/system/_active.json").exists()
 
 
 @pytest.mark.parametrize("mutation", ["mode", "hardlink", "symlink"])

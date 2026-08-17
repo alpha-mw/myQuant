@@ -43,11 +43,17 @@ from quant_investor.system.release_install import (
     validate_release_install_evidence,
 )
 from quant_investor.system.historical_activation import (
-    INITIAL_PRODUCTION_RECEIPT_CONTRACT_SHA256,
+    INITIAL_FINAL_PREFLIGHT_GATES,
+    INITIAL_GATE_RUNNER_ID,
     frozen_object_ref,
     validate_frozen_object_ref,
+    validate_initial_cutover_gate_evidence,
     validate_initial_final_authorization,
+    validate_initial_legacy_source_disposition,
+    validate_initial_main_checkout_adoption,
+    validate_initial_preflight_rows,
     validate_initial_production_receipt,
+    validate_initial_release_install_gate_binding,
 )
 from quant_investor.system.store import SystemStore, object_ref_for_artifact, validate_object_ref
 
@@ -545,7 +551,7 @@ def _validate_adoption_partition(value: Any, *, label: str) -> list[str]:
     return paths
 
 
-def _validate_adoption_dispositions(
+def _validate_adoption_dispositions(  # noqa: C901
     value: Any,
     *,
     task_origin_paths: Sequence[str],
@@ -1296,7 +1302,7 @@ def _git_adoption_path_rows(
     return _validate_adoption_path_rows(rows)
 
 
-def validate_main_checkout_adoption_closure(
+def validate_main_checkout_adoption_closure(  # noqa: C901
     document: Mapping[str, Any] | bytes,
     *,
     repository_root: str | os.PathLike[str],
@@ -1377,6 +1383,146 @@ def validate_main_checkout_adoption_closure(
             or _sha256(target_raw) != source["byte_sha256"]
         ):
             raise SystemPreconditionError("exact-preserved adoption path changed")
+    return artifact
+
+
+def _git_initial_adoption_path_rows(
+    repository_root: Path,
+    *,
+    parent_commit: str,
+    adoption_commit: str,
+) -> list[dict[str, Any]]:
+    """Reconstruct initial adoption rows without descendant schema helpers."""
+
+    raw = _git(
+        repository_root,
+        "diff-tree",
+        "--no-commit-id",
+        "--name-status",
+        "-z",
+        "-r",
+        "--no-renames",
+        parent_commit,
+        adoption_commit,
+    )
+    parts = raw.split(b"\0")
+    if parts and parts[-1] == b"":
+        parts.pop()
+    if len(parts) % 2:
+        raise SystemPreconditionError("historical adoption Git delta is malformed")
+    rows: list[dict[str, Any]] = []
+    for offset in range(0, len(parts), 2):
+        try:
+            status_code = parts[offset].decode("ascii")
+            path = parts[offset + 1].decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise SystemPreconditionError(
+                "historical adoption Git delta is not canonical text"
+            ) from exc
+        status = {"A": "ADDED", "M": "MODIFIED"}.get(status_code)
+        if status is None:
+            raise SystemPreconditionError("historical adoption delta contains a non-A/M path")
+        normalized_path = _path(path, label="historical adoption Git path")
+        mode, oid, blob = _git_blob(repository_root, adoption_commit, normalized_path)
+        if mode not in {"100600", "100644", "100755"}:
+            raise SystemPreconditionError("historical adoption path mode is unsafe")
+        rows.append(
+            {
+                "path": normalized_path,
+                "status": status,
+                "mode": mode,
+                "size": len(blob),
+                "git_blob_oid": oid,
+                "byte_sha256": _sha256(blob),
+            }
+        )
+    if rows != sorted(rows, key=lambda row: row["path"]):
+        raise SystemPreconditionError("historical adoption Git delta order is unstable")
+    if len(rows) != 22 or [row["path"] for row in rows] != sorted({row["path"] for row in rows}):
+        raise SystemPreconditionError("historical adoption Git delta cardinality differs")
+    return rows
+
+
+def _validate_initial_main_checkout_adoption_closure(  # noqa: C901
+    document: Mapping[str, Any] | bytes,
+    *,
+    repository_root: Path,
+    final_commit: str,
+    final_preflight_rows: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Replay the first adoption from Git using only frozen initial schemas."""
+
+    artifact = validate_initial_main_checkout_adoption(document)
+    payload = artifact["payload"]
+    adoption_commit = payload["adoption_commit"]
+    adoption_parent = payload["adoption_parent"]
+    adoption_tree = payload["adoption_tree"]
+    baseline = payload["accepted_baseline_commit"]
+    if _git_scalar(repository_root, "rev-parse", f"{adoption_commit}^{{commit}}") != (
+        adoption_commit
+    ):
+        raise SystemPreconditionError("historical adoption commit object is absent")
+    if _git_scalar(repository_root, "rev-parse", f"{adoption_commit}^{{tree}}") != adoption_tree:
+        raise SystemPreconditionError("historical adoption tree differs from Git")
+    if _git_scalar(repository_root, "rev-parse", f"{adoption_commit}^") != adoption_parent:
+        raise SystemPreconditionError("historical adoption parent differs from Git")
+    if adoption_parent != baseline:
+        raise SystemPreconditionError("historical adoption parent is not the baseline")
+    if (
+        _git_scalar(repository_root, "rev-parse", f"{baseline}^{{tree}}")
+        != payload["accepted_baseline_tree"]
+    ):
+        raise SystemPreconditionError("historical baseline tree differs from Git")
+
+    observed = _git_initial_adoption_path_rows(
+        repository_root,
+        parent_commit=adoption_parent,
+        adoption_commit=adoption_commit,
+    )
+    if observed != payload["path_rows"]:
+        raise SystemPreconditionError("historical adoption path rows differ from Git")
+    observed_paths = [row["path"] for row in observed]
+    if sorted([*payload["task_origin_paths"], *payload["orphan_paths"]]) != observed_paths:
+        raise SystemPreconditionError("historical adoption partition differs from Git")
+
+    _inventory, inventory_sha = _git_inventory(repository_root, adoption_commit)
+    empty_status_sha = _sha256(b"")
+    for row in payload["readback_rows"]:
+        if (
+            row["commit"] != adoption_commit
+            or row["tree"] != adoption_tree
+            or row["status_porcelain_sha256"] != empty_status_sha
+            or row["path_inventory_sha256"] != inventory_sha
+        ):
+            raise SystemPreconditionError("historical adoption readback is not reproducible")
+    if payload["full_gate_refs"] != validate_initial_preflight_rows(list(final_preflight_rows)):
+        raise SystemPreconditionError("historical adoption full-gate bindings differ")
+    if not _is_ancestor(repository_root, adoption_commit, final_commit):
+        raise SystemPreconditionError("historical adoption is not an ancestor of release")
+
+    source_by_path = {row["path"]: row for row in observed}
+    for disposition in payload["disposition_rows"]:
+        source = source_by_path[disposition["path"]]
+        decision = disposition["decision"]
+        if decision == "LEGACY_CUSTODY_ONLY":
+            try:
+                _git_blob(repository_root, final_commit, disposition["path"])
+            except SystemPreconditionError:
+                continue
+            raise SystemPreconditionError("historical legacy-custody path remains")
+        target_mode, target_oid, target_raw = _git_blob(
+            repository_root, final_commit, disposition["target_path"]
+        )
+        if target_mode not in {"100600", "100644", "100755"}:
+            raise SystemPreconditionError("historical adoption target mode is unsafe")
+        if target_oid != disposition["target_blob_oid"]:
+            raise SystemPreconditionError("historical adoption target blob differs")
+        if decision == "EXACT_PRESERVED" and (
+            target_oid != source["git_blob_oid"]
+            or len(target_raw) != source["size"]
+            or _sha256(target_raw) != source["byte_sha256"]
+        ):
+            raise SystemPreconditionError("historical exact-preserved path changed")
     return artifact
 
 
@@ -1605,6 +1751,68 @@ def _seal_final_cutover_authorization(  # noqa: C901
     )
 
 
+def validate_current_production_authorization_target(
+    *,
+    system_store: SystemStore,
+    deployed_release_ref: Mapping[str, Any],
+    generation_id: str,
+    expected_manifest_ref: Mapping[str, Any] | None = None,
+    expected_receipt_ref: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Deeply replay the sole production target at every authorization boundary."""
+
+    if not isinstance(system_store, SystemStore):
+        raise SystemPreconditionError("production target requires a SystemStore resolver")
+    normalized_release = validate_object_ref(deployed_release_ref, label="deployed_release_ref")
+    normalized_generation = _sha(generation_id, label="production_generation_id")
+    verified = system_store.verify_generation(
+        normalized_generation,
+        deployed_release_ref=normalized_release,
+    )
+    generation_manifest = verified["manifest"]
+    from quant_investor.factors.governance.production import (
+        validate_production_bootstrap_generation_closure,
+    )
+
+    receipt = validate_production_bootstrap_generation_closure(
+        store=system_store,
+        verified_generation=verified,
+        deployed_release_ref=normalized_release,
+        validation_mode="PRE_CAS_CURRENT",
+    )
+    manifest_ref = object_ref_for_artifact(generation_manifest)
+    receipt_ref = object_ref_for_artifact(receipt)
+    manifest_payload = generation_manifest["payload"]
+    receipt_payload = receipt["payload"]
+    if (
+        generation_manifest["semantic_sha256"] != normalized_generation
+        or manifest_payload["generation_state"] != "OPERATIONAL"
+        or manifest_payload["mainline_ref"] is not None
+        or manifest_payload["release_manifest_ref"] != normalized_release
+        or manifest_payload["research_refs"] != [receipt_ref]
+        or receipt_payload["deployed_release_ref"] != normalized_release
+    ):
+        raise SystemPreconditionError("production authorization target differs")
+    if (
+        expected_manifest_ref is not None
+        and validate_object_ref(expected_manifest_ref, label="expected_manifest_ref")
+        != manifest_ref
+    ):
+        raise SystemPreconditionError("production target manifest authorization differs")
+    if (
+        expected_receipt_ref is not None
+        and validate_object_ref(expected_receipt_ref, label="expected_receipt_ref") != receipt_ref
+    ):
+        raise SystemPreconditionError("production target receipt authorization differs")
+    return {
+        "verified_generation": verified,
+        "generation_manifest": generation_manifest,
+        "generation_manifest_ref": manifest_ref,
+        "production_receipt": receipt,
+        "production_receipt_ref": receipt_ref,
+    }
+
+
 def build_final_cutover_authorization(  # noqa: C901
     *,
     final_authorization_id: str,
@@ -1652,37 +1860,15 @@ def build_final_cutover_authorization(  # noqa: C901
         )
     rows.sort(key=lambda row: row["gate_id"])
     _validate_preflight_rows(rows)
-    if not isinstance(system_store, SystemStore):
-        raise SystemPreconditionError("final authorization requires a SystemStore resolver")
-    generation_id = _sha(production_generation_id, label="production_generation_id")
     normalized_release = validate_object_ref(deployed_release_ref, label="deployed_release_ref")
-    verified = system_store.verify_generation(
-        generation_id,
+    target = validate_current_production_authorization_target(
+        system_store=system_store,
         deployed_release_ref=normalized_release,
+        generation_id=production_generation_id,
     )
-    generation_manifest = verified["manifest"]
-    from quant_investor.factors.governance.production import (
-        validate_production_bootstrap_generation_closure,
-    )
-
-    production_receipt = validate_production_bootstrap_generation_closure(
-        store=system_store,
-        verified_generation=verified,
-        deployed_release_ref=normalized_release,
-        validation_mode="PRE_CAS_CURRENT",
-    )
-    receipt_ref = object_ref_for_artifact(production_receipt)
-    manifest_payload = generation_manifest["payload"]
+    production_receipt = target["production_receipt"]
+    receipt_ref = target["production_receipt_ref"]
     receipt_payload = production_receipt["payload"]
-    if (
-        generation_manifest["semantic_sha256"] != generation_id
-        or manifest_payload["generation_state"] != "OPERATIONAL"
-        or manifest_payload["mainline_ref"] is not None
-        or manifest_payload["release_manifest_ref"] != normalized_release
-        or manifest_payload["research_refs"] != [receipt_ref]
-        or receipt_payload["deployed_release_ref"] != normalized_release
-    ):
-        raise SystemPreconditionError("final authorization production generation differs")
     return _seal_final_cutover_authorization(
         final_authorization_id=final_authorization_id,
         accepted_baseline_commit=accepted_baseline_commit,
@@ -1692,7 +1878,7 @@ def build_final_cutover_authorization(  # noqa: C901
         main_checkout_adoption_ref=main_checkout_adoption_ref,
         legacy_disposition_ref=legacy_disposition_ref,
         deployed_release_ref=deployed_release_ref,
-        production_generation_manifest_ref=object_ref_for_artifact(generation_manifest),
+        production_generation_manifest_ref=target["generation_manifest_ref"],
         production_bootstrap_receipt_ref=receipt_ref,
         calendar_authority_policy_ref=receipt_payload["calendar_authority_policy_ref"],
         calendar_compilation_ref=receipt_payload["calendar_compilation_ref"],
@@ -1783,6 +1969,11 @@ def validate_final_cutover_authorization_closure(  # noqa: C901
         else validate_final_cutover_authorization(document)
     )
     payload = artifact["payload"]
+    preflight_rows = (
+        validate_initial_preflight_rows(payload["preflight_rows"])
+        if validation_mode == "HISTORICAL"
+        else _validate_preflight_rows(payload["preflight_rows"])
+    )
 
     def normalize_ref(value: Any, label: str) -> dict[str, str]:
         if validation_mode == "HISTORICAL":
@@ -1815,28 +2006,19 @@ def validate_final_cutover_authorization_closure(  # noqa: C901
         raise SystemPreconditionError("authorized deployed release kind is invalid")
     if exact_ref(release) != normalized_release:
         raise SystemPreconditionError("deployed release exact object differs")
-    from quant_investor.system.bootstrap_receipt import (
-        validate_production_bootstrap_receipt,
-    )
-
     receipt_ref = normalize_ref(
         payload["production_bootstrap_receipt_ref"],
         "production_bootstrap_receipt_ref",
     )
     resolved_receipt = dict(object_resolver(receipt_ref))
     if validation_mode == "PRE_CAS_CURRENT":
+        from quant_investor.system.bootstrap_receipt import (
+            validate_production_bootstrap_receipt,
+        )
+
         production_receipt = validate_production_bootstrap_receipt(resolved_receipt)
     else:
-        production_receipt = (
-            validate_initial_production_receipt(resolved_receipt)
-            if resolved_receipt.get("contract_sha256") == INITIAL_PRODUCTION_RECEIPT_CONTRACT_SHA256
-            else resolved_receipt
-        )
-        if (
-            production_receipt.get("kind") != "system.production_bootstrap_receipt"
-            or type(production_receipt.get("payload")) is not dict
-        ):
-            raise SystemPreconditionError("historical production bootstrap receipt is invalid")
+        production_receipt = validate_initial_production_receipt(resolved_receipt)
     receipt_payload = production_receipt["payload"]
     if (
         exact_ref(production_receipt) != receipt_ref
@@ -1897,18 +2079,33 @@ def validate_final_cutover_authorization_closure(  # noqa: C901
 
     if payload["concurrent_task_handoff_ref"] is not None:
         raise SystemPreconditionError("prospective-adoption handoff tombstone is not null")
-    adoption_ref = payload["main_checkout_adoption_ref"]
-    adoption = validate_main_checkout_adoption_closure(
-        object_resolver(adoption_ref),
-        repository_root=root,
-        final_commit=final_commit,
-        final_preflight_rows=payload["preflight_rows"],
+    adoption_ref = normalize_ref(
+        payload["main_checkout_adoption_ref"], "main_checkout_adoption_ref"
     )
+    if validation_mode == "HISTORICAL":
+        adoption = _validate_initial_main_checkout_adoption_closure(
+            object_resolver(adoption_ref),
+            repository_root=root,
+            final_commit=final_commit,
+            final_preflight_rows=preflight_rows,
+        )
+    else:
+        adoption = validate_main_checkout_adoption_closure(
+            object_resolver(adoption_ref),
+            repository_root=root,
+            final_commit=final_commit,
+            final_preflight_rows=preflight_rows,
+        )
     if exact_ref(adoption) != adoption_ref:
         raise SystemPreconditionError("main checkout adoption exact object differs")
-    disposition = validate_legacy_source_disposition(
-        object_resolver(payload["legacy_disposition_ref"])
+    disposition_ref = normalize_ref(payload["legacy_disposition_ref"], "legacy_disposition_ref")
+    disposition = (
+        validate_initial_legacy_source_disposition(object_resolver(disposition_ref))
+        if validation_mode == "HISTORICAL"
+        else validate_legacy_source_disposition(object_resolver(disposition_ref))
     )
+    if exact_ref(disposition) != disposition_ref:
+        raise SystemPreconditionError("legacy disposition exact object differs")
     object_resolver(payload["historical_dirty_evidence_ref"])
     adoption_payload = adoption["payload"]
     if adoption_payload["accepted_baseline_commit"] != payload["accepted_baseline_commit"]:
@@ -1957,15 +2154,12 @@ def validate_final_cutover_authorization_closure(  # noqa: C901
         root, final_commit, "quant_investor/migration/authority.py"
     )
     runner_code_sha = _sha256(runner_code)
-    for row in payload["preflight_rows"]:
+    for row in preflight_rows:
         resolved_evidence = object_resolver(row["evidence_ref"])
         if validation_mode == "PRE_CAS_CURRENT":
             evidence = validate_cutover_gate_evidence(resolved_evidence)
         else:
-            evidence = _validate_historical_cutover_gate_evidence(
-                resolved_evidence,
-                authorized_runner_source=runner_code,
-            )
+            evidence = validate_initial_cutover_gate_evidence(resolved_evidence)
         evidence_payload = evidence["payload"]
         if (
             exact_ref(evidence) != row["evidence_ref"]
@@ -1973,7 +2167,8 @@ def validate_final_cutover_authorization_closure(  # noqa: C901
             or evidence_payload["final_commit"] != final_commit
             or evidence_payload["final_tree"] != final_tree
             or evidence_payload["state"] != "PASS"
-            or evidence_payload["runner_id"] != _GATE_RUNNER_ID
+            or evidence_payload["runner_id"]
+            != (_GATE_RUNNER_ID if validation_mode == "PRE_CAS_CURRENT" else INITIAL_GATE_RUNNER_ID)
             or evidence_payload["runner_code_sha256"] != runner_code_sha
             or any(batch["exit_code"] != 0 for batch in evidence_payload["batch_results"])
         ):
@@ -1998,6 +2193,15 @@ def validate_final_cutover_authorization_closure(  # noqa: C901
         if exact_ref(subject) != evidence_payload["subject_ref"]:
             raise SystemPreconditionError("cutover gate subject exact object differs")
         if row["gate_id"] == "release_install_origin":
+            if validation_mode == "HISTORICAL":
+                validate_initial_release_install_gate_binding(
+                    gate_evidence=evidence,
+                    install_evidence=subject,
+                    deployed_release=release,
+                    deployed_release_ref=normalized_release,
+                )
+                observed_gates.add(row["gate_id"])
+                continue
             install_evidence = validate_release_install_evidence(subject)
             if install_evidence["payload"]["release_ref"] != normalized_release:
                 raise SystemPreconditionError("release install gate release differs")
@@ -2051,12 +2255,17 @@ def validate_final_cutover_authorization_closure(  # noqa: C901
             ):
                 raise SystemPreconditionError("release install gate output binding differs")
         observed_gates.add(row["gate_id"])
-    if observed_gates != REQUIRED_FINAL_PREFLIGHT_GATES:
+    expected_gates = (
+        REQUIRED_FINAL_PREFLIGHT_GATES
+        if validation_mode == "PRE_CAS_CURRENT"
+        else INITIAL_FINAL_PREFLIGHT_GATES
+    )
+    if observed_gates != expected_gates:
         raise SystemPreconditionError("final preflight evidence set is incomplete")
     return artifact
 
 
-def _publish_validated_authority_artifact(
+def _publish_validated_authority_artifact(  # noqa: C901
     authority_root: str | os.PathLike[str], artifact: Mapping[str, Any]
 ) -> Path:
     kind = artifact["kind"]
@@ -2160,8 +2369,38 @@ def publish_final_cutover_authorization(
 ) -> Path:
     """Publish final authority only after current deep production replay."""
 
+    structural = validate_final_cutover_authorization(document)
+    payload = structural["payload"]
+    manifest_ref = validate_object_ref(
+        payload["production_generation_manifest_ref"],
+        label="production_generation_manifest_ref",
+    )
+    manifest = system_store.get_object(manifest_ref)
+    if (
+        manifest.get("kind") != "system.generation_manifest"
+        or object_ref_for_artifact(manifest) != manifest_ref
+    ):
+        raise SystemPreconditionError("publication generation manifest differs")
+    target = validate_current_production_authorization_target(
+        system_store=system_store,
+        deployed_release_ref=deployed_release_ref,
+        generation_id=manifest["semantic_sha256"],
+        expected_manifest_ref=manifest_ref,
+        expected_receipt_ref=payload["production_bootstrap_receipt_ref"],
+    )
+    receipt_payload = target["production_receipt"]["payload"]
+    for field in (
+        "calendar_authority_policy_ref",
+        "calendar_compilation_ref",
+        "calendar_capability_ref",
+        "calendar_capture_execution_ref",
+        "calendar_authorization_basis",
+        "calendar_source_limitations",
+    ):
+        if payload[field] != receipt_payload[field]:
+            raise SystemPreconditionError("publication production binding differs")
     artifact = validate_final_cutover_authorization_closure(
-        document,
+        structural,
         repository_root=repository_root,
         object_resolver=system_store.get_object,
         deployed_release_ref=deployed_release_ref,
@@ -2188,6 +2427,7 @@ __all__ = [
     "validate_cutover_gate_evidence",
     "validate_final_cutover_authorization",
     "validate_final_cutover_authorization_closure",
+    "validate_current_production_authorization_target",
     "validate_legacy_source_disposition",
     "validate_main_checkout_adoption",
     "validate_main_checkout_adoption_closure",

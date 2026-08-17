@@ -2737,38 +2737,9 @@ class SystemStore:
             raise SystemActivationAuthorizationError(
                 "initial activation preimage must be literal EMPTY"
             )
-        verified = self._verify_generation(
-            pointer["generation_id"],
-            deployed_release_ref=deployed_release_ref,
-            validation_level="full",
-        )
-        if verified["generation_state"] != "OPERATIONAL":
-            raise SystemActivationAuthorizationError(
-                "initial activation target must be OPERATIONAL"
-            )
-        if verified["manifest_sha256"] != pointer["manifest_sha256"]:
-            raise SystemActivationAuthorizationError("pointer manifest binding mismatch")
         try:
-            from quant_investor.factors.governance.production import (
-                validate_production_bootstrap_generation_closure,
-            )
-
-            production_receipt = validate_production_bootstrap_generation_closure(
-                store=self,
-                verified_generation=verified,
-                deployed_release_ref=deployed_release_ref,
-                validation_mode="PRE_CAS_CURRENT",
-            )
-        except SystemError as exc:
-            raise SystemActivationAuthorizationError(
-                "initial target lacks valid production bootstrap closure"
-            ) from exc
-        try:
-            from .activation import (
-                build_prepared_activation_transaction,
-                validate_activation_authorization,
-            )
             from quant_investor.migration.authority import (
+                validate_current_production_authorization_target,
                 validate_final_cutover_authorization_closure,
             )
 
@@ -2779,6 +2750,34 @@ class SystemStore:
                 deployed_release_ref=deployed_release_ref,
                 validation_mode="PRE_CAS_CURRENT",
             )
+        except SystemError:
+            raise
+        try:
+            target = validate_current_production_authorization_target(
+                system_store=self,
+                deployed_release_ref=deployed_release_ref,
+                generation_id=pointer["generation_id"],
+                expected_manifest_ref=final_authorization["payload"][
+                    "production_generation_manifest_ref"
+                ],
+                expected_receipt_ref=final_authorization["payload"][
+                    "production_bootstrap_receipt_ref"
+                ],
+            )
+            verified = target["verified_generation"]
+            production_receipt = target["production_receipt"]
+        except SystemError as exc:
+            raise SystemActivationAuthorizationError(
+                "initial authorization lacks valid production target closure"
+            ) from exc
+        if verified["manifest_sha256"] != pointer["manifest_sha256"]:
+            raise SystemActivationAuthorizationError("pointer manifest binding mismatch")
+        try:
+            from .activation import (
+                build_prepared_activation_transaction,
+                validate_activation_authorization,
+            )
+
             calendar_fields = (
                 "calendar_authority_policy_ref",
                 "calendar_compilation_ref",
@@ -2787,12 +2786,18 @@ class SystemStore:
                 "calendar_authorization_basis",
                 "calendar_source_limitations",
             )
-            if any(
-                final_authorization["payload"][field] != production_receipt["payload"][field]
-                for field in calendar_fields
+            if (
+                any(
+                    final_authorization["payload"][field] != production_receipt["payload"][field]
+                    for field in calendar_fields
+                )
+                or final_authorization["payload"]["production_generation_manifest_ref"]
+                != target["generation_manifest_ref"]
+                or final_authorization["payload"]["production_bootstrap_receipt_ref"]
+                != target["production_receipt_ref"]
             ):
                 raise SystemActivationAuthorizationError(
-                    "final authorization calendar binding differs from production receipt"
+                    "final authorization target binding differs from production receipt"
                 )
 
             authorization, marker = validate_activation_authorization(
@@ -2828,20 +2833,23 @@ class SystemStore:
                 deployed_release_ref=deployed_release_ref,
                 validation_mode="PRE_CAS_CURRENT",
             )
-            locked_generation = self.verify_generation(
-                pointer["generation_id"],
+            locked_target = validate_current_production_authorization_target(
+                system_store=self,
                 deployed_release_ref=deployed_release_ref,
+                generation_id=pointer["generation_id"],
+                expected_manifest_ref=final_authorization["payload"][
+                    "production_generation_manifest_ref"
+                ],
+                expected_receipt_ref=final_authorization["payload"][
+                    "production_bootstrap_receipt_ref"
+                ],
             )
+            locked_generation = locked_target["verified_generation"]
             if locked_generation["manifest_sha256"] != pointer["manifest_sha256"]:
                 raise SystemActivationAuthorizationError(
                     "pointer manifest binding drifted under activation lock"
                 )
-            locked_production_receipt = validate_production_bootstrap_generation_closure(
-                store=self,
-                verified_generation=locked_generation,
-                deployed_release_ref=deployed_release_ref,
-                validation_mode="PRE_CAS_CURRENT",
-            )
+            locked_production_receipt = locked_target["production_receipt"]
             if any(
                 final_authorization["payload"][field] != locked_production_receipt["payload"][field]
                 for field in calendar_fields

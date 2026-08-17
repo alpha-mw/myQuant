@@ -16,15 +16,16 @@ from quant_investor.migration import (
     build_legacy_source_disposition,
     build_main_checkout_adoption,
     publish_authority_artifact,
+    publish_final_cutover_authorization,
     run_cutover_gate,
     validate_concurrent_task_handoff,
-    validate_final_cutover_authorization,
     validate_main_checkout_adoption,
     validate_main_checkout_adoption_closure,
     validate_cutover_gate_evidence,
 )
 from quant_investor.migration.authority import (
     _GATE_SPECS,
+    _seal_final_cutover_authorization,
     _seal_cutover_gate_evidence,
 )
 from quant_investor.system import SystemContractError, SystemNotFound, SystemPreconditionError
@@ -516,7 +517,7 @@ def test_final_cutover_authorization_rejects_synthetic_production_target(
     adoption = _adoption(gate_evidence)
     assert validate_main_checkout_adoption(adoption) == adoption
     adoption_ref = object_ref_for_artifact(adoption)
-    production_manifest, _production_receipt = _production_target(handoff_ref)
+    production_manifest, production_receipt = _production_target(handoff_ref)
     with pytest.raises(SystemNotFound, match="directory is absent"):
         build_final_cutover_authorization(
             final_authorization_id="unified-final-cutover",
@@ -544,6 +545,61 @@ def test_final_cutover_authorization_rejects_synthetic_production_target(
             preflight_evidence=gate_evidence,
             created_at=BASE,
         )
+
+    receipt_payload = production_receipt["payload"]
+    private_authorization = _seal_final_cutover_authorization(
+        final_authorization_id="private-synthetic-final",
+        accepted_baseline_commit="a" * 40,
+        historical_integration_commit="3" * 40,
+        historical_dirty_evidence_ref=handoff_ref,
+        concurrent_task_handoff_ref=None,
+        main_checkout_adoption_ref=adoption_ref,
+        legacy_disposition_ref=disposition_ref,
+        deployed_release_ref=handoff_ref,
+        production_generation_manifest_ref=object_ref_for_artifact(production_manifest),
+        production_bootstrap_receipt_ref=object_ref_for_artifact(production_receipt),
+        calendar_authority_policy_ref=receipt_payload["calendar_authority_policy_ref"],
+        calendar_compilation_ref=receipt_payload["calendar_compilation_ref"],
+        calendar_capability_ref=receipt_payload["calendar_capability_ref"],
+        calendar_capture_execution_ref=receipt_payload["calendar_capture_execution_ref"],
+        calendar_authorization_basis=receipt_payload["calendar_authorization_basis"],
+        calendar_source_limitations=receipt_payload["calendar_source_limitations"],
+        release_commit="4" * 40,
+        release_tree="5" * 40,
+        final_integration_commit="4" * 40,
+        final_integration_tree="5" * 40,
+        ancestry_rows=[
+            {"ancestor": "a" * 40, "descendant": "4" * 40, "proved": True},
+            {"ancestor": "b" * 40, "descendant": "4" * 40, "proved": True},
+        ],
+        excluded_commit_rows=[],
+        final_worktree_inventory_sha256="6" * 64,
+        clean_checkout_readback_rows=_readbacks("4" * 40, "5" * 40),
+        user_authorization_basis="private synthetic authority is not production proof",
+        preflight_rows=sorted(
+            (
+                {
+                    "gate_id": evidence["payload"]["gate_id"],
+                    "evidence_ref": object_ref_for_artifact(evidence),
+                }
+                for evidence in gate_evidence
+            ),
+            key=lambda row: row["gate_id"],
+        ),
+        created_at=BASE,
+    )
+    authority_root = tmp_path / "authority"
+    private_store_root = tmp_path / "private-store"
+    private_store_root.mkdir()
+    with pytest.raises(SystemNotFound, match="directory is absent"):
+        publish_final_cutover_authorization(
+            authority_root,
+            private_authorization,
+            repository_root=tmp_path,
+            system_store=SystemStore(private_store_root),
+            deployed_release_ref=handoff_ref,
+        )
+    assert not authority_root.exists()
 
     with pytest.raises(SystemPreconditionError, match="preflight"):
         build_final_cutover_authorization(

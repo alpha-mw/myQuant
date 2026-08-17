@@ -102,7 +102,6 @@ from quant_investor.system.components import (
 from quant_investor.system.bootstrap_receipt import (
     ASSEMBLER_MODULE_PATH,
     FUNDAMENTAL_SOURCE_BLOCKERS,
-    INPUT_SOURCE_ROW_FIELDS,
     PRODUCTION_BOOTSTRAP_RECEIPT_FIELDS,
     build_production_bootstrap_receipt,
     production_generation_intent_sha256,
@@ -165,6 +164,14 @@ BOOTSTRAP_OPERATOR_REQUEST_FIELDS: Final = frozenset(
     }
 )
 FILE_REF_FIELDS: Final = frozenset({"relative_path", "byte_sha256"})
+INITIAL_INPUT_SOURCE_ROW_FIELDS: Final = frozenset(
+    {"field", "ordinal", "input_file_ref", "source_object_ref"}
+)
+INITIAL_FUNDAMENTAL_SOURCE_BLOCKERS: Final = (
+    "FUNDAMENTAL_HISTORY_MIXED",
+    "FUNDAMENTAL_HISTORY_NOT_HOMOGENEOUS",
+    "FUNDAMENTAL_LEGACY_DIRECT_READER_PROVENANCE_LIMITED",
+)
 _SHA256_RE: Final = re.compile(r"^[0-9a-f]{64}$")
 _IDENTIFIER_RE: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
 _A_SHARE_SYMBOL_RE: Final = re.compile(r"^[0-9]{6}\.(?:SH|SZ|BJ)$")
@@ -3599,7 +3606,7 @@ def _validate_historical_production_bootstrap_generation_closure(  # noqa: C901
         raise SystemContractError("historical input source rows are absent")
     observed_keys: list[tuple[str, int]] = []
     for row in rows:
-        if type(row) is not dict or set(row) != INPUT_SOURCE_ROW_FIELDS:
+        if type(row) is not dict or set(row) != INITIAL_INPUT_SOURCE_ROW_FIELDS:
             raise SystemContractError("historical input source row fields differ")
         field = row["field"]
         ordinal = row["ordinal"]
@@ -3624,7 +3631,7 @@ def _validate_historical_production_bootstrap_generation_closure(  # noqa: C901
         observed_keys.append((field, ordinal))
     if observed_keys != sorted(observed_keys) or len(observed_keys) != len(set(observed_keys)):
         raise SystemContractError("historical input source rows are not sorted/unique")
-    if payload["source_blockers"] != sorted(FUNDAMENTAL_SOURCE_BLOCKERS):
+    if payload["source_blockers"] != list(INITIAL_FUNDAMENTAL_SOURCE_BLOCKERS):
         raise SystemContractError("historical source blockers differ")
     if payload["fundamental_machine_states"] != {
         "mixed": True,

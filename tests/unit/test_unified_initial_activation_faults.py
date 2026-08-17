@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import base64
+import copy
 import json
 import os
 from pathlib import Path
@@ -10,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 import quant_investor.factors.governance.production as production_module
+import quant_investor.migration.authority as authority_module
 import quant_investor.system.store as system_store_module
 
 from quant_investor.cli.unified import factor_history, system_status, system_verify
@@ -40,6 +42,13 @@ from quant_investor.system import (
     build_prepared_activation_transaction,
     validate_activation_authorization,
     verify_emergency_controller,
+    object_ref_for_artifact,
+)
+from quant_investor.system.historical_activation import (
+    validate_initial_cutover_gate_evidence,
+    validate_initial_legacy_source_disposition,
+    validate_initial_main_checkout_adoption,
+    validate_initial_release_install_evidence,
 )
 from test_unified_system_bootstrap import _closure
 from unified_activation_helpers import prepare_initial_activation
@@ -75,6 +84,41 @@ def _isolate_pointer_protocol_from_production_source_gate(
         production_module,
         "validate_production_bootstrap_generation_closure",
         isolated_receipt,
+    )
+
+    def isolated_target(
+        *,
+        system_store,
+        deployed_release_ref,
+        generation_id,
+        expected_manifest_ref=None,
+        expected_receipt_ref=None,
+    ):
+        verified = system_store.verify_generation(
+            generation_id,
+            deployed_release_ref=deployed_release_ref,
+        )
+        manifest = verified["manifest"]
+        manifest_ref = object_ref_for_artifact(manifest)
+        receipt_ref = expected_receipt_ref
+        if receipt_ref is None:
+            receipt_ref = manifest["payload"]["research_refs"][0]
+        if expected_manifest_ref is not None and expected_manifest_ref != manifest_ref:
+            raise SystemPreconditionError("isolated manifest binding differs")
+        if expected_receipt_ref is not None and expected_receipt_ref != receipt_ref:
+            raise SystemPreconditionError("isolated receipt binding differs")
+        return {
+            "verified_generation": verified,
+            "generation_manifest": manifest,
+            "generation_manifest_ref": manifest_ref,
+            "production_receipt": isolated_receipt(verified_generation=verified),
+            "production_receipt_ref": receipt_ref,
+        }
+
+    monkeypatch.setattr(
+        authority_module,
+        "validate_current_production_authorization_target",
+        isolated_target,
     )
 
 
@@ -314,6 +358,20 @@ def test_initial_marker_uses_frozen_schemas_after_descendant_contract_change(
         "validate_final_cutover_authorization",
         reject_current_schema,
     )
+    for current_validator in (
+        "validate_main_checkout_adoption_closure",
+        "validate_legacy_source_disposition",
+        "validate_cutover_gate_evidence",
+        "validate_release_install_evidence",
+        "_validate_preflight_rows",
+        "_validate_historical_cutover_gate_evidence",
+    ):
+        monkeypatch.setattr(authority_module, current_validator, reject_current_schema)
+    monkeypatch.setattr(authority_module, "REQUIRED_FINAL_PREFLIGHT_GATES", frozenset())
+    monkeypatch.setattr(authority_module, "_GATE_SPECS", {})
+    monkeypatch.setattr(authority_module, "_GATE_RUNNER_ID", "descendant-runner")
+    monkeypatch.setattr(production_module, "INPUT_SOURCE_ROW_FIELDS", frozenset(), raising=False)
+    monkeypatch.setattr(production_module, "FUNDAMENTAL_SOURCE_BLOCKERS", frozenset())
     monkeypatch.setattr(migration_module, "validate_permanent_marker", reject_current_schema)
     monkeypatch.setattr(
         activation_module,
@@ -351,6 +409,55 @@ def test_initial_marker_uses_frozen_schemas_after_descendant_contract_change(
     )
     assert emergency["generation_state"] == "SYSTEM_SUSPENDED"
     assert emergency["factor_authority"] == "BLOCKED"
+
+
+def test_frozen_initial_nested_evidence_rejects_semantically_resealed_tamper(
+    tmp_path: Path,
+) -> None:
+    closure, _generation, inputs = _case(tmp_path)
+    store = closure["store"]
+    final = parse_canonical_json_bytes(
+        inputs["final_cutover_authorization_raw"], label="final authorization"
+    )
+
+    adoption = store.get_object(final["payload"]["main_checkout_adoption_ref"])
+    adoption_payload = copy.deepcopy(adoption["payload"])
+    adoption_payload["writer_ended"] = False
+    tampered_adoption = seal_artifact(
+        adoption["kind"], adoption_payload, created_at=adoption["created_at"]
+    )
+    with pytest.raises(SystemPreconditionError, match="adoption authority"):
+        validate_initial_main_checkout_adoption(tampered_adoption)
+
+    disposition = store.get_object(final["payload"]["legacy_disposition_ref"])
+    disposition_payload = copy.deepcopy(disposition["payload"])
+    disposition_payload["rows"][0]["classification"] = "BLOCKED_UNRESOLVED"
+    tampered_disposition = seal_artifact(
+        disposition["kind"], disposition_payload, created_at=disposition["created_at"]
+    )
+    with pytest.raises(SystemPreconditionError, match="classification blocks"):
+        validate_initial_legacy_source_disposition(tampered_disposition)
+
+    preflight_by_gate = {
+        row["gate_id"]: store.get_object(row["evidence_ref"])
+        for row in final["payload"]["preflight_rows"]
+    }
+    gate = preflight_by_gate["full_pytest"]
+    gate_payload = copy.deepcopy(gate["payload"])
+    gate_payload["batch_results"][0]["exit_code"] = 1
+    tampered_gate = seal_artifact(gate["kind"], gate_payload, created_at=gate["created_at"])
+    with pytest.raises(SystemPreconditionError, match="command did not pass"):
+        validate_initial_cutover_gate_evidence(tampered_gate)
+
+    release_gate = preflight_by_gate["release_install_origin"]
+    install = store.get_object(release_gate["payload"]["subject_ref"])
+    install_payload = copy.deepcopy(install["payload"])
+    install_payload["editable_install"] = True
+    tampered_install = seal_artifact(
+        install["kind"], install_payload, created_at=install["created_at"]
+    )
+    with pytest.raises(SystemPreconditionError, match="not fail-closed"):
+        validate_initial_release_install_evidence(tampered_install)
 
 
 def test_default_initial_read_falls_back_to_historical_when_install_drifted(
@@ -638,7 +745,7 @@ def test_uid_release_and_preimage_drift_fail_before_empty_cas(
     assert not (root / str(ACTIVE_POINTER_PATH)).exists()
 
     missing_release = {**inputs["deployed_release_ref"], "byte_sha256": "f" * 64}
-    with pytest.raises(SystemContractError, match="deployed release identity"):
+    with pytest.raises(SystemPreconditionError, match="deployed release"):
         store.activate_initial_generation(**{**inputs, "deployed_release_ref": missing_release})
     assert not (root / str(ACTIVE_POINTER_PATH)).exists()
 
