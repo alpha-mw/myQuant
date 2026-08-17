@@ -388,9 +388,12 @@ def test_frozen_release_build_install_and_exact_origin_replay(
     assert _git(production_workspace, "status", "--porcelain=v1") == ""
     activated = store.activate_initial_generation(**activation)
     assert activated["generation_state"] == "OPERATIONAL"
-    assert activated["factor_authority"] == "ACTIVE"
-    assert store.status()["state"] == "PARTIAL"
-    assert store.status()["calendar_source_limitations"] == list(SOURCE_LIMITATIONS)
+    active = store.read_active(deployed_release_ref=release_ref)
+    assert active is not None
+    assert active["factor_status"]["payload"]["readiness"] == "READY"
+    status = store.status()
+    assert status["state"] == "PARTIAL"
+    assert status["calendar_source_limitations"] == list(SOURCE_LIMITATIONS)
 
     wrong_origin_parent = tmp_path / "wrong-origin"
     wrong_origin_parent.mkdir(mode=0o700)
