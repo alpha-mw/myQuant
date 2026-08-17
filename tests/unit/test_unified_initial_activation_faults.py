@@ -11,7 +11,6 @@ from types import SimpleNamespace
 
 import pytest
 import quant_investor.factors.governance.production as production_module
-import quant_investor.migration.authority as authority_module
 import quant_investor.system.store as system_store_module
 
 from quant_investor.cli.unified import factor_history, system_status, system_verify
@@ -42,7 +41,6 @@ from quant_investor.system import (
     build_prepared_activation_transaction,
     validate_activation_authorization,
     verify_emergency_controller,
-    object_ref_for_artifact,
 )
 from quant_investor.system.historical_activation import (
     validate_initial_cutover_gate_evidence,
@@ -51,7 +49,10 @@ from quant_investor.system.historical_activation import (
     validate_initial_release_install_evidence,
 )
 from test_unified_system_bootstrap import _closure
-from unified_activation_helpers import prepare_initial_activation
+from unified_activation_helpers import (
+    isolate_pointer_protocol_source_gate,
+    prepare_initial_activation,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -59,67 +60,7 @@ def _isolate_pointer_protocol_from_production_source_gate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Fault injection remains below the independently tested source hard gate."""
-
-    def isolated_receipt(**kwargs):
-        sources = kwargs["verified_generation"]["manifest"]["payload"]["factor_source_object_refs"]
-        return {
-            "payload": {
-                "calendar_authority_policy_ref": sources[0],
-                "calendar_compilation_ref": sources[1],
-                "calendar_capability_ref": None,
-                "calendar_capture_execution_ref": None,
-                "calendar_authorization_basis": {
-                    "authority_route": "EXCHANGE_OFFICIAL",
-                    "policy_ref": sources[0],
-                    "compilation_ref": sources[1],
-                    "capability_ref": None,
-                    "capture_execution_ref": None,
-                    "source_limitations": [],
-                },
-                "calendar_source_limitations": [],
-            }
-        }
-
-    monkeypatch.setattr(
-        production_module,
-        "validate_production_bootstrap_generation_closure",
-        isolated_receipt,
-    )
-
-    def isolated_target(
-        *,
-        system_store,
-        deployed_release_ref,
-        generation_id,
-        expected_manifest_ref=None,
-        expected_receipt_ref=None,
-    ):
-        verified = system_store.verify_generation(
-            generation_id,
-            deployed_release_ref=deployed_release_ref,
-        )
-        manifest = verified["manifest"]
-        manifest_ref = object_ref_for_artifact(manifest)
-        receipt_ref = expected_receipt_ref
-        if receipt_ref is None:
-            receipt_ref = manifest["payload"]["research_refs"][0]
-        if expected_manifest_ref is not None and expected_manifest_ref != manifest_ref:
-            raise SystemPreconditionError("isolated manifest binding differs")
-        if expected_receipt_ref is not None and expected_receipt_ref != receipt_ref:
-            raise SystemPreconditionError("isolated receipt binding differs")
-        return {
-            "verified_generation": verified,
-            "generation_manifest": manifest,
-            "generation_manifest_ref": manifest_ref,
-            "production_receipt": isolated_receipt(verified_generation=verified),
-            "production_receipt_ref": receipt_ref,
-        }
-
-    monkeypatch.setattr(
-        authority_module,
-        "validate_current_production_authorization_target",
-        isolated_target,
-    )
+    isolate_pointer_protocol_source_gate(monkeypatch)
 
 
 def _case(tmp_path: Path) -> tuple[dict, dict, dict]:

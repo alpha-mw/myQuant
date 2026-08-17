@@ -10,7 +10,6 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-import quant_investor.factors.governance.production as production_module
 
 from quant_investor.contracts import canonical_json_bytes, seal_artifact
 from quant_investor.system import (
@@ -27,7 +26,11 @@ from quant_investor.system import (
     verify_emergency_controller,
 )
 from test_unified_system_bootstrap import _closure
-from unified_activation_helpers import activate_initial, prepare_initial_activation
+from unified_activation_helpers import (
+    activate_initial,
+    isolate_pointer_protocol_source_gate,
+    prepare_initial_activation,
+)
 
 CREATED_AT = "2026-08-14T00:00:00Z"
 
@@ -37,32 +40,7 @@ def _isolate_pointer_protocol_from_production_source_gate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """These tests exercise CAS mechanics; production closure has its own suite."""
-
-    def isolated_receipt(**kwargs: Any) -> dict[str, Any]:
-        sources = kwargs["verified_generation"]["manifest"]["payload"]["factor_source_object_refs"]
-        return {
-            "payload": {
-                "calendar_authority_policy_ref": sources[0],
-                "calendar_compilation_ref": sources[1],
-                "calendar_capability_ref": None,
-                "calendar_capture_execution_ref": None,
-                "calendar_authorization_basis": {
-                    "authority_route": "EXCHANGE_OFFICIAL",
-                    "policy_ref": sources[0],
-                    "compilation_ref": sources[1],
-                    "capability_ref": None,
-                    "capture_execution_ref": None,
-                    "source_limitations": [],
-                },
-                "calendar_source_limitations": [],
-            }
-        }
-
-    monkeypatch.setattr(
-        production_module,
-        "validate_production_bootstrap_generation_closure",
-        isolated_receipt,
-    )
+    isolate_pointer_protocol_source_gate(monkeypatch)
 
 
 def _sha(value: str) -> str:

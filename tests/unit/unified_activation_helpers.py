@@ -31,6 +31,75 @@ from quant_investor.system.store import SystemStore, object_ref_for_artifact
 from test_unified_migration_custody import _inventory, _workspace
 
 
+def isolate_pointer_protocol_source_gate(monkeypatch: Any) -> None:
+    """Replace only production-source replay for lower-level pointer fault tests."""
+
+    import quant_investor.factors.governance.production as production_module
+    import quant_investor.migration.authority as authority_module
+
+    def isolated_receipt(**kwargs: Any) -> dict[str, Any]:
+        sources = kwargs["verified_generation"]["manifest"]["payload"]["factor_source_object_refs"]
+        return {
+            "payload": {
+                "calendar_authority_policy_ref": sources[0],
+                "calendar_compilation_ref": sources[1],
+                "calendar_capability_ref": None,
+                "calendar_capture_execution_ref": None,
+                "calendar_authorization_basis": {
+                    "authority_route": "EXCHANGE_OFFICIAL",
+                    "policy_ref": sources[0],
+                    "compilation_ref": sources[1],
+                    "capability_ref": None,
+                    "capture_execution_ref": None,
+                    "source_limitations": [],
+                },
+                "calendar_source_limitations": [],
+            }
+        }
+
+    def isolated_target(
+        *,
+        system_store: SystemStore,
+        deployed_release_ref: dict[str, str],
+        generation_id: str,
+        expected_manifest_ref: dict[str, str] | None = None,
+        expected_receipt_ref: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        verified = system_store.verify_generation(
+            generation_id,
+            deployed_release_ref=deployed_release_ref,
+        )
+        manifest = verified["manifest"]
+        manifest_ref = object_ref_for_artifact(manifest)
+        if expected_manifest_ref is not None and expected_manifest_ref != manifest_ref:
+            raise AssertionError("isolated manifest binding differs")
+        if expected_receipt_ref is None:
+            research_refs = manifest["payload"]["research_refs"]
+            if not research_refs:
+                raise AssertionError("isolated receipt binding is absent")
+            receipt_ref = research_refs[0]
+        else:
+            receipt_ref = expected_receipt_ref
+        return {
+            "verified_generation": verified,
+            "generation_manifest": manifest,
+            "generation_manifest_ref": manifest_ref,
+            "production_receipt": isolated_receipt(verified_generation=verified),
+            "production_receipt_ref": receipt_ref,
+        }
+
+    monkeypatch.setattr(
+        production_module,
+        "validate_production_bootstrap_generation_closure",
+        isolated_receipt,
+    )
+    monkeypatch.setattr(
+        authority_module,
+        "validate_current_production_authorization_target",
+        isolated_target,
+    )
+
+
 def _git(root: Path, *args: str) -> bytes:
     return subprocess.run(
         ["git", "-C", str(root), *args],
@@ -40,7 +109,7 @@ def _git(root: Path, *args: str) -> bytes:
     ).stdout
 
 
-def _test_final_authorization(
+def _test_final_authorization(  # noqa: C901
     store: SystemStore,
     release_ref: dict[str, str],
     *,
