@@ -23,7 +23,7 @@ def test_generic_operational_generation_cannot_cross_initial_activation_gate(
 
     with pytest.raises(
         SystemActivationAuthorizationError,
-        match="lacks valid production bootstrap closure",
+        match="lacks valid production target closure",
     ):
         store.activate_initial_generation(**prepared)
 

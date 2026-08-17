@@ -11,7 +11,6 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
-import quant_investor.factors.governance.production as production_module
 
 from quant_investor.cli.main import main
 from quant_investor.contracts import canonical_json_bytes, seal_artifact
@@ -752,31 +751,9 @@ def test_real_operational_generation_returns_only_generation_bound_result(
 ) -> None:
     # This test exercises Mainline state transitions below the independently
     # tested production-source admission boundary.
-    def isolated_receipt(**kwargs: Any) -> dict[str, Any]:
-        sources = kwargs["verified_generation"]["manifest"]["payload"]["factor_source_object_refs"]
-        return {
-            "payload": {
-                "calendar_authority_policy_ref": sources[0],
-                "calendar_compilation_ref": sources[1],
-                "calendar_capability_ref": None,
-                "calendar_capture_execution_ref": None,
-                "calendar_authorization_basis": {
-                    "authority_route": "EXCHANGE_OFFICIAL",
-                    "policy_ref": sources[0],
-                    "compilation_ref": sources[1],
-                    "capability_ref": None,
-                    "capture_execution_ref": None,
-                    "source_limitations": [],
-                },
-                "calendar_source_limitations": [],
-            }
-        }
+    from unified_activation_helpers import isolate_pointer_protocol_source_gate
 
-    monkeypatch.setattr(
-        production_module,
-        "validate_production_bootstrap_generation_closure",
-        isolated_receipt,
-    )
+    isolate_pointer_protocol_source_gate(monkeypatch)
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir(mode=0o700)
     source_root = workspace_root
