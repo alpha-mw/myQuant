@@ -37,6 +37,10 @@ PRODUCTION_BOOTSTRAP_RECEIPT_FIELDS: Final = frozenset(
         "source_root_id",
         "input_source_rows",
         "deployed_release_ref",
+        "calendar_authority_policy_ref",
+        "calendar_compilation_ref",
+        "calendar_capability_ref",
+        "calendar_source_limitations",
         "release_code_manifest_sha256",
         "generation_created_at",
         "expected_assembly_id",
@@ -225,7 +229,7 @@ def _statistics(value: Any) -> list[dict[str, Any]]:
     return rows
 
 
-def validate_production_bootstrap_receipt(
+def validate_production_bootstrap_receipt(  # noqa: C901
     document: Mapping[str, Any] | bytes,
 ) -> dict[str, Any]:
     """Validate exact receipt structure and its deterministic self-identity."""
@@ -251,6 +255,32 @@ def validate_production_bootstrap_receipt(
     )
     _identifier(payload["source_root_id"], label="source_root_id")
     validate_object_ref(payload["deployed_release_ref"], label="deployed_release_ref")
+    validate_object_ref(
+        payload["calendar_authority_policy_ref"],
+        label="calendar_authority_policy_ref",
+    )
+    validate_object_ref(payload["calendar_compilation_ref"], label="calendar_compilation_ref")
+    if payload["calendar_capability_ref"] is not None:
+        validate_object_ref(
+            payload["calendar_capability_ref"],
+            label="calendar_capability_ref",
+        )
+    limitations = payload["calendar_source_limitations"]
+    if (
+        type(limitations) is not list
+        or any(type(row) is not str or not row for row in limitations)
+        or limitations != sorted(set(limitations))
+    ):
+        raise SystemContractError("calendar source limitations are not exact")
+    degraded_limitations = [
+        "BSE_CALENDAR_POLICY_PROJECTED_FROM_SSE_SZSE",
+        "CALENDAR_AUTHORITY_DEGRADED",
+    ]
+    if not (
+        (limitations == [] and payload["calendar_capability_ref"] is None)
+        or (limitations == degraded_limitations and payload["calendar_capability_ref"] is not None)
+    ):
+        raise SystemContractError("calendar authority route/limitations differ")
     _sha(payload["release_code_manifest_sha256"], label="release_code_manifest_sha256")
     _timestamp(payload["generation_created_at"], label="generation_created_at")
     _sha(payload["expected_assembly_id"], label="expected_assembly_id")
@@ -315,6 +345,10 @@ def build_production_bootstrap_receipt(
     source_root_id: str,
     input_source_rows: Sequence[Mapping[str, Any]],
     deployed_release_ref: Mapping[str, Any],
+    calendar_authority_policy_ref: Mapping[str, Any],
+    calendar_compilation_ref: Mapping[str, Any],
+    calendar_capability_ref: Mapping[str, Any] | None,
+    calendar_source_limitations: Sequence[str],
     release_code_manifest_sha256: str,
     generation_created_at: str,
     expected_assembly_id: str,
@@ -343,6 +377,12 @@ def build_production_bootstrap_receipt(
         "source_root_id": source_root_id,
         "input_source_rows": [dict(row) for row in input_source_rows],
         "deployed_release_ref": dict(deployed_release_ref),
+        "calendar_authority_policy_ref": dict(calendar_authority_policy_ref),
+        "calendar_compilation_ref": dict(calendar_compilation_ref),
+        "calendar_capability_ref": (
+            None if calendar_capability_ref is None else dict(calendar_capability_ref)
+        ),
+        "calendar_source_limitations": list(calendar_source_limitations),
         "release_code_manifest_sha256": release_code_manifest_sha256,
         "generation_created_at": generation_created_at,
         "expected_assembly_id": expected_assembly_id,

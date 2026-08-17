@@ -1317,9 +1317,7 @@ def validate_main_checkout_adoption_closure(
         raise SystemPreconditionError("adoption direct parent differs from Git")
     if adoption_parent != baseline:
         raise SystemPreconditionError("adoption parent is not the accepted baseline")
-    if _git_scalar(root, "rev-parse", f"{baseline}^{{tree}}") != payload[
-        "accepted_baseline_tree"
-    ]:
+    if _git_scalar(root, "rev-parse", f"{baseline}^{{tree}}") != payload["accepted_baseline_tree"]:
         raise SystemPreconditionError("accepted baseline tree differs from Git")
 
     observed_rows = _git_adoption_path_rows(
@@ -1410,6 +1408,10 @@ def _seal_final_cutover_authorization(  # noqa: C901
     main_checkout_adoption_ref: Mapping[str, Any],
     legacy_disposition_ref: Mapping[str, Any],
     deployed_release_ref: Mapping[str, Any],
+    calendar_authority_policy_ref: Mapping[str, Any],
+    calendar_compilation_ref: Mapping[str, Any],
+    calendar_capability_ref: Mapping[str, Any] | None,
+    calendar_source_limitations: Sequence[str],
     release_commit: str,
     release_tree: str,
     final_integration_commit: str,
@@ -1465,6 +1467,23 @@ def _seal_final_cutover_authorization(  # noqa: C901
     ):
         raise SystemPreconditionError("final clean readback differs from frozen tree")
     preflights = _validate_preflight_rows(list(preflight_rows))
+    limitations = list(calendar_source_limitations)
+    if (
+        limitations != sorted(set(limitations))
+        or any(type(value) is not str or not value for value in limitations)
+        or not (
+            (limitations == [] and calendar_capability_ref is None)
+            or (
+                limitations
+                == [
+                    "BSE_CALENDAR_POLICY_PROJECTED_FROM_SSE_SZSE",
+                    "CALENDAR_AUTHORITY_DEGRADED",
+                ]
+                and calendar_capability_ref is not None
+            )
+        )
+    ):
+        raise SystemPreconditionError("calendar final authorization route differs")
     return seal_artifact(
         FINAL_AUTHORIZATION_KIND,
         {
@@ -1489,6 +1508,24 @@ def _seal_final_cutover_authorization(  # noqa: C901
             "deployed_release_ref": validate_object_ref(
                 deployed_release_ref, label="deployed_release_ref"
             ),
+            "calendar_authority_policy_ref": validate_object_ref(
+                calendar_authority_policy_ref,
+                label="calendar_authority_policy_ref",
+            ),
+            "calendar_compilation_ref": validate_object_ref(
+                calendar_compilation_ref,
+                label="calendar_compilation_ref",
+            ),
+            "calendar_capability_ref": (
+                None
+                if calendar_capability_ref is None
+                else validate_object_ref(
+                    calendar_capability_ref,
+                    label="calendar_capability_ref",
+                )
+            ),
+            "calendar_source_limitations": limitations,
+            "calendar_policy_authorized": True,
             "release_commit": _git_oid(release_commit, label="release_commit"),
             "release_tree": _git_oid(release_tree, label="release_tree"),
             "final_integration_commit": _git_oid(
@@ -1525,6 +1562,10 @@ def build_final_cutover_authorization(  # noqa: C901
     main_checkout_adoption_ref: Mapping[str, Any],
     legacy_disposition_ref: Mapping[str, Any],
     deployed_release_ref: Mapping[str, Any],
+    calendar_authority_policy_ref: Mapping[str, Any],
+    calendar_compilation_ref: Mapping[str, Any],
+    calendar_capability_ref: Mapping[str, Any] | None,
+    calendar_source_limitations: Sequence[str],
     release_commit: str,
     release_tree: str,
     final_integration_commit: str,
@@ -1569,6 +1610,10 @@ def build_final_cutover_authorization(  # noqa: C901
         main_checkout_adoption_ref=main_checkout_adoption_ref,
         legacy_disposition_ref=legacy_disposition_ref,
         deployed_release_ref=deployed_release_ref,
+        calendar_authority_policy_ref=calendar_authority_policy_ref,
+        calendar_compilation_ref=calendar_compilation_ref,
+        calendar_capability_ref=calendar_capability_ref,
+        calendar_source_limitations=calendar_source_limitations,
         release_commit=release_commit,
         release_tree=release_tree,
         final_integration_commit=commit,
@@ -1591,6 +1636,7 @@ def validate_final_cutover_authorization(
     if (
         payload.get("final_build_authorized") is not True
         or payload.get("cas_authorized") is not True
+        or payload.get("calendar_policy_authorized") is not True
     ):
         raise SystemPreconditionError("final cutover authorization is not machine-authorized")
     rebuilt = _seal_final_cutover_authorization(
@@ -1602,6 +1648,10 @@ def validate_final_cutover_authorization(
         main_checkout_adoption_ref=payload["main_checkout_adoption_ref"],
         legacy_disposition_ref=payload["legacy_disposition_ref"],
         deployed_release_ref=payload["deployed_release_ref"],
+        calendar_authority_policy_ref=payload["calendar_authority_policy_ref"],
+        calendar_compilation_ref=payload["calendar_compilation_ref"],
+        calendar_capability_ref=payload["calendar_capability_ref"],
+        calendar_source_limitations=payload["calendar_source_limitations"],
         release_commit=payload["release_commit"],
         release_tree=payload["release_tree"],
         final_integration_commit=payload["final_integration_commit"],
@@ -1664,6 +1714,25 @@ def validate_final_cutover_authorization_closure(  # noqa: C901
         raise SystemPreconditionError("authorized deployed release kind is invalid")
     if object_ref_for_artifact(release) != normalized_release:
         raise SystemPreconditionError("deployed release exact object differs")
+    calendar_refs = [
+        payload["calendar_authority_policy_ref"],
+        payload["calendar_compilation_ref"],
+        *(
+            [payload["calendar_capability_ref"]]
+            if payload["calendar_capability_ref"] is not None
+            else []
+        ),
+    ]
+    for calendar_ref in calendar_refs:
+        normalized_calendar_ref = validate_object_ref(
+            calendar_ref, label="final authorization calendar ref"
+        )
+        calendar_source = dict(object_resolver(normalized_calendar_ref))
+        if (
+            calendar_source.get("kind") != "system.source_object"
+            or object_ref_for_artifact(calendar_source) != normalized_calendar_ref
+        ):
+            raise SystemPreconditionError("final authorization calendar source differs")
 
     empty_status_sha = _sha256(b"")
     if validation_mode == "PRE_CAS_CURRENT":

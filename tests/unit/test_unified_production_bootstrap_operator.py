@@ -34,6 +34,9 @@ import quant_investor.factors.governance.production as production_module
 import quant_investor.market.fundamental_incremental as fundamental_incremental_module
 import quant_investor.market.exchange_calendar_closure as calendar_closure_module
 from quant_investor.market.exchange_calendar_official import decoder_code_sha256
+from quant_investor.market.tushare_calendar_authority import (
+    build_calendar_authority_policy,
+)
 from quant_investor.system import (
     SystemActivationAuthorizationError,
     SystemContractError,
@@ -326,18 +329,18 @@ def _finalize_input_refs(
         _write(root, reference["relative_path"], raw)
 
     artifact_paths: dict[str, list[str]] = {
-        "calendar_capture_file_refs": [],
-        "calendar_decoder_admission_file_refs": [],
-        "calendar_index_closure_file_refs": [],
+        "official_calendar_capture_file_refs": [],
+        "official_calendar_decoder_admission_file_refs": [],
+        "official_calendar_index_closure_file_refs": [],
     }
     for field, artifacts, folder in (
-        ("calendar_capture_file_refs", calendar_case["captures"], "captures"),
+        ("official_calendar_capture_file_refs", calendar_case["captures"], "captures"),
         (
-            "calendar_decoder_admission_file_refs",
+            "official_calendar_decoder_admission_file_refs",
             calendar_case["admissions"],
             "admissions",
         ),
-        ("calendar_index_closure_file_refs", calendar_case["indexes"], "indexes"),
+        ("official_calendar_index_closure_file_refs", calendar_case["indexes"], "indexes"),
     ):
         for artifact in artifacts:
             relative = f"closure/calendar-{folder}/{artifact['artifact_id']}.json"
@@ -348,10 +351,22 @@ def _finalize_input_refs(
         "closure/calendar-compilation.json",
         canonical_json_bytes(compilation),
     )
+    _write(
+        root,
+        "closure/calendar-authority-policy.json",
+        canonical_json_bytes(
+            build_calendar_authority_policy(
+                created_at=BASE,
+                authority_route="EXCHANGE_OFFICIAL",
+                pit_exchange_ids=["SSE", "SZSE"],
+            )
+        ),
+    )
     scalars = {
         "exchange_calendar_file_ref": "strict/exchange_calendar.parquet",
         "calendar_runtime_json_file_ref": "strict/exchange_calendar.json",
         "calendar_compilation_file_ref": "closure/calendar-compilation.json",
+        "calendar_authority_policy_file_ref": "closure/calendar-authority-policy.json",
         "market_scope_file_ref": "closure/market_scope.json",
         "market_pointer_file_ref": "closure/market_pointer.json",
         "market_snapshot_manifest_file_ref": "closure/market_snapshot_manifest.json",
@@ -367,7 +382,7 @@ def _finalize_input_refs(
     result: dict[str, dict[str, str] | list[dict[str, str]]] = {
         field: _byte_ref(root, relative) for field, relative in scalars.items()
     }
-    result["calendar_raw_file_refs"] = sorted(
+    result["official_calendar_raw_file_refs"] = sorted(
         [
             _byte_ref(root, json.loads(encoded_ref)["relative_path"])
             for encoded_ref in sorted(calendar_case["raw_by_ref"])
@@ -377,6 +392,10 @@ def _finalize_input_refs(
     )
     for field, paths in artifact_paths.items():
         result[field] = [_byte_ref(root, relative) for relative in sorted(paths)]
+    result["trusted_provider_calendar_raw_file_refs"] = []
+    result["trusted_provider_calendar_capture_file_refs"] = []
+    result["trusted_provider_calendar_capability_file_ref"] = None
+    result["trusted_provider_calendar_capture_transaction_file_ref"] = None
     result["market_table_file_refs"] = [_byte_ref(root, "closure/market-2026.parquet")]
     result["fundamental_table_file_refs"] = [
         _byte_ref(root, f"_fundamental_generations/staged_successor/{name}.parquet")
@@ -765,10 +784,22 @@ def _inputs(root: Path) -> dict[str, dict[str, str] | list[dict[str, str]]]:
         "closure/calendar-compilation.json",
         canonical_json_bytes(calendar_compilation),
     )
+    _write(
+        root,
+        "closure/calendar-authority-policy.json",
+        canonical_json_bytes(
+            build_calendar_authority_policy(
+                created_at=BASE,
+                authority_route="EXCHANGE_OFFICIAL",
+                pit_exchange_ids=["SSE", "SZSE"],
+            )
+        ),
+    )
     scalars = {
         "exchange_calendar_file_ref": "strict/exchange_calendar.parquet",
         "calendar_runtime_json_file_ref": "strict/exchange_calendar.json",
         "calendar_compilation_file_ref": "closure/calendar-compilation.json",
+        "calendar_authority_policy_file_ref": "closure/calendar-authority-policy.json",
         "market_scope_file_ref": "closure/market_scope.json",
         "market_pointer_file_ref": "closure/market_pointer.json",
         "market_snapshot_manifest_file_ref": "closure/market_snapshot_manifest.json",
@@ -784,20 +815,24 @@ def _inputs(root: Path) -> dict[str, dict[str, str] | list[dict[str, str]]]:
     result: dict[str, dict[str, str] | list[dict[str, str]]] = {
         field: _byte_ref(root, relative) for field, relative in scalars.items()
     }
-    result["calendar_raw_file_refs"] = [
+    result["official_calendar_raw_file_refs"] = [
         _byte_ref(root, json.loads(encoded_ref)["relative_path"])
         for encoded_ref in sorted(calendar_case["raw_by_ref"])
         if json.loads(encoded_ref)["relative_path"].startswith("raw/")
     ]
-    result["calendar_capture_file_refs"] = [
+    result["official_calendar_capture_file_refs"] = [
         _byte_ref(root, relative) for relative in sorted(calendar_capture_paths)
     ]
-    result["calendar_decoder_admission_file_refs"] = [
+    result["official_calendar_decoder_admission_file_refs"] = [
         _byte_ref(root, relative) for relative in sorted(calendar_admission_paths)
     ]
-    result["calendar_index_closure_file_refs"] = [
+    result["official_calendar_index_closure_file_refs"] = [
         _byte_ref(root, relative) for relative in sorted(calendar_index_paths)
     ]
+    result["trusted_provider_calendar_raw_file_refs"] = []
+    result["trusted_provider_calendar_capture_file_refs"] = []
+    result["trusted_provider_calendar_capability_file_ref"] = None
+    result["trusted_provider_calendar_capture_transaction_file_ref"] = None
     result["market_table_file_refs"] = [_byte_ref(root, "closure/market-2026.parquet")]
     result["fundamental_table_file_refs"] = [
         _byte_ref(root, f"_fundamental_generations/staged_successor/{name}.parquet")
@@ -856,14 +891,16 @@ def _replace_synthetic_calendar_capture(
     capture_ref = _byte_ref(root, capture_relative)
     raw_refs = [
         raw_ref if row["relative_path"] == raw_relative else row
-        for row in files["calendar_raw_file_refs"]
+        for row in files["official_calendar_raw_file_refs"]
     ]
     capture_refs = [
         capture_ref if row["relative_path"] == capture_relative else row
-        for row in files["calendar_capture_file_refs"]
+        for row in files["official_calendar_capture_file_refs"]
     ]
-    files["calendar_raw_file_refs"] = sorted(raw_refs, key=lambda value: value["relative_path"])
-    files["calendar_capture_file_refs"] = sorted(
+    files["official_calendar_raw_file_refs"] = sorted(
+        raw_refs, key=lambda value: value["relative_path"]
+    )
+    files["official_calendar_capture_file_refs"] = sorted(
         capture_refs, key=lambda value: value["relative_path"]
     )
     manifest_path = root / "closure/calendar_manifest.json"
@@ -925,6 +962,36 @@ def _calendar_path(
     matches = [row["relative_path"] for row in rows if fragment in row["relative_path"]]
     assert len(matches) == 1
     return matches[0]
+
+
+def test_calendar_authority_routes_cannot_be_mixed(tmp_path: Path) -> None:
+    workspace, release_ref = _seed_workspace(tmp_path)
+    input_root = tmp_path / "mixed-calendar-authority"
+    files = _inputs(input_root)
+    official_raw = files["official_calendar_raw_file_refs"]
+    official_captures = files["official_calendar_capture_file_refs"]
+    assert isinstance(official_raw, list)
+    assert isinstance(official_captures, list)
+    files["trusted_provider_calendar_raw_file_refs"] = official_raw[:4]
+    files["trusted_provider_calendar_capture_file_refs"] = official_captures[:3]
+    files["trusted_provider_calendar_capability_file_ref"] = files[
+        "calendar_authority_policy_file_ref"
+    ]
+    files["trusted_provider_calendar_capture_transaction_file_ref"] = files[
+        "calendar_compilation_file_ref"
+    ]
+    with pytest.raises(SystemContractError, match="route tombstones are not exact"):
+        assemble_production_bootstrap(
+            workspace_root=workspace,
+            input_root=input_root,
+            request_raw=_request(
+                workspace_root=workspace,
+                release_ref=release_ref,
+                files=files,
+                operation_id="mixed-calendar-authority",
+            ),
+        )
+    assert not (workspace / "results/system/_active.json").exists()
 
 
 def _replace_list_file_ref(
@@ -1183,6 +1250,18 @@ def test_production_bootstrap_receipt_binding_mutations_block_initial_activation
             "deployed_release_ref", result["production_bootstrap_receipt_ref"]
         ),
         lambda payload: payload.__setitem__(
+            "calendar_authority_policy_ref", result["production_bootstrap_receipt_ref"]
+        ),
+        lambda payload: payload.__setitem__(
+            "calendar_compilation_ref", result["production_bootstrap_receipt_ref"]
+        ),
+        lambda payload: payload.__setitem__(
+            "calendar_capability_ref", result["production_bootstrap_receipt_ref"]
+        ),
+        lambda payload: payload.__setitem__(
+            "calendar_source_limitations", ["CALENDAR_AUTHORITY_DEGRADED"]
+        ),
+        lambda payload: payload.__setitem__(
             "source_refs", [result["production_bootstrap_receipt_ref"]]
         ),
         lambda payload: payload.__setitem__(
@@ -1213,11 +1292,10 @@ def test_production_bootstrap_receipt_binding_mutations_block_initial_activation
     for mutate in mutations:
         mutated_ref = reseal(mutate)
         generation = store.assemble_generation(**{**base_kwargs, "research_refs": [mutated_ref]})
-        prepared = prepare_initial_activation(store, generation, release_ref)
         with pytest.raises(
-            SystemActivationAuthorizationError,
-            match="lacks valid production bootstrap closure",
+            (SystemActivationAuthorizationError, SystemPreconditionError),
         ):
+            prepared = prepare_initial_activation(store, generation, release_ref)
             store.activate_initial_generation(**prepared)
         assert not (workspace / "results/system/_active.json").exists()
         assert not (workspace / "results/system/_migration_complete.json").exists()
@@ -1259,7 +1337,12 @@ def test_production_bootstrap_receipt_binding_mutations_block_initial_activation
     wrong_kind_generation = store.assemble_generation(
         **{**base_kwargs, "research_refs": [release_ref]}
     )
-    wrong_kind_prepared = prepare_initial_activation(store, wrong_kind_generation, release_ref)
+    wrong_kind_prepared = prepare_initial_activation(
+        store,
+        wrong_kind_generation,
+        release_ref,
+        calendar_binding_receipt_ref=result["production_bootstrap_receipt_ref"],
+    )
     with pytest.raises(
         SystemActivationAuthorizationError,
         match="lacks valid production bootstrap closure",
@@ -1668,7 +1751,7 @@ def test_production_bootstrap_rejects_unofficial_calendar_authority(
     workspace, release_ref = _seed_workspace(tmp_path)
     input_root = tmp_path / "sealed-inputs"
     files = _inputs(input_root)
-    relative = _calendar_path(files, "calendar_capture_file_refs", "sse-trading_week_rule")
+    relative = _calendar_path(files, "official_calendar_capture_file_refs", "sse-trading_week_rule")
     capture = json.loads((input_root / relative).read_bytes())
     capture["payload"]["request_url"] = "https://example.com/calendar"
     capture["payload"]["effective_url"] = "https://example.com/calendar"
@@ -1683,7 +1766,7 @@ def test_production_bootstrap_rejects_unofficial_calendar_authority(
             )
         ),
     )
-    _replace_list_file_ref(input_root, files, "calendar_capture_file_refs", relative)
+    _replace_list_file_ref(input_root, files, "official_calendar_capture_file_refs", relative)
     raw = _request(workspace_root=workspace, release_ref=release_ref, files=files)
 
     with pytest.raises(SystemSecurityError, match="official issuer authority"):
@@ -1741,7 +1824,7 @@ def test_production_bootstrap_rejects_notice_index_pagination_drift(tmp_path: Pa
     workspace, release_ref = _seed_workspace(tmp_path)
     input_root = tmp_path / "sealed-inputs"
     files = _inputs(input_root)
-    relative = _calendar_path(files, "calendar_index_closure_file_refs", "szse")
+    relative = _calendar_path(files, "official_calendar_index_closure_file_refs", "szse")
     index = json.loads((input_root / relative).read_bytes())
     index["payload"]["reported_page_count"] = 2
     _write(
@@ -1755,7 +1838,7 @@ def test_production_bootstrap_rejects_notice_index_pagination_drift(tmp_path: Pa
             )
         ),
     )
-    _replace_list_file_ref(input_root, files, "calendar_index_closure_file_refs", relative)
+    _replace_list_file_ref(input_root, files, "official_calendar_index_closure_file_refs", relative)
 
     with pytest.raises((SystemPreconditionError, SystemSecurityError)):
         assemble_production_bootstrap(
@@ -1767,11 +1850,15 @@ def test_production_bootstrap_rejects_notice_index_pagination_drift(tmp_path: Pa
 
 def test_calendar_replay_budget_rejects_many_small_and_few_near_cap_objects() -> None:
     one_mebibyte = 1024**2
-    many_small = [("calendar_raw_file_refs", ordinal, one_mebibyte) for ordinal in range(129)]
+    many_small = [
+        ("official_calendar_raw_file_refs", ordinal, one_mebibyte) for ordinal in range(129)
+    ]
     with pytest.raises(SystemSecurityError, match="aggregate byte bound"):
         production_module._validate_calendar_size_rows(many_small)
 
-    near_cap = [("calendar_raw_file_refs", ordinal, 8 * one_mebibyte) for ordinal in range(17)]
+    near_cap = [
+        ("official_calendar_raw_file_refs", ordinal, 8 * one_mebibyte) for ordinal in range(17)
+    ]
     with pytest.raises(SystemSecurityError, match="aggregate byte bound"):
         production_module._validate_calendar_size_rows(near_cap)
 
@@ -1819,7 +1906,7 @@ def test_calendar_preflight_rejects_in_root_input_symlink_before_staging(
     workspace, release_ref = _seed_workspace(tmp_path)
     input_root = tmp_path / "sealed-inputs"
     files = _inputs(input_root)
-    reference = files["calendar_raw_file_refs"][0]
+    reference = files["official_calendar_raw_file_refs"][0]
     source = input_root / reference["relative_path"]
     replacement = source.parent / "same-root-calendar-replacement.bin"
     replacement.write_bytes(source.read_bytes())
@@ -2004,7 +2091,7 @@ def test_calendar_copy_rechecks_aggregate_budget_after_preflight_drift(
             for _field, _ordinal, reference in rows
         )
         monkeypatch.setattr(production_module, "_MAXIMUM_CALENDAR_REPLAY_BYTES", total)
-        reference = normalized["calendar_index_closure_file_refs"][-1]
+        reference = normalized["official_calendar_index_closure_file_refs"][-1]
         source = input_root / reference["relative_path"]
         with source.open("ab") as stream:
             stream.write(b"x")
@@ -2072,16 +2159,16 @@ def test_production_bootstrap_rejects_unsupported_official_session_hours(
     workspace, release_ref = _seed_workspace(tmp_path)
     input_root = tmp_path / "sealed-inputs"
     files = _inputs(input_root)
-    raw_relative = _calendar_path(files, "calendar_raw_file_refs", "sse-session_rule.json")
+    raw_relative = _calendar_path(files, "official_calendar_raw_file_refs", "sse-session_rule.json")
     native = json.loads((input_root / raw_relative).read_bytes())
     native["projection"]["session_rule_intervals"][0]["session_intervals"][0][
         "opens_local"
     ] = "09:31:00"
     raw_body = canonical_json_bytes(native)
     _write(input_root, raw_relative, raw_body)
-    _replace_list_file_ref(input_root, files, "calendar_raw_file_refs", raw_relative)
+    _replace_list_file_ref(input_root, files, "official_calendar_raw_file_refs", raw_relative)
     capture_relative = _calendar_path(
-        files, "calendar_capture_file_refs", "sse-session_rule-capture"
+        files, "official_calendar_capture_file_refs", "sse-session_rule-capture"
     )
     capture = json.loads((input_root / capture_relative).read_bytes())
     raw_ref = _byte_ref(input_root, raw_relative)
@@ -2102,7 +2189,9 @@ def test_production_bootstrap_rejects_unsupported_official_session_hours(
             )
         ),
     )
-    _replace_list_file_ref(input_root, files, "calendar_capture_file_refs", capture_relative)
+    _replace_list_file_ref(
+        input_root, files, "official_calendar_capture_file_refs", capture_relative
+    )
 
     with pytest.raises(SystemPreconditionError, match="continuous-auction"):
         assemble_production_bootstrap(
@@ -2117,7 +2206,7 @@ def test_production_bootstrap_rejects_decoder_code_identity_drift(tmp_path: Path
     input_root = tmp_path / "sealed-inputs"
     files = _inputs(input_root)
     capture_relative = _calendar_path(
-        files, "calendar_capture_file_refs", "sse-trading_week_rule-capture"
+        files, "official_calendar_capture_file_refs", "sse-trading_week_rule-capture"
     )
     capture_path = input_root / capture_relative
     capture = json.loads(capture_path.read_bytes())
@@ -2133,7 +2222,9 @@ def test_production_bootstrap_rejects_decoder_code_identity_drift(tmp_path: Path
             )
         ),
     )
-    _replace_list_file_ref(input_root, files, "calendar_capture_file_refs", capture_relative)
+    _replace_list_file_ref(
+        input_root, files, "official_calendar_capture_file_refs", capture_relative
+    )
 
     with pytest.raises(SystemSecurityError, match="capture/admission binding"):
         assemble_production_bootstrap(

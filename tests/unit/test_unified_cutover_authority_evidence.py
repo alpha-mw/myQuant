@@ -432,6 +432,10 @@ def test_final_cutover_authorization_is_machine_derived_from_passed_gates() -> N
         main_checkout_adoption_ref=adoption_ref,
         legacy_disposition_ref=disposition_ref,
         deployed_release_ref=handoff_ref,
+        calendar_authority_policy_ref=handoff_ref,
+        calendar_compilation_ref=handoff_ref,
+        calendar_capability_ref=None,
+        calendar_source_limitations=[],
         release_commit="4" * 40,
         release_tree="5" * 40,
         final_integration_commit="4" * 40,
@@ -462,6 +466,10 @@ def test_final_cutover_authorization_is_machine_derived_from_passed_gates() -> N
             main_checkout_adoption_ref=adoption_ref,
             legacy_disposition_ref=disposition_ref,
             deployed_release_ref=handoff_ref,
+            calendar_authority_policy_ref=handoff_ref,
+            calendar_compilation_ref=handoff_ref,
+            calendar_capability_ref=None,
+            calendar_source_limitations=[],
             release_commit="4" * 40,
             release_tree="5" * 40,
             final_integration_commit="4" * 40,
@@ -478,12 +486,15 @@ def test_final_cutover_authorization_is_machine_derived_from_passed_gates() -> N
 
 def test_main_checkout_adoption_deeply_replays_exact_git_delta(tmp_path: Path) -> None:
     root, adoption, gate_refs = _real_adoption(tmp_path)
-    assert validate_main_checkout_adoption_closure(
-        adoption,
-        repository_root=root,
-        final_commit=adoption["payload"]["adoption_commit"],
-        final_preflight_rows=gate_refs,
-    ) == adoption
+    assert (
+        validate_main_checkout_adoption_closure(
+            adoption,
+            repository_root=root,
+            final_commit=adoption["payload"]["adoption_commit"],
+            final_preflight_rows=gate_refs,
+        )
+        == adoption
+    )
 
 
 @pytest.mark.parametrize(

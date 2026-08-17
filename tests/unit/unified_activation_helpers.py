@@ -42,6 +42,10 @@ def _test_final_authorization(
     store: SystemStore,
     release_ref: dict[str, str],
     *,
+    calendar_authority_policy_ref: dict[str, str],
+    calendar_compilation_ref: dict[str, str],
+    calendar_capability_ref: dict[str, str] | None,
+    calendar_source_limitations: list[str],
     created_at: str,
 ) -> dict[str, Any]:
     root = store.workspace_root
@@ -343,6 +347,10 @@ def _test_final_authorization(
         main_checkout_adoption_ref=adoption_ref,
         legacy_disposition_ref=disposition_ref,
         deployed_release_ref=release_ref,
+        calendar_authority_policy_ref=calendar_authority_policy_ref,
+        calendar_compilation_ref=calendar_compilation_ref,
+        calendar_capability_ref=calendar_capability_ref,
+        calendar_source_limitations=calendar_source_limitations,
         release_commit=commit,
         release_tree=tree,
         final_integration_commit=commit,
@@ -398,6 +406,7 @@ def prepare_initial_activation(
     prepared_at: str = "2026-08-14T00:00:00Z",
     activated_at: str = "2026-08-14T00:00:01Z",
     migration_context: dict[str, Any] | None = None,
+    calendar_binding_receipt_ref: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     root = store.workspace_root
     context = migration_context or prepare_migration_context(
@@ -425,7 +434,27 @@ def prepare_initial_activation(
         created_at=prepared_at,
         rules_path=rules_path,
     )
-    final_authorization = _test_final_authorization(store, release_ref, created_at=prepared_at)
+    research_refs = generation["manifest"]["payload"]["research_refs"]
+    if calendar_binding_receipt_ref is not None or research_refs:
+        production_receipt_ref = calendar_binding_receipt_ref or research_refs[0]
+        production_receipt = store.get_object(production_receipt_ref)["payload"]
+    else:
+        source_refs = generation["manifest"]["payload"]["factor_source_object_refs"]
+        production_receipt = {
+            "calendar_authority_policy_ref": source_refs[0],
+            "calendar_compilation_ref": source_refs[1],
+            "calendar_capability_ref": None,
+            "calendar_source_limitations": [],
+        }
+    final_authorization = _test_final_authorization(
+        store,
+        release_ref,
+        calendar_authority_policy_ref=production_receipt["calendar_authority_policy_ref"],
+        calendar_compilation_ref=production_receipt["calendar_compilation_ref"],
+        calendar_capability_ref=production_receipt["calendar_capability_ref"],
+        calendar_source_limitations=production_receipt["calendar_source_limitations"],
+        created_at=prepared_at,
+    )
     authorization = build_activation_authorization(
         final_cutover_authorization=final_authorization,
         migration_receipt=receipt,

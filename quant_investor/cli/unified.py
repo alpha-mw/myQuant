@@ -97,6 +97,9 @@ def system_status(
         "status": "OK",
         "active_generation_id": observed.get("generation_id"),
         "capabilities": capabilities,
+        "calendar_authority_route": observed.get("calendar_authority_route"),
+        "calendar_authority_confidence": observed.get("calendar_authority_confidence"),
+        "calendar_source_limitations": list(observed.get("calendar_source_limitations", [])),
         "external_routing_state": observed.get("external_routing_state", "BLOCKED"),
         "blockers": list(observed.get("blockers", [])),
     }
@@ -150,6 +153,9 @@ def system_verify(
         "active_generation_id": verified["generation_id"],
         "generation_state": verified["generation_state"],
         "verified": verified["verified"],
+        "calendar_authority_route": verified.get("calendar_authority_route"),
+        "calendar_authority_confidence": verified.get("calendar_authority_confidence"),
+        "calendar_source_limitations": list(verified.get("calendar_source_limitations", [])),
         "blockers": [],
     }
 
@@ -195,6 +201,47 @@ def system_bootstrap_assemble(
         workspace_root=workspace_root,
         input_root=Path(workspace_root) / input_root,
         request_raw=raw,
+    )
+
+
+def system_calendar_capture(
+    *,
+    workspace_root: str,
+    capture_parent: str,
+    capture_root_name: str,
+    cutoff_date: str,
+    captured_at: str,
+    release_install_evidence_path: str,
+    expected_release_install_evidence_sha256: str,
+) -> dict[str, Any]:
+    """Capture one immutable Tushare Tier-1 calendar transaction."""
+
+    import quant_investor
+    from quant_investor.market.tushare_calendar_authority import (
+        capture_trusted_provider_calendar_evidence,
+    )
+    from quant_investor.system import SystemPreconditionError
+    from quant_investor.system.release_install import validate_release_install_evidence
+
+    evidence_raw, _ = _request(
+        workspace_root=workspace_root,
+        request_path=release_install_evidence_path,
+        expected_request_sha256=expected_release_install_evidence_sha256,
+    )
+    evidence = validate_release_install_evidence(evidence_raw)
+    payload = evidence["payload"]
+    current_origin = Path(quant_investor.__file__).resolve(strict=True)
+    if (
+        payload["editable_install"] is not False
+        or payload["source_tree_import"] is not False
+        or Path(payload["import_origin"]).resolve(strict=True) != current_origin
+    ):
+        raise SystemPreconditionError("CALENDAR_CAPTURE_INSTALL_ORIGIN_UNVERIFIED")
+    return capture_trusted_provider_calendar_evidence(
+        capture_parent=capture_parent,
+        capture_root_name=capture_root_name,
+        cutoff_date=cutoff_date,
+        captured_at=captured_at,
     )
 
 

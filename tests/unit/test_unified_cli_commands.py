@@ -178,6 +178,9 @@ def test_system_status_complete_when_uninitialized(
     assert set(system) == {
         "active_generation_id",
         "blockers",
+        "calendar_authority_confidence",
+        "calendar_authority_route",
+        "calendar_source_limitations",
         "capabilities",
         "external_routing_state",
         "status",

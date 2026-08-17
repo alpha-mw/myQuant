@@ -80,9 +80,10 @@ exact marker never grants Factor `ACTIVE` authority.
 System status is one of `UNINITIALIZED`, `PARTIAL`, `ACTIVE`, `BLOCKED`, or
 `SUSPENDED`. External routing is independently `ACTIVE`, `UNCONFIRMED`,
 `SYSTEM_ACTIVE_AUTOMATION_DISABLED`, or `SYSTEM_EXTERNAL_ROUTING_DRIFT`.
-The public status payload contains exactly `state`, `verified`,
-`active_pointer_sha256`, `generation_id`, `readiness`, `blockers`, and
-`external_routing_state`. An absent active pointer is `UNINITIALIZED` with
+The public status payload also reports `calendar_authority_route`,
+`calendar_authority_confidence`, and exact `calendar_source_limitations` for
+an active production bootstrap generation. An absent active pointer is
+`UNINITIALIZED` with
 readiness `EMPTY` and blocker `SYSTEM_ACTIVE_POINTER_ABSENT`.
 
 There is no runtime version selector and no compatibility executable. A removed
@@ -230,13 +231,30 @@ refs, and all three Fundamental tables must be present in the declared fileset.
 No pathname reopen or whole-row-group `to_pandas()` is authoritative in this
 production validation path.
 
-The production calendar decoder registry is intentionally empty in this
-release. No SSE, SZSE, or BSE response format has yet been admitted from a
-retained native issuer capture, so every calendar assembly stops with
-`OFFICIAL_CALENDAR_WIRE_CONTRACT_UNVERIFIED`. Project-authored JSON, test
-fixtures, official-hostname assertions, weekday/holiday inference, bars,
-Macro data, provider calendars, and legacy calendars cannot satisfy this gate.
-A future decoder admission must bind the exchange and evidence role to the
+Calendar admission is an exact tagged union. `EXCHANGE_OFFICIAL` remains the
+full-authority route and requires the native issuer closure described below.
+`TRUSTED_PROVIDER_DEGRADED` is the narrowly admitted daily-Factor route for a
+fresh Tushare `trade_cal` transaction: retained official Tushare documentation,
+one exact SSE response, one exact SZSE response, and one exact-empty BSE
+capability probe. It is not exchange-official authority. SSE and SZSE must have
+identical normalized daily rows and finite `pretrade_date` ancestry. BSE rows
+are explicitly `POLICY_PROJECTED` from that common SSE/SZSE projection and are
+never labeled provider-direct. The permanent limitations are
+`BSE_CALENDAR_POLICY_PROJECTED_FROM_SSE_SZSE` and
+`CALENDAR_AUTHORITY_DEGRADED`; status and historical verification retain both.
+The route supplies only a code-owned 09:30-15:00 Asia/Shanghai daily Factor
+processing envelope and grants no intraday, market-hours, portfolio, broker,
+order, trade, or funds authority.
+
+The installed-release capture command is `system calendar-capture`. It makes
+exactly one documentation GET plus three `trade_cal` reads, retains no token or
+credential-bearing request body, and publishes an owner-only capture root only
+after all raw bytes, artifacts, directory fsyncs, and no-follow readbacks pass.
+An incomplete transaction is moved to a distinct `FAILED_INADMISSIBLE` root
+and can never be repaired or admitted. Project-authored JSON, weekday/holiday
+inference, bars, Macro data, and legacy V17 calendars remain forbidden.
+
+An official decoder admission must bind the exchange and evidence role to the
 exact HTTPS endpoint/query contract (or, for a notice body, to the exact body
 URL carried by a validated notice-index entry), redirect policy, real
 status/content type and response headers, retained native body bytes and SHA, capture time,
@@ -253,7 +271,9 @@ prior-year annual notices, and the distinct calendar effective-coverage window
 must all close. Per-role counts, individual object sizes, and aggregate replay
 bytes are bounded before source bodies are materialized. Until this native
 rule/notice closure covers every exchange in the sealed PIT cohort through the
-exact cutoff, production generation publication and CAS remain blocked.
+exact cutoff, the `EXCHANGE_OFFICIAL` route remains blocked; it does not block
+the separately authorized degraded provider route when every provider gate is
+closed.
 
 The currently admitted index contract is deliberately page-number-only and
 requires the exact four semantic query values (category, page, publication

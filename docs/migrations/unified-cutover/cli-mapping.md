@@ -47,17 +47,31 @@ not inferred from the old command name. Missing required paths, identities,
 hashes, cutoffs, or authorization stay blocked; the CLI does not search for a
 substitute.
 
+`system calendar-capture` is the installed-release-only, read-only network
+entrypoint for the `TRUSTED_PROVIDER_DEGRADED` route. It atomically retains the
+official Tushare `trade_cal` documentation plus exact SSE, SZSE, and BSE probe
+responses and seals an all-leaves capture transaction. The production request
+must bind that exact transaction; isolated raw/capture files are insufficient.
+The BSE response must be exact-empty and confers no direct calendar authority.
+No provider write, broker, order, trade, funds, portfolio, Strategy
+Record, System pointer, generation, or activation write is reachable from this
+command.
+
 `system bootstrap-assemble` is offline-only and requires a sealed request whose
 PIT pointer and complete Fundamental safe-successor v3 fileset are explicit
 path/SHA inputs. The fileset includes the canonical Fundamental pointer,
 manifest, all three Parquet tables, and every provider-evidence file. The
-calendar side of that same request is an exact native-source DAG: a detached
-`system.exchange_calendar_compilation`, runtime JSON, strict Parquet, raw
-issuer responses, zero-request-header capture envelopes, registered decoder
-admissions, and complete notice-index/page/body closures. The assembler reruns
-the admitted decoders, derives weekly rules, closures, effective-dated session
-rules, precedence and market contradictions, and then requires its regenerated
-JSON and Parquet bytes to equal the requested files. The superseded
+calendar side is one exact tagged route. `EXCHANGE_OFFICIAL` uses a detached
+`system.exchange_calendar_compilation`, raw issuer responses, decoder
+admissions, and complete notice-index/page/body closures.
+`TRUSTED_PROVIDER_DEGRADED` uses a detached
+`system.trusted_provider_calendar_compilation`, provider capability artifact,
+exact three-response capture set, the immutable four-call capture transaction,
+policy artifact, runtime JSON and strict Parquet. Official and provider fields
+are mandatory tombstones for the route
+that is not selected; mixed, missing, duplicated, or old topology fails. The
+assembler reruns the selected decoder and requires regenerated JSON and
+Parquet bytes to equal the requested files. The superseded
 `calendar_manifest_file_ref` and project-authored `DAILY_STATUS` projection are
 not accepted request fields or calendar authority. The assembler reconstructs
 the canonical layout under owner-only staging and

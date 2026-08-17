@@ -28,6 +28,7 @@ from quant_investor.cli.unified import (
     system_activate,
     system_assemble,
     system_bootstrap_assemble,
+    system_calendar_capture,
     system_status,
     system_suspend,
     system_verify,
@@ -387,6 +388,26 @@ def _build_parser() -> argparse.ArgumentParser:
         required=True,
         type=_workspace_relative_canonical_path,
         help="workspace-relative root containing every sealed input",
+    )
+
+    system_calendar_capture_parser = system_subparsers.add_parser(
+        "calendar-capture",
+        help="从 installed release 原子采集 Tushare 降级交易日历证据",
+    )
+    _add_workspace_argument(system_calendar_capture_parser)
+    system_calendar_capture_parser.add_argument("--capture-parent", required=True)
+    system_calendar_capture_parser.add_argument("--capture-root-name", required=True)
+    system_calendar_capture_parser.add_argument("--cutoff-date", required=True)
+    system_calendar_capture_parser.add_argument("--captured-at", required=True)
+    system_calendar_capture_parser.add_argument(
+        "--release-install-evidence",
+        required=True,
+        type=_workspace_relative_canonical_path,
+    )
+    system_calendar_capture_parser.add_argument(
+        "--expected-release-install-evidence-sha256",
+        required=True,
+        type=_sha256_argument,
     )
 
     system_activate_parser = system_subparsers.add_parser(
@@ -927,6 +948,22 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
                 input_root=args.input_root,
                 request_path=args.request,
                 expected_request_sha256=args.expected_request_sha256,
+            )
+        )
+        return
+
+    if args.command == "system" and args.system_command == "calendar-capture":
+        _print_json(
+            system_calendar_capture(
+                workspace_root=args.workspace_root,
+                capture_parent=args.capture_parent,
+                capture_root_name=args.capture_root_name,
+                cutoff_date=args.cutoff_date,
+                captured_at=args.captured_at,
+                release_install_evidence_path=args.release_install_evidence,
+                expected_release_install_evidence_sha256=(
+                    args.expected_release_install_evidence_sha256
+                ),
             )
         )
         return

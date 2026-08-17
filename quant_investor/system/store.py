@@ -2522,11 +2522,40 @@ class SystemStore:
     ) -> dict[str, Any]:
         """Deep-verify a generation, including full Factor source byte hashes."""
 
-        return self._verify_generation(
+        verified = self._verify_generation(
             generation_id,
             deployed_release_ref=deployed_release_ref,
             validation_level="full",
         )
+        research = verified.get("research")
+        if (
+            verified.get("generation_state") == "OPERATIONAL"
+            and type(research) is list
+            and len(research) == 1
+            and research[0].get("kind") == "system.production_bootstrap_receipt"
+        ):
+            from quant_investor.factors.governance.production import (
+                validate_production_bootstrap_generation_closure,
+            )
+
+            receipt = validate_production_bootstrap_generation_closure(
+                store=self,
+                verified_generation=verified,
+                deployed_release_ref=(
+                    deployed_release_ref or verified["manifest"]["payload"]["release_manifest_ref"]
+                ),
+                validation_mode="PRE_CAS_CURRENT",
+            )
+            limitations = list(receipt["payload"]["calendar_source_limitations"])
+            verified = {
+                **verified,
+                "calendar_authority_route": (
+                    "TRUSTED_PROVIDER_DEGRADED" if limitations else "EXCHANGE_OFFICIAL"
+                ),
+                "calendar_authority_confidence": ("DEGRADED" if limitations else "OFFICIAL"),
+                "calendar_source_limitations": limitations,
+            }
+        return verified
 
     @staticmethod
     def _validate_pointer(document: Mapping[str, Any] | bytes) -> dict[str, Any]:
@@ -2708,8 +2737,10 @@ class SystemStore:
             raise SystemActivationAuthorizationError(
                 "initial activation preimage must be literal EMPTY"
             )
-        verified = self.verify_generation(
-            pointer["generation_id"], deployed_release_ref=deployed_release_ref
+        verified = self._verify_generation(
+            pointer["generation_id"],
+            deployed_release_ref=deployed_release_ref,
+            validation_level="full",
         )
         if verified["generation_state"] != "OPERATIONAL":
             raise SystemActivationAuthorizationError(
@@ -2722,7 +2753,7 @@ class SystemStore:
                 validate_production_bootstrap_generation_closure,
             )
 
-            validate_production_bootstrap_generation_closure(
+            production_receipt = validate_production_bootstrap_generation_closure(
                 store=self,
                 verified_generation=verified,
                 deployed_release_ref=deployed_release_ref,
@@ -2748,6 +2779,19 @@ class SystemStore:
                 deployed_release_ref=deployed_release_ref,
                 validation_mode="PRE_CAS_CURRENT",
             )
+            calendar_fields = (
+                "calendar_authority_policy_ref",
+                "calendar_compilation_ref",
+                "calendar_capability_ref",
+                "calendar_source_limitations",
+            )
+            if any(
+                final_authorization["payload"][field] != production_receipt["payload"][field]
+                for field in calendar_fields
+            ):
+                raise SystemActivationAuthorizationError(
+                    "final authorization calendar binding differs from production receipt"
+                )
 
             authorization, marker = validate_activation_authorization(
                 activation_authorization_raw,
@@ -2790,12 +2834,19 @@ class SystemStore:
                 raise SystemActivationAuthorizationError(
                     "pointer manifest binding drifted under activation lock"
                 )
-            validate_production_bootstrap_generation_closure(
+            locked_production_receipt = validate_production_bootstrap_generation_closure(
                 store=self,
                 verified_generation=locked_generation,
                 deployed_release_ref=deployed_release_ref,
                 validation_mode="PRE_CAS_CURRENT",
             )
+            if any(
+                final_authorization["payload"][field] != locked_production_receipt["payload"][field]
+                for field in calendar_fields
+            ):
+                raise SystemActivationAuthorizationError(
+                    "calendar authorization drifted under activation lock"
+                )
 
         result = self._storage._commit_initial_activation(
             transaction=_PreparedInitialActivationWrite(
@@ -2911,13 +2962,26 @@ class SystemStore:
             )
 
             try:
-                validate_production_bootstrap_generation_closure(
+                production_receipt = validate_production_bootstrap_generation_closure(
                     store=self,
                     verified_generation=generation,
                     deployed_release_ref=deployed_ref,
                     validation_mode="HISTORICAL",
                     historical_assembler_sha256=historical_assembler_sha256,
                 )
+                for field in (
+                    "calendar_authority_policy_ref",
+                    "calendar_compilation_ref",
+                    "calendar_capability_ref",
+                    "calendar_source_limitations",
+                ):
+                    if field in production_receipt["payload"] and (
+                        final_authorization["payload"].get(field)
+                        != production_receipt["payload"][field]
+                    ):
+                        raise SystemMigrationClosureError(
+                            "historical calendar authorization binding differs"
+                        )
             except SystemError as exc:
                 raise SystemMigrationClosureError(
                     "initial generation production bootstrap closure is invalid"
@@ -3145,6 +3209,9 @@ class SystemStore:
                     "active_pointer_sha256": EMPTY_POINTER_SHA256,
                     "generation_id": None,
                     "readiness": None,
+                    "calendar_authority_route": None,
+                    "calendar_authority_confidence": None,
+                    "calendar_source_limitations": [],
                     "blockers": [SYSTEM_ACTIVE_POINTER_ABSENT],
                     "external_routing_state": "UNINITIALIZED",
                 }
@@ -3178,12 +3245,22 @@ class SystemStore:
                 active["manifest"]["payload"]["automation_semantic_sha256"],
                 external_routing,
             )
+            final_payload = active["migration_completion"]["final_cutover_authorization"]["payload"]
+            calendar_limitations = list(final_payload["calendar_source_limitations"])
+            calendar_route = (
+                "TRUSTED_PROVIDER_DEGRADED" if calendar_limitations else "EXCHANGE_OFFICIAL"
+            )
             return {
                 "state": state,
                 "verified": True,
                 "active_pointer_sha256": active["pointer_byte_sha256"],
                 "generation_id": active["generation_id"],
                 "readiness": readiness,
+                "calendar_authority_route": calendar_route,
+                "calendar_authority_confidence": (
+                    "DEGRADED" if calendar_limitations else "OFFICIAL"
+                ),
+                "calendar_source_limitations": calendar_limitations,
                 "blockers": blockers,
                 "external_routing_state": routing_state,
             }
@@ -3194,6 +3271,9 @@ class SystemStore:
                 "active_pointer_sha256": None,
                 "generation_id": None,
                 "readiness": None,
+                "calendar_authority_route": None,
+                "calendar_authority_confidence": None,
+                "calendar_source_limitations": [],
                 "blockers": [exc.code],
                 "external_routing_state": "BLOCKED",
             }

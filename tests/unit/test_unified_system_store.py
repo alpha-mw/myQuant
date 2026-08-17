@@ -38,10 +38,21 @@ def _isolate_pointer_protocol_from_production_source_gate(
 ) -> None:
     """These tests exercise CAS mechanics; production closure has its own suite."""
 
+    def isolated_receipt(**kwargs: Any) -> dict[str, Any]:
+        sources = kwargs["verified_generation"]["manifest"]["payload"]["factor_source_object_refs"]
+        return {
+            "payload": {
+                "calendar_authority_policy_ref": sources[0],
+                "calendar_compilation_ref": sources[1],
+                "calendar_capability_ref": None,
+                "calendar_source_limitations": [],
+            }
+        }
+
     monkeypatch.setattr(
         production_module,
         "validate_production_bootstrap_generation_closure",
-        lambda **_kwargs: {},
+        isolated_receipt,
     )
 
 

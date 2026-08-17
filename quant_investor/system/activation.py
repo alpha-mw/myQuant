@@ -40,6 +40,10 @@ ACTIVATION_AUTHORIZATION_FIELDS: Final = frozenset(
         "target_generation_id",
         "target_generation_manifest_ref",
         "deployed_release_ref",
+        "calendar_authority_policy_ref",
+        "calendar_compilation_ref",
+        "calendar_capability_ref",
+        "calendar_source_limitations",
         "target_active_pointer",
         "target_active_pointer_ref",
         "target_active_pointer_path",
@@ -189,6 +193,14 @@ def build_activation_authorization(
         "target_generation_id": manifest["semantic_sha256"],
         "target_generation_manifest_ref": artifact_exact_ref(manifest),
         "deployed_release_ref": normalized_release,
+        "calendar_authority_policy_ref": final_authorization["payload"][
+            "calendar_authority_policy_ref"
+        ],
+        "calendar_compilation_ref": final_authorization["payload"]["calendar_compilation_ref"],
+        "calendar_capability_ref": final_authorization["payload"]["calendar_capability_ref"],
+        "calendar_source_limitations": final_authorization["payload"][
+            "calendar_source_limitations"
+        ],
         "target_active_pointer": dict(pointer),
         "target_active_pointer_ref": _pointer_ref(pointer),
         "target_active_pointer_path": str(ACTIVE_POINTER_PATH),
@@ -281,6 +293,14 @@ def validate_activation_authorization(  # noqa: C901
         "target_generation_id": manifest["semantic_sha256"],
         "target_generation_manifest_ref": artifact_exact_ref(manifest),
         "deployed_release_ref": normalized_release,
+        "calendar_authority_policy_ref": final_authorization["payload"][
+            "calendar_authority_policy_ref"
+        ],
+        "calendar_compilation_ref": final_authorization["payload"]["calendar_compilation_ref"],
+        "calendar_capability_ref": final_authorization["payload"]["calendar_capability_ref"],
+        "calendar_source_limitations": final_authorization["payload"][
+            "calendar_source_limitations"
+        ],
         "target_active_pointer": pointer,
         "target_active_pointer_ref": _pointer_ref(pointer),
         "target_active_pointer_path": str(ACTIVE_POINTER_PATH),
