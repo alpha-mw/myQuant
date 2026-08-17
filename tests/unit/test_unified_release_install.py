@@ -367,11 +367,25 @@ def test_frozen_release_build_install_and_exact_origin_replay(
         ),
     )
     assert assembled["status"] == "OFFLINE_VERIFIED"
+    rules_path = production_workspace / "operations/unified_cutover/rules.json"
+    original_rules = rules_path.read_bytes()
     activation = prepare_initial_activation(
         store,
         assembled["generation"],
         release_ref,
     )
+    rules_path.write_bytes(original_rules)
+    for relative in (
+        "authority/_active.json",
+        "caller.py",
+        "custody/archive.bin",
+        "legacy.py",
+        "shadow/source.json",
+        "src/main.py",
+        "strategy/source.json",
+    ):
+        (production_workspace / relative).unlink()
+    assert _git(production_workspace, "status", "--porcelain=v1") == ""
     activated = store.activate_initial_generation(**activation)
     assert activated["generation_state"] == "OPERATIONAL"
     assert activated["factor_authority"] == "ACTIVE"
