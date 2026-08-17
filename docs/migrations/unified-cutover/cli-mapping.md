@@ -52,10 +52,17 @@ entrypoint for the `TRUSTED_PROVIDER_DEGRADED` route. It atomically retains the
 official Tushare `trade_cal` documentation plus exact SSE, SZSE, and BSE probe
 responses and seals an all-leaves capture transaction, installed-release
 execution receipt, and success marker. The command requires the exact
-release-install input path and SHA; caller-supplied timestamps or transport
+release-install input path and SHA plus a distinct exact clean detached
+`--release-repository-root`; the attached production workspace is never
+substituted for that release checkout. Caller-supplied timestamps or transport
 objects are not accepted. The production request must bind that transaction,
-execution receipt, success marker, and release-install input; isolated
-raw/capture files are insufficient.
+execution receipt, success marker, release-install input, and the original
+owner-only capture-root inode. Assembly reopens the fixed thirteen-leaf root
+through one pinned no-follow descriptor before copying; isolated or rehomed
+raw/capture/receipt files are insufficient.
+Tushare does not sign response bodies: this proves exact retained bytes,
+reviewed installed operator identity, and local custody topology, but it is not
+a cryptographic proof against a malicious same-UID process.
 The BSE response must be exact-empty and confers no direct calendar authority.
 No provider write, broker, order, trade, funds, portfolio, Strategy
 Record, System pointer, generation, or activation write is reachable from this

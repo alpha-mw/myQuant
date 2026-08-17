@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from datetime import date
 import hashlib
 import json
 import os
@@ -11,6 +12,11 @@ import textwrap
 import pytest
 
 from quant_investor.contracts import canonical_json_bytes
+from quant_investor.factors.governance.production import assemble_production_bootstrap
+from quant_investor.market.exchange_calendar_closure import (
+    runtime_json_bytes,
+    runtime_parquet_bytes,
+)
 from quant_investor.migration import run_cutover_gate, validate_cutover_gate_evidence
 from quant_investor.system import (
     SystemPreconditionError,
@@ -20,8 +26,20 @@ from quant_investor.system import (
     verify_release_install_input,
 )
 from quant_investor.market.tushare_calendar_authority import (
+    SOURCE_LIMITATIONS,
+    build_trusted_provider_calendar_compilation,
     capture_trusted_provider_calendar_evidence,
 )
+from quant_investor.system import SystemStore
+from tests.unit.test_tushare_calendar_authority import _runtime
+import tests.unit.test_unified_production_bootstrap_operator as production_test_module
+from tests.unit.test_unified_production_bootstrap_operator import (
+    _byte_ref,
+    _inputs,
+    _request,
+    _write,
+)
+from unified_activation_helpers import prepare_initial_activation
 
 BASE = "2026-08-16T00:00:00Z"
 
@@ -40,7 +58,10 @@ def _git(root: Path, *arguments: str) -> str:
     )
 
 
-def test_frozen_release_build_install_and_exact_origin_replay(tmp_path: Path) -> None:
+def test_frozen_release_build_install_and_exact_origin_replay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     source = Path(__file__).resolve().parents[2]
     repository = tmp_path / "repository"
     subprocess.run(
@@ -95,10 +116,17 @@ def test_frozen_release_build_install_and_exact_origin_replay(tmp_path: Path) ->
         != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     )
 
-    authority_root = repository / "results/system/authority"
-    capture_parent = repository / "results/system/calendar-captures"
-    authority_root.mkdir(parents=True, mode=0o700)
-    capture_parent.mkdir(parents=True, mode=0o700)
+    operator_workspace = tmp_path / "operator-workspace"
+    authority_root = operator_workspace / "authority"
+    operator_workspace.mkdir(mode=0o700)
+    authority_root.mkdir(mode=0o700)
+    monkeypatch.setattr(
+        production_test_module,
+        "SYMBOLS",
+        ["000001.SZ", "000002.SZ", "430001.BJ", "600000.SH", "600001.SH"],
+    )
+    capture_parent = tmp_path / "provider-production-inputs"
+    files = _inputs(capture_parent)
     authority_root.chmod(0o700)
     capture_parent.chmod(0o700)
     release_input_path = authority_root / "release-install-input.json"
@@ -134,7 +162,7 @@ def test_frozen_release_build_install_and_exact_origin_replay(tmp_path: Path) ->
             if exchange != "BSE":
                 prior = ""
                 cursor = date(2023, 12, 1)
-                cutoff = date(2025, 7, 1)
+                cutoff = date(2026, 8, 7)
                 while cursor <= cutoff:
                     opened = cursor.weekday() < 5
                     rows.append([
@@ -185,7 +213,8 @@ def test_frozen_release_build_install_and_exact_origin_replay(tmp_path: Path) ->
             "--workspace-root", sys.argv[1],
             "--capture-parent", sys.argv[2],
             "--capture-root-name", "installed-cli-capture",
-            "--cutoff-date", "2025-07-01",
+            "--cutoff-date", "2026-08-07",
+            "--release-repository-root", sys.argv[5],
             "--release-install-input", sys.argv[3],
             "--expected-release-install-input-sha256", sys.argv[4],
         ])
@@ -197,10 +226,11 @@ def test_frozen_release_build_install_and_exact_origin_replay(tmp_path: Path) ->
             str(installed_python),
             "-c",
             script,
-            str(repository),
+            str(operator_workspace),
             str(capture_parent),
-            release_input_path.relative_to(repository).as_posix(),
+            release_input_path.relative_to(operator_workspace).as_posix(),
             release_input_sha,
+            str(repository),
         ],
         check=True,
         cwd=Path(evidence["payload"]["install_root"]),
@@ -221,16 +251,142 @@ def test_frozen_release_build_install_and_exact_origin_replay(tmp_path: Path) ->
     assert (capture_root / "capture-success.json").is_file()
     assert len(list(capture_root.iterdir())) == 13
 
-    wrong_origin_parent = repository / "results/system/wrong-origin"
+    cutoff = date(2026, 8, 7)
+    runtime = _runtime(cutoff=cutoff)
+    calendar_json = runtime_json_bytes(runtime)
+    calendar_parquet = runtime_parquet_bytes(runtime)
+    _write(capture_parent, "strict/exchange_calendar.json", calendar_json)
+    _write(capture_parent, "strict/exchange_calendar.parquet", calendar_parquet)
+    json_ref = _byte_ref(capture_parent, "strict/exchange_calendar.json")
+    parquet_ref = _byte_ref(capture_parent, "strict/exchange_calendar.parquet")
+    provider_raw_refs = capture_result["trusted_provider_calendar_raw_file_refs"]
+    provider_capture_refs = capture_result["trusted_provider_calendar_capture_file_refs"]
+    raw_by_ref = {
+        canonical_json_bytes(reference): (capture_parent / reference["relative_path"]).read_bytes()
+        for reference in provider_raw_refs
+    }
+    raw_by_ref[canonical_json_bytes(json_ref)] = calendar_json
+    raw_by_ref[canonical_json_bytes(parquet_ref)] = calendar_parquet
+
+    def raw_resolver(reference: dict) -> bytes:
+        return raw_by_ref[canonical_json_bytes(reference)]
+
+    policy = json.loads(
+        (
+            capture_parent / capture_result["calendar_authority_policy_file_ref"]["relative_path"]
+        ).read_bytes()
+    )
+    capability = json.loads(
+        (
+            capture_parent
+            / capture_result["trusted_provider_calendar_capability_file_ref"]["relative_path"]
+        ).read_bytes()
+    )
+    captures = [
+        json.loads((capture_parent / reference["relative_path"]).read_bytes())
+        for reference in provider_capture_refs
+    ]
+    docs_raw = (capture_parent / provider_raw_refs[0]["relative_path"]).read_bytes()
+    market_sessions = [
+        row["date"] for row in runtime if row["status"] == "OPEN" and row["date"] >= "2024-01-02"
+    ][-100:]
+    release_ref = object_ref_for_artifact(release)
+    compilation = build_trusted_provider_calendar_compilation(
+        compilation_id="installed-two-root-provider-compilation",
+        policy=policy,
+        capability=capability,
+        capture_documents=captures,
+        docs_raw=docs_raw,
+        raw_resolver=raw_resolver,
+        release_ref=release_ref,
+        pit_exchange_ids=["BSE", "SSE", "SZSE"],
+        market_session_dates=market_sessions,
+        cutoff_date=cutoff.isoformat(),
+        calendar_json_file_ref=json_ref,
+        calendar_parquet_file_ref=parquet_ref,
+        created_at=capture_result["capture_execution"]["payload"]["observed_completed_at"],
+    )
+    compilation_path = "closure/installed-provider-calendar-compilation.json"
+    _write(capture_parent, compilation_path, canonical_json_bytes(compilation))
+    files.update(
+        {
+            "exchange_calendar_file_ref": parquet_ref,
+            "calendar_runtime_json_file_ref": json_ref,
+            "calendar_compilation_file_ref": _byte_ref(capture_parent, compilation_path),
+            "calendar_authority_policy_file_ref": capture_result[
+                "calendar_authority_policy_file_ref"
+            ],
+            "official_calendar_raw_file_refs": [],
+            "official_calendar_capture_file_refs": [],
+            "official_calendar_decoder_admission_file_refs": [],
+            "official_calendar_index_closure_file_refs": [],
+            "trusted_provider_calendar_raw_file_refs": provider_raw_refs,
+            "trusted_provider_calendar_capture_file_refs": provider_capture_refs,
+            "trusted_provider_calendar_capability_file_ref": capture_result[
+                "trusted_provider_calendar_capability_file_ref"
+            ],
+            "trusted_provider_calendar_capture_transaction_file_ref": capture_result[
+                "capture_transaction_file_ref"
+            ],
+            "trusted_provider_calendar_capture_execution_file_ref": capture_result[
+                "capture_execution_file_ref"
+            ],
+            "trusted_provider_calendar_capture_success_file_ref": capture_result[
+                "capture_success_file_ref"
+            ],
+            "trusted_provider_release_install_input_file_ref": capture_result[
+                "release_install_input_file_ref"
+            ],
+        }
+    )
+    production_workspace = tmp_path / "attached-production-workspace"
+    subprocess.run(
+        ["git", "clone", "--quiet", "--shared", str(source), str(production_workspace)],
+        check=True,
+        stdin=subprocess.DEVNULL,
+    )
+    subprocess.run(
+        ["git", "-C", str(production_workspace), "checkout", "-q", "-B", "production-main", commit],
+        check=True,
+        stdin=subprocess.DEVNULL,
+    )
+    assert _git(production_workspace, "symbolic-ref", "-q", "HEAD") == (
+        "refs/heads/production-main"
+    )
+    store = SystemStore(production_workspace)
+    assert store.put_object(release) == release_ref
+    assembled = assemble_production_bootstrap(
+        workspace_root=production_workspace,
+        input_root=capture_parent,
+        request_raw=_request(
+            workspace_root=production_workspace,
+            release_ref=release_ref,
+            files=files,
+            operation_id="installed-two-root-provider-bootstrap",
+        ),
+    )
+    assert assembled["status"] == "OFFLINE_VERIFIED"
+    activation = prepare_initial_activation(
+        store,
+        assembled["generation"],
+        release_ref,
+    )
+    activated = store.activate_initial_generation(**activation)
+    assert activated["generation_state"] == "OPERATIONAL"
+    assert activated["factor_authority"] == "ACTIVE"
+    assert store.status()["state"] == "PARTIAL"
+    assert store.status()["calendar_source_limitations"] == list(SOURCE_LIMITATIONS)
+
+    wrong_origin_parent = tmp_path / "wrong-origin"
     wrong_origin_parent.mkdir(mode=0o700)
     with pytest.raises(SystemPreconditionError, match="not running installed release"):
         capture_trusted_provider_calendar_evidence(
             capture_parent=wrong_origin_parent,
             capture_root_name="wrong-origin",
-            cutoff_date="2025-07-01",
+            cutoff_date="2026-08-07",
             release_install_input_raw=exact_input,
             expected_release_install_input_sha256=release_input_sha,
-            repository_root=repository,
+            release_repository_root=repository,
         )
     assert not (wrong_origin_parent / "wrong-origin").exists()
 

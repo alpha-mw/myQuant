@@ -1321,12 +1321,8 @@ def test_production_bootstrap_receipt_binding_mutations_block_initial_activation
         **{**base_kwargs, "created_at": "2026-08-14T00:00:02Z"}
     )
     assert drifted_generation["generation_id"] != result["generation_id"]
-    drifted_prepared = prepare_initial_activation(store, drifted_generation, release_ref)
-    with pytest.raises(
-        SystemActivationAuthorizationError,
-        match="lacks valid production bootstrap closure",
-    ):
-        store.activate_initial_generation(**drifted_prepared)
+    with pytest.raises(SystemContractError, match="generation envelope"):
+        prepare_initial_activation(store, drifted_generation, release_ref)
     replayed = store.assemble_generation(**base_kwargs)
     assert replayed["generation_id"] == result["generation_id"]
 
@@ -1344,10 +1340,7 @@ def test_production_bootstrap_receipt_binding_mutations_block_initial_activation
     mainline_generation = store.assemble_generation(
         **{**base_kwargs, "mainline_ref": candidate_ref}
     )
-    with pytest.raises(
-        SystemPreconditionError,
-        match="production generation differs",
-    ):
+    with pytest.raises(SystemContractError, match="generation envelope"):
         prepare_initial_activation(store, mainline_generation, release_ref)
 
     wrong_kind_generation = store.assemble_generation(
@@ -1398,14 +1391,12 @@ def test_production_source_drift_after_receipt_blocks_before_initial_cas(
     source_path = workspace / source["payload"]["relative_path"]
     source_path.write_bytes(source_path.read_bytes() + b"tamper")
     source_path.chmod(0o600)
-    prepared = prepare_initial_activation(
-        store,
-        result["generation"],
-        release_ref,
-    )
-
     with pytest.raises(SystemContractError, match="byte hash|byte binding|source"):
-        store.activate_initial_generation(**prepared)
+        prepare_initial_activation(
+            store,
+            result["generation"],
+            release_ref,
+        )
 
     assert not (workspace / "results/system/_active.json").exists()
     assert not (workspace / "results/system/_migration_complete.json").exists()

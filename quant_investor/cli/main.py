@@ -254,6 +254,22 @@ def _workspace_relative_canonical_path(value: str) -> str:
     return text
 
 
+def _canonical_absolute_path(value: str) -> str:
+    """Accept one normalized absolute POSIX path without resolving symlinks."""
+
+    text = str(value)
+    candidate = PurePosixPath(text)
+    if (
+        not text
+        or "\\" in text
+        or not candidate.is_absolute()
+        or text != candidate.as_posix()
+        or any(part in {"", ".", ".."} for part in candidate.parts[1:])
+    ):
+        raise argparse.ArgumentTypeError("expected a canonical absolute POSIX path")
+    return text
+
+
 def _sha256_argument(value: str) -> str:
     text = str(value)
     if re.fullmatch(r"[0-9a-f]{64}", text) is None:
@@ -396,6 +412,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     _add_workspace_argument(system_calendar_capture_parser)
     system_calendar_capture_parser.add_argument("--capture-parent", required=True)
+    system_calendar_capture_parser.add_argument(
+        "--release-repository-root",
+        required=True,
+        type=_canonical_absolute_path,
+        help="exact clean detached release checkout used by installed capture",
+    )
     system_calendar_capture_parser.add_argument("--capture-root-name", required=True)
     system_calendar_capture_parser.add_argument("--cutoff-date", required=True)
     system_calendar_capture_parser.add_argument(
@@ -958,6 +980,7 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
                 capture_parent=args.capture_parent,
                 capture_root_name=args.capture_root_name,
                 cutoff_date=args.cutoff_date,
+                release_repository_root=args.release_repository_root,
                 release_install_input_path=args.release_install_input,
                 expected_release_install_input_sha256=(args.expected_release_install_input_sha256),
             )

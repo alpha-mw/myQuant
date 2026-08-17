@@ -1331,12 +1331,12 @@ def _rooted_file_refs(
     return refs
 
 
-def build_trusted_provider_calendar_capture_execution(
+def _build_trusted_provider_calendar_capture_execution(
     *,
     capture_root_name: str,
     release_install_input_raw: bytes,
     release_install_input_file_ref: Mapping[str, Any],
-    repository_root: str | os.PathLike[str],
+    release_repository_root: str | os.PathLike[str],
     documentation_raw_file_ref: Mapping[str, Any],
     capability_file_ref: Mapping[str, Any],
     policy_file_ref: Mapping[str, Any],
@@ -1357,9 +1357,12 @@ def build_trusted_provider_calendar_capture_execution(
         "byte_sha256"
     ] != _sha256(release_install_input_raw):
         raise SystemSecurityError("release install input file binding differs")
+    release_root = Path(release_repository_root).resolve(strict=True)
+    if not release_root.is_absolute() or str(release_root) != str(release_repository_root):
+        raise SystemSecurityError("release repository root is not canonical absolute")
     evidence, release, verification = _release_install_components(
         release_install_input_raw,
-        repository_root=repository_root,
+        repository_root=release_root,
         require_current_operator=True,
     )
     started = _timestamp(observed_started_at, label="observed_started_at")
@@ -1397,6 +1400,7 @@ def build_trusted_provider_calendar_capture_execution(
         "release_install_input_file_ref": input_ref,
         "release_install_evidence_ref": object_ref_for_artifact(evidence),
         "release_install_verification_sha256": _sha256(canonical_json_bytes(verification)),
+        "release_repository_root": str(release_root),
         "final_commit": evidence_payload["final_commit"],
         "final_tree": evidence_payload["final_tree"],
         "wheel_sha256": verification["wheel_sha256"],
@@ -1430,7 +1434,6 @@ def build_trusted_provider_calendar_capture_execution(
     return validate_trusted_provider_calendar_capture_execution(
         artifact,
         release_install_input_raw=release_install_input_raw,
-        repository_root=repository_root,
         documentation_raw_file_ref=docs_ref,
         capability_file_ref=capability_ref,
         policy_file_ref=policy_ref,
@@ -1444,7 +1447,6 @@ def validate_trusted_provider_calendar_capture_execution(
     document: Mapping[str, Any] | bytes,
     *,
     release_install_input_raw: bytes,
-    repository_root: str | os.PathLike[str],
     documentation_raw_file_ref: Mapping[str, Any],
     capability_file_ref: Mapping[str, Any],
     policy_file_ref: Mapping[str, Any],
@@ -1467,9 +1469,19 @@ def validate_trusted_provider_calendar_capture_execution(
         or input_ref["byte_sha256"] != _sha256(release_install_input_raw)
     ):
         raise SystemSecurityError("capture execution input binding differs")
+    release_root_value = payload.get("release_repository_root")
+    if type(release_root_value) is not str:
+        raise SystemSecurityError("release repository root binding is absent")
+    release_root = Path(release_root_value)
+    if (
+        not release_root.is_absolute()
+        or any(part in {"", ".", ".."} for part in release_root.parts[1:])
+        or (not historical and release_root.resolve(strict=True) != release_root)
+    ):
+        raise SystemSecurityError("release repository root binding is invalid")
     evidence, release, verification = _release_install_components(
         release_install_input_raw,
-        repository_root=repository_root,
+        repository_root=release_root,
         historical=historical,
     )
     docs_ref = _file_ref(
@@ -1499,6 +1511,7 @@ def validate_trusted_provider_calendar_capture_execution(
         "deployed_release_ref": object_ref_for_artifact(release),
         "release_install_evidence_ref": object_ref_for_artifact(evidence),
         "release_install_verification_sha256": verification_sha,
+        "release_repository_root": str(release_root),
         "final_commit": evidence_payload["final_commit"],
         "final_tree": evidence_payload["final_tree"],
         "wheel_sha256": verification["wheel_sha256"],
@@ -1539,12 +1552,14 @@ def validate_trusted_provider_calendar_capture_execution(
     return artifact
 
 
-def build_trusted_provider_calendar_capture_success(
+def _build_trusted_provider_calendar_capture_success(
     *,
     capture_root_name: str,
     capture_transaction_file_ref: Mapping[str, Any],
     capture_execution_file_ref: Mapping[str, Any],
     published_leaf_file_refs: Sequence[Mapping[str, Any]],
+    published_root_device: int,
+    published_root_inode: int,
     observed_completed_at: str,
 ) -> dict[str, Any]:
     root_name = _identifier(capture_root_name, label="capture_root_name")
@@ -1563,6 +1578,13 @@ def build_trusted_provider_calendar_capture_success(
     )
     if transaction_ref not in leaves or execution_ref not in leaves:
         raise SystemContractError("capture success omits authority leaves")
+    if (
+        type(published_root_device) is not int
+        or published_root_device < 0
+        or type(published_root_inode) is not int
+        or published_root_inode <= 0
+    ):
+        raise SystemSecurityError("capture success root identity is invalid")
     body = {
         "state": "COMPLETE",
         "capture_root_name": root_name,
@@ -1570,6 +1592,8 @@ def build_trusted_provider_calendar_capture_success(
         "capture_execution_file_ref": execution_ref,
         "published_leaf_file_refs": leaves,
         "published_leaves_sha256": _sha256(canonical_json_bytes(leaves)),
+        "published_root_device": published_root_device,
+        "published_root_inode": published_root_inode,
         "observed_completed_at": _timestamp(
             observed_completed_at,
             label="observed_completed_at",
@@ -1620,11 +1644,17 @@ def validate_trusted_provider_calendar_capture_success(
         "capture_execution_file_ref": execution_ref,
         "published_leaf_file_refs": leaves,
         "published_leaves_sha256": _sha256(canonical_json_bytes(leaves)),
+        "published_root_device": payload["published_root_device"],
+        "published_root_inode": payload["published_root_inode"],
     }
     if (
         any(payload[field] != value for field, value in expected.items())
         or transaction_ref not in leaves
         or execution_ref not in leaves
+        or type(payload["published_root_device"]) is not int
+        or payload["published_root_device"] < 0
+        or type(payload["published_root_inode"]) is not int
+        or payload["published_root_inode"] <= 0
     ):
         raise SystemContractError("trusted-provider capture success binding differs")
     completed = _timestamp(
@@ -1809,6 +1839,174 @@ def _read_directory_files(
             os.close(descriptor)
 
 
+def _read_ref_leaf(
+    directory_fd: int,
+    *,
+    leaf: str,
+    expected_sha256: str,
+) -> bytes:
+    descriptor = os.open(
+        leaf,
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+        dir_fd=directory_fd,
+    )
+    try:
+        before = os.fstat(descriptor)
+        _verify_owner_file(before)
+        chunks: list[bytes] = []
+        total = 0
+        while total <= _CALENDAR_AGGREGATE_MAX_BYTES:
+            chunk = os.read(
+                descriptor,
+                min(1024 * 1024, _CALENDAR_AGGREGATE_MAX_BYTES + 1 - total),
+            )
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+        after = os.fstat(descriptor)
+        path_stat = os.stat(leaf, dir_fd=directory_fd, follow_symlinks=False)
+        raw = b"".join(chunks)
+        if (
+            not raw
+            or total > _CALENDAR_AGGREGATE_MAX_BYTES
+            or _stat_identity(before) != _stat_identity(after)
+            or _stat_identity(after) != _stat_identity(path_stat)
+            or _sha256(raw) != expected_sha256
+        ):
+            raise SystemSecurityError("trusted-provider capture leaf readback differs")
+        return raw
+    finally:
+        os.close(descriptor)
+
+
+def validate_published_trusted_provider_calendar_capture_root(
+    *,
+    capture_parent: str | os.PathLike[str],
+    capture_execution: Mapping[str, Any] | bytes,
+    capture_execution_file_ref: Mapping[str, Any],
+    capture_success: Mapping[str, Any] | bytes,
+    capture_success_file_ref: Mapping[str, Any],
+) -> dict[str, bytes]:
+    """Pin and replay the sole success-last capture custody topology.
+
+    This proves exact local bytes, reviewed operator identity, and immutable
+    owner-only custody.  Tushare responses are not provider-signed, so this is
+    deliberately not a cryptographic proof that a network peer emitted them.
+    """
+
+    execution = _artifact(capture_execution, CAPTURE_EXECUTION_KIND)
+    execution_payload = execution["payload"]
+    root_name = _identifier(execution_payload["capture_root_name"], label="capture_root_name")
+    if "/" in root_name or root_name.startswith("."):
+        raise SystemSecurityError("trusted-provider capture root name is invalid")
+    execution_ref = _file_ref(
+        capture_execution_file_ref,
+        label="capture_execution_file_ref",
+    )
+    success_ref = _file_ref(
+        capture_success_file_ref,
+        label="capture_success_file_ref",
+    )
+    expected_paths = {
+        "documentation.raw": execution_payload["documentation_raw_file_ref"],
+        "release-install-input.json": execution_payload["release_install_input_file_ref"],
+        "capability.json": execution_payload["capability_file_ref"],
+        "policy.json": execution_payload["policy_file_ref"],
+        "capture-transaction.json": execution_payload["capture_transaction_file_ref"],
+        "capture-execution.json": execution_ref,
+    }
+    raw_refs = {
+        row["relative_path"].removeprefix(f"{root_name}/"): row
+        for row in execution_payload["provider_raw_file_refs"]
+    }
+    capture_refs = {
+        row["relative_path"].removeprefix(f"{root_name}/"): row
+        for row in execution_payload["provider_capture_file_refs"]
+    }
+    expected_paths.update(raw_refs)
+    expected_paths.update(capture_refs)
+    expected_leaf_names = {
+        "documentation.raw",
+        "release-install-input.json",
+        "capability.json",
+        "policy.json",
+        "response-sse.raw",
+        "response-szse.raw",
+        "response-bse.raw",
+        "capture-sse.json",
+        "capture-szse.json",
+        "capture-bse.json",
+        "capture-transaction.json",
+        "capture-execution.json",
+    }
+    if (
+        set(expected_paths) != expected_leaf_names
+        or any(
+            _file_ref(reference, label=f"capture root {leaf}")["relative_path"]
+            != f"{root_name}/{leaf}"
+            for leaf, reference in expected_paths.items()
+        )
+        or execution_ref["relative_path"] != f"{root_name}/capture-execution.json"
+        or success_ref["relative_path"] != f"{root_name}/capture-success.json"
+    ):
+        raise SystemContractError("trusted-provider capture exact topology differs")
+    success = validate_trusted_provider_calendar_capture_success(
+        capture_success,
+        capture_transaction_file_ref=execution_payload["capture_transaction_file_ref"],
+        capture_execution_file_ref=execution_ref,
+        published_leaf_file_refs=sorted(
+            expected_paths.values(), key=lambda row: row["relative_path"]
+        ),
+    )
+    if success["payload"]["capture_root_name"] != root_name:
+        raise SystemContractError("trusted-provider capture success root differs")
+
+    parent = Path(capture_parent)
+    parent_fd = _open_pinned_absolute_directory(parent)
+    root_fd: int | None = None
+    try:
+        root_fd = os.open(
+            root_name,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=parent_fd,
+        )
+        root_stat = os.fstat(root_fd)
+        _verify_owner_directory(root_stat, exact_mode=True)
+        if (
+            success["payload"]["published_root_device"] != root_stat.st_dev
+            or success["payload"]["published_root_inode"] != root_stat.st_ino
+        ):
+            raise SystemSecurityError("trusted-provider published root identity differs")
+        with os.scandir(root_fd) as entries:
+            observed_names = sorted(entry.name for entry in entries)
+        if observed_names != sorted({*expected_leaf_names, "capture-success.json"}):
+            raise SystemSecurityError("trusted-provider capture directory topology differs")
+        result: dict[str, bytes] = {}
+        aggregate = 0
+        for leaf, reference in sorted(
+            {**expected_paths, "capture-success.json": success_ref}.items()
+        ):
+            raw = _read_ref_leaf(
+                root_fd,
+                leaf=leaf,
+                expected_sha256=reference["byte_sha256"],
+            )
+            aggregate += len(raw)
+            if aggregate > _CALENDAR_AGGREGATE_MAX_BYTES:
+                raise SystemSecurityError("trusted-provider capture root exceeds byte bound")
+            result[leaf] = raw
+        if result["capture-execution.json"] != canonical_json_bytes(execution) or result[
+            "capture-success.json"
+        ] != canonical_json_bytes(success):
+            raise SystemSecurityError("trusted-provider capture authority bytes differ")
+        return result
+    finally:
+        if root_fd is not None:
+            os.close(root_fd)
+        os.close(parent_fd)
+
+
 def _rename_no_replace(parent_fd: int, source: str, target: str) -> None:
     library = ctypes.CDLL(None, use_errno=True)
     result: int
@@ -1870,7 +2068,7 @@ def _publish_capture_tree(
     parent: Path,
     root_name: str,
     files: Mapping[str, bytes],
-    success_builder: Callable[[str], bytes],
+    success_builder: Callable[[str, os.stat_result], bytes],
 ) -> bytes:
     parent_fd = _open_pinned_absolute_directory(parent)
     parent_identity = _directory_identity(os.fstat(parent_fd))
@@ -1925,7 +2123,7 @@ def _publish_capture_tree(
         if _stat_identity(os.fstat(final_fd)) != staging_identity:
             raise SystemSecurityError("trusted-provider capture directory inode drifted")
         _read_directory_files(final_fd, expected=files)
-        success_raw = success_builder(_utc_now())
+        success_raw = success_builder(_utc_now(), os.fstat(final_fd))
         if type(success_raw) is not bytes or not success_raw:
             raise SystemSecurityError("trusted-provider capture success bytes are invalid")
         _write_fd_leaf(final_fd, "capture-success.json", success_raw)
@@ -1973,7 +2171,7 @@ def capture_trusted_provider_calendar_evidence(  # noqa: C901
     cutoff_date: str,
     release_install_input_raw: bytes,
     expected_release_install_input_sha256: str,
-    repository_root: str | os.PathLike[str],
+    release_repository_root: str | os.PathLike[str],
 ) -> dict[str, Any]:
     """Capture through the fixed production operator and publish exact evidence."""
 
@@ -1992,7 +2190,7 @@ def capture_trusted_provider_calendar_evidence(  # noqa: C901
     observed_started_at = _utc_now()
     _release_install_components(
         release_install_input_raw,
-        repository_root=repository_root,
+        repository_root=release_repository_root,
         require_current_operator=True,
     )
     capture_start = RUNTIME_START_DATE - timedelta(days=CAPTURE_PREHISTORY_DAYS)
@@ -2110,11 +2308,11 @@ def capture_trusted_provider_calendar_evidence(  # noqa: C901
             transaction_raw,
         )
         observed_completed_at = _utc_now()
-        execution = build_trusted_provider_calendar_capture_execution(
+        execution = _build_trusted_provider_calendar_capture_execution(
             capture_root_name=root_name,
             release_install_input_raw=release_install_input_raw,
             release_install_input_file_ref=release_input_ref,
-            repository_root=repository_root,
+            release_repository_root=release_repository_root,
             documentation_raw_file_ref=docs_ref,
             capability_file_ref=capability_ref,
             policy_file_ref=policy_ref,
@@ -2145,13 +2343,18 @@ def capture_trusted_provider_calendar_evidence(  # noqa: C901
             key=lambda row: row["relative_path"],
         )
 
-        def success_builder(observed_completed_at: str) -> bytes:
+        def success_builder(
+            observed_completed_at: str,
+            published_root_stat: os.stat_result,
+        ) -> bytes:
             return canonical_json_bytes(
-                build_trusted_provider_calendar_capture_success(
+                _build_trusted_provider_calendar_capture_success(
                     capture_root_name=root_name,
                     capture_transaction_file_ref=transaction_ref,
                     capture_execution_file_ref=execution_ref,
                     published_leaf_file_refs=published_refs,
+                    published_root_device=published_root_stat.st_dev,
+                    published_root_inode=published_root_stat.st_ino,
                     observed_completed_at=observed_completed_at,
                 )
             )
@@ -2212,8 +2415,6 @@ __all__ = [
     "build_calendar_authority_policy",
     "build_trusted_provider_calendar_capability",
     "build_trusted_provider_calendar_capture",
-    "build_trusted_provider_calendar_capture_execution",
-    "build_trusted_provider_calendar_capture_success",
     "build_trusted_provider_calendar_capture_transaction",
     "build_trusted_provider_calendar_compilation",
     "calendar_source_limitations",
@@ -2222,6 +2423,7 @@ __all__ = [
     "compiler_code_sha256",
     "decode_trade_cal_documentation",
     "validate_calendar_authority_policy",
+    "validate_published_trusted_provider_calendar_capture_root",
     "validate_trusted_provider_calendar_capability",
     "validate_trusted_provider_calendar_capture",
     "validate_trusted_provider_calendar_capture_execution",

@@ -27,9 +27,9 @@ from quant_investor.migration.authority import (
     _GATE_SPECS,
     _seal_cutover_gate_evidence,
 )
-from quant_investor.system import SystemContractError, SystemPreconditionError
+from quant_investor.system import SystemContractError, SystemNotFound, SystemPreconditionError
 from quant_investor.system.bootstrap_receipt import build_production_bootstrap_receipt
-from quant_investor.system.store import object_ref_for_artifact
+from quant_investor.system.store import SystemStore, object_ref_for_artifact
 
 BASE = "2026-08-16T00:00:00Z"
 
@@ -507,44 +507,43 @@ def test_legacy_disposition_blocks_unresolved_rows() -> None:
         )
 
 
-def test_final_cutover_authorization_is_machine_derived_from_passed_gates() -> None:
+def test_final_cutover_authorization_rejects_synthetic_production_target(
+    tmp_path: Path,
+) -> None:
     handoff_ref = object_ref_for_artifact(_handoff())
     disposition_ref = object_ref_for_artifact(_disposition())
     gate_evidence = _gate_evidence("4" * 40, "5" * 40, handoff_ref)
     adoption = _adoption(gate_evidence)
     assert validate_main_checkout_adoption(adoption) == adoption
     adoption_ref = object_ref_for_artifact(adoption)
-    production_manifest, production_receipt = _production_target(handoff_ref)
-    authorization = build_final_cutover_authorization(
-        final_authorization_id="unified-final-cutover",
-        accepted_baseline_commit="a" * 40,
-        historical_integration_commit="3" * 40,
-        historical_dirty_evidence_ref=handoff_ref,
-        concurrent_task_handoff_ref=None,
-        main_checkout_adoption_ref=adoption_ref,
-        legacy_disposition_ref=disposition_ref,
-        deployed_release_ref=handoff_ref,
-        production_generation_manifest=production_manifest,
-        production_bootstrap_receipt=production_receipt,
-        release_commit="4" * 40,
-        release_tree="5" * 40,
-        final_integration_commit="4" * 40,
-        final_integration_tree="5" * 40,
-        ancestry_rows=[
-            {"ancestor": "a" * 40, "descendant": "4" * 40, "proved": True},
-            {"ancestor": "b" * 40, "descendant": "4" * 40, "proved": True},
-        ],
-        excluded_commit_rows=[],
-        final_worktree_inventory_sha256="6" * 64,
-        clean_checkout_readback_rows=_readbacks("4" * 40, "5" * 40),
-        user_authorization_basis="explicit current-task production authorization",
-        preflight_evidence=gate_evidence,
-        created_at=BASE,
-    )
-
-    assert authorization["payload"]["final_build_authorized"] is True
-    assert authorization["payload"]["cas_authorized"] is True
-    assert validate_final_cutover_authorization(authorization) == authorization
+    production_manifest, _production_receipt = _production_target(handoff_ref)
+    with pytest.raises(SystemNotFound, match="directory is absent"):
+        build_final_cutover_authorization(
+            final_authorization_id="unified-final-cutover",
+            accepted_baseline_commit="a" * 40,
+            historical_integration_commit="3" * 40,
+            historical_dirty_evidence_ref=handoff_ref,
+            concurrent_task_handoff_ref=None,
+            main_checkout_adoption_ref=adoption_ref,
+            legacy_disposition_ref=disposition_ref,
+            deployed_release_ref=handoff_ref,
+            system_store=SystemStore(tmp_path),
+            production_generation_id=production_manifest["semantic_sha256"],
+            release_commit="4" * 40,
+            release_tree="5" * 40,
+            final_integration_commit="4" * 40,
+            final_integration_tree="5" * 40,
+            ancestry_rows=[
+                {"ancestor": "a" * 40, "descendant": "4" * 40, "proved": True},
+                {"ancestor": "b" * 40, "descendant": "4" * 40, "proved": True},
+            ],
+            excluded_commit_rows=[],
+            final_worktree_inventory_sha256="6" * 64,
+            clean_checkout_readback_rows=_readbacks("4" * 40, "5" * 40),
+            user_authorization_basis="explicit current-task production authorization",
+            preflight_evidence=gate_evidence,
+            created_at=BASE,
+        )
 
     with pytest.raises(SystemPreconditionError, match="preflight"):
         build_final_cutover_authorization(
@@ -556,8 +555,8 @@ def test_final_cutover_authorization_is_machine_derived_from_passed_gates() -> N
             main_checkout_adoption_ref=adoption_ref,
             legacy_disposition_ref=disposition_ref,
             deployed_release_ref=handoff_ref,
-            production_generation_manifest=production_manifest,
-            production_bootstrap_receipt=production_receipt,
+            system_store=SystemStore(tmp_path),
+            production_generation_id=production_manifest["semantic_sha256"],
             release_commit="4" * 40,
             release_tree="5" * 40,
             final_integration_commit="4" * 40,

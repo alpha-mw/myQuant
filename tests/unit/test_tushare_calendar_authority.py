@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
+import ast
 import hashlib
+import inspect
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
 from typing import Any
 
@@ -35,6 +38,7 @@ from quant_investor.system import (
     SystemContractError,
     SystemPreconditionError,
     SystemSecurityError,
+    SystemStore,
 )
 from quant_investor.system.release_install import build_release_install_evidence
 from quant_investor.system.store import object_ref_for_artifact
@@ -45,11 +49,42 @@ from tests.unit.test_unified_production_bootstrap_operator import (
     _seed_workspace,
     _write,
 )
+import tests.unit.test_unified_production_bootstrap_operator as production_test_module
 from quant_investor.factors.governance.production import assemble_production_bootstrap
 
 CREATED_AT = "2026-08-17T00:00:00Z"
 CAPTURE_START = date(2023, 12, 1)
 CUTOFF = date(2025, 7, 1)
+
+
+def test_execution_and_success_sealers_have_one_production_writer() -> None:
+    assert "build_trusted_provider_calendar_capture_execution" not in calendar_authority.__all__
+    assert "build_trusted_provider_calendar_capture_success" not in calendar_authority.__all__
+    source = inspect.getsource(calendar_authority)
+    tree = ast.parse(source)
+    targets = {
+        "_build_trusted_provider_calendar_capture_execution",
+        "_build_trusted_provider_calendar_capture_success",
+    }
+    callers: dict[str, set[str]] = {target: set() for target in targets}
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for child in ast.walk(node):
+            if (
+                isinstance(child, ast.Call)
+                and isinstance(child.func, ast.Name)
+                and child.func.id in targets
+            ):
+                callers[child.func.id].add(node.name)
+    assert callers == {
+        "_build_trusted_provider_calendar_capture_execution": {
+            "capture_trusted_provider_calendar_evidence"
+        },
+        "_build_trusted_provider_calendar_capture_success": {
+            "capture_trusted_provider_calendar_evidence"
+        },
+    }
 
 
 def _docs(*, output_exchange_text: str = "SSE上交所 SZSE深交所") -> bytes:
@@ -397,7 +432,7 @@ def test_public_capture_api_has_no_caller_time_or_transport_injection() -> None:
         "cutoff_date",
         "release_install_input_raw",
         "expected_release_install_input_sha256",
-        "repository_root",
+        "release_repository_root",
     } == set(parameters)
 
 
@@ -426,14 +461,18 @@ def test_capture_failure_never_calls_network_before_release_closure(
             cutoff_date=CUTOFF.isoformat(),
             release_install_input_raw=invalid,
             expected_release_install_input_sha256=hashlib.sha256(invalid).hexdigest(),
-            repository_root=tmp_path,
+            release_repository_root=tmp_path,
         )
     assert not (parent / "capture-fails").exists()
     assert network_called is False
 
 
-def _fake_release_install_closure(tmp_path: Path) -> tuple[bytes, dict[str, Any], dict[str, Any]]:
-    release = seal_artifact(
+def _fake_release_install_closure(
+    tmp_path: Path,
+    *,
+    release: dict[str, Any] | None = None,
+) -> tuple[bytes, dict[str, Any], dict[str, Any]]:
+    release = release or seal_artifact(
         "system.release",
         {
             "release_id": "installed-calendar-capture-test",
@@ -532,7 +571,7 @@ def test_public_capture_publishes_success_last_with_exact_owner_only_tree(
         cutoff_date=CUTOFF.isoformat(),
         release_install_input_raw=exact_input,
         expected_release_install_input_sha256=hashlib.sha256(exact_input).hexdigest(),
-        repository_root=tmp_path,
+        release_repository_root=tmp_path,
     )
 
     root = parent / "capture-success"
@@ -572,6 +611,210 @@ def test_public_capture_publishes_success_last_with_exact_owner_only_tree(
     )
 
 
+def _captured_provider_production_case(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[Path, Path, dict[str, str], dict[str, Any], dict[str, Any]]:
+    production_cutoff = date(2026, 8, 7)
+    monkeypatch.setattr(
+        production_test_module,
+        "SYMBOLS",
+        ["000001.SZ", "000002.SZ", "430001.BJ", "600000.SH", "600001.SH"],
+    )
+    workspace, release_ref = _seed_workspace(tmp_path)
+    release = SystemStore(workspace).get_object(release_ref)
+    input_root = tmp_path / "provider-production-inputs"
+    files = _inputs(input_root)
+    exact_input, _release, closure = _fake_release_install_closure(
+        tmp_path,
+        release=release,
+    )
+    release_root = tmp_path / "detached-release-root"
+    release_root.mkdir(mode=0o700)
+
+    def fake_release_components(raw: bytes, **_: Any):
+        assert raw == exact_input
+        return closure["evidence"], release, closure["verification"]
+
+    class FakeClient:
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        def request(self, *, api_name: str, params: dict[str, str], **_: Any):
+            return replay_tushare_response_bytes(
+                _provider_raw(params["exchange"], cutoff=production_cutoff),
+                api_name=api_name,
+                expected_fields=EXPECTED_FIELDS,
+                strict_decimal_decode=True,
+            )
+
+    monkeypatch.setattr(calendar_authority, "_release_install_components", fake_release_components)
+    monkeypatch.setattr(calendar_authority, "_utc_now", lambda: "2026-08-14T00:00:00Z")
+    monkeypatch.setattr(
+        calendar_authority,
+        "_official_documentation_fetch",
+        lambda: (
+            _docs(),
+            200,
+            {"content-type": "text/html; charset=utf-8"},
+            True,
+            [],
+        ),
+    )
+    monkeypatch.setattr(calendar_authority, "OfficialTushareHttpsClient", FakeClient)
+    capture = capture_trusted_provider_calendar_evidence(
+        capture_parent=input_root,
+        capture_root_name="provider-production-capture",
+        cutoff_date=production_cutoff.isoformat(),
+        release_install_input_raw=exact_input,
+        expected_release_install_input_sha256=hashlib.sha256(exact_input).hexdigest(),
+        release_repository_root=release_root,
+    )
+    runtime = _runtime(cutoff=production_cutoff)
+    calendar_json = runtime_json_bytes(runtime)
+    calendar_parquet = runtime_parquet_bytes(runtime)
+    _write(input_root, "strict/exchange_calendar.json", calendar_json)
+    _write(input_root, "strict/exchange_calendar.parquet", calendar_parquet)
+    json_ref = _byte_ref(input_root, "strict/exchange_calendar.json")
+    parquet_ref = _byte_ref(input_root, "strict/exchange_calendar.parquet")
+    raw_by_ref = {
+        canonical_json_bytes(reference): (input_root / reference["relative_path"]).read_bytes()
+        for reference in capture["trusted_provider_calendar_raw_file_refs"]
+    }
+    raw_by_ref[canonical_json_bytes(json_ref)] = calendar_json
+    raw_by_ref[canonical_json_bytes(parquet_ref)] = calendar_parquet
+
+    def raw_resolver(reference: dict[str, Any]) -> bytes:
+        return raw_by_ref[canonical_json_bytes(reference)]
+
+    market_sessions = [
+        row["date"] for row in runtime if row["status"] == "OPEN" and row["date"] >= "2024-01-02"
+    ][-100:]
+    policy_document = json.loads(
+        (input_root / capture["calendar_authority_policy_file_ref"]["relative_path"])
+        .read_bytes()
+        .decode()
+    )
+    capability_document = json.loads(
+        (input_root / capture["trusted_provider_calendar_capability_file_ref"]["relative_path"])
+        .read_bytes()
+        .decode()
+    )
+    capture_documents = [
+        json.loads((input_root / reference["relative_path"]).read_bytes().decode())
+        for reference in capture["trusted_provider_calendar_capture_file_refs"]
+    ]
+    docs_raw = (
+        input_root / capture["trusted_provider_calendar_raw_file_refs"][0]["relative_path"]
+    ).read_bytes()
+    compilation = build_trusted_provider_calendar_compilation(
+        compilation_id="provider-production-compilation",
+        policy=policy_document,
+        capability=capability_document,
+        capture_documents=capture_documents,
+        docs_raw=docs_raw,
+        raw_resolver=raw_resolver,
+        release_ref=release_ref,
+        pit_exchange_ids=["BSE", "SSE", "SZSE"],
+        market_session_dates=market_sessions,
+        cutoff_date=production_cutoff.isoformat(),
+        calendar_json_file_ref=json_ref,
+        calendar_parquet_file_ref=parquet_ref,
+        created_at="2026-08-14T00:00:00Z",
+    )
+    compilation_path = "closure/provider-calendar-compilation.json"
+    _write(input_root, compilation_path, canonical_json_bytes(compilation))
+    files.update(
+        {
+            "exchange_calendar_file_ref": parquet_ref,
+            "calendar_runtime_json_file_ref": json_ref,
+            "calendar_compilation_file_ref": _byte_ref(input_root, compilation_path),
+            "calendar_authority_policy_file_ref": capture["calendar_authority_policy_file_ref"],
+            "official_calendar_raw_file_refs": [],
+            "official_calendar_capture_file_refs": [],
+            "official_calendar_decoder_admission_file_refs": [],
+            "official_calendar_index_closure_file_refs": [],
+            "trusted_provider_calendar_raw_file_refs": sorted(
+                capture["trusted_provider_calendar_raw_file_refs"],
+                key=lambda row: row["relative_path"],
+            ),
+            "trusted_provider_calendar_capture_file_refs": sorted(
+                capture["trusted_provider_calendar_capture_file_refs"],
+                key=lambda row: row["relative_path"],
+            ),
+            "trusted_provider_calendar_capability_file_ref": capture[
+                "trusted_provider_calendar_capability_file_ref"
+            ],
+            "trusted_provider_calendar_capture_transaction_file_ref": capture[
+                "capture_transaction_file_ref"
+            ],
+            "trusted_provider_calendar_capture_execution_file_ref": capture[
+                "capture_execution_file_ref"
+            ],
+            "trusted_provider_calendar_capture_success_file_ref": capture[
+                "capture_success_file_ref"
+            ],
+            "trusted_provider_release_install_input_file_ref": capture[
+                "release_install_input_file_ref"
+            ],
+        }
+    )
+    return workspace, input_root, release_ref, files, capture
+
+
+def test_fixed_capture_root_enters_provider_production_assembly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace, input_root, release_ref, files, _capture = _captured_provider_production_case(
+        tmp_path,
+        monkeypatch,
+    )
+    result = assemble_production_bootstrap(
+        workspace_root=workspace,
+        input_root=input_root,
+        request_raw=_request(
+            workspace_root=workspace,
+            release_ref=release_ref,
+            files=files,
+            operation_id="provider-production-positive",
+        ),
+    )
+    assert result["status"] == "OFFLINE_VERIFIED"
+    assert result["generation"]["verified"] is True
+    assert result["generation"]["calendar_authority_route"] == "TRUSTED_PROVIDER_DEGRADED"
+    assert result["generation"]["calendar_source_limitations"] == list(SOURCE_LIMITATIONS)
+    assert not (workspace / "results/system/_active.json").exists()
+
+
+def test_rehomed_execution_and_success_artifacts_cannot_enter_production(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _workspace, input_root, _release_ref, files, _capture = _captured_provider_production_case(
+        tmp_path,
+        monkeypatch,
+    )
+    rehomed = tmp_path / "rehomed-provider-inputs"
+    shutil.copytree(input_root, rehomed)
+    rehomed.chmod(0o700)
+    rehomed_case = tmp_path / "rehomed-workspace-case"
+    rehomed_case.mkdir(mode=0o700)
+    workspace, release_ref = _seed_workspace(rehomed_case)
+    with pytest.raises(SystemSecurityError, match="published root identity differs"):
+        assemble_production_bootstrap(
+            workspace_root=workspace,
+            input_root=rehomed,
+            request_raw=_request(
+                workspace_root=workspace,
+                release_ref=release_ref,
+                files=files,
+                operation_id="provider-production-rehomed",
+            ),
+        )
+    assert not (workspace / "results/system/_active.json").exists()
+
+
 def test_capture_publication_is_no_replace_with_exactly_one_winner(tmp_path: Path) -> None:
     parent = tmp_path / "captures"
     parent.mkdir(mode=0o700)
@@ -583,7 +826,7 @@ def test_capture_publication_is_no_replace_with_exactly_one_winner(tmp_path: Pat
                 parent=parent,
                 root_name="one-winner",
                 files=files,
-                success_builder=lambda _: b"success",
+                success_builder=lambda _completed, _root_stat: b"success",
             )
         except SystemPreconditionError:
             return "BLOCKED"
@@ -618,7 +861,7 @@ def test_post_rename_readback_failure_leaves_no_success_marker(
             parent=parent,
             root_name="incomplete",
             files={"payload.raw": b"payload"},
-            success_builder=lambda _: b"success",
+            success_builder=lambda _completed, _root_stat: b"success",
         )
     assert (parent / "incomplete/payload.raw").read_bytes() == b"payload"
     assert not (parent / "incomplete/capture-success.json").exists()
@@ -632,7 +875,7 @@ def test_capture_publication_rejects_unsafe_parent_mode(tmp_path: Path) -> None:
             parent=parent,
             root_name="blocked",
             files={"payload.raw": b"payload"},
-            success_builder=lambda _: b"success",
+            success_builder=lambda _completed, _root_stat: b"success",
         )
     assert not (parent / "blocked").exists()
 

@@ -77,6 +77,7 @@ from quant_investor.market.tushare_calendar_authority import (
     COMPILATION_KIND as TRUSTED_PROVIDER_CALENDAR_COMPILATION_KIND,
     SOURCE_LIMITATIONS as TRUSTED_PROVIDER_CALENDAR_SOURCE_LIMITATIONS,
     validate_calendar_authority_policy,
+    validate_published_trusted_provider_calendar_capture_root,
     validate_trusted_provider_calendar_capability,
     validate_trusted_provider_calendar_capture_execution,
     validate_trusted_provider_calendar_capture_success,
@@ -102,13 +103,16 @@ from quant_investor.system.bootstrap_receipt import (
     ASSEMBLER_MODULE_PATH,
     FUNDAMENTAL_SOURCE_BLOCKERS,
     INPUT_SOURCE_ROW_FIELDS,
-    PRODUCTION_BOOTSTRAP_RECEIPT_CONTRACT_SHA256,
     PRODUCTION_BOOTSTRAP_RECEIPT_FIELDS,
     build_production_bootstrap_receipt,
     production_generation_intent_sha256,
     validate_production_bootstrap_receipt,
 )
 from quant_investor.system.storage import ACTIVE_POINTER_PATH, MIGRATION_MARKER_PATH
+from quant_investor.system.historical_activation import (
+    INITIAL_PRODUCTION_RECEIPT_CONTRACT_SHA256,
+    INITIAL_PRODUCTION_RECEIPT_FIELDS,
+)
 from quant_investor.system.store import (
     SystemStore,
     generation_assembly_identity,
@@ -2554,7 +2558,6 @@ def _validate_calendar_compilation_closure(  # noqa: C901
     cohort_symbols: Sequence[str],
     source_projection: Mapping[str, Any],
     release_ref: Mapping[str, Any],
-    repository_root: Path,
     store: SystemStore | None = None,
     observed_inputs: Mapping[tuple[str, int], Mapping[str, Any]] | None = None,
     validation_mode: str = "PRE_CAS_CURRENT",
@@ -2845,7 +2848,6 @@ def _validate_calendar_compilation_closure(  # noqa: C901
         validate_trusted_provider_calendar_capture_execution(
             execution_document,
             release_install_input_raw=release_install_input_raw,
-            repository_root=repository_root,
             documentation_raw_file_ref=_file_ref(
                 docs_ref,
                 label="provider docs raw_file_ref",
@@ -3413,7 +3415,7 @@ _INITIAL_PRODUCTION_RECEIPT_CONTRACT_SHA256: Final = (
 _HISTORICAL_PRODUCTION_RECEIPT_CONTRACT_SHA256S: Final = frozenset(
     {
         _INITIAL_PRODUCTION_RECEIPT_CONTRACT_SHA256,
-        PRODUCTION_BOOTSTRAP_RECEIPT_CONTRACT_SHA256,
+        INITIAL_PRODUCTION_RECEIPT_CONTRACT_SHA256,
     }
 )
 _INITIAL_PRODUCTION_RECEIPT_FIELDS: Final = PRODUCTION_BOOTSTRAP_RECEIPT_FIELDS - {
@@ -3497,7 +3499,7 @@ def _validate_historical_production_bootstrap_generation_closure(  # noqa: C901
     historical_fields = (
         _INITIAL_PRODUCTION_RECEIPT_FIELDS
         if receipt["contract_sha256"] == _INITIAL_PRODUCTION_RECEIPT_CONTRACT_SHA256
-        else PRODUCTION_BOOTSTRAP_RECEIPT_FIELDS
+        else INITIAL_PRODUCTION_RECEIPT_FIELDS
     )
     if set(payload) != historical_fields or payload["state"] != "VERIFIED":
         raise SystemContractError("historical production receipt fields/state differ")
@@ -3953,7 +3955,6 @@ def _validate_production_bootstrap_generation_closure(  # noqa: C901
         cohort_symbols=source_projection["all_pit_symbols"],
         source_projection=source_projection,
         release_ref=release_ref,
-        repository_root=store.workspace_root,
         store=store,
         observed_inputs=observed_inputs,
         validation_mode=validation_mode,
@@ -4066,6 +4067,28 @@ def assemble_production_bootstrap(  # noqa: C901
     if release["kind"] != "system.release":
         raise SystemContractError("deployed release ref kind is invalid")
     _preflight_calendar_input_budget(normalized=normalized, input_root=inputs)
+    provider_execution_ref = normalized["trusted_provider_calendar_capture_execution_file_ref"]
+    provider_success_ref = normalized["trusted_provider_calendar_capture_success_file_ref"]
+    if provider_execution_ref is not None and provider_success_ref is not None:
+        execution_raw = _read_stable_bytes(
+            _stable_input_path(inputs, provider_execution_ref),
+            maximum_bytes=_CALENDAR_INPUT_BYTE_LIMITS[
+                "trusted_provider_calendar_capture_execution_file_ref"
+            ],
+        )
+        success_raw = _read_stable_bytes(
+            _stable_input_path(inputs, provider_success_ref),
+            maximum_bytes=_CALENDAR_INPUT_BYTE_LIMITS[
+                "trusted_provider_calendar_capture_success_file_ref"
+            ],
+        )
+        validate_published_trusted_provider_calendar_capture_root(
+            capture_parent=inputs,
+            capture_execution=execution_raw,
+            capture_execution_file_ref=provider_execution_ref,
+            capture_success=success_raw,
+            capture_success_file_ref=provider_success_ref,
+        )
     staging = _ensure_staging_root(workspace, normalized["operation_id"])
 
     copied_local = _copy_request_inputs(
@@ -4161,7 +4184,6 @@ def assemble_production_bootstrap(  # noqa: C901
         cohort_symbols=source_projection["all_pit_symbols"],
         source_projection=source_projection,
         release_ref=release_ref,
-        repository_root=workspace,
     )
     if (
         source_projection["all_pit_symbols"] != materialized["scope_symbols"]

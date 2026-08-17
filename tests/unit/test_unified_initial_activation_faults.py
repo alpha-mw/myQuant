@@ -19,6 +19,10 @@ from quant_investor.contracts import (
     seal_artifact,
 )
 from quant_investor.mainline import MainlineStore
+from quant_investor.migration import (
+    publish_authority_artifact,
+    publish_final_cutover_authorization,
+)
 from quant_investor.system import (
     ACTIVE_POINTER_PATH,
     ACTIVATION_TRANSACTIONS_ROOT,
@@ -238,6 +242,18 @@ def test_completed_activation_replay_is_exact_and_never_repeats_cas(
 ) -> None:
     closure, _generation, inputs = _case(tmp_path)
     store = closure["store"]
+    final_authorization = parse_canonical_json_bytes(
+        inputs["final_cutover_authorization_raw"],
+        label="final authorization",
+    )
+    published = publish_final_cutover_authorization(
+        tmp_path / "deep-authority",
+        final_authorization,
+        repository_root=closure["workspace"],
+        system_store=store,
+        deployed_release_ref=inputs["deployed_release_ref"],
+    )
+    assert published.read_bytes() == inputs["final_cutover_authorization_raw"]
     first = store.activate_initial_generation(**inputs)
     second = store.activate_initial_generation(**inputs)
     assert first["activation"]["cas_performed"] is True
@@ -246,9 +262,17 @@ def test_completed_activation_replay_is_exact_and_never_repeats_cas(
     assert first["migration_completion"]["marker"] == second["migration_completion"]["marker"]
     assert first["deployed_release_verified"] is True
     assert second["deployed_release_verified"] is True
+    with pytest.raises(SystemPreconditionError, match="deep publication closure"):
+        publish_authority_artifact(
+            tmp_path / "shallow-authority",
+            final_authorization,
+        )
 
 
-def test_initial_marker_remains_valid_after_descendant_release_commit(tmp_path: Path) -> None:
+def test_initial_marker_uses_frozen_schemas_after_descendant_contract_change(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     closure, _generation, inputs = _case(tmp_path)
     store = closure["store"]
     activated = store.activate_initial_generation(**inputs)
@@ -278,11 +302,55 @@ def test_initial_marker_remains_valid_after_descendant_release_commit(tmp_path: 
         stderr=subprocess.PIPE,
     )
 
+    def reject_current_schema(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("descendant current schema must not reinterpret initial marker")
+
+    import quant_investor.migration.authority as authority_module
+    import quant_investor.migration.migration as migration_module
+    import quant_investor.system.activation as activation_module
+
+    monkeypatch.setattr(
+        authority_module,
+        "validate_final_cutover_authorization",
+        reject_current_schema,
+    )
+    monkeypatch.setattr(migration_module, "validate_permanent_marker", reject_current_schema)
+    monkeypatch.setattr(
+        activation_module,
+        "validate_activation_authorization",
+        reject_current_schema,
+    )
+    monkeypatch.setattr(
+        activation_module,
+        "validate_prepared_activation_transaction",
+        reject_current_schema,
+    )
+
     readback = store.read_active()
     assert readback is not None
     assert readback["pointer"] == activated["pointer"]
     assert readback["deployed_release_verified"] is True
     assert readback["migration_completion"]["marker"]["payload"]["migration_replay_refused"] is True
+    assert store.status()["state"] == "PARTIAL"
+    import quant_investor.system as system_package
+
+    monkeypatch.setattr(system_package, "SystemStore", lambda _workspace_root: store)
+    assert (
+        system_verify(
+            workspace_root=str(closure["workspace"]),
+            generation_id=activated["generation_id"],
+        )["verified"]
+        is True
+    )
+    emergency = store.activate_suspended_generation(
+        target_active_pointer_raw=_emergency_pointer_raw(
+            store,
+            activated["pointer_byte_sha256"],
+        ),
+        expected_pointer_sha256=activated["pointer_byte_sha256"],
+    )
+    assert emergency["generation_state"] == "SYSTEM_SUSPENDED"
+    assert emergency["factor_authority"] == "BLOCKED"
 
 
 def test_default_initial_read_falls_back_to_historical_when_install_drifted(

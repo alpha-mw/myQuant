@@ -2916,40 +2916,49 @@ class SystemStore:
             raise SystemMigrationClosureError("final cutover authorization index is absent")
         try:
             from quant_investor.migration.errors import UnifiedCutoverError
-            from quant_investor.migration.migration import validate_permanent_marker
             from quant_investor.migration.authority import (
                 _git_blob,
                 validate_final_cutover_authorization_closure,
             )
-            from .activation import (
-                validate_activation_authorization,
-                validate_prepared_activation_transaction,
+            from .historical_activation import (
+                validate_frozen_object_ref,
+                validate_initial_activation_authorization,
+                validate_initial_activation_bundle,
+                validate_initial_migration_receipt,
+                validate_initial_permanent_marker,
             )
 
-            marker = validate_permanent_marker(marker_stored.data)
-            receipt_ref = validate_object_ref(
-                marker["payload"]["migration_receipt_ref"],
-                label="marker.migration_receipt_ref",
-            )
-            receipt = self.get_object(receipt_ref)
-            authorization = self._validated_artifact(authorization_stored.data)
-            if authorization["kind"] != "system.activation_authorization":
-                raise SystemMigrationClosureError("initial authorization kind is invalid")
-            deployed_ref = validate_object_ref(
-                authorization["payload"]["deployed_release_ref"],
-                label="authorization.deployed_release_ref",
-            )
             generation = self._verify_historical_initial_generation(
                 initial_pointer["generation_id"]
+            )
+            dispatch = generation["historical_contract_dispatch"]
+            marker = validate_initial_permanent_marker(marker_stored.data)
+            receipt_ref = validate_frozen_object_ref(
+                marker["payload"]["migration_receipt_ref"],
+                label="marker.migration_receipt_ref",
+                dispatch=dispatch,
+            )
+            receipt = validate_initial_migration_receipt(
+                self._historical_get_object(receipt_ref, dispatch=dispatch)
+            )
+            authorization = validate_initial_activation_authorization(authorization_stored.data)
+            deployed_ref = validate_frozen_object_ref(
+                authorization["payload"]["deployed_release_ref"],
+                label="authorization.deployed_release_ref",
+                dispatch=dispatch,
             )
             if generation["manifest"]["payload"]["release_manifest_ref"] != deployed_ref:
                 raise SystemMigrationClosureError(
                     "initial generation/deployed release binding is invalid"
                 )
+
+            def historical_resolver(ref: Mapping[str, object]) -> Mapping[str, object]:
+                return self._historical_get_object(ref, dispatch=dispatch)
+
             final_authorization = validate_final_cutover_authorization_closure(
                 final_authorization_stored.data,
                 repository_root=self.workspace_root,
-                object_resolver=self.get_object,
+                object_resolver=historical_resolver,
                 deployed_release_ref=deployed_ref,
                 validation_mode="HISTORICAL",
             )
@@ -2990,26 +2999,24 @@ class SystemStore:
                 raise SystemMigrationClosureError(
                     "initial generation production bootstrap closure is invalid"
                 ) from exc
-            validated_authorization, expected_marker = validate_activation_authorization(
-                authorization_stored.data,
-                final_cutover_authorization=final_authorization_stored.data,
-                migration_receipt=canonical_json_bytes(receipt),
-                target_active_pointer=canonical_json_bytes(initial_pointer),
-                target_generation_manifest=generation["manifest"],
+            bundle = validate_initial_activation_bundle(
+                final_authorization=final_authorization_stored.data,
+                activation_authorization=authorization_stored.data,
+                prepared_transaction=prepared_stored.data,
+                migration_receipt=receipt,
+                permanent_marker=marker_stored.data,
+                active_pointer=initial_pointer,
+                generation_manifest=generation["manifest"],
                 deployed_release_ref=deployed_ref,
                 current_uid=os.geteuid(),
             )
-            prepared = validate_prepared_activation_transaction(
-                prepared_stored.data,
-                authorization=authorization_stored.data,
-            )
+            validated_authorization = bundle["activation_authorization"]
+            prepared = bundle["prepared_transaction"]
         except (SystemError, UnifiedCutoverError) as exc:
             if isinstance(exc, SystemMigrationClosureError):
                 raise
             raise SystemMigrationClosureError("permanent migration closure is invalid") from exc
-        if canonical_json_bytes(expected_marker) != marker_stored.data:
-            raise SystemMigrationClosureError("permanent marker exact bytes mismatch")
-        if object_ref_for_artifact(validated_authorization)["byte_sha256"] != (
+        if hashlib.sha256(canonical_json_bytes(validated_authorization)).hexdigest() != (
             hashlib.sha256(authorization_stored.data).hexdigest()
         ):
             raise SystemMigrationClosureError("authorization exact-byte identity mismatch")

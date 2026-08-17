@@ -42,7 +42,14 @@ from quant_investor.system.release_install import (
     RELEASE_INSTALL_EVIDENCE_KIND,
     validate_release_install_evidence,
 )
-from quant_investor.system.store import object_ref_for_artifact, validate_object_ref
+from quant_investor.system.historical_activation import (
+    INITIAL_PRODUCTION_RECEIPT_CONTRACT_SHA256,
+    frozen_object_ref,
+    validate_frozen_object_ref,
+    validate_initial_final_authorization,
+    validate_initial_production_receipt,
+)
+from quant_investor.system.store import SystemStore, object_ref_for_artifact, validate_object_ref
 
 CONCURRENT_HANDOFF_KIND: Final = "system.concurrent_task_handoff"
 MAIN_CHECKOUT_ADOPTION_KIND: Final = "system.main_checkout_adoption"
@@ -1608,8 +1615,8 @@ def build_final_cutover_authorization(  # noqa: C901
     main_checkout_adoption_ref: Mapping[str, Any],
     legacy_disposition_ref: Mapping[str, Any],
     deployed_release_ref: Mapping[str, Any],
-    production_generation_manifest: Mapping[str, Any] | bytes,
-    production_bootstrap_receipt: Mapping[str, Any] | bytes,
+    system_store: SystemStore,
+    production_generation_id: str,
     release_commit: str,
     release_tree: str,
     final_integration_commit: str,
@@ -1645,24 +1652,31 @@ def build_final_cutover_authorization(  # noqa: C901
         )
     rows.sort(key=lambda row: row["gate_id"])
     _validate_preflight_rows(rows)
-    try:
-        generation_manifest = validate_artifact(
-            production_generation_manifest,
-            expected_kind="system.generation_manifest",
-        )
-    except ContractError as exc:
-        raise SystemContractError("production generation manifest is invalid") from exc
-    from quant_investor.system.bootstrap_receipt import (
-        validate_production_bootstrap_receipt,
+    if not isinstance(system_store, SystemStore):
+        raise SystemPreconditionError("final authorization requires a SystemStore resolver")
+    generation_id = _sha(production_generation_id, label="production_generation_id")
+    normalized_release = validate_object_ref(deployed_release_ref, label="deployed_release_ref")
+    verified = system_store.verify_generation(
+        generation_id,
+        deployed_release_ref=normalized_release,
+    )
+    generation_manifest = verified["manifest"]
+    from quant_investor.factors.governance.production import (
+        validate_production_bootstrap_generation_closure,
     )
 
-    production_receipt = validate_production_bootstrap_receipt(production_bootstrap_receipt)
+    production_receipt = validate_production_bootstrap_generation_closure(
+        store=system_store,
+        verified_generation=verified,
+        deployed_release_ref=normalized_release,
+        validation_mode="PRE_CAS_CURRENT",
+    )
     receipt_ref = object_ref_for_artifact(production_receipt)
     manifest_payload = generation_manifest["payload"]
     receipt_payload = production_receipt["payload"]
-    normalized_release = validate_object_ref(deployed_release_ref, label="deployed_release_ref")
     if (
-        manifest_payload["generation_state"] != "OPERATIONAL"
+        generation_manifest["semantic_sha256"] != generation_id
+        or manifest_payload["generation_state"] != "OPERATIONAL"
         or manifest_payload["mainline_ref"] is not None
         or manifest_payload["release_manifest_ref"] != normalized_release
         or manifest_payload["research_refs"] != [receipt_ref]
@@ -1761,16 +1775,27 @@ def validate_final_cutover_authorization_closure(  # noqa: C901
     to remain pinned forever to the initial cutover commit.
     """
 
-    artifact = validate_final_cutover_authorization(document)
+    if validation_mode not in {"PRE_CAS_CURRENT", "HISTORICAL"}:
+        raise SystemContractError("final authorization validation mode is invalid")
+    artifact = (
+        validate_initial_final_authorization(document)
+        if validation_mode == "HISTORICAL"
+        else validate_final_cutover_authorization(document)
+    )
     payload = artifact["payload"]
+
+    def normalize_ref(value: Any, label: str) -> dict[str, str]:
+        if validation_mode == "HISTORICAL":
+            return validate_frozen_object_ref(value, label=label)
+        return validate_object_ref(value, label=label)
+
+    exact_ref = frozen_object_ref if validation_mode == "HISTORICAL" else object_ref_for_artifact
     root = Path(repository_root).resolve(strict=True)
     top = Path(_git(root, "rev-parse", "--show-toplevel").decode("utf-8").strip()).resolve()
     if top != root:
         raise SystemPreconditionError("final authorization repository root differs")
     final_commit = payload["final_integration_commit"]
     final_tree = payload["final_integration_tree"]
-    if validation_mode not in {"PRE_CAS_CURRENT", "HISTORICAL"}:
-        raise SystemContractError("final authorization validation mode is invalid")
     if _git_scalar(root, "rev-parse", f"{final_commit}^{{commit}}") != final_commit:
         raise SystemPreconditionError("authorized final commit object is absent")
     if _git_scalar(root, "rev-parse", f"{final_commit}^{{tree}}") != final_tree:
@@ -1782,27 +1807,31 @@ def validate_final_cutover_authorization_closure(  # noqa: C901
             raise SystemPreconditionError("authorized final tree is not current HEAD tree")
     if payload["release_commit"] != final_commit or payload["release_tree"] != final_tree:
         raise SystemPreconditionError("release identity is not the frozen final tree")
-    normalized_release = validate_object_ref(deployed_release_ref, label="deployed_release_ref")
+    normalized_release = normalize_ref(deployed_release_ref, "deployed_release_ref")
     if normalized_release != payload["deployed_release_ref"]:
         raise SystemPreconditionError("deployed release differs from final authorization")
     release = dict(object_resolver(normalized_release))
     if release.get("kind") != "system.release":
         raise SystemPreconditionError("authorized deployed release kind is invalid")
-    if object_ref_for_artifact(release) != normalized_release:
+    if exact_ref(release) != normalized_release:
         raise SystemPreconditionError("deployed release exact object differs")
     from quant_investor.system.bootstrap_receipt import (
         validate_production_bootstrap_receipt,
     )
 
-    receipt_ref = validate_object_ref(
+    receipt_ref = normalize_ref(
         payload["production_bootstrap_receipt_ref"],
-        label="production_bootstrap_receipt_ref",
+        "production_bootstrap_receipt_ref",
     )
     resolved_receipt = dict(object_resolver(receipt_ref))
     if validation_mode == "PRE_CAS_CURRENT":
         production_receipt = validate_production_bootstrap_receipt(resolved_receipt)
     else:
-        production_receipt = resolved_receipt
+        production_receipt = (
+            validate_initial_production_receipt(resolved_receipt)
+            if resolved_receipt.get("contract_sha256") == INITIAL_PRODUCTION_RECEIPT_CONTRACT_SHA256
+            else resolved_receipt
+        )
         if (
             production_receipt.get("kind") != "system.production_bootstrap_receipt"
             or type(production_receipt.get("payload")) is not dict
@@ -1810,7 +1839,7 @@ def validate_final_cutover_authorization_closure(  # noqa: C901
             raise SystemPreconditionError("historical production bootstrap receipt is invalid")
     receipt_payload = production_receipt["payload"]
     if (
-        object_ref_for_artifact(production_receipt) != receipt_ref
+        exact_ref(production_receipt) != receipt_ref
         or receipt_payload["deployed_release_ref"] != normalized_release
         or payload["calendar_authority_policy_ref"]
         != receipt_payload["calendar_authority_policy_ref"]
@@ -1838,13 +1867,11 @@ def validate_final_cutover_authorization_closure(  # noqa: C901
         ),
     ]
     for calendar_ref in calendar_refs:
-        normalized_calendar_ref = validate_object_ref(
-            calendar_ref, label="final authorization calendar ref"
-        )
+        normalized_calendar_ref = normalize_ref(calendar_ref, "final authorization calendar ref")
         calendar_source = dict(object_resolver(normalized_calendar_ref))
         if (
             calendar_source.get("kind") != "system.source_object"
-            or object_ref_for_artifact(calendar_source) != normalized_calendar_ref
+            or exact_ref(calendar_source) != normalized_calendar_ref
         ):
             raise SystemPreconditionError("final authorization calendar source differs")
 
@@ -1877,7 +1904,7 @@ def validate_final_cutover_authorization_closure(  # noqa: C901
         final_commit=final_commit,
         final_preflight_rows=payload["preflight_rows"],
     )
-    if object_ref_for_artifact(adoption) != adoption_ref:
+    if exact_ref(adoption) != adoption_ref:
         raise SystemPreconditionError("main checkout adoption exact object differs")
     disposition = validate_legacy_source_disposition(
         object_resolver(payload["legacy_disposition_ref"])
@@ -1941,7 +1968,7 @@ def validate_final_cutover_authorization_closure(  # noqa: C901
             )
         evidence_payload = evidence["payload"]
         if (
-            object_ref_for_artifact(evidence) != row["evidence_ref"]
+            exact_ref(evidence) != row["evidence_ref"]
             or evidence_payload["gate_id"] != row["gate_id"]
             or evidence_payload["final_commit"] != final_commit
             or evidence_payload["final_tree"] != final_tree
@@ -1968,7 +1995,7 @@ def validate_final_cutover_authorization_closure(  # noqa: C901
                 if _sha256(executable_raw) != batch["executable_sha256"]:
                     raise SystemPreconditionError("cutover gate executable identity drifted")
         subject = object_resolver(evidence_payload["subject_ref"])
-        if object_ref_for_artifact(subject) != evidence_payload["subject_ref"]:
+        if exact_ref(subject) != evidence_payload["subject_ref"]:
             raise SystemPreconditionError("cutover gate subject exact object differs")
         if row["gate_id"] == "release_install_origin":
             install_evidence = validate_release_install_evidence(subject)
@@ -2029,21 +2056,10 @@ def validate_final_cutover_authorization_closure(  # noqa: C901
     return artifact
 
 
-def publish_authority_artifact(  # noqa: C901
-    authority_root: str | os.PathLike[str], document: Mapping[str, Any]
+def _publish_validated_authority_artifact(
+    authority_root: str | os.PathLike[str], artifact: Mapping[str, Any]
 ) -> Path:
-    kind = document.get("kind")
-    if kind not in AUTHORITY_KINDS:
-        raise SystemContractError("authority artifact kind is not permitted")
-    validators = {
-        CONCURRENT_HANDOFF_KIND: validate_concurrent_task_handoff,
-        MAIN_CHECKOUT_ADOPTION_KIND: validate_main_checkout_adoption,
-        LEGACY_DISPOSITION_KIND: validate_legacy_source_disposition,
-        FINAL_AUTHORIZATION_KIND: validate_final_cutover_authorization,
-        GATE_EVIDENCE_KIND: validate_cutover_gate_evidence,
-        RELEASE_INSTALL_EVIDENCE_KIND: validate_release_install_evidence,
-    }
-    artifact = validators[kind](document)
+    kind = artifact["kind"]
     raw = canonical_json_bytes(artifact)
     byte_sha = _sha256(raw)
     root = Path(authority_root)
@@ -2109,6 +2125,51 @@ def publish_authority_artifact(  # noqa: C901
     return target
 
 
+def publish_authority_artifact(
+    authority_root: str | os.PathLike[str], document: Mapping[str, Any]
+) -> Path:
+    """Publish non-authorizing evidence; final CAS authority needs deep closure."""
+
+    kind = document.get("kind")
+    if kind not in AUTHORITY_KINDS:
+        raise SystemContractError("authority artifact kind is not permitted")
+    if kind == FINAL_AUTHORIZATION_KIND:
+        raise SystemPreconditionError(
+            "final cutover authorization requires deep publication closure"
+        )
+    validators = {
+        CONCURRENT_HANDOFF_KIND: validate_concurrent_task_handoff,
+        MAIN_CHECKOUT_ADOPTION_KIND: validate_main_checkout_adoption,
+        LEGACY_DISPOSITION_KIND: validate_legacy_source_disposition,
+        GATE_EVIDENCE_KIND: validate_cutover_gate_evidence,
+        RELEASE_INSTALL_EVIDENCE_KIND: validate_release_install_evidence,
+    }
+    return _publish_validated_authority_artifact(
+        authority_root,
+        validators[kind](document),
+    )
+
+
+def publish_final_cutover_authorization(
+    authority_root: str | os.PathLike[str],
+    document: Mapping[str, Any] | bytes,
+    *,
+    repository_root: str | os.PathLike[str],
+    system_store: SystemStore,
+    deployed_release_ref: Mapping[str, Any],
+) -> Path:
+    """Publish final authority only after current deep production replay."""
+
+    artifact = validate_final_cutover_authorization_closure(
+        document,
+        repository_root=repository_root,
+        object_resolver=system_store.get_object,
+        deployed_release_ref=deployed_release_ref,
+        validation_mode="PRE_CAS_CURRENT",
+    )
+    return _publish_validated_authority_artifact(authority_root, artifact)
+
+
 __all__ = [
     "AUTHORITY_KINDS",
     "CONCURRENT_HANDOFF_KIND",
@@ -2121,6 +2182,7 @@ __all__ = [
     "build_legacy_source_disposition",
     "build_main_checkout_adoption",
     "publish_authority_artifact",
+    "publish_final_cutover_authorization",
     "run_cutover_gate",
     "validate_concurrent_task_handoff",
     "validate_cutover_gate_evidence",

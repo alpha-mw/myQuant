@@ -249,12 +249,18 @@ order, trade, or funds authority.
 The installed-release capture command is `system calendar-capture`. It makes
 exactly one documentation GET plus three `trade_cal` reads, retains no token or
 credential-bearing request body, and publishes an owner-only capture root only
-after the exact release-install input has replayed and all raw bytes, artifacts,
-directory fsyncs, and no-follow readbacks pass. The success marker is created
-only after the no-replace rename and post-rename readback. A published root
-without that marker is permanently inadmissible and cannot be repaired in
-place. Project-authored JSON, weekday/holiday inference, bars, Macro data, and
-legacy V17 calendars remain forbidden.
+after the exact release-install input has replayed against a separately named
+clean detached release checkout and all raw bytes, artifacts, directory fsyncs,
+and no-follow readbacks pass. The success marker is created only after the
+no-replace rename and post-rename readback; it binds the published directory
+device/inode. Production assembly reopens that same fixed thirteen-leaf root
+through one pinned descriptor, so a loose or rehomed execution/success document
+is inadmissible. A published root without that marker is permanently
+inadmissible and cannot be repaired in place. Tushare responses are not signed,
+so the receipt proves reviewed installed-code custody and exact bytes rather
+than cryptographic remote-peer identity. Project-authored JSON,
+weekday/holiday inference, bars, Macro data, and legacy V17 calendars remain
+forbidden.
 
 An official decoder admission must bind the exchange and evidence role to the
 exact HTTPS endpoint/query contract (or, for a notice body, to the exact body

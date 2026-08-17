@@ -368,8 +368,8 @@ def _test_final_authorization(
     if production_generation_manifest["payload"]["research_refs"] == [production_receipt_ref]:
         final_authorization = build_final_cutover_authorization(
             **common,
-            production_generation_manifest=production_generation_manifest,
-            production_bootstrap_receipt=production_bootstrap_receipt,
+            system_store=store,
+            production_generation_id=production_generation_manifest["semantic_sha256"],
             preflight_evidence=gate_evidence,
         )
     else:

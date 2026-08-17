@@ -1673,6 +1673,7 @@ SYSTEM_TRUSTED_PROVIDER_CALENDAR_CAPTURE_EXECUTION_FIELDS: Final = frozenset(
         "release_install_input_file_ref",
         "release_install_evidence_ref",
         "release_install_verification_sha256",
+        "release_repository_root",
         "final_commit",
         "final_tree",
         "wheel_sha256",
@@ -1709,6 +1710,8 @@ SYSTEM_TRUSTED_PROVIDER_CALENDAR_CAPTURE_SUCCESS_FIELDS: Final = frozenset(
         "capture_execution_file_ref",
         "published_leaf_file_refs",
         "published_leaves_sha256",
+        "published_root_device",
+        "published_root_inode",
         "observed_completed_at",
     }
 )

@@ -210,6 +210,7 @@ def system_calendar_capture(
     capture_parent: str,
     capture_root_name: str,
     cutoff_date: str,
+    release_repository_root: str,
     release_install_input_path: str,
     expected_release_install_input_sha256: str,
 ) -> dict[str, Any]:
@@ -230,7 +231,7 @@ def system_calendar_capture(
         cutoff_date=cutoff_date,
         release_install_input_raw=release_input_raw,
         expected_release_install_input_sha256=expected_release_install_input_sha256,
-        repository_root=workspace_root,
+        release_repository_root=release_repository_root,
     )
 
 
