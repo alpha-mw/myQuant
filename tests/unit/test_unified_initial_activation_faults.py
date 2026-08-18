@@ -295,6 +295,8 @@ def test_initial_marker_uses_frozen_schemas_after_descendant_contract_change(
     import quant_investor.migration.authority as authority_module
     import quant_investor.migration.migration as migration_module
     import quant_investor.system.activation as activation_module
+    import quant_investor.system.fundamental_advisory as advisory_module
+    import quant_investor.market.fundamental_limits as limits_module
 
     monkeypatch.setattr(
         authority_module,
@@ -315,6 +317,19 @@ def test_initial_marker_uses_frozen_schemas_after_descendant_contract_change(
     monkeypatch.setattr(authority_module, "_GATE_RUNNER_ID", "descendant-runner")
     monkeypatch.setattr(production_module, "INPUT_SOURCE_ROW_FIELDS", frozenset(), raising=False)
     monkeypatch.setattr(production_module, "FUNDAMENTAL_SOURCE_BLOCKERS", frozenset())
+    monkeypatch.setattr(limits_module, "FUNDAMENTAL_GENERIC_JSON_MAX_BYTES", 1)
+    monkeypatch.setattr(limits_module, "FUNDAMENTAL_PREDECESSOR_MANIFEST_MAX_BYTES", 1)
+    monkeypatch.setattr(limits_module, "FUNDAMENTAL_PARQUET_MAX_BYTES", 1)
+    monkeypatch.setattr(
+        advisory_module,
+        "validate_fundamental_advisory",
+        reject_current_schema,
+    )
+    monkeypatch.setattr(
+        advisory_module,
+        "validate_fundamental_veto_subject",
+        reject_current_schema,
+    )
     monkeypatch.setattr(
         production_module,
         "ASSEMBLER_MODULE_PATH",

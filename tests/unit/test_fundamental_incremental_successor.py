@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -28,12 +29,21 @@ from quant_investor.market.fundamental_incremental import (
     stage_successor_generation,
     validate_successor_provenance,
 )
+from quant_investor.market.fundamental_limits import (
+    FUNDAMENTAL_DAILY_REPLAY_MAX_CELLS,
+    FUNDAMENTAL_GENERIC_JSON_MAX_BYTES,
+    FUNDAMENTAL_GENERIC_REPLAY_MAX_CELLS,
+    FUNDAMENTAL_PARQUET_MAX_BYTES,
+    FUNDAMENTAL_PREDECESSOR_MANIFEST_MAX_BYTES,
+    FUNDAMENTAL_PREDECESSOR_MANIFEST_ROLE,
+    FundamentalSizePolicyViolation,
+    validate_fundamental_parquet_size_policy,
+)
 from quant_investor.market.fundamental_provider_contract import (
     canonical_json_sha256,
     frame_fingerprint,
 )
 from quant_investor.system import SystemContractError, SystemSecurityError
-
 
 SYMBOLS = ("000001.SZ", "000002.SZ", "000003.SZ")
 PARENT_CUTOFF = "20260806"
@@ -54,8 +64,7 @@ def _support_bytes() -> dict[str, bytes]:
             b'"cn-fundamental-generation.v1","status":"OK"}\n'
         ),
         "support_manifest": (
-            b'{"schema_version":"fixture-successor-support.v1",'
-            b'"status":"sealed"}\n'
+            b'{"schema_version":"fixture-successor-support.v1",' b'"status":"sealed"}\n'
         ),
     }
 
@@ -64,6 +73,354 @@ def _support_refs() -> dict[str, dict[str, str]]:
     return {
         name: {"path": f"sealed/{name}.json", "sha256": _sha(payload)}
         for name, payload in _support_bytes().items()
+    }
+
+
+def test_secure_support_read_enforces_role_boundary_and_distinct_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "sealed-predecessor-manifest.json"
+    payload = b'{"generation_id":"parent_v2"}\n'
+
+    class SealedFileset:
+        def __init__(self) -> None:
+            self.maximum_bytes: list[int] = []
+
+        def read_bytes(
+            self,
+            _path: Path,
+            *,
+            expected_sha256: str,
+            maximum_bytes: int,
+        ) -> bytes:
+            assert expected_sha256 == _sha(payload)
+            self.maximum_bytes.append(maximum_bytes)
+            return payload
+
+    sealed = SealedFileset()
+    observed_size = {"value": FUNDAMENTAL_PREDECESSOR_MANIFEST_MAX_BYTES}
+    monkeypatch.setattr(
+        incremental_module.os,
+        "lstat",
+        lambda _path: SimpleNamespace(st_size=observed_size["value"]),
+    )
+
+    assert (
+        incremental_module._successor_read_bytes(
+            path,
+            expected_sha256=_sha(payload),
+            sealed_fileset=sealed,
+            semantic_role=FUNDAMENTAL_PREDECESSOR_MANIFEST_ROLE,
+            maximum_bytes=FUNDAMENTAL_PREDECESSOR_MANIFEST_MAX_BYTES,
+        )
+        == payload
+    )
+    assert sealed.maximum_bytes == [FUNDAMENTAL_PREDECESSOR_MANIFEST_MAX_BYTES]
+
+    observed_size["value"] = FUNDAMENTAL_PREDECESSOR_MANIFEST_MAX_BYTES + 1
+    with pytest.raises(
+        SafeSuccessorError,
+        match="SUPPORT_REFERENCE_SIZE_POLICY_VIOLATION",
+    ):
+        incremental_module._successor_read_bytes(
+            path,
+            expected_sha256=_sha(payload),
+            sealed_fileset=sealed,
+            semantic_role=FUNDAMENTAL_PREDECESSOR_MANIFEST_ROLE,
+            maximum_bytes=FUNDAMENTAL_PREDECESSOR_MANIFEST_MAX_BYTES,
+        )
+
+    observed_size["value"] = FUNDAMENTAL_GENERIC_JSON_MAX_BYTES + 1
+    with pytest.raises(
+        SafeSuccessorError,
+        match="SUPPORT_REFERENCE_SIZE_POLICY_VIOLATION",
+    ):
+        incremental_module._successor_read_bytes(
+            path,
+            expected_sha256=_sha(payload),
+            sealed_fileset=sealed,
+            semantic_role="support_manifest",
+            maximum_bytes=FUNDAMENTAL_GENERIC_JSON_MAX_BYTES,
+        )
+
+    with pytest.raises(
+        SafeSuccessorError,
+        match="SUCCESSOR_SIZE_POLICY_INVALID",
+    ):
+        incremental_module._successor_read_bytes(
+            path,
+            expected_sha256=_sha(payload),
+            sealed_fileset=sealed,
+            semantic_role="support_manifest",
+            maximum_bytes=FUNDAMENTAL_PREDECESSOR_MANIFEST_MAX_BYTES,
+        )
+
+    monkeypatch.undo()
+    path.write_bytes(payload)
+    path.chmod(0o600)
+    with pytest.raises(SafeSuccessorError) as failure:
+        incremental_module._successor_read_bytes(
+            path,
+            expected_sha256="0" * 64,
+            sealed_fileset=None,
+            semantic_role="predecessor_pointer",
+            maximum_bytes=FUNDAMENTAL_GENERIC_JSON_MAX_BYTES,
+        )
+    assert failure.value.code == "SUCCESSOR_FILE_HASH_MISMATCH"
+
+
+def test_direct_predecessor_manifest_uses_128mib_role_limit_without_legacy_64mib_cap(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "predecessor_manifest.json"
+    size = FUNDAMENTAL_GENERIC_JSON_MAX_BYTES + 1
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        os.ftruncate(descriptor, size)
+    finally:
+        os.close(descriptor)
+    digest = hashlib.sha256()
+    block = b"\0" * (1024 * 1024)
+    remaining = size
+    while remaining:
+        chunk = block[: min(len(block), remaining)]
+        digest.update(chunk)
+        remaining -= len(chunk)
+    raw = incremental_module._successor_read_bytes(
+        path,
+        expected_sha256=digest.hexdigest(),
+        sealed_fileset=None,
+        semantic_role=FUNDAMENTAL_PREDECESSOR_MANIFEST_ROLE,
+        maximum_bytes=FUNDAMENTAL_PREDECESSOR_MANIFEST_MAX_BYTES,
+    )
+    assert len(raw) == size
+    del raw
+
+    with pytest.raises(
+        SafeSuccessorError,
+        match="SUPPORT_REFERENCE_SIZE_POLICY_VIOLATION",
+    ):
+        incremental_module._successor_read_bytes(
+            path,
+            expected_sha256=digest.hexdigest(),
+            sealed_fileset=None,
+            semantic_role="support_manifest",
+            maximum_bytes=FUNDAMENTAL_GENERIC_JSON_MAX_BYTES,
+        )
+
+    os.truncate(path, FUNDAMENTAL_PREDECESSOR_MANIFEST_MAX_BYTES)
+    exact_digest = hashlib.sha256()
+    remaining = FUNDAMENTAL_PREDECESSOR_MANIFEST_MAX_BYTES
+    while remaining:
+        chunk = block[: min(len(block), remaining)]
+        exact_digest.update(chunk)
+        remaining -= len(chunk)
+    exact_raw = incremental_module._successor_read_bytes(
+        path,
+        expected_sha256=exact_digest.hexdigest(),
+        sealed_fileset=None,
+        semantic_role=FUNDAMENTAL_PREDECESSOR_MANIFEST_ROLE,
+        maximum_bytes=FUNDAMENTAL_PREDECESSOR_MANIFEST_MAX_BYTES,
+    )
+    assert len(exact_raw) == FUNDAMENTAL_PREDECESSOR_MANIFEST_MAX_BYTES
+    del exact_raw
+
+    os.truncate(path, FUNDAMENTAL_PREDECESSOR_MANIFEST_MAX_BYTES + 1)
+    with pytest.raises(
+        SafeSuccessorError,
+        match="SUPPORT_REFERENCE_SIZE_POLICY_VIOLATION",
+    ):
+        incremental_module._successor_read_bytes(
+            path,
+            expected_sha256=digest.hexdigest(),
+            sealed_fileset=None,
+            semantic_role=FUNDAMENTAL_PREDECESSOR_MANIFEST_ROLE,
+            maximum_bytes=FUNDAMENTAL_PREDECESSOR_MANIFEST_MAX_BYTES,
+        )
+
+
+@pytest.mark.parametrize("unsafe_kind", ["symlink", "hardlink", "mode"])
+def test_direct_fundamental_json_read_rejects_unsafe_storage(
+    tmp_path: Path,
+    unsafe_kind: str,
+) -> None:
+    payload = b'{"status":"sealed"}'
+    path = tmp_path / "support_manifest.json"
+    path.write_bytes(payload)
+    path.chmod(0o600)
+    target = path
+    if unsafe_kind == "symlink":
+        target = tmp_path / "support-link.json"
+        target.symlink_to(path)
+    elif unsafe_kind == "hardlink":
+        os.link(path, tmp_path / "support-hardlink.json")
+    else:
+        path.chmod(0o620)
+    with pytest.raises(SafeSuccessorError, match="SUCCESSOR_FILE_SECURITY_INVALID"):
+        incremental_module._successor_read_bytes(
+            target,
+            expected_sha256=_sha(payload),
+            sealed_fileset=None,
+            semantic_role="support_manifest",
+            maximum_bytes=FUNDAMENTAL_GENERIC_JSON_MAX_BYTES,
+        )
+
+
+@pytest.mark.parametrize("mutation", ["inode_swap", "size_growth"])
+def test_direct_fundamental_json_read_rejects_descriptor_path_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    payload = b'{"status":"sealed"}'
+    path = tmp_path / "support_manifest.json"
+    path.write_bytes(payload)
+    path.chmod(0o600)
+    real_fdopen = os.fdopen
+
+    class MutatingStream:
+        def __init__(self, stream: object) -> None:
+            self.stream = stream
+
+        def __enter__(self) -> "MutatingStream":
+            self.stream.__enter__()  # type: ignore[attr-defined]
+            return self
+
+        def __exit__(self, *args: object) -> object:
+            return self.stream.__exit__(*args)  # type: ignore[attr-defined]
+
+        def read(self, *args: object) -> bytes:
+            raw = self.stream.read(*args)  # type: ignore[attr-defined]
+            if mutation == "inode_swap":
+                replacement = tmp_path / "replacement.json"
+                replacement.write_bytes(payload)
+                replacement.chmod(0o600)
+                os.replace(replacement, path)
+            else:
+                with path.open("ab") as output:
+                    output.write(b"x")
+            return raw
+
+    def mutating_fdopen(*args: object, **kwargs: object) -> MutatingStream:
+        return MutatingStream(real_fdopen(*args, **kwargs))
+
+    monkeypatch.setattr(incremental_module.os, "fdopen", mutating_fdopen)
+    with pytest.raises(SafeSuccessorError, match="SUCCESSOR_FILE_IDENTITY_DRIFT"):
+        incremental_module._successor_read_bytes(
+            path,
+            expected_sha256=_sha(payload),
+            sealed_fileset=None,
+            semantic_role="support_manifest",
+            maximum_bytes=FUNDAMENTAL_GENERIC_JSON_MAX_BYTES,
+        )
+
+
+def test_fundamental_parquet_size_policy_is_exact_and_role_closed() -> None:
+    assert FUNDAMENTAL_PARQUET_MAX_BYTES == 512 * 1024 * 1024
+    validate_fundamental_parquet_size_policy(
+        table_role="fundamental_daily",
+        observed_bytes=FUNDAMENTAL_PARQUET_MAX_BYTES,
+    )
+    with pytest.raises(FundamentalSizePolicyViolation):
+        validate_fundamental_parquet_size_policy(
+            table_role="fundamental_daily",
+            observed_bytes=FUNDAMENTAL_PARQUET_MAX_BYTES + 1,
+        )
+    with pytest.raises(ValueError, match="table role"):
+        validate_fundamental_parquet_size_policy(
+            table_role="provider_evidence",
+            observed_bytes=1,
+        )
+
+
+def test_sealed_fundamental_parquet_uses_512mib_without_eager_read(
+    tmp_path: Path,
+) -> None:
+    observed: dict[str, int] = {}
+
+    class SealedFileset:
+        @contextmanager
+        def open_parquet(
+            self,
+            _path: Path,
+            *,
+            expected_sha256: str,
+            maximum_bytes: int,
+            decoded_reservation_bytes: int,
+        ):
+            assert expected_sha256 == "0" * 64
+            observed["maximum_bytes"] = maximum_bytes
+            observed["decoded_reservation_bytes"] = decoded_reservation_bytes
+            yield object()
+
+    with successor_module._successor_open_parquet(
+        tmp_path / "fundamental_daily.parquet",
+        table_role="fundamental_daily",
+        expected_sha256="0" * 64,
+        sealed_fileset=SealedFileset(),
+    ):
+        pass
+    assert observed == {
+        "maximum_bytes": FUNDAMENTAL_PARQUET_MAX_BYTES,
+        "decoded_reservation_bytes": successor_module.SUCCESSOR_REPLAY_BATCH_BYTES,
+    }
+    with pytest.raises(SafeSuccessorError, match="SUCCESSOR_PARQUET_ROLE_INVALID"):
+        with successor_module._successor_open_parquet(
+            tmp_path / "provider_evidence.parquet",
+            table_role="provider_evidence",
+            expected_sha256="0" * 64,
+            sealed_fileset=SealedFileset(),
+        ):
+            pass
+
+
+@pytest.mark.parametrize(
+    ("table_role", "rows", "columns", "limit"),
+    [
+        ("fundamental_daily", 1_000_000, 256, FUNDAMENTAL_DAILY_REPLAY_MAX_CELLS),
+        (
+            "fundamental_period",
+            390_625,
+            256,
+            FUNDAMENTAL_GENERIC_REPLAY_MAX_CELLS,
+        ),
+    ],
+)
+def test_fundamental_table_cell_limits_are_role_specific_and_inclusive(
+    table_role: str,
+    rows: int,
+    columns: int,
+    limit: int,
+) -> None:
+    parquet = SimpleNamespace(
+        metadata=SimpleNamespace(num_rows=rows),
+        schema_arrow=SimpleNamespace(names=[f"c{index}" for index in range(columns)]),
+        num_row_groups=0,
+    )
+    observed_rows, observed_columns = successor_module._bounded_parquet_metadata(
+        parquet,
+        label=f"{table_role}.parquet",
+        table_role=table_role,
+    )
+    assert observed_rows == rows
+    assert len(observed_columns) == columns
+    assert rows * columns == limit
+
+    parquet.metadata.num_rows = rows + 1
+    with pytest.raises(SafeSuccessorError) as failure:
+        successor_module._bounded_parquet_metadata(
+            parquet,
+            label=f"{table_role}.parquet",
+            table_role=table_role,
+        )
+    assert failure.value.code == "SUCCESSOR_PARQUET_RESOURCE_BOUND"
+    assert failure.value.details == {
+        "table_role": table_role,
+        "observed_rows": rows + 1,
+        "observed_columns": columns,
+        "observed_cells": (rows + 1) * columns,
+        "cell_limit": limit,
     }
 
 
@@ -290,9 +647,7 @@ def _raw_tables(target: str = "20260808") -> dict[str, pd.DataFrame]:
             },
         ]
     )
-    raw["forecast"] = pd.DataFrame(
-        [row for row in forecast if row["ann_date"] <= target]
-    )
+    raw["forecast"] = pd.DataFrame([row for row in forecast if row["ann_date"] <= target])
     return raw
 
 
@@ -375,9 +730,7 @@ class _NoAggregateAccessStore(Mapping[str, object]):
 
 def _derivation_budget(raw: Mapping[str, pd.DataFrame]) -> dict:
     body = {
-        "schema_version": (
-            "cn-fundamental-successor-derivation-accumulator-budget.v1"
-        ),
+        "schema_version": ("cn-fundamental-successor-derivation-accumulator-budget.v1"),
         "status": "PASS",
         "period_anchor_row_limit": len(SYMBOLS),
         "forecast_anchor_row_limit": len(SYMBOLS),
@@ -395,16 +748,18 @@ def _derivation_budget(raw: Mapping[str, pd.DataFrame]) -> dict:
 
 def _sorted_raw(raw: Mapping[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
     return {
-        table: frame.sort_values(
-            [
-                column
-                for column in ("ts_code", "ann_date", "trade_date", "end_date")
-                if column in frame.columns
-            ],
-            kind="mergesort",
-        ).reset_index(drop=True)
-        if not frame.empty
-        else frame.copy()
+        table: (
+            frame.sort_values(
+                [
+                    column
+                    for column in ("ts_code", "ann_date", "trade_date", "end_date")
+                    if column in frame.columns
+                ],
+                kind="mergesort",
+            ).reset_index(drop=True)
+            if not frame.empty
+            else frame.copy()
+        )
         for table, frame in raw.items()
     }
 
@@ -421,11 +776,7 @@ def _streamed_bundle(
         parent_cutoff=PARENT_CUTOFF,
         target_cutoff="20260808",
         permanent_support_refs=_support_refs(),
-        extra={
-            "derivation_resource_budget": dict(
-                budget or _derivation_budget(sorted_raw)
-            )
-        },
+        extra={"derivation_resource_budget": dict(budget or _derivation_budget(sorted_raw))},
     )
     bundle = assemble_safe_successor(
         parent_tables=_parent_tables(),
@@ -446,12 +797,8 @@ def test_streamed_support_is_reference_equivalent_without_aggregate_getitem() ->
     streamed, store, _raw = _streamed_bundle(sorted_raw)
 
     assert store.getitem_calls == 0
-    assert frame_fingerprint(streamed.period_suffix) == frame_fingerprint(
-        reference.period_suffix
-    )
-    assert frame_fingerprint(streamed.daily_suffix) == frame_fingerprint(
-        reference.daily_suffix
-    )
+    assert frame_fingerprint(streamed.period_suffix) == frame_fingerprint(reference.period_suffix)
+    assert frame_fingerprint(streamed.daily_suffix) == frame_fingerprint(reference.daily_suffix)
     assert streamed.lineage["period_rows"] == reference.lineage["period_rows"]
     streaming = streamed.lineage["support_streaming"]
     assert all(
@@ -479,9 +826,7 @@ def test_deep_prefix_retains_only_boundary_anchors_and_delta() -> None:
                             delta=False,
                         )
                     )
-        deep[table] = pd.concat(
-            [deep[table], pd.DataFrame(historical)], ignore_index=True
-        )
+        deep[table] = pd.concat([deep[table], pd.DataFrame(historical)], ignore_index=True)
     historical_forecast = []
     for symbol in SYMBOLS:
         for year in range(2010, 2025):
@@ -623,10 +968,7 @@ def test_boundary_anchor_mismatch_blocks_and_declared_nonreachability_passes() -
     raw = _raw_tables("20260807")
     for table in RAW_TABLES[:4]:
         raw[table] = raw[table][
-            ~(
-                (raw[table]["ts_code"] == "000001.SZ")
-                & (raw[table]["ann_date"] <= PARENT_CUTOFF)
-            )
+            ~((raw[table]["ts_code"] == "000001.SZ") & (raw[table]["ann_date"] <= PARENT_CUTOFF))
         ].reset_index(drop=True)
     raw["forecast"] = raw["forecast"][
         ~(
@@ -654,9 +996,7 @@ def test_boundary_anchor_mismatch_blocks_and_declared_nonreachability_passes() -
         target_cutoff="20260807",
         run_id="nonreachable",
     )
-    assert result.lineage["boundary"]["period"]["000001.SZ"] == (
-        "LANE_NON_REACHABLE_DECLARED"
-    )
+    assert result.lineage["boundary"]["period"]["000001.SZ"] == ("LANE_NON_REACHABLE_DECLARED")
 
 
 def test_hidden_previous_year_dependency_must_be_present_or_proven_absent() -> None:
@@ -667,10 +1007,7 @@ def test_hidden_previous_year_dependency_must_be_present_or_proven_absent() -> N
         "netprofit_yoy",
     ] = np.nan
     raw["income"] = raw["income"][
-        ~(
-            (raw["income"]["ts_code"] == "000001.SZ")
-            & (raw["income"]["end_date"] == "20250630")
-        )
+        ~((raw["income"]["ts_code"] == "000001.SZ") & (raw["income"]["end_date"] == "20250630"))
     ].reset_index(drop=True)
     with pytest.raises(SafeSuccessorError, match="HIDDEN_DEPENDENCY_UNPROVEN"):
         _bundle(target="20260807", raw=raw)
@@ -679,10 +1016,7 @@ def test_hidden_previous_year_dependency_must_be_present_or_proven_absent() -> N
 def test_hidden_dependency_before_support_start_has_specific_stop_code() -> None:
     raw = _raw_tables("20260807")
     for table in ("fina_indicator", "income", "balancesheet", "cashflow"):
-        selector = (
-            (raw[table]["ts_code"] == "000001.SZ")
-            & (raw[table]["ann_date"] == "20260807")
-        )
+        selector = (raw[table]["ts_code"] == "000001.SZ") & (raw[table]["ann_date"] == "20260807")
         raw[table].loc[selector, "end_date"] = "20200101"
     raw["fina_indicator"].loc[
         (raw["fina_indicator"]["ts_code"] == "000001.SZ")
@@ -735,10 +1069,7 @@ def test_same_day_batch_is_permutation_invariant() -> None:
 def test_future_revision_does_not_look_back_and_forecast_carries_then_supersedes() -> None:
     bundle = _bundle(target="20260808")
     symbol = bundle.daily_suffix[bundle.daily_suffix["ts_code"] == "000001.SZ"]
-    by_date = {
-        row.trade_date.strftime("%Y%m%d"): row
-        for row in symbol.itertuples(index=False)
-    }
+    by_date = {row.trade_date.strftime("%Y%m%d"): row for row in symbol.itertuples(index=False)}
     assert by_date["20260807"].forecast_revision == pytest.approx(0.30)
     assert by_date["20260807"].forecast_summary == "first"
     assert by_date["20260808"].forecast_revision == pytest.approx(0.50)
@@ -759,9 +1090,11 @@ def test_decimal_size_ties_and_future_session_invariance() -> None:
     }
 
     raw_two = _raw_tables("20260808")
-    raw_two["daily_basic"].loc[
-        raw_two["daily_basic"]["trade_date"] == "20260807", "total_mv"
-    ] = ["100", "100", "300"]
+    raw_two["daily_basic"].loc[raw_two["daily_basic"]["trade_date"] == "20260807", "total_mv"] = [
+        "100",
+        "100",
+        "300",
+    ]
     two = _bundle(target="20260808", raw=raw_two)
     prior = two.daily_suffix[two.daily_suffix["trade_date"] == pd.Timestamp("2026-08-07")]
     assert dict(zip(prior["ts_code"], prior["size_bucket"])) == first_buckets
@@ -809,22 +1142,15 @@ def test_no_period_state_is_counted_but_true_missing_blocks() -> None:
 
 def test_nonbar_scope_symbols_are_included_in_boundary_proof() -> None:
     raw = _raw_tables("20260807")
-    observed = [
-        (row.ts_code, row.trade_date)
-        for row in raw["daily_basic"].itertuples(index=False)
-    ]
+    observed = [(row.ts_code, row.trade_date) for row in raw["daily_basic"].itertuples(index=False)]
     keyset = build_keyset_closure(
         observed_bar_keys=observed,
         daily_basic_keys=observed,
         suspended_keys=[("000004.SZ", "20260807")],
     )
     bundle = _bundle(target="20260807", raw=raw, keyset=keyset)
-    assert bundle.lineage["boundary"]["period"]["000004.SZ"] == (
-        "LANE_NON_REACHABLE_EMPTY"
-    )
-    assert bundle.lineage["boundary"]["forecast"]["000004.SZ"] == (
-        "LANE_NON_REACHABLE_EMPTY"
-    )
+    assert bundle.lineage["boundary"]["period"]["000004.SZ"] == ("LANE_NON_REACHABLE_EMPTY")
+    assert bundle.lineage["boundary"]["forecast"]["000004.SZ"] == ("LANE_NON_REACHABLE_EMPTY")
 
 
 def test_successor_chain_rejects_cycle_and_self_reference() -> None:
@@ -875,12 +1201,8 @@ def _path_backed_case(tmp_path: Path):
         frame.to_parquet(path, index=False)
         parent_paths[name] = path
     closure = _parent_closure(parents)
-    closure["table_sha256"] = {
-        name: _sha(path.read_bytes()) for name, path in parent_paths.items()
-    }
-    closure["validated_frame_fingerprints"] = dict(
-        closure["table_frame_fingerprints"]
-    )
+    closure["table_sha256"] = {name: _sha(path.read_bytes()) for name, path in parent_paths.items()}
+    closure["validated_frame_fingerprints"] = dict(closure["table_frame_fingerprints"])
     raw = _raw_tables("20260807")
     plan = seal_support_plan(
         raw,
@@ -907,14 +1229,21 @@ def _path_backed_case(tmp_path: Path):
     expected_scope.write_bytes(b'{"as_of":"20260807","true_missing":0}\n')
     market_pointer = tmp_path / "market_pointer.json"
     market_pointer.write_bytes(
-        b'{"manifest_path":"immutable/market_manifest.json",'
-        b'"snapshot_id":"market-20260807"}\n'
+        b'{"manifest_path":"immutable/market_manifest.json",' b'"snapshot_id":"market-20260807"}\n'
     )
     pit_pointer = tmp_path / "pit_pointer.json"
     pit_pointer.write_bytes(
         b'{"generation_id":"pit-20260807",'
         b'"membership_path":"immutable/pit_membership.parquet"}\n'
     )
+    for path in (
+        market_manifest,
+        pit_membership,
+        expected_scope,
+        market_pointer,
+        pit_pointer,
+    ):
+        path.chmod(0o600)
     target_bindings = {
         "market_pointer": {
             "path": str(market_pointer),
@@ -950,8 +1279,7 @@ def _path_backed_case(tmp_path: Path):
         },
     }
     support_files = {
-        _support_refs()[name]["path"]: payload
-        for name, payload in _support_bytes().items()
+        _support_refs()[name]["path"]: payload for name, payload in _support_bytes().items()
     }
     evidence_sha = {name: _sha(payload) for name, payload in support_files.items()}
     provider = seal_successor_provider_manifest(
@@ -1001,8 +1329,7 @@ def test_staging_exact_readback_and_permanent_support_tamper_block(tmp_path: Pat
         "homogeneous_history_ready": False,
     }
     readiness_state = {
-        name: pointer["metadata"]["readiness"][name]
-        for name in validated["machine_states"]
+        name: pointer["metadata"]["readiness"][name] for name in validated["machine_states"]
     }
     assert readiness_state == validated["machine_states"]
     assert pointer["metadata"]["readiness"]["gate2_contract"] == (
@@ -1017,10 +1344,7 @@ def test_staging_exact_readback_and_permanent_support_tamper_block(tmp_path: Pat
         "cn-fundamental-derivation.safe-successor.v1"
     )
     for document in (pointer, manifest):
-        metadata_state = {
-            name: document["metadata"][name]
-            for name in validated["machine_states"]
-        }
+        metadata_state = {name: document["metadata"][name] for name in validated["machine_states"]}
         assert metadata_state == validated["machine_states"]
     altered_pointer = copy.deepcopy(pointer)
     altered_manifest = copy.deepcopy(manifest)
@@ -1096,9 +1420,7 @@ def test_staging_exact_readback_and_permanent_support_tamper_block(tmp_path: Pat
     predecessor_pointer.write_bytes(original)
 
     for name in ("market_pointer", "pit_pointer"):
-        relative = Path(
-            pointer["metadata"]["target_bindings"][name]["sealed_ref"]["path"]
-        )
+        relative = Path(pointer["metadata"]["target_bindings"][name]["sealed_ref"]["path"])
         sealed_pointer = evidence_root / relative
         original_sealed = sealed_pointer.read_bytes()
         sealed_pointer.write_bytes(b'{"tampered":true}\n')
@@ -1150,9 +1472,7 @@ def test_stage_and_provenance_replay_same_versioned_source_fileset(
     ) -> dict[str, object]:
         source_root = Path(root)
         calls.append(source_root)
-        assert (source_root / "binding.json").read_bytes() == support_files[
-            "source/binding.json"
-        ]
+        assert (source_root / "binding.json").read_bytes() == support_files["source/binding.json"]
         assert expected_implementation_sha256 == implementation_sha256
         return {
             "manifest_sha256": source_manifest_sha256,
@@ -1161,8 +1481,7 @@ def test_stage_and_provenance_replay_same_versioned_source_fileset(
         }
 
     monkeypatch.setattr(
-        "quant_investor.market.fundamental_successor_source."
-        "validate_successor_support_fileset",
+        "quant_investor.market.fundamental_successor_source." "validate_successor_support_fileset",
         validate_source,
     )
     capture = stage_successor_generation(
@@ -1183,9 +1502,7 @@ def test_stage_and_provenance_replay_same_versioned_source_fileset(
         generation_root=capture.staging_root,
         historical_only=True,
     )
-    assert receipt["source_fileset_validation"]["manifest_sha256"] == (
-        source_manifest_sha256
-    )
+    assert receipt["source_fileset_validation"]["manifest_sha256"] == (source_manifest_sha256)
     # Staging validates once before sealing and once through its own exact
     # readback; the independent provenance call replays the same source policy.
     assert len(calls) == 3
@@ -1243,12 +1560,8 @@ def test_append_first_uses_immutable_parent_without_prefix_replay() -> None:
         run_id="append_first_successor",
     )
 
-    assert bundle.derivation_evidence["support_prefix_mode"] == (
-        SUCCESSOR_APPEND_FIRST_MODE
-    )
-    assert bundle.derivation_evidence["historical_taint_registry_sha256"] == (
-        registry_sha
-    )
+    assert bundle.derivation_evidence["support_prefix_mode"] == (SUCCESSOR_APPEND_FIRST_MODE)
+    assert bundle.derivation_evidence["historical_taint_registry_sha256"] == (registry_sha)
     assert bundle.lineage["boundary"]["support_prefix_row_count"] == 0
     assert len(bundle.period_suffix) == 0
     assert len(bundle.daily_suffix) == len(SYMBOLS)
@@ -1433,10 +1746,7 @@ def test_append_first_consumes_declared_balancesheet_support_dependency() -> Non
     )
 
     requirements = bundle.lineage["period_rows"][0]["dependency_requirements"]
-    assert any(
-        row["table"] == "balancesheet" and row["row_binding"]
-        for row in requirements
-    )
+    assert any(row["table"] == "balancesheet" and row["row_binding"] for row in requirements)
 
 
 def test_append_first_rejects_declared_income_support_not_consumed() -> None:
@@ -1460,9 +1770,7 @@ def test_append_first_rejects_declared_income_support_not_consumed() -> None:
         permanent_support_refs=_support_refs(),
         support_prefix_mode=SUCCESSOR_APPEND_FIRST_MODE,
         historical_taint_registry_sha256="9" * 64,
-        append_first_income_dependencies=(
-            {"ts_code": "000001.SZ", "end_date": "20250630"},
-        ),
+        append_first_income_dependencies=({"ts_code": "000001.SZ", "end_date": "20250630"},),
         extra={"support_start": "20260807"},
     )
 
@@ -1776,7 +2084,8 @@ def test_sealed_descriptor_system_errors_are_not_relabelled(
 
     with pytest.raises(error_type, match="governed descriptor rejection"):
         with successor_module._successor_open_parquet(
-            tmp_path / "unused.parquet",
+            tmp_path / "fundamental_daily.parquet",
+            table_role="fundamental_daily",
             expected_sha256="0" * 64,
             sealed_fileset=RejectingFileset(),
         ):

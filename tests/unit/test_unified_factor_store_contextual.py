@@ -184,6 +184,7 @@ def _implementation_rows(manifest: dict[str, Any]) -> list[dict[str, Any]]:
                 "normalized_expression": row["normalized_expression"],
                 "parameters_json": row["parameters_json"],
                 "input_fields": row["input_fields"],
+                "required_source_roles": row["required_source_roles"],
             }
         )
     return rows
@@ -438,6 +439,56 @@ def _statistics_signals(
     blend: dict[str, str | None],
 ) -> dict[str, dict[str, str | None]]:
     return {LOW_DOLLAR_VOLUME: low, BLEND_W80: blend}
+
+
+@pytest.mark.parametrize(
+    "mutated_roles",
+    [
+        ["EXCHANGE_CALENDAR", "MARKET"],
+        ["EXCHANGE_CALENDAR", "FUNDAMENTAL", "MARKET", "PIT_MEMBERSHIP"],
+        ["MARKET", "EXCHANGE_CALENDAR", "PIT_MEMBERSHIP"],
+        ["EXCHANGE_CALENDAR", "MARKET", "PIT_MEMBERSHIP", "UNKNOWN"],
+    ],
+)
+def test_implementation_source_rejects_required_source_role_mutation(
+    tmp_path: Path,
+    mutated_roles: list[str],
+) -> None:
+    workspace = tmp_path / "workspace"
+    source_root = tmp_path / "source"
+    workspace.mkdir(mode=0o700)
+    source_root.mkdir(mode=0o700)
+    system_store = SystemStore(
+        workspace,
+        source_root=source_root,
+        source_root_id="factor-source-role-test-root",
+    )
+    factor_store = FactorValidationStore._for_testing(
+        system_store=system_store,
+        clock=lambda: datetime(2026, 8, 16, tzinfo=timezone.utc),
+    )
+    _, manifest, _ = _release_and_manifest(system_store, factor_store)
+    rows = _implementation_rows(manifest)
+    rows[0]["required_source_roles"] = mutated_roles
+    _write_parquet(
+        source_root,
+        "implementation-mutated.parquet",
+        rows,
+        role_schema("implementation_manifest"),
+    )
+    source_ref = _source(
+        system_store,
+        "implementation-mutated.parquet",
+        source_format="PARQUET",
+        media_type="application/vnd.apache.parquet",
+    )
+    with pytest.raises(FactorGovernanceError):
+        decode_source_role(
+            system_store=system_store,
+            source_object_ref=source_ref,
+            role="implementation_manifest",
+            projector=lambda table, binding: (table.num_rows, binding["role"]),
+        )
 
 
 @pytest.mark.parametrize(

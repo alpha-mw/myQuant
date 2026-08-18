@@ -927,6 +927,7 @@ class FactorValidationStore:
                     "normalized_expression": row["normalized_expression"],
                     "parameters_json": row["parameters_json"],
                     "input_fields": list(row["input_fields"]),
+                    "required_source_roles": list(row["required_source_roles"]),
                 }
             )
         if observed != factor_manifest["payload"]["implementation_rows"]:

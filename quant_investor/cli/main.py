@@ -28,6 +28,7 @@ from quant_investor.cli.unified import (
     system_activate,
     system_assemble,
     system_bootstrap_assemble,
+    system_bootstrap_admission_preflight,
     system_calendar_capture,
     system_status,
     system_suspend,
@@ -400,6 +401,18 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     _add_exact_request_arguments(system_bootstrap_assemble_parser)
     system_bootstrap_assemble_parser.add_argument(
+        "--input-root",
+        required=True,
+        type=_workspace_relative_canonical_path,
+        help="workspace-relative root containing every sealed input",
+    )
+
+    system_bootstrap_preflight_parser = system_subparsers.add_parser(
+        "bootstrap-admission-preflight",
+        help="验证 strict sources 并生成非授权 Fundamental veto subject",
+    )
+    _add_exact_request_arguments(system_bootstrap_preflight_parser)
+    system_bootstrap_preflight_parser.add_argument(
         "--input-root",
         required=True,
         type=_workspace_relative_canonical_path,
@@ -965,6 +978,17 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
     if args.command == "system" and args.system_command == "bootstrap-assemble":
         _print_json(
             system_bootstrap_assemble(
+                workspace_root=args.workspace_root,
+                input_root=args.input_root,
+                request_path=args.request,
+                expected_request_sha256=args.expected_request_sha256,
+            )
+        )
+        return
+
+    if args.command == "system" and args.system_command == "bootstrap-admission-preflight":
+        _print_json(
+            system_bootstrap_admission_preflight(
                 workspace_root=args.workspace_root,
                 input_root=args.input_root,
                 request_path=args.request,

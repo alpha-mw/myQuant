@@ -135,6 +135,18 @@ from .validation_records import (
     validate_validation_prepared,
 )
 from .suspension import build_suspended_generation, suspend_system
+from .fundamental_advisory import (
+    FUNDAMENTAL_ADVISORY_KIND,
+    FUNDAMENTAL_OPERATOR_VETO_KIND,
+    FUNDAMENTAL_VETO_SUBJECT_KIND,
+    build_fundamental_advisory,
+    build_fundamental_operator_veto,
+    build_fundamental_veto_subject,
+    require_fundamental_proceed,
+    validate_fundamental_advisory,
+    validate_fundamental_operator_veto,
+    validate_fundamental_veto_subject,
+)
 
 EMPTY = EMPTY_POINTER_SHA256
 
@@ -166,6 +178,9 @@ __all__ = [
     "EMERGENCY_CONTROLLER_DOMAIN",
     "EMERGENCY_CONTROLLER_PATH",
     "GENERATIONS_ROOT",
+    "FUNDAMENTAL_ADVISORY_KIND",
+    "FUNDAMENTAL_OPERATOR_VETO_KIND",
+    "FUNDAMENTAL_VETO_SUBJECT_KIND",
     "MIGRATION_MARKER_PATH",
     "GENERATION_STATES",
     "MANIFEST_KIND",
@@ -220,6 +235,9 @@ __all__ = [
     "build_prepared_activation_transaction",
     "build_release_install_evidence",
     "build_suspended_generation",
+    "build_fundamental_advisory",
+    "build_fundamental_operator_veto",
+    "build_fundamental_veto_subject",
     "decode_assembly_request",
     "ast_entrypoint_sha256",
     "component_registry",
@@ -235,6 +253,9 @@ __all__ = [
     "validate_activation_authorization",
     "validate_prepared_activation_transaction",
     "validate_release_install_evidence",
+    "validate_fundamental_advisory",
+    "validate_fundamental_operator_veto",
+    "validate_fundamental_veto_subject",
     "verify_detached_checkout",
     "validate_candidate_transaction_intent",
     "validate_installed_component_manifest",
@@ -246,6 +267,7 @@ __all__ = [
     "validation_namespace_path_sha256",
     "verify_release_install_input",
     "verify_emergency_controller",
+    "require_fundamental_proceed",
     "MAXIMUM_BOOTSTRAP_FACTOR_SOURCE_BYTES",
     "MAXIMUM_DECODED_SOURCE_CELLS",
     "MAXIMUM_DECODED_SOURCE_ROWS",

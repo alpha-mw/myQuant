@@ -25,10 +25,18 @@ from quant_investor.migration.migration import (
 )
 from quant_investor.system.activation import build_activation_authorization
 from quant_investor.system.bootstrap_receipt import build_production_bootstrap_receipt
+from quant_investor.system.fundamental_advisory import (
+    build_fundamental_advisory,
+    build_fundamental_veto_subject,
+    factor_dependency_sha256,
+)
+from quant_investor.factors.governance.bootstrap import bootstrap_factor_definitions
 from quant_investor.system.release_install import build_release_install_evidence
 from quant_investor.system.store import SystemStore, object_ref_for_artifact
 
 from test_unified_migration_custody import _inventory, _workspace
+
+_ISOLATED_RECEIPT_REFS: dict[tuple[str, str], dict[str, str]] = {}
 
 
 def isolate_pointer_protocol_source_gate(monkeypatch: Any) -> None:
@@ -38,24 +46,25 @@ def isolate_pointer_protocol_source_gate(monkeypatch: Any) -> None:
     import quant_investor.migration.authority as authority_module
 
     def isolated_receipt(**kwargs: Any) -> dict[str, Any]:
-        sources = kwargs["verified_generation"]["manifest"]["payload"]["factor_source_object_refs"]
-        return {
-            "payload": {
-                "calendar_authority_policy_ref": sources[0],
-                "calendar_compilation_ref": sources[1],
-                "calendar_capability_ref": None,
-                "calendar_capture_execution_ref": None,
-                "calendar_authorization_basis": {
-                    "authority_route": "EXCHANGE_OFFICIAL",
-                    "policy_ref": sources[0],
-                    "compilation_ref": sources[1],
-                    "capability_ref": None,
-                    "capture_execution_ref": None,
-                    "source_limitations": [],
-                },
-                "calendar_source_limitations": [],
-            }
-        }
+        manifest = kwargs["verified_generation"]["manifest"]
+        refs = manifest["payload"]["research_refs"]
+        if type(refs) is list and len(refs) == 1:
+            receipt_ref = refs[0]
+        else:
+            receipt_ref = _ISOLATED_RECEIPT_REFS.get(
+                (
+                    str(kwargs["store"].workspace_root),
+                    kwargs["verified_generation"]["generation_id"],
+                )
+            )
+        if receipt_ref is None:
+            raise AssertionError("isolated receipt binding is absent")
+        if kwargs.get("validation_mode") == "HISTORICAL":
+            dispatch = kwargs["verified_generation"].get("historical_contract_dispatch")
+            if type(dispatch) is not dict:
+                raise AssertionError("isolated historical dispatch is absent")
+            return kwargs["store"]._historical_get_object(receipt_ref, dispatch=dispatch)
+        return kwargs["store"].get_object(receipt_ref)
 
     def isolated_target(
         *,
@@ -80,11 +89,18 @@ def isolate_pointer_protocol_source_gate(monkeypatch: Any) -> None:
             receipt_ref = research_refs[0]
         else:
             receipt_ref = expected_receipt_ref
+        if manifest["payload"]["research_refs"]:
+            receipt = system_store.get_object(receipt_ref)
+        else:
+            receipt = system_store.get_object(
+                _ISOLATED_RECEIPT_REFS[(str(system_store.workspace_root), generation_id)]
+            )
+            receipt_ref = _ISOLATED_RECEIPT_REFS[(str(system_store.workspace_root), generation_id)]
         return {
             "verified_generation": verified,
             "generation_manifest": manifest,
             "generation_manifest_ref": manifest_ref,
-            "production_receipt": isolated_receipt(verified_generation=verified),
+            "production_receipt": receipt,
             "production_receipt_ref": receipt_ref,
         }
 
@@ -550,6 +566,12 @@ def _test_final_authorization(  # noqa: C901
             calendar_capture_execution_ref=receipt_payload["calendar_capture_execution_ref"],
             calendar_authorization_basis=receipt_payload["calendar_authorization_basis"],
             calendar_source_limitations=receipt_payload["calendar_source_limitations"],
+            bootstrap_admission_intent_sha256=receipt_payload["bootstrap_admission_intent_sha256"],
+            factor_dependency_sha256=receipt_payload["factor_dependency_sha256"],
+            fundamental_veto_subject_ref=receipt_payload["fundamental_veto_subject_ref"],
+            fundamental_operator_veto_ref=receipt_payload["fundamental_operator_veto_ref"],
+            fundamental_advisory_ref=receipt_payload["fundamental_advisory_ref"],
+            fundamental_advisory_authorized=True,
             preflight_rows=sorted(
                 [
                     {
@@ -632,6 +654,115 @@ def prepare_initial_activation(
         production_receipt_document = store.get_object(production_receipt_ref)
     else:
         source_refs = generation["manifest"]["payload"]["factor_source_object_refs"]
+        dependency_rows = [
+            {
+                "factor_id": row["factor_id"],
+                "required_source_roles": list(row["required_source_roles"]),
+            }
+            for row in bootstrap_factor_definitions()
+        ]
+        dependency_sha = factor_dependency_sha256(dependency_rows)
+        active_set = store.get_object(generation["manifest"]["payload"]["factor_active_set_ref"])
+        ordered_sources = sorted(
+            source_refs,
+            key=lambda row: (
+                row["kind"],
+                row["contract_sha256"],
+                row["artifact_id"],
+                row["semantic_sha256"],
+                row["byte_sha256"],
+            ),
+        )
+        subject = build_fundamental_veto_subject(
+            bootstrap_admission_intent_sha256="0" * 64,
+            deployed_release_ref=release_ref,
+            release_code_manifest_sha256=store.get_object(release_ref)["payload"][
+                "code_manifest_sha256"
+            ],
+            system_as_of_date="2026-08-14",
+            calendar_compilation_ref=source_refs[1],
+            exchange_calendar_ref=source_refs[0],
+            current_market_pointer_ref=source_refs[0],
+            current_pit_pointer_ref=source_refs[0],
+            current_pit_membership_ref=source_refs[0],
+            fundamental_pointer_ref=source_refs[0],
+            fundamental_manifest_ref=source_refs[0],
+            fundamental_table_refs=ordered_sources,
+            fundamental_evidence_refs=ordered_sources,
+            fundamental_provenance_binding_sha256="3" * 64,
+            fundamental_target_bindings_sha256="4" * 64,
+            fundamental_snapshot_cutoff_date="2026-08-14",
+            factor_set_sha256=active_set["payload"]["factor_set_sha256"],
+            factor_dependency_rows=dependency_rows,
+            factor_dependency_sha256=dependency_sha,
+            created_at=prepared_at,
+        )
+        subject_ref = store.put_object(subject)
+        advisory = build_fundamental_advisory(
+            veto_subject_ref=subject_ref,
+            operator_veto_ref=None,
+            integrity_status="VERIFIED",
+            required_by_active_factor_set=False,
+            system_as_of_date="2026-08-14",
+            fundamental_snapshot_cutoff_date="2026-08-14",
+            calendar_age_days=0,
+            open_session_age=0,
+            latest_admitted_available_at="2026-08-14",
+            last_refresh_basis="SNAPSHOT_CUTOFF_DATE",
+            disclosure_check="PASS",
+            freshness_policy="ADVISORY_NO_FIXED_MAXIMUM",
+            default_action="PROCEED",
+            operator_veto_present=False,
+            effective_action="PROCEED",
+            factor_dependency_rows=dependency_rows,
+            factor_dependency_sha256=dependency_sha,
+            fundamental_machine_states={
+                "mixed": True,
+                "legacy_direct_reader_provenance": "limited",
+                "binding_aware_research_ready": True,
+                "homogeneous_history_ready": False,
+            },
+            source_limitations=[
+                "FUNDAMENTAL_HISTORY_MIXED",
+                "FUNDAMENTAL_HISTORY_NOT_HOMOGENEOUS",
+                "FUNDAMENTAL_LEGACY_DIRECT_READER_PROVENANCE_LIMITED",
+            ],
+            generic_json_max_bytes=64 * 1024**2,
+            predecessor_manifest_max_bytes=128 * 1024**2,
+            fundamental_parquet_max_bytes=512 * 1024**2,
+            generic_replay_max_cells=100_000_000,
+            daily_replay_max_cells=256_000_000,
+            fundamental_table_source_rows=[
+                {
+                    "table_name": "fundamental_daily",
+                    "source_ref": source_refs[0],
+                    "row_count": 2,
+                    "column_count": 2,
+                    "observed_cells": 4,
+                    "cell_limit": 256_000_000,
+                },
+                {
+                    "table_name": "fundamental_period",
+                    "source_ref": source_refs[0],
+                    "row_count": 2,
+                    "column_count": 2,
+                    "observed_cells": 4,
+                    "cell_limit": 100_000_000,
+                },
+                {
+                    "table_name": "fundamental_quarantine",
+                    "source_ref": source_refs[0],
+                    "row_count": 0,
+                    "column_count": 0,
+                    "observed_cells": 0,
+                    "cell_limit": 100_000_000,
+                },
+            ],
+            predecessor_manifest_source_ref=source_refs[0],
+            ordinary_json_source_refs=ordered_sources,
+            created_at=prepared_at,
+        )
+        advisory_ref = store.put_object(advisory)
         basis = {
             "authority_route": "EXCHANGE_OFFICIAL",
             "policy_ref": source_refs[0],
@@ -642,6 +773,7 @@ def prepare_initial_activation(
         }
         production_receipt_document = build_production_bootstrap_receipt(
             bootstrap_operator_request_ref=source_refs[0],
+            bootstrap_admission_intent_sha256="0" * 64,
             source_root_id="test-isolated-pointer-protocol",
             input_source_rows=[
                 {
@@ -694,6 +826,11 @@ def prepare_initial_activation(
                 "binding_aware_research_ready": True,
                 "homogeneous_history_ready": False,
             },
+            factor_dependency_rows=dependency_rows,
+            factor_dependency_sha256=dependency_sha,
+            fundamental_veto_subject_ref=subject_ref,
+            fundamental_operator_veto_ref=None,
+            fundamental_advisory_ref=advisory_ref,
             signal_statistics=[
                 {
                     "factor_id": "pv_low_dollar_volume_5d",
@@ -709,6 +846,10 @@ def prepare_initial_activation(
             assembler_code_sha256="2" * 64,
             created_at=prepared_at,
         )
+    production_receipt_ref = store.put_object(production_receipt_document)
+    _ISOLATED_RECEIPT_REFS[(str(store.workspace_root), generation["generation_id"])] = (
+        production_receipt_ref
+    )
     final_authorization = _test_final_authorization(
         store,
         release_ref,

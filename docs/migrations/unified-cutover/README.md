@@ -236,6 +236,22 @@ refs, and all three Fundamental tables must be present in the declared fileset.
 No pathname reopen or whole-row-group `to_pandas()` is authoritative in this
 production validation path.
 
+Fundamental freshness is an immutable disclosure, not a numerical admission
+threshold. The initial generation must still include one fully valid
+safe-successor source, but that source retains its own historical
+market/PIT/scope bindings rather than being rewritten to current Factor inputs.
+The receipt seals `system_as_of_date`, Fundamental snapshot cutoff,
+calendar/open-session age, latest admitted availability date, code-owned Factor
+dependencies, and a nullable VETO-only operator reference. A valid veto can
+only reduce authority and stops before generation/final authorization/CAS.
+Active status reports the sealed advisory values; it never recomputes age from
+the current date or a descendant calendar.
+Current VETO issuance is bound to the effective UID and to a source leaf owned
+by that same UID; frozen historical replay preserves, but does not reinterpret,
+the initial actor. Daily forecast admission is row-relative:
+`forecast_ann_date` must not follow its own `trade_date`, even when both dates
+are inside the overall Fundamental and System cutoffs.
+
 Calendar admission is an exact tagged union. `EXCHANGE_OFFICIAL` remains the
 full-authority route and requires the native issuer closure described below.
 `TRUSTED_PROVIDER_DEGRADED` is the narrowly admitted daily-Factor route for a

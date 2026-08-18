@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from quant_investor.contracts import get_contract
 from quant_investor.factors.governance.bootstrap import (
+    BOOTSTRAP_REQUIRED_SOURCE_ROLES,
     BLEND_W75_CONTROL,
     BLEND_W80,
     LOW_DOLLAR_VOLUME,
@@ -47,6 +48,7 @@ def test_installed_factor_semantics_and_ast_identity_are_exact() -> None:
         ),
         "parameters_json": '{"window_open_sessions":5}',
         "input_fields": ["amount"],
+        "required_source_roles": list(BOOTSTRAP_REQUIRED_SOURCE_ROLES),
     }
     assert blend["primitive"] == "volstab_momentum_amihud_blend"
     assert blend["parameters_json"] == (
@@ -87,6 +89,9 @@ def test_installed_rows_bind_each_exact_component_ref() -> None:
         "component-low",
         "component-w80",
     }
+    assert all(
+        row["required_source_roles"] == list(BOOTSTRAP_REQUIRED_SOURCE_ROLES) for row in rows
+    )
 
 
 def test_validation_namespaces_are_deterministic_and_root_bound() -> None:

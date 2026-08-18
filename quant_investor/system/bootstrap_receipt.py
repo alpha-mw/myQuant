@@ -34,6 +34,7 @@ PRODUCTION_BOOTSTRAP_RECEIPT_FIELDS: Final = frozenset(
         "production_bootstrap_receipt_id",
         "state",
         "bootstrap_operator_request_ref",
+        "bootstrap_admission_intent_sha256",
         "source_root_id",
         "input_source_rows",
         "deployed_release_ref",
@@ -60,6 +61,11 @@ PRODUCTION_BOOTSTRAP_RECEIPT_FIELDS: Final = frozenset(
         "automation_semantic_sha256",
         "source_blockers",
         "fundamental_machine_states",
+        "factor_dependency_rows",
+        "factor_dependency_sha256",
+        "fundamental_veto_subject_ref",
+        "fundamental_operator_veto_ref",
+        "fundamental_advisory_ref",
         "signal_statistics",
         "signal_statistics_sha256",
         "assembler_module_path",
@@ -314,6 +320,10 @@ def validate_production_bootstrap_receipt(  # noqa: C901
         payload["bootstrap_operator_request_ref"],
         label="bootstrap_operator_request_ref",
     )
+    _sha(
+        payload["bootstrap_admission_intent_sha256"],
+        label="bootstrap_admission_intent_sha256",
+    )
     _identifier(payload["source_root_id"], label="source_root_id")
     validate_object_ref(payload["deployed_release_ref"], label="deployed_release_ref")
     validate_object_ref(
@@ -387,6 +397,20 @@ def validate_production_bootstrap_receipt(  # noqa: C901
         label="factor_validation_attestation_ref",
     )
     validate_object_ref(payload["readiness_matrix_ref"], label="readiness_matrix_ref")
+    from .fundamental_advisory import (
+        factor_dependency_sha256,
+        validate_factor_dependency_rows,
+    )
+
+    dependency_rows = validate_factor_dependency_rows(payload["factor_dependency_rows"])
+    if factor_dependency_sha256(dependency_rows) != payload["factor_dependency_sha256"]:
+        raise SystemContractError("production receipt Factor dependency SHA differs")
+    validate_object_ref(
+        payload["fundamental_veto_subject_ref"], label="fundamental_veto_subject_ref"
+    )
+    if payload["fundamental_operator_veto_ref"] is not None:
+        raise SystemContractError("verified production receipt veto ref must be null")
+    validate_object_ref(payload["fundamental_advisory_ref"], label="fundamental_advisory_ref")
     for field in (
         "emergency_controller_sha256",
         "skill_tree_sha256",
@@ -427,6 +451,7 @@ def validate_production_bootstrap_receipt(  # noqa: C901
 def build_production_bootstrap_receipt(
     *,
     bootstrap_operator_request_ref: Mapping[str, Any],
+    bootstrap_admission_intent_sha256: str,
     source_root_id: str,
     input_source_rows: Sequence[Mapping[str, Any]],
     deployed_release_ref: Mapping[str, Any],
@@ -452,6 +477,11 @@ def build_production_bootstrap_receipt(
     automation_semantic_sha256: str,
     source_blockers: Sequence[str],
     fundamental_machine_states: Mapping[str, Any],
+    factor_dependency_rows: Sequence[Mapping[str, Any]],
+    factor_dependency_sha256: str,
+    fundamental_veto_subject_ref: Mapping[str, Any],
+    fundamental_operator_veto_ref: Mapping[str, Any] | None,
+    fundamental_advisory_ref: Mapping[str, Any],
     signal_statistics: Sequence[Mapping[str, Any]],
     assembler_code_sha256: str,
     created_at: str,
@@ -461,6 +491,7 @@ def build_production_bootstrap_receipt(
     body = {
         "state": "VERIFIED",
         "bootstrap_operator_request_ref": dict(bootstrap_operator_request_ref),
+        "bootstrap_admission_intent_sha256": bootstrap_admission_intent_sha256,
         "source_root_id": source_root_id,
         "input_source_rows": [dict(row) for row in input_source_rows],
         "deployed_release_ref": dict(deployed_release_ref),
@@ -493,6 +524,13 @@ def build_production_bootstrap_receipt(
         "automation_semantic_sha256": automation_semantic_sha256,
         "source_blockers": list(source_blockers),
         "fundamental_machine_states": dict(fundamental_machine_states),
+        "factor_dependency_rows": [dict(row) for row in factor_dependency_rows],
+        "factor_dependency_sha256": factor_dependency_sha256,
+        "fundamental_veto_subject_ref": dict(fundamental_veto_subject_ref),
+        "fundamental_operator_veto_ref": (
+            None if fundamental_operator_veto_ref is None else dict(fundamental_operator_veto_ref)
+        ),
+        "fundamental_advisory_ref": dict(fundamental_advisory_ref),
         "signal_statistics": [dict(row) for row in signal_statistics],
         "signal_statistics_sha256": hashlib.sha256(
             canonical_json_bytes([dict(row) for row in signal_statistics])

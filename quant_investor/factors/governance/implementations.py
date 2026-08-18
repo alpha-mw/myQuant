@@ -20,6 +20,7 @@ from .bootstrap import (
     LOW_DOLLAR_VOLUME,
     bootstrap_factor_definitions,
     compute_bootstrap_signals,
+    required_source_roles_for_factor,
 )
 from .common import require_sha256
 from .errors import FactorGovernanceError
@@ -40,6 +41,7 @@ class InstalledFactorImplementation:
     normalized_expression: str
     parameters_json: str
     input_fields: tuple[str, ...]
+    required_source_roles: tuple[str, ...]
 
 
 def _low_dollar_volume(
@@ -110,6 +112,7 @@ def _installed_implementation(factor_id: str) -> InstalledFactorImplementation:
         normalized_expression=_NORMALIZED_EXPRESSIONS[factor_id],
         parameters_json=canonical_json_bytes(definition["parameters"]).decode("utf-8"),
         input_fields=tuple(input_fields),
+        required_source_roles=required_source_roles_for_factor(factor_id),
     )
 
 
@@ -173,6 +176,7 @@ def installed_implementation_rows(
                 "normalized_expression": implementation.normalized_expression,
                 "parameters_json": implementation.parameters_json,
                 "input_fields": list(implementation.input_fields),
+                "required_source_roles": list(implementation.required_source_roles),
             }
         )
     return rows
@@ -195,6 +199,7 @@ def installed_semantic_row(factor_id: str) -> dict[str, Any]:
         "normalized_expression": implementation.normalized_expression,
         "parameters_json": implementation.parameters_json,
         "input_fields": list(implementation.input_fields),
+        "required_source_roles": list(implementation.required_source_roles),
     }
 
 

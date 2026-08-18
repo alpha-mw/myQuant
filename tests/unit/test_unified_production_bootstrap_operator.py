@@ -6,13 +6,14 @@ import hashlib
 from datetime import date, datetime, timedelta, timezone
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import subprocess
 import sys
 from typing import Any
 
 import pyarrow.parquet as pq
 import pyarrow as pa
+import pandas as pd
 import pytest
 
 from quant_investor.contracts import (
@@ -29,7 +30,10 @@ from quant_investor.factors.governance import (
     LOW_DOLLAR_VOLUME,
 )
 from quant_investor.factors.governance.production import (
+    BOOTSTRAP_OPERATOR_REQUEST_FIELDS,
     assemble_production_bootstrap,
+    bootstrap_admission_intent_sha256,
+    prepare_production_bootstrap_admission,
 )
 import quant_investor.factors.governance.production as production_module
 import quant_investor.market.fundamental_incremental as fundamental_incremental_module
@@ -47,6 +51,7 @@ from quant_investor.system import (
     installed_code_manifest_sha256,
     verify_emergency_controller,
     object_ref_for_artifact,
+    build_fundamental_operator_veto,
 )
 from unified_activation_helpers import prepare_initial_activation
 
@@ -930,6 +935,7 @@ def _request(
 ) -> bytes:
     payload: dict[str, Any] = {
         "bootstrap_operation_id": operation_id,
+        "bootstrap_admission_intent_sha256": "0" * 64,
         "state": "SEALED",
         "source_root_id": SystemStore(workspace_root).source_root_id,
         "release_manifest_ref": release_ref,
@@ -940,9 +946,12 @@ def _request(
             "FUNDAMENTAL_HISTORY_NOT_HOMOGENEOUS",
             "FUNDAMENTAL_LEGACY_DIRECT_READER_PROVENANCE_LIMITED",
         ],
+        "fundamental_operator_veto_file_ref": None,
         "trusted_at": trusted_at,
         **files,
     }
+    if set(payload) == BOOTSTRAP_OPERATOR_REQUEST_FIELDS:
+        payload["bootstrap_admission_intent_sha256"] = bootstrap_admission_intent_sha256(payload)
     return canonical_json_bytes(
         seal_artifact("system.bootstrap_operator_request", payload, created_at=trusted_at)
     )
@@ -1288,6 +1297,17 @@ def test_production_bootstrap_receipt_binding_mutations_block_initial_activation
         lambda payload: payload.__setitem__("emergency_controller_sha256", "f" * 64),
         lambda payload: payload.__setitem__("assembler_code_sha256", "e" * 64),
         lambda payload: payload.__setitem__("expected_assembly_id", "d" * 64),
+        lambda payload: payload.__setitem__("bootstrap_admission_intent_sha256", "c" * 64),
+        lambda payload: payload.__setitem__("factor_dependency_sha256", "b" * 64),
+        lambda payload: payload.__setitem__(
+            "fundamental_veto_subject_ref", result["production_bootstrap_receipt_ref"]
+        ),
+        lambda payload: payload.__setitem__(
+            "fundamental_advisory_ref", result["production_bootstrap_receipt_ref"]
+        ),
+        lambda payload: payload.__setitem__(
+            "fundamental_operator_veto_ref", result["production_bootstrap_receipt_ref"]
+        ),
         lambda payload: payload.__setitem__(
             "source_blockers",
             [
@@ -1701,6 +1721,9 @@ def test_production_bootstrap_requires_exact_machine_derived_source_blockers(
         )
     )
     request["payload"]["source_blockers"] = sorted(declared)
+    request["payload"]["bootstrap_admission_intent_sha256"] = bootstrap_admission_intent_sha256(
+        request["payload"]
+    )
     altered = canonical_json_bytes(
         seal_artifact(
             "system.bootstrap_operator_request",
@@ -1732,6 +1755,9 @@ def test_production_bootstrap_rejects_operator_selected_source_root_identity(
         )
     )
     request["payload"]["source_root_id"] = "operator-selected-root"
+    request["payload"]["bootstrap_admission_intent_sha256"] = bootstrap_admission_intent_sha256(
+        request["payload"]
+    )
     altered = canonical_json_bytes(
         seal_artifact(
             "system.bootstrap_operator_request",
@@ -2382,7 +2408,7 @@ def test_production_bootstrap_requires_complete_fundamental_evidence_fileset(
         )
 
 
-def test_production_bootstrap_rejects_fundamental_target_binding_drift(
+def test_production_bootstrap_accepts_valid_historical_fundamental_binding(
     tmp_path: Path,
 ) -> None:
     workspace, release_ref = _seed_workspace(tmp_path)
@@ -2393,12 +2419,14 @@ def test_production_bootstrap_rejects_fundamental_target_binding_drift(
     _write(input_root, relative, canonical_json_bytes(pointer) + b"\n")
     files["market_pointer_file_ref"] = _byte_ref(input_root, relative)
 
-    with pytest.raises(SystemContractError, match="target source binding differs"):
-        assemble_production_bootstrap(
-            workspace_root=workspace,
-            input_root=input_root,
-            request_raw=_request(workspace_root=workspace, release_ref=release_ref, files=files),
-        )
+    result = assemble_production_bootstrap(
+        workspace_root=workspace,
+        input_root=input_root,
+        request_raw=_request(workspace_root=workspace, release_ref=release_ref, files=files),
+    )
+    assert result["status"] == "OFFLINE_VERIFIED"
+    assert result["fundamental_advisory"]["effective_action"] == "PROCEED"
+    assert not (workspace / "results/system/_active.json").exists()
 
 
 def test_production_bootstrap_requires_empty_pointer(tmp_path: Path) -> None:
@@ -2415,3 +2443,286 @@ def test_production_bootstrap_requires_empty_pointer(tmp_path: Path) -> None:
             input_root=input_root,
             request_raw=raw,
         )
+
+
+def test_admission_intent_sentinel_is_acyclic_and_every_other_field_is_bound(
+    tmp_path: Path,
+) -> None:
+    workspace, release_ref = _seed_workspace(tmp_path)
+    input_root = tmp_path / "sealed-inputs"
+    raw = _request(workspace_root=workspace, release_ref=release_ref, files=_inputs(input_root))
+    request = json.loads(raw)
+    payload = dict(request["payload"])
+    null_intent = payload["bootstrap_admission_intent_sha256"]
+    payload["fundamental_operator_veto_file_ref"] = {
+        "relative_path": "authority/operator-veto.json",
+        "byte_sha256": "f" * 64,
+    }
+    veto_intent = bootstrap_admission_intent_sha256(payload)
+    assert veto_intent == null_intent
+    payload["bootstrap_admission_intent_sha256"] = veto_intent
+    veto_request = canonical_json_bytes(
+        seal_artifact("system.bootstrap_operator_request", payload, created_at=BASE)
+    )
+    assert veto_request != raw
+
+    changed = dict(payload)
+    changed["automation_semantic_sha256"] = "e" * 64
+    assert bootstrap_admission_intent_sha256(changed) != null_intent
+
+    recursive = dict(payload)
+    recursive["bootstrap_admission_intent_sha256"] = hashlib.sha256(raw).hexdigest()
+    recursive_artifact = seal_artifact(
+        "system.bootstrap_operator_request", recursive, created_at=BASE
+    )
+    with pytest.raises(SystemContractError, match="admission intent SHA differs"):
+        production_module.validate_bootstrap_operator_request(recursive_artifact)
+
+    sentinel_as_ref = dict(payload)
+    sentinel_as_ref["fundamental_operator_veto_file_ref"] = (
+        production_module.FUNDAMENTAL_OPERATOR_VETO_SENTINEL
+    )
+    sentinel_as_ref["bootstrap_admission_intent_sha256"] = bootstrap_admission_intent_sha256(
+        sentinel_as_ref
+    )
+    sentinel_artifact = seal_artifact(
+        "system.bootstrap_operator_request", sentinel_as_ref, created_at=BASE
+    )
+    with pytest.raises(SystemContractError, match="veto_file_ref fields"):
+        production_module.validate_bootstrap_operator_request(sentinel_artifact)
+
+
+def test_exact_operator_veto_blocks_before_any_generation_or_activation_artifact(
+    tmp_path: Path,
+) -> None:
+    workspace, release_ref = _seed_workspace(tmp_path)
+    input_root = tmp_path / "sealed-inputs"
+    files = _inputs(input_root)
+    request_raw = _request(
+        workspace_root=workspace,
+        release_ref=release_ref,
+        files=files,
+        operation_id="vetoed-bootstrap",
+    )
+    preflight = prepare_production_bootstrap_admission(
+        workspace_root=workspace,
+        input_root=input_root,
+        request_raw=request_raw,
+    )
+    assert preflight["status"] == "ADMISSION_PREFLIGHT_ONLY"
+    assert preflight["generation_write_count"] == 0
+    assert not (workspace / "results/system/generations").exists()
+
+    veto = build_fundamental_operator_veto(
+        veto_subject_ref=preflight["fundamental_veto_subject_ref"],
+        reason_codes=["FUNDAMENTAL_OPERATOR_HOLD"],
+        issued_at=BASE,
+    )
+    veto_relative = "authority/fundamental-operator-veto.json"
+    _write(input_root, veto_relative, canonical_json_bytes(veto))
+    request = json.loads(request_raw)
+    payload = dict(request["payload"])
+    payload["fundamental_operator_veto_file_ref"] = _byte_ref(input_root, veto_relative)
+    payload["bootstrap_admission_intent_sha256"] = bootstrap_admission_intent_sha256(payload)
+    vetoed_raw = canonical_json_bytes(
+        seal_artifact("system.bootstrap_operator_request", payload, created_at=BASE)
+    )
+    with pytest.raises(SystemPreconditionError, match="veto blocks"):
+        assemble_production_bootstrap(
+            workspace_root=workspace,
+            input_root=input_root,
+            request_raw=vetoed_raw,
+        )
+    assert not (workspace / "results/system/generations").exists()
+    assert not (workspace / "results/system/_active.json").exists()
+    assert not (workspace / "results/system/_migration_complete.json").exists()
+    assert not (workspace / "results/system/activation_authorizations").exists()
+    assert not (workspace / "results/system/activation_transactions").exists()
+
+
+def test_operator_veto_source_owner_must_match_authenticated_actor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace, release_ref = _seed_workspace(tmp_path)
+    input_root = tmp_path / "sealed-inputs"
+    files = _inputs(input_root)
+    request_raw = _request(
+        workspace_root=workspace,
+        release_ref=release_ref,
+        files=files,
+        operation_id="veto-owner-mismatch",
+    )
+    preflight = prepare_production_bootstrap_admission(
+        workspace_root=workspace,
+        input_root=input_root,
+        request_raw=request_raw,
+    )
+    veto = build_fundamental_operator_veto(
+        veto_subject_ref=preflight["fundamental_veto_subject_ref"],
+        reason_codes=["FUNDAMENTAL_OPERATOR_HOLD"],
+        issued_at=BASE,
+    )
+    veto_relative = "authority/fundamental-operator-veto.json"
+    _write(input_root, veto_relative, canonical_json_bytes(veto))
+    request = json.loads(request_raw)
+    payload = dict(request["payload"])
+    payload["fundamental_operator_veto_file_ref"] = _byte_ref(input_root, veto_relative)
+    payload["bootstrap_admission_intent_sha256"] = bootstrap_admission_intent_sha256(payload)
+    vetoed_raw = canonical_json_bytes(
+        seal_artifact("system.bootstrap_operator_request", payload, created_at=BASE)
+    )
+    real_inspect = SystemStore.inspect_source_object
+
+    def owner_mismatch(
+        self: SystemStore,
+        source_object_ref: dict[str, str],
+        *,
+        full_hash: bool,
+        maximum_bytes: int,
+    ) -> dict[str, Any]:
+        observed = real_inspect(
+            self,
+            source_object_ref,
+            full_hash=full_hash,
+            maximum_bytes=maximum_bytes,
+        )
+        if observed["relative_path"].endswith(veto_relative):
+            observed = dict(observed)
+            observed["stat_identity"] = {
+                **observed["stat_identity"],
+                "st_uid": os.geteuid() + 1,
+            }
+        return observed
+
+    monkeypatch.setattr(SystemStore, "inspect_source_object", owner_mismatch)
+    with pytest.raises(SystemSecurityError, match="owner differs from actor"):
+        assemble_production_bootstrap(
+            workspace_root=workspace,
+            input_root=input_root,
+            request_raw=vetoed_raw,
+        )
+    assert not (workspace / "results/system/generations").exists()
+    assert not (workspace / "results/system/_active.json").exists()
+    assert not (workspace / "results/system/_migration_complete.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("table_name", "column", "future_value"),
+    [
+        ("fundamental_period", "availability_date", pd.Timestamp("2026-08-08")),
+        ("fundamental_daily", "availability_date", pd.Timestamp("2026-08-08")),
+        ("fundamental_daily", "trade_date", pd.Timestamp("2026-08-08")),
+        ("fundamental_daily", "forecast_ann_date", "20260808"),
+    ],
+)
+def test_admitted_fundamental_future_date_blocks_every_included_domain(
+    tmp_path: Path,
+    table_name: str,
+    column: str,
+    future_value: object,
+) -> None:
+    input_root = tmp_path / "sealed-inputs"
+    files = _inputs(input_root)
+    references = [dict(row) for row in files["fundamental_table_file_refs"]]
+    index = next(
+        index
+        for index, row in enumerate(references)
+        if PurePosixPath(row["relative_path"]).name == f"{table_name}.parquet"
+    )
+    path = input_root / references[index]["relative_path"]
+    frame = pq.read_table(path).to_pandas()
+    frame.loc[frame.index[0], column] = future_value
+    pq.write_table(pa.Table.from_pandas(frame, preserve_index=False), path)
+    path.chmod(0o600)
+    references[index] = _byte_ref(input_root, references[index]["relative_path"])
+    with pytest.raises(SystemContractError, match="future admitted information|future information"):
+        production_module._validate_fundamental_admitted_dates(
+            normalized={"fundamental_table_file_refs": references},
+            staging_root=input_root,
+            copied={"fundamental_table_file_refs": [row["relative_path"] for row in references]},
+            fundamental_cutoff="20260807",
+            system_cutoff="20260807",
+        )
+
+
+@pytest.mark.parametrize(
+    ("forecast_value", "expect_error"),
+    [
+        ("20260806", True),
+        ("20260805", False),
+        ("20260804", False),
+        ("2026/08/04", True),
+        (None, False),
+    ],
+)
+def test_daily_forecast_announcement_is_pit_relative_to_its_own_trade_date(
+    tmp_path: Path,
+    forecast_value: object,
+    expect_error: bool,
+) -> None:
+    input_root = tmp_path / "sealed-inputs"
+    files = _inputs(input_root)
+    references = [dict(row) for row in files["fundamental_table_file_refs"]]
+    index = next(
+        index
+        for index, row in enumerate(references)
+        if PurePosixPath(row["relative_path"]).name == "fundamental_daily.parquet"
+    )
+    path = input_root / references[index]["relative_path"]
+    frame = pq.read_table(path).to_pandas()
+    original_forecast_count = int(frame["forecast_ann_date"].notna().sum())
+    original_first_present = bool(pd.notna(frame.loc[frame.index[0], "forecast_ann_date"]))
+    frame.loc[frame.index[0], "trade_date"] = pd.Timestamp("2026-08-05")
+    frame.loc[frame.index[0], "forecast_ann_date"] = forecast_value
+    pq.write_table(pa.Table.from_pandas(frame, preserve_index=False), path)
+    path.chmod(0o600)
+    references[index] = _byte_ref(input_root, references[index]["relative_path"])
+
+    def validate() -> dict[str, Any]:
+        return production_module._validate_fundamental_admitted_dates(
+            normalized={"fundamental_table_file_refs": references},
+            staging_root=input_root,
+            copied={"fundamental_table_file_refs": [row["relative_path"] for row in references]},
+            fundamental_cutoff="20260807",
+            system_cutoff="20260807",
+        )
+
+    if expect_error:
+        with pytest.raises(
+            SystemContractError,
+            match="follows its row trade date|not a canonical admitted date",
+        ):
+            validate()
+    else:
+        result = validate()
+        expected_count = (
+            original_forecast_count - int(original_first_present) + int(forecast_value is not None)
+        )
+        assert result["forecast_announcement_count"] == expected_count
+
+
+def test_quarantine_future_date_is_not_mislabeled_as_admitted_information(
+    tmp_path: Path,
+) -> None:
+    input_root = tmp_path / "sealed-inputs"
+    files = _inputs(input_root)
+    references = [dict(row) for row in files["fundamental_table_file_refs"]]
+    index = next(
+        index
+        for index, row in enumerate(references)
+        if PurePosixPath(row["relative_path"]).name == "fundamental_quarantine.parquet"
+    )
+    path = input_root / references[index]["relative_path"]
+    pq.write_table(pa.table({"audit_only_future_date": ["20990101"]}), path)
+    path.chmod(0o600)
+    references[index] = _byte_ref(input_root, references[index]["relative_path"])
+    projection = production_module._validate_fundamental_admitted_dates(
+        normalized={"fundamental_table_file_refs": references},
+        staging_root=input_root,
+        copied={"fundamental_table_file_refs": [row["relative_path"] for row in references]},
+        fundamental_cutoff="20260807",
+        system_cutoff="20260807",
+    )
+    assert projection["quarantine_admission"] == "EXCLUDED_NOT_ADMITTED"
+    assert projection["latest_admitted_available_at"] == "2026-08-07"

@@ -31,6 +31,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
+from .fundamental_limits import (
+    FUNDAMENTAL_GENERIC_JSON_MAX_BYTES,
+    FUNDAMENTAL_PREDECESSOR_MANIFEST_MAX_BYTES,
+    FUNDAMENTAL_PREDECESSOR_MANIFEST_ROLE,
+    FundamentalSizePolicyViolation,
+    validate_fundamental_json_size_policy,
+)
 
 FUNDAMENTAL_POINTER_FILENAME = "_fundamental_latest.json"
 FUNDAMENTAL_GENERATIONS_DIRNAME = "_fundamental_generations"
@@ -55,8 +62,6 @@ SUCCESSOR_PROMOTION_PLAN_SCHEMA = "cn-fundamental-successor-promotion-plan.v1"
 
 DEFAULT_LOCK_TIMEOUT_SECONDS = 120.0
 _COPY_CHUNK_SIZE = 1024 * 1024
-_MAX_JSON_BYTES = 64 * 1024 * 1024
-_MAX_PREDECESSOR_MANIFEST_JSON_BYTES = 128 * 1024 * 1024
 _MAX_CHAIN_DEPTH = 4096
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,191}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -182,12 +187,21 @@ def _json_object(
     payload: bytes,
     *,
     label: str,
-    maximum_bytes: int = _MAX_JSON_BYTES,
+    semantic_role: str = "generic_json",
+    maximum_bytes: int = FUNDAMENTAL_GENERIC_JSON_MAX_BYTES,
 ) -> dict[str, Any]:
-    if type(maximum_bytes) is not int or maximum_bytes < 1:
-        raise SuccessorPromotionError(f"{label} JSON limit is invalid")
-    if len(payload) > maximum_bytes:
-        raise SuccessorPromotionError(f"{label} JSON is unreasonably large")
+    try:
+        validate_fundamental_json_size_policy(
+            semantic_role=semantic_role,
+            maximum_bytes=maximum_bytes,
+            observed_bytes=len(payload),
+        )
+    except FundamentalSizePolicyViolation as exc:
+        raise SuccessorPromotionError(
+            f"SUPPORT_REFERENCE_SIZE_POLICY_VIOLATION: {label} exceeds its role bound"
+        ) from exc
+    except ValueError as exc:
+        raise SuccessorPromotionError(f"{label} JSON limit is invalid") from exc
     try:
         parsed = json.loads(payload.decode("utf-8"))
     except Exception as exc:
@@ -332,13 +346,27 @@ def _stable_small_bytes(
     path: Path,
     *,
     label: str,
-    maximum_bytes: int = _MAX_JSON_BYTES,
+    semantic_role: str = "generic_json",
+    maximum_bytes: int = FUNDAMENTAL_GENERIC_JSON_MAX_BYTES,
 ) -> tuple[bytes, _FileIdentity]:
-    if type(maximum_bytes) is not int or maximum_bytes < 1:
-        raise SuccessorPromotionError(f"{label} size limit is invalid")
+    try:
+        validate_fundamental_json_size_policy(
+            semantic_role=semantic_role,
+            maximum_bytes=maximum_bytes,
+        )
+    except ValueError as exc:
+        raise SuccessorPromotionError(f"{label} size limit is invalid") from exc
     identity = _stable_file_hash(path, label=label)
-    if identity.size > maximum_bytes:
-        raise SuccessorPromotionError(f"{label} is unreasonably large")
+    try:
+        validate_fundamental_json_size_policy(
+            semantic_role=semantic_role,
+            maximum_bytes=maximum_bytes,
+            observed_bytes=identity.size,
+        )
+    except FundamentalSizePolicyViolation as exc:
+        raise SuccessorPromotionError(
+            f"SUPPORT_REFERENCE_SIZE_POLICY_VIOLATION: {label} exceeds its role bound"
+        ) from exc
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(
         os, "O_CLOEXEC", 0
     )
@@ -1413,7 +1441,8 @@ def _validate_pointer_references(
     *,
     expected_pointer_sha256: str,
     expected_manifest_sha256: str | None = None,
-    manifest_maximum_bytes: int = _MAX_JSON_BYTES,
+    manifest_semantic_role: str = "successor_manifest",
+    manifest_maximum_bytes: int = FUNDAMENTAL_GENERIC_JSON_MAX_BYTES,
 ) -> dict[str, Any]:
     if _sha256_bytes(pointer_bytes) != expected_pointer_sha256:
         raise SuccessorPromotionError("Fundamental pointer SHA256 mismatch")
@@ -1432,6 +1461,7 @@ def _validate_pointer_references(
     manifest_bytes, manifest_identity = _stable_small_bytes(
         manifest_path,
         label="Fundamental manifest",
+        semantic_role=manifest_semantic_role,
         maximum_bytes=manifest_maximum_bytes,
     )
     if expected_manifest_sha256 and manifest_identity.sha256 != _valid_sha256(
@@ -1441,6 +1471,7 @@ def _validate_pointer_references(
     manifest = _json_object(
         manifest_bytes,
         label="Fundamental manifest",
+        semantic_role=manifest_semantic_role,
         maximum_bytes=manifest_maximum_bytes,
     )
     if (
@@ -1510,7 +1541,8 @@ def _validate_current_predecessor(
             capture.predecessor.get("manifest_sha256") or ""
         )
         or None,
-        manifest_maximum_bytes=_MAX_PREDECESSOR_MANIFEST_JSON_BYTES,
+        manifest_semantic_role=FUNDAMENTAL_PREDECESSOR_MANIFEST_ROLE,
+        manifest_maximum_bytes=FUNDAMENTAL_PREDECESSOR_MANIFEST_MAX_BYTES,
     )
     if str(validated["pointer"].get("generation_id") or "") != str(
         capture.predecessor.get("generation_id") or ""
@@ -2513,8 +2545,11 @@ def promote_successor_generation(
                         expected_manifest_sha256=_valid_sha256(
                             capture.predecessor.get("manifest_sha256")
                         ),
+                        manifest_semantic_role=(
+                            FUNDAMENTAL_PREDECESSOR_MANIFEST_ROLE
+                        ),
                         manifest_maximum_bytes=(
-                            _MAX_PREDECESSOR_MANIFEST_JSON_BYTES
+                            FUNDAMENTAL_PREDECESSOR_MANIFEST_MAX_BYTES
                         ),
                     )
                 except Exception as rollback_ref_exc:
@@ -2961,8 +2996,11 @@ def recover_successor_promotion(
                         expected_manifest_sha256=_valid_sha256(
                             intent.get("predecessor_manifest_sha256")
                         ),
+                        manifest_semantic_role=(
+                            FUNDAMENTAL_PREDECESSOR_MANIFEST_ROLE
+                        ),
                         manifest_maximum_bytes=(
-                            _MAX_PREDECESSOR_MANIFEST_JSON_BYTES
+                            FUNDAMENTAL_PREDECESSOR_MANIFEST_MAX_BYTES
                         ),
                     )
                 except Exception:

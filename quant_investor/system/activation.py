@@ -46,6 +46,12 @@ ACTIVATION_AUTHORIZATION_FIELDS: Final = frozenset(
         "calendar_capture_execution_ref",
         "calendar_authorization_basis",
         "calendar_source_limitations",
+        "bootstrap_admission_intent_sha256",
+        "factor_dependency_sha256",
+        "fundamental_veto_subject_ref",
+        "fundamental_operator_veto_ref",
+        "fundamental_advisory_ref",
+        "fundamental_advisory_authorized",
         "target_active_pointer",
         "target_active_pointer_ref",
         "target_active_pointer_path",
@@ -67,6 +73,11 @@ ACTIVATION_PREPARED_FIELDS: Final = frozenset(
         "activation_authorization_ref",
         "final_cutover_authorization_ref",
         "migration_receipt_ref",
+        "bootstrap_admission_intent_sha256",
+        "factor_dependency_sha256",
+        "fundamental_veto_subject_ref",
+        "fundamental_operator_veto_ref",
+        "fundamental_advisory_ref",
         "target_active_pointer",
         "target_active_pointer_ref",
         "permanent_marker_ref",
@@ -135,7 +146,7 @@ def _pointer_ref(pointer: Mapping[str, Any]) -> dict[str, str]:
     }
 
 
-def build_activation_authorization(
+def build_activation_authorization(  # noqa: C901
     *,
     final_cutover_authorization: Mapping[str, Any] | bytes,
     migration_receipt: Mapping[str, Any] | bytes,
@@ -183,6 +194,13 @@ def build_activation_authorization(
         raise SystemActivationAuthorizationError(
             "final authorization does not bind the production target"
         )
+    if (
+        final_authorization["payload"]["fundamental_advisory_authorized"] is not True
+        or final_authorization["payload"]["fundamental_operator_veto_ref"] is not None
+    ):
+        raise SystemActivationAuthorizationError(
+            "Fundamental advisory does not authorize activation"
+        )
     if type(actor_uid) is not int or actor_uid < 0:
         raise SystemActivationAuthorizationError("actor_uid is invalid")
     prepared = _timestamp(prepared_at, label="prepared_at")
@@ -219,6 +237,16 @@ def build_activation_authorization(
         "calendar_source_limitations": final_authorization["payload"][
             "calendar_source_limitations"
         ],
+        "bootstrap_admission_intent_sha256": final_authorization["payload"][
+            "bootstrap_admission_intent_sha256"
+        ],
+        "factor_dependency_sha256": final_authorization["payload"]["factor_dependency_sha256"],
+        "fundamental_veto_subject_ref": final_authorization["payload"][
+            "fundamental_veto_subject_ref"
+        ],
+        "fundamental_operator_veto_ref": None,
+        "fundamental_advisory_ref": final_authorization["payload"]["fundamental_advisory_ref"],
+        "fundamental_advisory_authorized": True,
         "target_active_pointer": dict(pointer),
         "target_active_pointer_ref": _pointer_ref(pointer),
         "target_active_pointer_path": str(ACTIVE_POINTER_PATH),
@@ -335,6 +363,16 @@ def validate_activation_authorization(  # noqa: C901
         "calendar_source_limitations": final_authorization["payload"][
             "calendar_source_limitations"
         ],
+        "bootstrap_admission_intent_sha256": final_authorization["payload"][
+            "bootstrap_admission_intent_sha256"
+        ],
+        "factor_dependency_sha256": final_authorization["payload"]["factor_dependency_sha256"],
+        "fundamental_veto_subject_ref": final_authorization["payload"][
+            "fundamental_veto_subject_ref"
+        ],
+        "fundamental_operator_veto_ref": None,
+        "fundamental_advisory_ref": final_authorization["payload"]["fundamental_advisory_ref"],
+        "fundamental_advisory_authorized": True,
         "target_active_pointer": pointer,
         "target_active_pointer_ref": _pointer_ref(pointer),
         "target_active_pointer_path": str(ACTIVE_POINTER_PATH),
@@ -374,6 +412,11 @@ def build_prepared_activation_transaction(
         "activation_authorization_ref": artifact_exact_ref(document),
         "final_cutover_authorization_ref": payload["final_cutover_authorization_ref"],
         "migration_receipt_ref": payload["migration_receipt_ref"],
+        "bootstrap_admission_intent_sha256": payload["bootstrap_admission_intent_sha256"],
+        "factor_dependency_sha256": payload["factor_dependency_sha256"],
+        "fundamental_veto_subject_ref": payload["fundamental_veto_subject_ref"],
+        "fundamental_operator_veto_ref": payload["fundamental_operator_veto_ref"],
+        "fundamental_advisory_ref": payload["fundamental_advisory_ref"],
         "target_active_pointer": payload["target_active_pointer"],
         "target_active_pointer_ref": payload["target_active_pointer_ref"],
         "permanent_marker_ref": payload["permanent_marker_ref"],
@@ -418,6 +461,13 @@ def validate_prepared_activation_transaction(
         "activation_authorization_ref": artifact_exact_ref(authorization_document),
         "final_cutover_authorization_ref": authorization_payload["final_cutover_authorization_ref"],
         "migration_receipt_ref": authorization_payload["migration_receipt_ref"],
+        "bootstrap_admission_intent_sha256": authorization_payload[
+            "bootstrap_admission_intent_sha256"
+        ],
+        "factor_dependency_sha256": authorization_payload["factor_dependency_sha256"],
+        "fundamental_veto_subject_ref": authorization_payload["fundamental_veto_subject_ref"],
+        "fundamental_operator_veto_ref": authorization_payload["fundamental_operator_veto_ref"],
+        "fundamental_advisory_ref": authorization_payload["fundamental_advisory_ref"],
         "target_active_pointer": authorization_payload["target_active_pointer"],
         "target_active_pointer_ref": authorization_payload["target_active_pointer_ref"],
         "permanent_marker_ref": authorization_payload["permanent_marker_ref"],

@@ -8,7 +8,12 @@ import textwrap
 
 import pytest
 
-from quant_investor.contracts import canonical_json_bytes, get_contract, seal_artifact
+from quant_investor.contracts import (
+    ContractError,
+    canonical_json_bytes,
+    get_contract,
+    seal_artifact,
+)
 from quant_investor.factors.governance import (
     BLEND_W75_CONTROL,
     BLEND_W80,
@@ -16,6 +21,7 @@ from quant_investor.factors.governance import (
     FactorGovernanceError,
     validate_validator_manifest,
 )
+from quant_investor.factors.governance.bootstrap import BOOTSTRAP_REQUIRED_SOURCE_ROLES
 from quant_investor.factors.governance.implementations import (
     implementation_code_sha256,
     installed_semantic_row,
@@ -111,6 +117,7 @@ def test_validator_manifest_replays_exact_installed_semantic_identity() -> None:
     for row in rows:
         expected = installed_semantic_row(row["factor_id"])
         assert {field: row[field] for field in expected} == expected
+        assert row["required_source_roles"] == list(BOOTSTRAP_REQUIRED_SOURCE_ROLES)
     assert manifest["payload"]["authority"] == "NON_AUTHORIZING"
 
 
@@ -126,6 +133,24 @@ def test_validator_manifest_rejects_semantic_or_component_forgery(field: str) ->
         payload["contextual_validator_component_ref"]
     )
     with pytest.raises(FactorGovernanceError):
+        validate_validator_manifest(_reseal(payload))
+
+
+@pytest.mark.parametrize(
+    "mutated_roles",
+    [
+        ["EXCHANGE_CALENDAR", "MARKET"],
+        ["EXCHANGE_CALENDAR", "FUNDAMENTAL", "MARKET", "PIT_MEMBERSHIP"],
+        ["MARKET", "EXCHANGE_CALENDAR", "PIT_MEMBERSHIP"],
+        ["EXCHANGE_CALENDAR", "MARKET", "PIT_MEMBERSHIP", "UNKNOWN"],
+    ],
+)
+def test_validator_manifest_rejects_required_source_role_mutation(
+    mutated_roles: list[str],
+) -> None:
+    payload = copy.deepcopy(_manifest()["payload"])
+    payload["implementation_rows"][0]["required_source_roles"] = mutated_roles
+    with pytest.raises((ContractError, FactorGovernanceError)):
         validate_validator_manifest(_reseal(payload))
 
 

@@ -103,6 +103,7 @@ def _validate_factor_validator_manifest(payload: Mapping[str, Any]) -> None:
             "normalized_expression",
             "parameters_json",
             "input_fields",
+            "required_source_roles",
         },
         label="factor.validator_manifest.implementation_rows",
     )
@@ -111,6 +112,27 @@ def _validate_factor_validator_manifest(payload: Mapping[str, Any]) -> None:
             row.get("implementation_component_ref"),
             label=f"factor.validator_manifest.implementation_rows[{index}].component_ref",
         )
+        roles = row.get("required_source_roles")
+        if (
+            type(roles) is not list
+            or roles != sorted(set(roles))
+            or not roles
+            or any(
+                type(role) is not str
+                or role
+                not in {
+                    "EXCHANGE_CALENDAR",
+                    "FUNDAMENTAL",
+                    "MARKET",
+                    "PIT_MEMBERSHIP",
+                }
+                for role in roles
+            )
+        ):
+            raise ArtifactValidationError(
+                f"factor.validator_manifest.implementation_rows[{index}] "
+                "required_source_roles are not exact"
+            )
     _exact_rows(
         payload.get("validated_contracts"),
         {"kind", "contract_sha256", "json_schema_sha256", "validator_code_sha256"},
@@ -854,6 +876,87 @@ INTELLIGENCE_READINESS_CONTRACT: Final = _exact_contract(
 
 
 _MIGRATION_SPECS: Final = {
+    "system.fundamental_veto_subject": (
+        "veto_subject_id",
+        {
+            "veto_subject_id",
+            "state",
+            "bootstrap_admission_intent_sha256",
+            "deployed_release_ref",
+            "release_code_manifest_sha256",
+            "system_as_of_date",
+            "calendar_compilation_ref",
+            "exchange_calendar_ref",
+            "current_market_pointer_ref",
+            "current_pit_pointer_ref",
+            "current_pit_membership_ref",
+            "fundamental_pointer_ref",
+            "fundamental_manifest_ref",
+            "fundamental_table_refs",
+            "fundamental_evidence_refs",
+            "fundamental_provenance_binding_sha256",
+            "fundamental_target_bindings_sha256",
+            "fundamental_snapshot_cutoff_date",
+            "factor_set_sha256",
+            "factor_dependency_rows",
+            "factor_dependency_sha256",
+        },
+    ),
+    "system.fundamental_operator_veto": (
+        "veto_id",
+        {
+            "veto_id",
+            "state",
+            "veto_subject_ref",
+            "reason_codes",
+            "issued_at",
+            "actor_uid",
+            "os_actor",
+            "human_signature_claimed",
+            "system_activation_authorized",
+            "factor_activation_authorized",
+            "portfolio_authority",
+            "strategy_record_authority",
+            "broker_authority",
+            "order_authority",
+            "trade_authority",
+            "funds_transfer_authority",
+        },
+    ),
+    "system.fundamental_advisory_evidence": (
+        "fundamental_advisory_id",
+        {
+            "fundamental_advisory_id",
+            "state",
+            "veto_subject_ref",
+            "operator_veto_ref",
+            "integrity_status",
+            "required_by_active_factor_set",
+            "system_as_of_date",
+            "fundamental_snapshot_cutoff_date",
+            "calendar_age_days",
+            "open_session_age",
+            "latest_admitted_available_at",
+            "last_refresh_basis",
+            "disclosure_check",
+            "freshness_policy",
+            "default_action",
+            "operator_veto_present",
+            "effective_action",
+            "factor_dependency_rows",
+            "factor_dependency_sha256",
+            "fundamental_machine_states",
+            "source_limitations",
+            "generic_json_max_bytes",
+            "predecessor_manifest_max_bytes",
+            "fundamental_parquet_max_bytes",
+            "generic_replay_max_cells",
+            "daily_replay_max_cells",
+            "fundamental_table_source_rows",
+            "predecessor_manifest_source_ref",
+            "ordinary_json_source_refs",
+        },
+    ),
     "system.migration.inventory": (
         "inventory_id",
         {
@@ -944,6 +1047,12 @@ _MIGRATION_SPECS: Final = {
             "calendar_capture_execution_ref",
             "calendar_authorization_basis",
             "calendar_source_limitations",
+            "bootstrap_admission_intent_sha256",
+            "factor_dependency_sha256",
+            "fundamental_veto_subject_ref",
+            "fundamental_operator_veto_ref",
+            "fundamental_advisory_ref",
+            "fundamental_advisory_authorized",
             "target_active_pointer",
             "target_active_pointer_ref",
             "target_active_pointer_path",
@@ -964,6 +1073,11 @@ _MIGRATION_SPECS: Final = {
             "activation_authorization_ref",
             "final_cutover_authorization_ref",
             "migration_receipt_ref",
+            "bootstrap_admission_intent_sha256",
+            "factor_dependency_sha256",
+            "fundamental_veto_subject_ref",
+            "fundamental_operator_veto_ref",
+            "fundamental_advisory_ref",
             "target_active_pointer",
             "target_active_pointer_ref",
             "permanent_marker_ref",
@@ -1051,6 +1165,12 @@ _MIGRATION_SPECS: Final = {
             "calendar_authorization_basis",
             "calendar_source_limitations",
             "calendar_policy_authorized",
+            "bootstrap_admission_intent_sha256",
+            "factor_dependency_sha256",
+            "fundamental_veto_subject_ref",
+            "fundamental_operator_veto_ref",
+            "fundamental_advisory_ref",
+            "fundamental_advisory_authorized",
             "release_commit",
             "release_tree",
             "final_integration_commit",
@@ -1113,6 +1233,7 @@ _MIGRATION_SPECS: Final = {
             "production_bootstrap_receipt_id",
             "state",
             "bootstrap_operator_request_ref",
+            "bootstrap_admission_intent_sha256",
             "source_root_id",
             "input_source_rows",
             "deployed_release_ref",
@@ -1139,6 +1260,11 @@ _MIGRATION_SPECS: Final = {
             "automation_semantic_sha256",
             "source_blockers",
             "fundamental_machine_states",
+            "factor_dependency_rows",
+            "factor_dependency_sha256",
+            "fundamental_veto_subject_ref",
+            "fundamental_operator_veto_ref",
+            "fundamental_advisory_ref",
             "signal_statistics",
             "signal_statistics_sha256",
             "assembler_module_path",
@@ -1302,6 +1428,7 @@ SYSTEM_ASSEMBLY_REQUEST_CONTRACT: Final = _exact_contract(
 SYSTEM_BOOTSTRAP_OPERATOR_REQUEST_FIELDS: Final = frozenset(
     {
         "bootstrap_operation_id",
+        "bootstrap_admission_intent_sha256",
         "state",
         "source_root_id",
         "release_manifest_ref",
@@ -1331,6 +1458,7 @@ SYSTEM_BOOTSTRAP_OPERATOR_REQUEST_FIELDS: Final = frozenset(
         "fundamental_generation_manifest_file_ref",
         "fundamental_table_file_refs",
         "fundamental_evidence_file_refs",
+        "fundamental_operator_veto_file_ref",
         "bootstrap_decision_file_ref",
         "skill_tree_sha256",
         "automation_semantic_sha256",
