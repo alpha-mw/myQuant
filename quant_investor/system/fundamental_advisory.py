@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime, timezone
 import hashlib
+import os
 import re
 from typing import Any, Final
 
@@ -304,7 +305,7 @@ def validate_fundamental_operator_veto(document: Mapping[str, Any] | bytes) -> d
     if artifact["created_at"] != issued:
         raise SystemContractError("Fundamental operator veto issuance binding differs")
     uid = payload["actor_uid"]
-    if type(uid) is not int or uid < 0 or payload["os_actor"] != f"uid:{uid}":
+    if type(uid) is not int or uid != os.geteuid() or payload["os_actor"] != f"uid:{os.geteuid()}":
         raise SystemContractError("Fundamental operator veto actor differs")
     false_fields = (
         "human_signature_claimed",
@@ -332,8 +333,8 @@ def build_fundamental_operator_veto(
     veto_subject_ref: Mapping[str, Any],
     reason_codes: Sequence[str],
     issued_at: str,
-    actor_uid: int,
 ) -> dict[str, Any]:
+    actor_uid = os.geteuid()
     body = {
         "state": "VETO",
         "veto_subject_ref": dict(veto_subject_ref),

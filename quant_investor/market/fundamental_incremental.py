@@ -66,15 +66,12 @@ SUCCESSOR_RESOURCE_SCHEMA = "cn-fundamental-successor-resource-preflight.v1"
 SUCCESSOR_PROVIDER_MANIFEST_SCHEMA = "cn-fundamental-safe-successor-provider.v1"
 SUCCESSOR_SUPPORT_PREFIX_VALIDATION_MODE = "validation_only"
 SUCCESSOR_APPEND_FIRST_MODE = "immutable_predecessor_append_first"
-SUCCESSOR_FINANCIAL_DEPENDENCY_CONTRACT_SCHEMA = (
-    "cn-fundamental-successor-financial-dependency.v1"
-)
+SUCCESSOR_FINANCIAL_DEPENDENCY_CONTRACT_SCHEMA = "cn-fundamental-successor-financial-dependency.v1"
 SUCCESSOR_FINANCIAL_DEPENDENCY_CONTRACT = {
     "schema_version": SUCCESSOR_FINANCIAL_DEPENDENCY_CONTRACT_SCHEMA,
     "state_key": ["table", "ts_code", "end_date"],
     "physical_update_policy": (
-        "exact-collapse; highest update_flag per physical class; "
-        "material winner ties block"
+        "exact-collapse; highest update_flag per physical class; " "material winner ties block"
     ),
     "event_order": ["availability_date", "ts_code"],
     "atomic_batch_key": ["ts_code", "availability_date"],
@@ -93,13 +90,9 @@ SUCCESSOR_FINANCIAL_DEPENDENCY_CONTRACT = {
         "fallback": "income at end_date minus one calendar year",
     },
     "period_winner": ["availability_date", "end_date"],
-    "daily_period_carry": (
-        "latest period winner available on or before trade_date"
-    ),
+    "daily_period_carry": ("latest period winner available on or before trade_date"),
     "forecast_winner": ["availability_date", "forecast_end_date"],
-    "daily_forecast_merge": (
-        "latest forecast winner available on or before trade_date"
-    ),
+    "daily_forecast_merge": ("latest forecast winner available on or before trade_date"),
     "daily_basic_and_size": (
         "target-session daily_basic exact bar keyset; size rank is a "
         "cross-sectional lane independent of financial state"
@@ -171,14 +164,11 @@ SUCCESSOR_REPLAY_BATCH_BYTES = 16 * 1024**2
 SUCCESSOR_REPLAY_MAX_ROWS = 10_000_000
 SUCCESSOR_REPLAY_MAX_CELLS = FUNDAMENTAL_GENERIC_REPLAY_MAX_CELLS
 SUCCESSOR_REPLAY_MAX_COLUMNS = 256
-SUCCESSOR_REPLAY_MAX_FILE_BYTES = FUNDAMENTAL_GENERIC_JSON_MAX_BYTES
 SUPPORT_STREAM_BATCH_ROWS = 2_048
 SUPPORT_STREAM_BATCH_BYTES = 16 * 1024 * 1024
 SUPPORT_SYMBOL_MAX_ROWS = 100_000
 SUPPORT_SYMBOL_MAX_BYTES = 64 * 1024 * 1024
-DERIVATION_ACCUMULATOR_BUDGET_SCHEMA = (
-    "cn-fundamental-successor-derivation-accumulator-budget.v1"
-)
+DERIVATION_ACCUMULATOR_BUDGET_SCHEMA = "cn-fundamental-successor-derivation-accumulator-budget.v1"
 
 
 class SafeSuccessorError(RuntimeError):
@@ -461,8 +451,7 @@ def _support_fingerprints(raw_tables: Mapping[str, Any]) -> dict[str, str]:
     if _streaming_support_store(raw_tables):
         fingerprints = getattr(raw_tables, "table_fingerprints")
         observed = {
-            str(table): str(digest).strip().lower()
-            for table, digest in dict(fingerprints).items()
+            str(table): str(digest).strip().lower() for table, digest in dict(fingerprints).items()
         }
         if set(observed) != set(RAW_TABLES) or any(
             not _valid_sha256(value) for value in observed.values()
@@ -548,10 +537,7 @@ def _iter_support_symbol_groups(
             ).encode("utf-8")
             current_rows.append(row)
             current_bytes += len(encoded)
-            if (
-                len(current_rows) > SUPPORT_SYMBOL_MAX_ROWS
-                or current_bytes > maximum_symbol_bytes
-            ):
+            if len(current_rows) > SUPPORT_SYMBOL_MAX_ROWS or current_bytes > maximum_symbol_bytes:
                 _fail("SUPPORT_SYMBOL_RESOURCE_LIMIT", f"{table} symbol group is too large")
     if current_symbol:
         yield current_symbol, current_rows
@@ -713,8 +699,7 @@ def seal_support_plan(
         )
     dependencies: list[dict[str, str]] = []
     dependency_values = [
-        {"table": "income", **dict(value)}
-        for value in append_first_income_dependencies
+        {"table": "income", **dict(value)} for value in append_first_income_dependencies
     ] + [dict(value) for value in append_first_financial_dependencies]
     for value in dependency_values:
         if not isinstance(value, Mapping) or set(value) != {
@@ -739,12 +724,10 @@ def seal_support_plan(
                 "ts_code": _safe_symbol(value["ts_code"]),
             }
         )
-    dependencies.sort(
-        key=lambda row: (row["table"], row["ts_code"], row["end_date"])
-    )
-    if len(
-        {(row["table"], row["ts_code"], row["end_date"]) for row in dependencies}
-    ) != len(dependencies):
+    dependencies.sort(key=lambda row: (row["table"], row["ts_code"], row["end_date"]))
+    if len({(row["table"], row["ts_code"], row["end_date"]) for row in dependencies}) != len(
+        dependencies
+    ):
         _fail(
             "APPEND_FIRST_FINANCIAL_DEPENDENCY_DUPLICATE",
             "financial dependencies must be unique",
@@ -767,17 +750,13 @@ def seal_support_plan(
         "schema_failures": 0,
         "duplicate_conflicts": 0,
         "support_prefix_mode": prefix_mode,
-        "support_prefix_complete": (
-            prefix_mode == SUCCESSOR_SUPPORT_PREFIX_VALIDATION_MODE
-        ),
+        "support_prefix_complete": (prefix_mode == SUCCESSOR_SUPPORT_PREFIX_VALIDATION_MODE),
         "predecessor_prefix_trusted": prefix_mode == SUCCESSOR_APPEND_FIRST_MODE,
         "historical_taint_registry_sha256": registry_sha256,
         "append_first_financial_dependencies": dependencies,
         "delta_window_complete": True,
         "raw_table_fingerprints": raw_fingerprints,
-        "financial_dependency_contract_sha256": (
-            SUCCESSOR_FINANCIAL_DEPENDENCY_CONTRACT_SHA256
-        ),
+        "financial_dependency_contract_sha256": (SUCCESSOR_FINANCIAL_DEPENDENCY_CONTRACT_SHA256),
         "permanent_support_refs": dict(permanent_support_refs or {}),
         "boundary_non_reachability": {
             lane: sorted({_safe_symbol(symbol) for symbol in values})
@@ -842,14 +821,9 @@ def _validate_plan(
                 "ts_code": _safe_symbol(value["ts_code"]),
             }
         )
-    replayed_dependencies.sort(
-        key=lambda row: (row["table"], row["ts_code"], row["end_date"])
-    )
+    replayed_dependencies.sort(key=lambda row: (row["table"], row["ts_code"], row["end_date"]))
     if replayed_dependencies != dependencies or len(
-        {
-            (row["table"], row["ts_code"], row["end_date"])
-            for row in replayed_dependencies
-        }
+        {(row["table"], row["ts_code"], row["end_date"]) for row in replayed_dependencies}
     ) != len(replayed_dependencies):
         _fail("UNSEALED_SUPPORT_PLAN", "income dependency keyset is not canonical")
     if (
@@ -1144,9 +1118,7 @@ def _derive_period_endpoint(
 
     previous_period = (pd.Timestamp(end_date) - pd.DateOffset(years=1)).strftime("%Y%m%d")
     previous_income_required = (
-        enforce_hidden_dependencies
-        and not math.isfinite(direct_yoy)
-        and math.isfinite(profit)
+        enforce_hidden_dependencies and not math.isfinite(direct_yoy) and math.isfinite(profit)
     )
     previous_income = _dependency(
         state["income"],
@@ -1275,9 +1247,7 @@ def _derive_period_endpoint(
                 "table": table,
                 "end_date": dependency_end,
                 "required": required,
-                "row_binding": (
-                    str(row.get("__row_binding") or "") if row is not None else ""
-                ),
+                "row_binding": (str(row.get("__row_binding") or "") if row is not None else ""),
                 "bounded_support": (
                     row is not None
                     and bool(plan.get("support_start"))
@@ -1328,21 +1298,13 @@ def _derive_event_graph(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     if plan.get("support_prefix_mode") == SUCCESSOR_APPEND_FIRST_MODE:
         symbols = sorted(
-            {
-                str(row["ts_code"])
-                for table in FINANCIAL_TABLES
-                for row in financial_rows[table]
-            }
+            {str(row["ts_code"]) for table in FINANCIAL_TABLES for row in financial_rows[table]}
         )
         append_records: list[dict[str, Any]] = []
         append_lineage: list[dict[str, Any]] = []
         for symbol in symbols:
             symbol_rows = {
-                table: [
-                    row
-                    for row in financial_rows[table]
-                    if str(row["ts_code"]) == symbol
-                ]
+                table: [row for row in financial_rows[table] if str(row["ts_code"]) == symbol]
                 for table in FINANCIAL_TABLES
             }
             _boundary, delta, delta_lineage, _derived = _derive_symbol_event_window(
@@ -1406,11 +1368,7 @@ def _derive_symbol_event_window(
     """Replay one symbol while retaining only its boundary winner and delta."""
 
     ordered = sorted(
-        (
-            row
-            for table in FINANCIAL_TABLES
-            for row in financial_rows[table]
-        ),
+        (row for table in FINANCIAL_TABLES for row in financial_rows[table]),
         key=lambda row: (
             str(row["availability_date"]),
             str(row["__table"]),
@@ -1429,8 +1387,7 @@ def _derive_symbol_event_window(
     declared_absences = {
         (str(value["table"]), str(value["symbol"]), str(value["end_date"]))
         for value in list(plan.get("absence_proofs", []) or [])
-        if value.get("status") == "PROVEN_ABSENT"
-        and str(value.get("symbol") or "") == symbol
+        if value.get("status") == "PROVEN_ABSENT" and str(value.get("symbol") or "") == symbol
     }
     observed_dependencies: set[tuple[str, str, str]] = set()
     boundary_winner: dict[str, Any] | None = None
@@ -1490,8 +1447,7 @@ def _derive_symbol_event_window(
             (str(requirement["table"]), symbol, str(requirement["end_date"]))
             for row in delta_lineage
             for requirement in row["dependency_requirements"]
-            if requirement.get("required") is True
-            and requirement.get("absence_proven") is True
+            if requirement.get("required") is True and requirement.get("absence_proven") is True
         }
         if observed_dependencies != declared_dependencies:
             _fail(
@@ -1549,13 +1505,9 @@ def replay_successor_event_trace(
         input_fingerprints[table] = frame_fingerprint(pd.DataFrame(values))
     plan = {
         "support_start": (
-            _strict_date(support_start, label="support_start")
-            if support_start
-            else ""
+            _strict_date(support_start, label="support_start") if support_start else ""
         ),
-        "financial_dependency_contract_sha256": (
-            SUCCESSOR_FINANCIAL_DEPENDENCY_CONTRACT_SHA256
-        ),
+        "financial_dependency_contract_sha256": (SUCCESSOR_FINANCIAL_DEPENDENCY_CONTRACT_SHA256),
     }
     boundary, delta, lineage, derived = _derive_symbol_event_window(
         normalized,
@@ -1570,9 +1522,7 @@ def replay_successor_event_trace(
         _fail("DEPENDENCY_CONTRACT_DRIFT", "financial dependency contract changed")
     receipt = {
         "schema_version": "cn-fundamental-successor-event-trace.v1",
-        "dependency_contract_sha256": (
-            SUCCESSOR_FINANCIAL_DEPENDENCY_CONTRACT_SHA256
-        ),
+        "dependency_contract_sha256": (SUCCESSOR_FINANCIAL_DEPENDENCY_CONTRACT_SHA256),
         "symbol": resolved_symbol,
         "parent_cutoff": parent,
         "target_cutoff": target,
@@ -1585,9 +1535,7 @@ def replay_successor_event_trace(
             else frame_fingerprint(pd.DataFrame())
         ),
         "delta_frame_fingerprint": frame_fingerprint(pd.DataFrame(delta)),
-        "lineage_frame_fingerprint": canonical_json_sha256(
-            {"lineage": lineage}
-        ),
+        "lineage_frame_fingerprint": canonical_json_sha256({"lineage": lineage}),
         "derived_record_count": derived,
         "delta_record_count": len(delta),
         "delta_lineage_count": len(lineage),
@@ -1637,11 +1585,7 @@ def _derive_streamed_financial(
     high_derived_records = 0
     symbols = 0
     while any(value is not None for value in heads.values()):
-        symbol = min(
-            value[0]
-            for value in heads.values()
-            if value is not None
-        )
+        symbol = min(value[0] for value in heads.values() if value is not None)
         symbols += 1
         financial: dict[str, list[dict[str, Any]]] = {}
         resident_rows = 0
@@ -2948,14 +2892,16 @@ def assemble_safe_successor(
             < _strict_date(row["availability_date"], label="forecast availability")
             <= target
         ]
-    relevant_symbols = {
-        symbol
-        for symbol, _trade_date in _keys(
-            keyset["expected_scope_keys"],
-            label="expected_scope_keys",
-        )
-    }.union(str(row["ts_code"]) for row in delta_period).union(
-        str(row["ts_code"]) for row in delta_forecast
+    relevant_symbols = (
+        {
+            symbol
+            for symbol, _trade_date in _keys(
+                keyset["expected_scope_keys"],
+                label="expected_scope_keys",
+            )
+        }
+        .union(str(row["ts_code"]) for row in delta_period)
+        .union(str(row["ts_code"]) for row in delta_forecast)
     )
     prefix_mode = str(plan["support_prefix_mode"])
     if prefix_mode == SUCCESSOR_APPEND_FIRST_MODE:
@@ -2988,8 +2934,7 @@ def assemble_safe_successor(
             )
             for value in period_lineage
             for requirement in value["dependency_requirements"]
-            if requirement.get("required") is True
-            and requirement.get("absence_proven") is True
+            if requirement.get("required") is True and requirement.get("absence_proven") is True
         }
         if consumed_dependency_keys != declared_dependency_keys:
             _fail(
@@ -3038,9 +2983,7 @@ def assemble_safe_successor(
             "mode": SUCCESSOR_APPEND_FIRST_MODE,
             "parent_cutoff": parent,
             "predecessor_reference_sha256": predecessor["reference_sha256"],
-            "historical_taint_registry_sha256": plan[
-                "historical_taint_registry_sha256"
-            ],
+            "historical_taint_registry_sha256": plan["historical_taint_registry_sha256"],
             "support_prefix_row_count": 0,
             "bounded_financial_support_key_count": len(
                 list(plan.get("append_first_financial_dependencies", []) or [])
@@ -3141,9 +3084,7 @@ def assemble_safe_successor(
                 accumulator.receipt()
                 if accumulator is not None
                 else {
-                    "schema_version": (
-                        "cn-fundamental-successor-derivation-accumulator.v1"
-                    ),
+                    "schema_version": ("cn-fundamental-successor-derivation-accumulator.v1"),
                     "mode": "bounded_reference_frames",
                 }
             ),
@@ -3171,9 +3112,7 @@ def assemble_safe_successor(
         "parent_cutoff": parent,
         "target_cutoff": target,
         "support_prefix_mode": prefix_mode,
-        "historical_taint_registry_sha256": str(
-            plan.get("historical_taint_registry_sha256") or ""
-        ),
+        "historical_taint_registry_sha256": str(plan.get("historical_taint_registry_sha256") or ""),
         "bounded_financial_support_keyset_sha256": canonical_json_sha256(
             list(plan.get("append_first_financial_dependencies", []) or [])
         ),
@@ -3760,34 +3699,110 @@ def _successor_read_bytes(
         maximum_bytes=maximum_bytes,
     )
 
-    try:
-        metadata = os.lstat(path)
-    except OSError:
-        metadata = None
-    if metadata is not None:
-        _validate_successor_read_size_policy(
-            semantic_role=semantic_role,
-            maximum_bytes=maximum_bytes,
-            observed_bytes=int(metadata.st_size),
-        )
     if sealed_fileset is not None:
+        try:
+            metadata = os.lstat(path)
+        except OSError:
+            metadata = None
+        if metadata is not None:
+            _validate_successor_read_size_policy(
+                semantic_role=semantic_role,
+                maximum_bytes=maximum_bytes,
+                observed_bytes=int(metadata.st_size),
+            )
         return sealed_fileset.read_bytes(
             path,
             expected_sha256=expected_sha256,
             maximum_bytes=maximum_bytes,
         )
-    metadata = path.stat()
-    if metadata.st_size <= 0 or metadata.st_size > SUCCESSOR_REPLAY_MAX_FILE_BYTES:
-        _fail("SUCCESSOR_FILE_SIZE_INVALID", f"source byte bound failed: {path.name}")
-    raw = path.read_bytes()
-    _validate_successor_read_size_policy(
-        semantic_role=semantic_role,
-        maximum_bytes=maximum_bytes,
-        observed_bytes=len(raw),
-    )
-    if hashlib.sha256(raw).hexdigest() != expected_sha256:
-        _fail("SUCCESSOR_FILE_HASH_MISMATCH", f"source bytes changed: {path.name}")
-    return raw
+
+    descriptor: int | None = None
+
+    def identity(value: os.stat_result) -> tuple[int, ...]:
+        return (
+            int(value.st_dev),
+            int(value.st_ino),
+            int(value.st_mode),
+            int(value.st_uid),
+            int(value.st_nlink),
+            int(value.st_size),
+            int(value.st_mtime_ns),
+            int(value.st_ctime_ns),
+        )
+
+    def verify_file(value: os.stat_result) -> None:
+        mode = stat.S_IMODE(value.st_mode)
+        if (
+            not stat.S_ISREG(value.st_mode)
+            or value.st_uid != os.geteuid()
+            or not mode & 0o400
+            or mode & 0o111
+            or mode & 0o022
+            or value.st_nlink != 1
+        ):
+            _fail(
+                "SUCCESSOR_FILE_SECURITY_INVALID",
+                f"JSON source identity is unsafe: {path.name}",
+            )
+        _validate_successor_read_size_policy(
+            semantic_role=semantic_role,
+            maximum_bytes=maximum_bytes,
+            observed_bytes=int(value.st_size),
+        )
+
+    try:
+        canonical_path = path.resolve(strict=True)
+        if canonical_path != path.absolute():
+            _fail(
+                "SUCCESSOR_FILE_SECURITY_INVALID",
+                f"JSON source path is not canonical: {path.name}",
+            )
+        path_before = os.stat(path, follow_symlinks=False)
+        verify_file(path_before)
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+        descriptor = os.open(path, flags)
+        before = os.fstat(descriptor)
+        verify_file(before)
+        if identity(path_before) != identity(before):
+            _fail(
+                "SUCCESSOR_FILE_IDENTITY_DRIFT",
+                f"JSON source changed before open: {path.name}",
+            )
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        with os.fdopen(os.dup(descriptor), "rb", closefd=True) as stream:
+            raw = stream.read(maximum_bytes + 1)
+        _validate_successor_read_size_policy(
+            semantic_role=semantic_role,
+            maximum_bytes=maximum_bytes,
+            observed_bytes=len(raw),
+        )
+        after = os.fstat(descriptor)
+        path_after = os.stat(path, follow_symlinks=False)
+        if (
+            identity(before) != identity(after)
+            or identity(after) != identity(path_after)
+            or len(raw) != after.st_size
+        ):
+            _fail(
+                "SUCCESSOR_FILE_IDENTITY_DRIFT",
+                f"JSON source changed during exact read: {path.name}",
+            )
+        verify_file(after)
+        verify_file(path_after)
+        if hashlib.sha256(raw).hexdigest() != expected_sha256:
+            _fail("SUCCESSOR_FILE_HASH_MISMATCH", f"source bytes changed: {path.name}")
+        return raw
+    except SafeSuccessorError:
+        raise
+    except OSError as exc:
+        _fail(
+            "SUCCESSOR_FILE_SECURITY_INVALID",
+            f"JSON source descriptor cannot be opened: {path.name}",
+        )
+        raise AssertionError from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 def _successor_file_sha256(
@@ -4041,10 +4056,7 @@ def _copy_provider_evidence(
                         destination_handle.flush()
                         os.fsync(destination_handle.fileno())
                 after = os.lstat(source_path)
-                if (
-                    _stat_identity(after) != _stat_identity(before)
-                    or observed != before.st_size
-                ):
+                if _stat_identity(after) != _stat_identity(before) or observed != before.st_size:
                     _fail(
                         "PROVIDER_EVIDENCE_SOURCE_DRIFT",
                         "provider evidence changed while copying",
@@ -4441,9 +4453,7 @@ def stage_successor_generation(
                 )
 
         source_validation: dict[str, Any] | None = None
-        source_manifest_sha256 = provider_manifest.get(
-            "source_fileset_manifest_sha256"
-        )
+        source_manifest_sha256 = provider_manifest.get("source_fileset_manifest_sha256")
         if source_manifest_sha256 is not None:
             from .fundamental_successor_source import (
                 validate_successor_support_fileset,
@@ -4452,9 +4462,8 @@ def stage_successor_generation(
             implementation_sha256 = str(
                 provider_manifest.get("implementation_sha256") or ""
             ).lower()
-            if (
-                not _valid_sha256(source_manifest_sha256)
-                or not _valid_sha256(implementation_sha256)
+            if not _valid_sha256(source_manifest_sha256) or not _valid_sha256(
+                implementation_sha256
             ):
                 _fail(
                     "SOURCE_FILESET_BINDING_INVALID",
@@ -4464,10 +4473,7 @@ def stage_successor_generation(
                 evidence_directory / "source",
                 expected_implementation_sha256=implementation_sha256,
             )
-            if (
-                validated_source.get("manifest_sha256")
-                != str(source_manifest_sha256).lower()
-            ):
+            if validated_source.get("manifest_sha256") != str(source_manifest_sha256).lower():
                 _fail(
                     "SOURCE_FILESET_MANIFEST_MISMATCH",
                     "source fileset manifest changed during staging",
@@ -4475,9 +4481,9 @@ def stage_successor_generation(
             source_validation = {
                 "implementation_sha256": implementation_sha256,
                 "manifest_sha256": validated_source["manifest_sha256"],
-                "resource_sha256": dict(
-                    validated_source.get("resource_accounting", {}) or {}
-                ).get("resource_sha256"),
+                "resource_sha256": dict(validated_source.get("resource_accounting", {}) or {}).get(
+                    "resource_sha256"
+                ),
                 "schema_version": validated_source["schema_version"],
                 "status": "PASS",
             }
@@ -4490,9 +4496,7 @@ def stage_successor_generation(
             )
 
         historical_taint_validation: dict[str, Any] | None = None
-        if bundle.derivation_evidence.get("support_prefix_mode") == (
-            SUCCESSOR_APPEND_FIRST_MODE
-        ):
+        if bundle.derivation_evidence.get("support_prefix_mode") == (SUCCESSOR_APPEND_FIRST_MODE):
             from .fundamental_historical_taint import (
                 validate_historical_taint_registry,
             )
@@ -4501,10 +4505,7 @@ def stage_successor_generation(
                 provider_manifest.get("historical_taint_registry_sha256") or ""
             ).lower()
             declared_registry_file_sha = str(
-                provider_manifest.get(
-                    "historical_taint_registry_file_sha256"
-                )
-                or ""
+                provider_manifest.get("historical_taint_registry_file_sha256") or ""
             ).lower()
             registry_path = evidence_directory / "historical_taint" / "registry.json"
             if (
@@ -4512,9 +4513,7 @@ def stage_successor_generation(
                 or not _valid_sha256(declared_registry_file_sha)
                 or evidence_files.get("historical_taint/registry.json")
                 != declared_registry_file_sha
-                or bundle.derivation_evidence.get(
-                    "historical_taint_registry_sha256"
-                )
+                or bundle.derivation_evidence.get("historical_taint_registry_sha256")
                 != declared_registry_sha
                 or source_validation is None
             ):
@@ -4537,9 +4536,7 @@ def stage_successor_generation(
                 "schema_version": registry["schema_version"],
                 "status": registry["status"],
                 "classification": registry["classification"],
-                "historical_conflict_count": registry[
-                    "historical_conflict_count"
-                ],
+                "historical_conflict_count": registry["historical_conflict_count"],
                 "current_window_material_conflict_count": 0,
                 "same_period_delta_row_count": 0,
                 "registry_sha256": declared_registry_sha,
@@ -4854,9 +4851,7 @@ def validate_successor_provenance(
     prefix_gate_valid = prefix_mode == SUCCESSOR_SUPPORT_PREFIX_VALIDATION_MODE
     if prefix_mode == SUCCESSOR_APPEND_FIRST_MODE:
         prefix_gate_valid = (
-            _valid_sha256(
-                derivation.get("historical_taint_registry_sha256")
-            )
+            _valid_sha256(derivation.get("historical_taint_registry_sha256"))
             and derivation.get("historical_taint_registry_sha256")
             == provider.get("historical_taint_registry_sha256")
             and readiness.get("prefix_gate_passed") is True
@@ -5228,13 +5223,8 @@ def validate_successor_provenance(
             validate_successor_support_fileset,
         )
 
-        implementation_sha256 = str(
-            provider.get("implementation_sha256") or ""
-        ).lower()
-        if (
-            not _valid_sha256(source_manifest_sha256)
-            or not _valid_sha256(implementation_sha256)
-        ):
+        implementation_sha256 = str(provider.get("implementation_sha256") or "").lower()
+        if not _valid_sha256(source_manifest_sha256) or not _valid_sha256(implementation_sha256):
             _fail(
                 "SOURCE_FILESET_BINDING_INVALID",
                 "source fileset binding is incomplete",
@@ -5243,10 +5233,7 @@ def validate_successor_provenance(
             evidence_root / "source",
             expected_implementation_sha256=implementation_sha256,
         )
-        if (
-            validated_source.get("manifest_sha256")
-            != str(source_manifest_sha256).lower()
-        ):
+        if validated_source.get("manifest_sha256") != str(source_manifest_sha256).lower():
             _fail(
                 "SOURCE_FILESET_MANIFEST_MISMATCH",
                 "source fileset manifest changed after staging",
@@ -5254,9 +5241,9 @@ def validate_successor_provenance(
         source_validation = {
             "implementation_sha256": implementation_sha256,
             "manifest_sha256": validated_source["manifest_sha256"],
-            "resource_sha256": dict(
-                validated_source.get("resource_accounting", {}) or {}
-            ).get("resource_sha256"),
+            "resource_sha256": dict(validated_source.get("resource_accounting", {}) or {}).get(
+                "resource_sha256"
+            ),
             "schema_version": validated_source["schema_version"],
             "status": "PASS",
         }
@@ -5276,17 +5263,13 @@ def validate_successor_provenance(
             validate_historical_taint_registry,
         )
 
-        declared_registry_sha = str(
-            provider.get("historical_taint_registry_sha256") or ""
-        ).lower()
+        declared_registry_sha = str(provider.get("historical_taint_registry_sha256") or "").lower()
         declared_registry_file_sha = str(
             provider.get("historical_taint_registry_file_sha256") or ""
         ).lower()
         if (
             not _valid_sha256(declared_registry_file_sha)
-            or _sha256_file(
-                evidence_root / "historical_taint" / "registry.json"
-            )
+            or _sha256_file(evidence_root / "historical_taint" / "registry.json")
             != declared_registry_file_sha
         ):
             _fail(
@@ -5303,17 +5286,14 @@ def validate_successor_provenance(
             "schema_version": registry["schema_version"],
             "status": registry["status"],
             "classification": registry["classification"],
-            "historical_conflict_count": registry[
-                "historical_conflict_count"
-            ],
+            "historical_conflict_count": registry["historical_conflict_count"],
             "current_window_material_conflict_count": 0,
             "same_period_delta_row_count": 0,
             "registry_sha256": declared_registry_sha,
         }
         if (
             registry.get("registry_sha256") != declared_registry_sha
-            or pointer_metadata.get("historical_taint_validation")
-            != historical_taint_validation
+            or pointer_metadata.get("historical_taint_validation") != historical_taint_validation
         ):
             _fail(
                 "HISTORICAL_TAINT_VALIDATION_MISMATCH",

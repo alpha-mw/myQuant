@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 
 import pytest
 
@@ -15,6 +16,10 @@ from quant_investor.system.fundamental_advisory import (
     validate_factor_dependency_rows,
     validate_fundamental_advisory,
     validate_fundamental_operator_veto,
+)
+import quant_investor.system.fundamental_advisory as advisory_module
+from quant_investor.system.historical_activation import (
+    validate_initial_fundamental_operator_veto,
 )
 from quant_investor.system.store import OBJECT_REF_SORT_FIELDS, object_ref_for_artifact
 
@@ -185,11 +190,12 @@ def test_veto_is_blocking_only_and_carries_zero_downstream_authority() -> None:
         veto_subject_ref=object_ref_for_artifact(subject),
         reason_codes=["FUNDAMENTAL_OPERATOR_HOLD"],
         issued_at=STAMP,
-        actor_uid=501,
     )
     assert validate_fundamental_operator_veto(veto) == veto
     veto_payload = veto["payload"]
     assert veto_payload["state"] == "VETO"
+    assert veto_payload["actor_uid"] == os.geteuid()
+    assert veto_payload["os_actor"] == f"uid:{os.geteuid()}"
     assert all(
         veto_payload[field] is False
         for field in (
@@ -211,6 +217,35 @@ def test_veto_is_blocking_only_and_carries_zero_downstream_authority() -> None:
         require_fundamental_proceed(advisory)
 
 
+def test_current_veto_actor_cannot_be_forged_but_historical_actor_is_not_reinterpreted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    veto = build_fundamental_operator_veto(
+        veto_subject_ref=object_ref_for_artifact(_subject()),
+        reason_codes=["FUNDAMENTAL_OPERATOR_HOLD"],
+        issued_at=STAMP,
+    )
+    original_uid = os.geteuid()
+    forged_payload = dict(veto["payload"])
+    forged_payload["actor_uid"] = original_uid + 1
+    forged_payload["os_actor"] = f"uid:{original_uid + 1}"
+    body = {key: forged_payload[key] for key in sorted(forged_payload) if key != "veto_id"}
+    forged_payload["veto_id"] = (
+        "fundamental-veto-"
+        + hashlib.sha256(
+            canonical_json_bytes({"domain": "myquant-fundamental-operator-veto", "payload": body})
+        ).hexdigest()
+    )
+    forged = seal_artifact("system.fundamental_operator_veto", forged_payload, created_at=STAMP)
+    with pytest.raises(SystemContractError, match="actor differs"):
+        validate_fundamental_operator_veto(forged)
+
+    monkeypatch.setattr(advisory_module.os, "geteuid", lambda: original_uid + 1)
+    with pytest.raises(SystemContractError, match="actor differs"):
+        validate_fundamental_operator_veto(veto)
+    assert validate_initial_fundamental_operator_veto(veto) == veto
+
+
 @pytest.mark.parametrize(
     "mutation",
     [
@@ -225,7 +260,6 @@ def test_veto_cannot_elevate_or_claim_unproved_authority(mutation: object) -> No
         veto_subject_ref=object_ref_for_artifact(_subject()),
         reason_codes=["FUNDAMENTAL_OPERATOR_HOLD"],
         issued_at=STAMP,
-        actor_uid=501,
     )
     payload = dict(veto["payload"])
     mutation(payload)  # type: ignore[operator]

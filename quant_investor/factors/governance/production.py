@@ -2423,6 +2423,8 @@ def _validate_fundamental_admitted_dates(  # noqa: C901
             )
             if observed_forecast > fundamental_iso or observed_forecast > system_iso:
                 raise SystemContractError("Fundamental daily forecast contains future information")
+            if observed_forecast > observed_trade:
+                raise SystemContractError("Fundamental daily forecast follows its row trade date")
             admitted.append(observed_forecast)
             forecast_rows += 1
         daily_rows += 1
@@ -5340,11 +5342,24 @@ def _run_production_bootstrap(  # noqa: C901
     veto_subject_ref = store.put_object(veto_subject)
     operator_veto_ref: dict[str, str] | None = None
     if veto_input_source_ref is not None:
+        veto_inspection = store.inspect_source_object(
+            veto_input_source_ref,
+            full_hash=True,
+            maximum_bytes=_FUNDAMENTAL_VETO_MAX_BYTES,
+        )
         _source_payload, veto_raw = store.read_source_object_bytes(
             veto_input_source_ref,
             maximum_bytes=_FUNDAMENTAL_VETO_MAX_BYTES,
         )
         operator_veto = validate_fundamental_operator_veto(veto_raw)
+        current_uid = os.geteuid()
+        if (
+            operator_veto["payload"]["actor_uid"] != current_uid
+            or operator_veto["payload"]["os_actor"] != f"uid:{current_uid}"
+        ):
+            raise SystemContractError("Fundamental operator veto actor is not current")
+        if veto_inspection["stat_identity"].get("st_uid") != current_uid:
+            raise SystemSecurityError("Fundamental operator veto owner differs from actor")
         if operator_veto["payload"]["veto_subject_ref"] != veto_subject_ref:
             raise SystemContractError("Fundamental operator veto subject differs")
         operator_veto_ref = store.put_object(operator_veto)

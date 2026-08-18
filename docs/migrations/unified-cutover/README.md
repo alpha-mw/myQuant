@@ -246,6 +246,11 @@ dependencies, and a nullable VETO-only operator reference. A valid veto can
 only reduce authority and stops before generation/final authorization/CAS.
 Active status reports the sealed advisory values; it never recomputes age from
 the current date or a descendant calendar.
+Current VETO issuance is bound to the effective UID and to a source leaf owned
+by that same UID; frozen historical replay preserves, but does not reinterpret,
+the initial actor. Daily forecast admission is row-relative:
+`forecast_ann_date` must not follow its own `trade_date`, even when both dates
+are inside the overall Fundamental and System cutoffs.
 
 Calendar admission is an exact tagged union. `EXCHANGE_OFFICIAL` remains the
 full-authority route and requires the native issuer closure described below.
