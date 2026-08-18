@@ -63,7 +63,13 @@ _record_store/performance/<performance-generation-id>/
 ```
 
 历史 seed 固定复现 owner-corrected 的 100 万初始资本路径：旧 funding correction 只反转
-其明确指定的错误资金流；旧逐点值不会被另一套公式重算覆盖。新 v3 financial state 使用
+其明确指定的错误资金流；旧逐点值不会被另一套公式重算覆盖。当整条 canonical series
+逐点满足 `adjusted total = raw total - excluded flow`、起点为 100 万且最终外部流为 0 时，
+Dashboard 固定报告 `initial_capital_return_excluding_external_flows`，并将已撤销的错误资金
+事件从 `history.funding_events` 折叠为空。该折叠只改变展示语义，不改 Store 的 immutable
+provenance bytes。
+
+只有未来真实外部资金流使上述逐点恒等式不再成立时，新 v3 financial state 才使用
 flow-neutral unitization：
 
 ```text
@@ -120,12 +126,20 @@ bytes 中删除内部持仓、变化、绝对资产、资金流金额、路径�
 - `BLOCKED`：Store/pointer/catalog/performance closure、active-row reconciliation 或
   bundle checker 失败。exporter 返回非零，不能把磁盘旧 bundle 当成本轮结果。
 
-真实 bundle 只原子刷新 Git ignored 的：
+真实 bundle 只原子刷新 Git ignored 的 private artifact set：
 
 ```text
 portfolio_dashboard/private/generated/cn_aggressive_dashboard.v1.json
 portfolio_dashboard/private/generated/cn_aggressive_dashboard.v1.js
+portfolio_dashboard/private/generated/cn_aggressive_dashboard.v2.json
+portfolio_dashboard/private/generated/cn_aggressive_dashboard.v2.js
+portfolio_dashboard/private/generated/cn_aggressive_dashboard_selector.v2.json
+portfolio_dashboard/private/generated/cn_aggressive_dashboard_selector.v2.js
 ```
+
+Exporter 不接受任意 output path：六个 artifact 必须使用这些固定文件名，并且在
+`portfolio_dashboard/private/generated/` 内。它会在首次 `REFRESHING` selector
+写入前拒绝 public、System、Store、Market/Data 和 symlink escape 路径。
 
 ## 离线导出与检查
 
@@ -134,11 +148,17 @@ portfolio_dashboard/private/generated/cn_aggressive_dashboard.v1.js
   --record-root results/strategy_records/CN/aggressive_tech_manufacturing
 ./.venv/bin/python scripts/export_cn_aggressive_dashboard_data.py
 ./.venv/bin/python scripts/check_cn_dashboard_export.py
-./.venv/bin/python -m pytest -q tests/unit/test_cn_dashboard_export.py
+./.venv/bin/python -m pytest -q \
+  tests/unit/test_cn_dashboard_export.py \
+  tests/unit/test_cn_dashboard_export_v2.py \
+  tests/unit/test_cn_dashboard_v2.py \
+  tests/unit/test_cn_dashboard_v2_selector.py
 node portfolio_dashboard/tests/cn_aggressive_dashboard_contract_v1.test.js
+node portfolio_dashboard/tests/cn_aggressive_dashboard_contract_v2.test.js
 node --check portfolio_dashboard/app.js
 node --check portfolio_dashboard/js/cn_aggressive_input.js
 node --check portfolio_dashboard/js/cn_aggressive_dashboard_contract_v1.js
+node --check portfolio_dashboard/js/cn_aggressive_dashboard_contract_v2.js
 ```
 
 `build_cn_dashboard_history_integrity.py` 和 legacy scanner 不属于 registered governed-root

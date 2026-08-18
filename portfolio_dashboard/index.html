@@ -228,7 +228,7 @@
           <section id="holdings" class="panel holdings-panel internal-only">
             <div class="panel-heading">
               <div><p class="eyebrow">CURRENT EFFECTIVE LEDGER</p><h2>当前持仓与资产配置</h2></div>
-              <p>记录价格，不是当前行情；权益权重按股票仓位内部计算。</p>
+              <p id="holdingsSubtitle">记录价格，不是当前行情；权益权重按股票仓位内部计算。</p>
             </div>
             <div class="allocation-layout">
               <div>
@@ -318,10 +318,21 @@
 
     <script>
       document.write('<script src="private/generated/cn_aggressive_dashboard.v1.js?cache=' + Date.now() + '"><\/script>');
+      document.write('<script src="private/generated/cn_aggressive_dashboard.v2.js?cache=' + Date.now() + '"><\/script>');
+      document.write('<script src="private/generated/cn_aggressive_dashboard_selector.v2.js?cache=' + Date.now() + '"><\/script>');
     </script>
     <script src="js/cn_aggressive_input.js?v=dashboard-v2"></script>
     <script src="js/cn_aggressive_dashboard_contract_v1.js?v=dashboard-v2"></script>
+    <script src="js/cn_aggressive_dashboard_contract_v2.js?v=dashboard-v1"></script>
     <script src="js/cn_aggressive_dashboard_analysis_v1.js?v=dashboard-v2"></script>
+    <script>
+      window.__cnAggressivePrivateDashboardBundle = window.MyQuantCNAggressiveDashboardV2;
+      window.__cnAggressivePrivateDashboardSelector = window.MyQuantCNAggressiveDashboardSelectorV2;
+      window.__cnAggressivePrivateDashboardContract = window.CNAggressiveDashboardContractV2;
+      delete window.MyQuantCNAggressiveDashboardV2;
+      delete window.MyQuantCNAggressiveDashboardSelectorV2;
+      delete window.CNAggressiveDashboardContractV2;
+    </script>
     <script src="js/cn_aggressive_public_mode.js?mode=internal-v1"></script>
     <script src="app.js?v=dashboard-v4"></script>
   </body>

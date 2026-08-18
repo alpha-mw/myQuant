@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import shutil
 import sys
 from datetime import date
 from pathlib import Path
@@ -34,6 +35,7 @@ from cn_dashboard_common import (  # noqa: E402
 )
 from export_cn_aggressive_dashboard_data import publish_bundle  # noqa: E402
 from build_cn_dashboard_public_site import (  # noqa: E402
+    build_site,
     sanitize_bundle,
     validate_public_template,
 )
@@ -47,12 +49,9 @@ def test_catalog_v3_disables_history_integrity_runtime_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project_root = tmp_path / "project"
-    record_root = project_root / (
-        "results/strategy_records/CN/aggressive_tech_manufacturing"
-    )
+    record_root = project_root / ("results/strategy_records/CN/aggressive_tech_manufacturing")
     requested = project_root / (
-        "portfolio_dashboard/private/generated/"
-        "cn_aggressive_history_integrity.v1.json"
+        "portfolio_dashboard/private/generated/" "cn_aggressive_history_integrity.v1.json"
     )
     monkeypatch.setattr(
         dashboard_exporter,
@@ -62,19 +61,57 @@ def test_catalog_v3_disables_history_integrity_runtime_path(
             {"schema_id": "myquant.strategy_record_catalog.v3"},
         ),
     )
-    assert dashboard_exporter._catalog_history_integrity_path(
-        project_root=project_root,
-        record_root=record_root,
-        requested=requested,
-    ) is None
-    with pytest.raises(
-        DashboardInputError, match="catalog_v3_history_integrity_path_forbidden"
-    ):
+    assert (
+        dashboard_exporter._catalog_history_integrity_path(
+            project_root=project_root,
+            record_root=record_root,
+            requested=requested,
+        )
+        is None
+    )
+    with pytest.raises(DashboardInputError, match="catalog_v3_history_integrity_path_forbidden"):
         dashboard_exporter._catalog_history_integrity_path(
             project_root=project_root,
             record_root=record_root,
             requested=project_root / "explicit-legacy-registry.json",
         )
+
+
+def test_owner_corrected_canonical_path_requires_zero_flow_and_identity() -> None:
+    points = [
+        {
+            "performance_initial_capital": 1_000_000.0,
+            "total_value": 1_000_000.0,
+            "excluded_external_flow": 0.0,
+            "adjusted_total_value": 1_000_000.0,
+            "unit_nav": 1.0,
+        },
+        {
+            "performance_initial_capital": 1_000_000.0,
+            "total_value": 10_016_784.0,
+            "excluded_external_flow": 8_338_387.0,
+            "adjusted_total_value": 1_678_397.0,
+            "unit_nav": 1.678397,
+        },
+        {
+            "performance_initial_capital": 1_000_000.0,
+            "total_value": 1_610_069.79,
+            "excluded_external_flow": 0.0,
+            "adjusted_total_value": 1_610_069.79,
+            "unit_nav": 1.61006979,
+        },
+    ]
+
+    assert dashboard_common._is_owner_corrected_initial_capital_path(points)
+
+    genuine_flow = json.loads(json.dumps(points))
+    genuine_flow[1]["adjusted_total_value"] = 1_680_000.0
+    genuine_flow[1]["unit_nav"] = 1.68
+    assert not dashboard_common._is_owner_corrected_initial_capital_path(genuine_flow)
+
+    nonzero_final_flow = json.loads(json.dumps(points))
+    nonzero_final_flow[-1]["excluded_external_flow"] = 100_000.0
+    assert not dashboard_common._is_owner_corrected_initial_capital_path(nonzero_final_flow)
 
 
 def _write_store_document(path: Path, body: dict) -> dict:
@@ -108,11 +145,7 @@ def _write_record(
     fallback_price_date: str | None = None,
 ) -> Path:
     record_root = (
-        project_root
-        / "results"
-        / "strategy_records"
-        / "CN"
-        / "aggressive_tech_manufacturing"
+        project_root / "results" / "strategy_records" / "CN" / "aggressive_tech_manufacturing"
     )
     record_dir = record_root / record
     record_dir.mkdir(parents=True)
@@ -202,15 +235,11 @@ def _write_record(
     }
     if funding is not None:
         supplement_path = record_dir / "funding.json"
-        supplement_path.write_text(
-            json.dumps(funding, sort_keys=True), encoding="utf-8"
-        )
+        supplement_path.write_text(json.dumps(funding, sort_keys=True), encoding="utf-8")
         manual["manual_funding_supplement"] = funding
         manual["manual_funding_supplement_path"] = "funding.json"
     if funding_correction is not None:
-        manual["correction_type"] = (
-            "reverse_erroneous_20260709_manual_funding"
-        )
+        manual["correction_type"] = "reverse_erroneous_20260709_manual_funding"
         manual["owner_correction"] = funding_correction
     if official_valuation is not None:
         manual["official_valuation"] = official_valuation
@@ -218,16 +247,12 @@ def _write_record(
     if valuation_status is not None:
         manual["valuation_status"] = valuation_status
     manual_path = record_dir / "manual_execution_manifest.json"
-    manual_path.write_text(
-        json.dumps(manual, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    manual_path.write_text(json.dumps(manual, ensure_ascii=False, indent=2), encoding="utf-8")
     manifest = {
         "market": "CN",
         "strategy": "aggressive_tech_manufacturing",
         "timestamp": record,
-        "recorded_at": (
-            f"{record[:4]}-{record[4:6]}-{record[6:8]} 12:00:00 CST"
-        ),
+        "recorded_at": (f"{record[:4]}-{record[4:6]}-{record[6:8]} 12:00:00 CST"),
         "capital_cny": capital_base,
         "source_record": source_record,
         "files": {
@@ -237,11 +262,7 @@ def _write_record(
         "manual_execution": manual,
         "data_snapshot": {
             "analysis_trade_date": data_date.replace("-", ""),
-            **(
-                {"valuation_status": valuation_status}
-                if valuation_status is not None
-                else {}
-            ),
+            **({"valuation_status": valuation_status} if valuation_status is not None else {}),
             **(
                 {
                     "last_strict_completed_trade_date_for_untouched_marks": (
@@ -260,12 +281,7 @@ def _write_record(
 
 
 def _write_benchmark(project_root: Path, dates: list[str]) -> Path:
-    path = (
-        project_root
-        / "portfolio_dashboard"
-        / "inputs"
-        / "cn_index_benchmark.csv"
-    )
+    path = project_root / "portfolio_dashboard" / "inputs" / "cn_index_benchmark.csv"
     _write_csv(
         path,
         [
@@ -297,12 +313,7 @@ def _write_benchmark(project_root: Path, dates: list[str]) -> Path:
 
 
 def _write_risk_free(project_root: Path, dates: list[str]) -> Path:
-    path = (
-        project_root
-        / "portfolio_dashboard"
-        / "inputs"
-        / "cn_govt_bond_yield.csv"
-    )
+    path = project_root / "portfolio_dashboard" / "inputs" / "cn_govt_bond_yield.csv"
     _write_csv(
         path,
         [
@@ -318,10 +329,7 @@ def _write_risk_free(project_root: Path, dates: list[str]) -> Path:
                 "tenor": "1Y",
                 "annual_yield_percent": "2.0",
                 "source_system": "chinabond.mof_govt_yield_curve",
-                "source_url": (
-                    "https://yield.chinabond.com.cn/cbweb-mn/pgxh/"
-                    "showHistory"
-                ),
+                "source_url": ("https://yield.chinabond.com.cn/cbweb-mn/pgxh/" "showHistory"),
             }
             for value in dates
         ],
@@ -329,9 +337,7 @@ def _write_risk_free(project_root: Path, dates: list[str]) -> Path:
     return path
 
 
-def _write_legacy_baseline(
-    project_root: Path, record: str, *, capital: float
-) -> None:
+def _write_legacy_baseline(project_root: Path, record: str, *, capital: float) -> None:
     record_dir = (
         project_root
         / "results"
@@ -362,9 +368,7 @@ def _write_legacy_baseline(
         "source_record": None,
         "capital_cny": capital,
         "files": {"ledger": "ledger.csv"},
-        "data_snapshot": {
-            "intraday_quote_snapshot": "2098-12-30 12:00 CST"
-        },
+        "data_snapshot": {"intraday_quote_snapshot": "2098-12-30 12:00 CST"},
     }
     (record_dir / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -372,13 +376,7 @@ def _write_legacy_baseline(
 
 
 def _fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
-    record_root = (
-        tmp_path
-        / "results"
-        / "strategy_records"
-        / "CN"
-        / "aggressive_tech_manufacturing"
-    )
+    record_root = tmp_path / "results" / "strategy_records" / "CN" / "aggressive_tech_manufacturing"
     _write_legacy_baseline(tmp_path, "20981230_1200", capital=10000)
     _write_record(
         tmp_path,
@@ -433,15 +431,11 @@ def _registered_projection_stub(
     active_record_id: str = "20990103_1200",
     previous_record_id: str = "20990102_1200",
 ) -> tuple[dict, dict]:
-    valid, rejected, latest_seen = scan_valid_records(
-        record_root, project_root
-    )
-    historical, historical_rejected = (
-        scan_historical_performance_records(
-            record_root=record_root,
-            project_root=project_root,
-            strict_records=valid,
-        )
+    valid, rejected, latest_seen = scan_valid_records(record_root, project_root)
+    historical, historical_rejected = scan_historical_performance_records(
+        record_root=record_root,
+        project_root=project_root,
+        strict_records=valid,
     )
     projection = {
         "valid_records": valid,
@@ -514,9 +508,7 @@ def _archive_registered_record(
         if row["record"] == record_id
     ]
     assert projection_rows
-    logical_refs = sorted(
-        projection_rows[0]["source_refs"], key=lambda item: item["path"]
-    )
+    logical_refs = sorted(projection_rows[0]["source_refs"], key=lambda item: item["path"])
     record_dir = record_root / record_id
     inventory = [
         {
@@ -528,13 +520,10 @@ def _archive_registered_record(
         for source in sorted(record_dir.rglob("*"))
         if source.is_file() and not source.is_symlink()
     ]
-    inventory_sha = hashlib.sha256(
-        store_canonical_json_bytes(inventory)
-    ).hexdigest()
+    inventory_sha = hashlib.sha256(store_canonical_json_bytes(inventory)).hexdigest()
     archive_id = "cn-aggressive-2098-12-v1"
     archive_root = (
-        project_root
-        / "results/strategy_record_archives/CN/"
+        project_root / "results/strategy_record_archives/CN/"
         "aggressive_tech_manufacturing/monthly/v1/2098-12"
     )
     archive_path = archive_root / "records.tar.zst"
@@ -573,9 +562,7 @@ def _archive_registered_record(
     _write_store_document(
         receipt_path,
         {
-            "schema_id": (
-                "myquant.strategy_record_archive_restore_receipt.v1"
-            ),
+            "schema_id": ("myquant.strategy_record_archive_restore_receipt.v1"),
             "archive_id": archive_id,
             "manifest_path": manifest_rel,
             "manifest_sha256": _sha(manifest_path),
@@ -594,12 +581,8 @@ def _archive_registered_record(
         row["inventory_sha256"] = hashlib.sha256(
             store_canonical_json_bytes(row_inventory)
         ).hexdigest()
-        row["file_count"] = len(
-            [item for item in row_inventory if item["type"] == "file"]
-        )
-        row["total_bytes"] = sum(
-            item["size"] for item in row_inventory if item["type"] == "file"
-        )
+        row["file_count"] = len([item for item in row_inventory if item["type"] == "file"])
+        row["total_bytes"] = sum(item["size"] for item in row_inventory if item["type"] == "file")
         if row["record_id"] == record_id:
             row.update(
                 {
@@ -607,9 +590,7 @@ def _archive_registered_record(
                     "storage_state": "ARCHIVED",
                     "logical_source_refs": logical_refs,
                     "archive_locator": {
-                        "schema_id": (
-                            "myquant.strategy_record_archive_locator.v1"
-                        ),
+                        "schema_id": ("myquant.strategy_record_archive_locator.v1"),
                         "archive_id": archive_id,
                         "archive_path": archive_rel,
                         "archive_sha256": _sha(archive_path),
@@ -631,27 +612,19 @@ def _archive_registered_record(
         "valid_records": [
             {
                 **row,
-                "source_refs": sorted(
-                    row["source_refs"], key=lambda ref: ref["path"]
-                ),
+                "source_refs": sorted(row["source_refs"], key=lambda ref: ref["path"]),
             }
             for row in catalog["dashboard_projection"]["valid_records"]
         ],
         "historical_records": [
             {
                 **row,
-                "source_refs": sorted(
-                    row["source_refs"], key=lambda ref: ref["path"]
-                ),
+                "source_refs": sorted(row["source_refs"], key=lambda ref: ref["path"]),
             }
-            for row in catalog["dashboard_projection"][
-                "historical_records"
-            ]
+            for row in catalog["dashboard_projection"]["historical_records"]
         ],
     }
-    projection_sha = hashlib.sha256(
-        canonical_json_bytes(normalized_projection)
-    ).hexdigest()
+    projection_sha = hashlib.sha256(canonical_json_bytes(normalized_projection)).hexdigest()
     catalog_by_id = {row["record_id"]: row for row in catalog["records"]}
     registry_records = []
     archive_bindings = {}
@@ -667,26 +640,18 @@ def _archive_registered_record(
         if catalog_row["state"] == "ARCHIVED":
             locator = catalog_row["archive_locator"]
             archive_bindings[row["record"]] = {
-                "record_inventory_sha256": catalog_row[
-                    "inventory_sha256"
-                ],
+                "record_inventory_sha256": catalog_row["inventory_sha256"],
                 "archive_storage_refs": [
                     {
                         "path": locator["manifest_path"],
                         "sha256": locator["manifest_sha256"],
-                        "bytes": (project_root / locator["manifest_path"])
-                        .stat()
-                        .st_size,
+                        "bytes": (project_root / locator["manifest_path"]).stat().st_size,
                         "media_type": "application/json",
                     },
                     {
                         "path": locator["restore_receipt_path"],
                         "sha256": locator["restore_receipt_sha256"],
-                        "bytes": (
-                            project_root / locator["restore_receipt_path"]
-                        )
-                        .stat()
-                        .st_size,
+                        "bytes": (project_root / locator["restore_receipt_path"]).stat().st_size,
                         "media_type": "application/json",
                     },
                     {
@@ -705,8 +670,7 @@ def _archive_registered_record(
         archive_bindings=archive_bindings,
     )
     registry_path = (
-        project_root
-        / "portfolio_dashboard/private/generated/"
+        project_root / "portfolio_dashboard/private/generated/"
         "cn_aggressive_history_integrity.v2.json"
     )
     registry_path.parent.mkdir(parents=True, exist_ok=True)
@@ -785,13 +749,12 @@ def test_build_bundle_excludes_external_funding_and_is_read_only(
     assert bundle["history"]["first_pnl_record"] == "20990101_1200"
     assert bundle["history"]["legacy_exact_byte_record_count"] == 1
     assert bundle["history"]["net_external_flow"] == 10000
-    assert bundle["history"]["funding_events"][0]["record"] == (
-        "20990102_1200"
-    )
+    assert bundle["history"]["funding_events"][0]["record"] == ("20990102_1200")
     assert bundle["portfolio"]["performance_start_date"] == "2098-12-30"
-    assert bundle["portfolio"]["performance_points"][0][
-        "evidence_status"
-    ] == "ARCHIVE_INCEPTION_EXACT_BYTES_NO_DECLARED_SHA"
+    assert (
+        bundle["portfolio"]["performance_points"][0]["evidence_status"]
+        == "ARCHIVE_INCEPTION_EXACT_BYTES_NO_DECLARED_SHA"
+    )
     assert bundle["portfolio"]["performance_initial_capital"] == 10000
     assert bundle["portfolio"]["excluded_external_flow"] == 10000
     assert bundle["portfolio"]["adjusted_total_value"] == 13100
@@ -799,61 +762,37 @@ def test_build_bundle_excludes_external_funding_and_is_read_only(
     assert bundle["portfolio"]["market_value"] == 1100
     assert bundle["portfolio"]["total_value"] == 13100
     assert bundle["portfolio"]["portfolio_pnl"] == 3100
-    assert bundle["portfolio"]["cash_weight"] == pytest.approx(
-        12000 / 13100
-    )
-    assert bundle["portfolio"]["gross_exposure"] == pytest.approx(
-        1100 / 13100
-    )
-    assert bundle["positions"][0]["nav_weight"] == pytest.approx(
-        1100 / 13100
-    )
-    assert bundle["changes"][0]["nav_weight_delta"] == pytest.approx(
-        1100 / 13100 - 1100 / 11000
-    )
-    assert bundle["portfolio"][
-        "cumulative_profit_excluding_external_flow"
-    ] == 3100
+    assert bundle["portfolio"]["cash_weight"] == pytest.approx(12000 / 13100)
+    assert bundle["portfolio"]["gross_exposure"] == pytest.approx(1100 / 13100)
+    assert bundle["positions"][0]["nav_weight"] == pytest.approx(1100 / 13100)
+    assert bundle["changes"][0]["nav_weight_delta"] == pytest.approx(1100 / 13100 - 1100 / 11000)
+    assert bundle["portfolio"]["cumulative_profit_excluding_external_flow"] == 3100
     assert bundle["portfolio"]["cumulative_return"] == pytest.approx(0.31)
-    assert bundle["portfolio"]["performance_points"][2][
-        "adjusted_total_value"
-    ] == 11000
-    assert bundle["portfolio"]["performance_points"][-1][
-        "excluded_external_flow"
-    ] == 10000
+    assert bundle["portfolio"]["performance_points"][2]["adjusted_total_value"] == 11000
+    assert bundle["portfolio"]["performance_points"][-1]["excluded_external_flow"] == 10000
     assert bundle["portfolio"]["latest_interval_turnover"] == 0
-    assert (
-        bundle["portfolio"]["return_method"]
-        == "initial_capital_return_excluding_external_flows"
-    )
+    assert bundle["portfolio"]["return_method"] == "initial_capital_return_excluding_external_flows"
     assert bundle["benchmarks"][0]["id"] == "CSI300"
     assert bundle["benchmarks"][0]["missing_dates"] == []
     assert bundle["risk_free"]["tenor"] == "1Y"
     assert bundle["risk_free"]["latest_annual_yield"] == pytest.approx(0.02)
-    assert bundle["portfolio"]["performance_points"][-1][
-        "risk_free_annual_yield"
-    ] == pytest.approx(0.02)
+    assert bundle["portfolio"]["performance_points"][-1]["risk_free_annual_yield"] == pytest.approx(
+        0.02
+    )
     assert [row["id"] for row in bundle["benchmarks"]] == [
         "CSI300",
         "STAR50",
         "CHINEXT",
     ]
-    assert bundle["portfolio"]["performance_points"][-1][
-        "star50_nav"
-    ] == pytest.approx(203 / 200)
-    assert bundle["portfolio"]["performance_points"][-1][
-        "chinext_nav"
-    ] == pytest.approx(303 / 300)
+    assert bundle["portfolio"]["performance_points"][-1]["star50_nav"] == pytest.approx(203 / 200)
+    assert bundle["portfolio"]["performance_points"][-1]["chinext_nav"] == pytest.approx(303 / 300)
     assert all(value is False for value in bundle["authority_flags"].values())
     assert bundle["i1_research"] is None
     assert validate_bundle_shape(bundle) == []
     assert verify_source_refs(bundle, project_root) == []
     without_hash = dict(bundle)
     content_hash = without_hash.pop("content_sha256")
-    assert (
-        hashlib.sha256(canonical_json_bytes(without_hash)).hexdigest()
-        == content_hash
-    )
+    assert hashlib.sha256(canonical_json_bytes(without_hash)).hexdigest() == content_hash
 
 
 def test_bundle_shape_accepts_flow_neutral_unitization_with_raw_holdings_nav(
@@ -876,9 +815,7 @@ def test_bundle_shape_accepts_flow_neutral_unitization_with_raw_holdings_nav(
     bundle["positions"][0]["nav_weight"] = 1100 / 23100
     without_hash = dict(bundle)
     without_hash.pop("content_sha256")
-    bundle["content_sha256"] = hashlib.sha256(
-        canonical_json_bytes(without_hash)
-    ).hexdigest()
+    bundle["content_sha256"] = hashlib.sha256(canonical_json_bytes(without_hash)).hexdigest()
 
     assert validate_bundle_shape(bundle) == []
 
@@ -886,12 +823,8 @@ def test_bundle_shape_accepts_flow_neutral_unitization_with_raw_holdings_nav(
     portfolio["portfolio_pnl"] += 100
     without_hash = dict(bundle)
     without_hash.pop("content_sha256")
-    bundle["content_sha256"] = hashlib.sha256(
-        canonical_json_bytes(without_hash)
-    ).hexdigest()
-    assert "economic_portfolio_performance_total_mismatch" in (
-        validate_bundle_shape(bundle)
-    )
+    bundle["content_sha256"] = hashlib.sha256(canonical_json_bytes(without_hash)).hexdigest()
+    assert "economic_portfolio_performance_total_mismatch" in (validate_bundle_shape(bundle))
 
 
 def test_owner_correction_reverses_false_funding_once(
@@ -941,12 +874,8 @@ def test_owner_correction_reverses_false_funding_once(
     assert bundle["portfolio"]["market_value"] == 1100
     assert bundle["portfolio"]["total_value"] == 13100
     assert bundle["portfolio"]["cumulative_return"] == pytest.approx(0.31)
-    assert bundle["portfolio"]["performance_points"][-2][
-        "adjusted_total_value"
-    ] == 13100
-    assert bundle["portfolio"]["performance_points"][-1][
-        "adjusted_total_value"
-    ] == 13100
+    assert bundle["portfolio"]["performance_points"][-2]["adjusted_total_value"] == 13100
+    assert bundle["portfolio"]["performance_points"][-1]["adjusted_total_value"] == 13100
 
 
 def test_source_sha_change_blocks_publish_and_preserves_existing_bundle(
@@ -966,9 +895,7 @@ def test_source_sha_change_blocks_publish_and_preserves_existing_bundle(
     js_output = output_dir / "cn_aggressive_dashboard.v1.js"
     json_output.write_bytes(b"old-json-bytes\n")
     js_output.write_bytes(b"old-js-bytes\n")
-    benchmark.write_text(
-        benchmark.read_text(encoding="utf-8-sig") + "\n", encoding="utf-8"
-    )
+    benchmark.write_text(benchmark.read_text(encoding="utf-8-sig") + "\n", encoding="utf-8")
     with pytest.raises(DashboardInputError, match="source_ref_sha_mismatch"):
         publish_bundle(bundle, json_output, js_output, project_root)
     assert json_output.read_bytes() == b"old-json-bytes\n"
@@ -984,15 +911,11 @@ def test_capital_base_change_without_exact_funding_blocks_history(
     manual = json.loads(manual_path.read_text(encoding="utf-8"))
     manual.pop("manual_funding_supplement")
     manual.pop("manual_funding_supplement_path")
-    manual_path.write_text(
-        json.dumps(manual, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    manual_path.write_text(json.dumps(manual, ensure_ascii=False, indent=2), encoding="utf-8")
     manifest_path = record_dir / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["manual_execution"] = manual
-    manifest_path.write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
     with pytest.raises(
         DashboardInputError,
@@ -1009,9 +932,7 @@ def test_capital_base_change_without_exact_funding_blocks_history(
 
 def test_missing_primary_benchmark_date_blocks_export(tmp_path: Path) -> None:
     project_root, record_root, benchmark = _fixture(tmp_path)
-    rows = list(
-        csv.DictReader(benchmark.read_text(encoding="utf-8-sig").splitlines())
-    )
+    rows = list(csv.DictReader(benchmark.read_text(encoding="utf-8-sig").splitlines()))
     _write_csv(
         benchmark,
         [
@@ -1024,9 +945,7 @@ def test_missing_primary_benchmark_date_blocks_export(tmp_path: Path) -> None:
         ],
         [row for row in rows if row["date"] != "2099-01-02"],
     )
-    with pytest.raises(
-        DashboardInputError, match="csi300_benchmark_missing_dates"
-    ):
+    with pytest.raises(DashboardInputError, match="csi300_benchmark_missing_dates"):
         build_bundle(
             project_root=project_root,
             record_root=record_root,
@@ -1054,9 +973,7 @@ def test_missing_risk_free_prior_date_blocks_export(tmp_path: Path) -> None:
 
 def test_effective_ledger_sha_mismatch_is_rejected(tmp_path: Path) -> None:
     project_root, record_root, benchmark = _fixture(tmp_path)
-    latest_ledger = (
-        record_root / "20990103_1200" / "ledger_after_manual_switch.csv"
-    )
+    latest_ledger = record_root / "20990103_1200" / "ledger_after_manual_switch.csv"
     latest_ledger.write_bytes(latest_ledger.read_bytes() + b"\n")
     bundle = build_bundle(
         project_root=project_root,
@@ -1066,12 +983,7 @@ def test_effective_ledger_sha_mismatch_is_rejected(tmp_path: Path) -> None:
         today=date(2099, 1, 3),
     )
     assert bundle["latest_valid_record"] == "20990102_1200"
-    assert (
-        bundle["rejected_record_reason_counts"][
-            "effective_ledger_sha_mismatch"
-        ]
-        == 1
-    )
+    assert bundle["rejected_record_reason_counts"]["effective_ledger_sha_mismatch"] == 1
 
 
 def test_hash_bound_effective_parquet_ledger_is_supported(
@@ -1106,25 +1018,17 @@ def test_hash_bound_effective_parquet_ledger_is_supported(
     parquet_sha = _sha(parquet_path)
     manual_path = latest_dir / "manual_execution_manifest.json"
     manual = json.loads(manual_path.read_text(encoding="utf-8"))
-    manual["effective_manual_ledger_path"] = (
-        "ledger_after_manual_switch.parquet"
-    )
+    manual["effective_manual_ledger_path"] = "ledger_after_manual_switch.parquet"
     manual["next_ledger_path"] = "ledger_after_manual_switch.parquet"
     manual["next_ledger_sha256"] = parquet_sha
-    manual["ledger_after_manual_switch_parquet"] = (
-        "ledger_after_manual_switch.parquet"
-    )
+    manual["ledger_after_manual_switch_parquet"] = "ledger_after_manual_switch.parquet"
     manual["ledger_after_manual_switch_parquet_sha256"] = parquet_sha
     manual["ledger_provenance"]["declared_sha256"] = parquet_sha
-    manual_path.write_text(
-        json.dumps(manual, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    manual_path.write_text(json.dumps(manual, ensure_ascii=False, indent=2), encoding="utf-8")
     manifest_path = latest_dir / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["manual_execution"] = manual
-    manifest_path.write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
     bundle = build_bundle(
         project_root=project_root,
@@ -1148,9 +1052,7 @@ def test_exact_backfill_provenance_can_close_current_carry_forward(
     manifest.pop("manual_execution")
     manifest["data_snapshot"] = {
         "valuation_trade_date": "20990103",
-        "freshness_mode": (
-            "strict_parquet_canonical_historical_revaluation"
-        ),
+        "freshness_mode": ("strict_parquet_canonical_historical_revaluation"),
         "snapshot_id_at_backfill": "20990103T120000Z",
         "market_pointer_sha256_at_backfill": "d" * 64,
     }
@@ -1158,9 +1060,7 @@ def test_exact_backfill_provenance_can_close_current_carry_forward(
         json.dumps(manifest, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    history_path = (
-        project_root / ".codex" / "automations" / "history.md"
-    )
+    history_path = project_root / ".codex" / "automations" / "history.md"
     history_path.parent.mkdir(parents=True)
     history_path.write_text(
         "# Synthetic automation history\n2099 current carry forward\n",
@@ -1202,16 +1102,11 @@ def test_exact_backfill_provenance_can_close_current_carry_forward(
 
     assert bundle["latest_valid_record"] == "20990103_1200"
     assert bundle["latest_data_date"] == "2099-01-03"
-    assert any(
-        ref["path"].endswith("backfill_provenance.json")
-        for ref in bundle["source_refs"]
-    )
+    assert any(ref["path"].endswith("backfill_provenance.json") for ref in bundle["source_refs"])
     assert verify_source_refs(bundle, project_root) == []
 
     history_path.write_text("changed\n", encoding="utf-8")
-    assert "backfill_history_sha_mismatch" in verify_source_refs(
-        bundle, project_root
-    )
+    assert "backfill_history_sha_mismatch" in verify_source_refs(bundle, project_root)
 
 
 def test_public_bundle_keeps_performance_and_removes_holdings_detail(
@@ -1229,28 +1124,26 @@ def test_public_bundle_keeps_performance_and_removes_holdings_detail(
     public = sanitize_bundle(source)
 
     assert public["public_redacted"] is True
-    assert public["portfolio"]["cumulative_return"] == source["portfolio"][
-        "cumulative_return"
-    ]
+    assert public["portfolio"]["cumulative_return"] == source["portfolio"]["cumulative_return"]
     assert public["portfolio"]["performance_initial_capital"] == 0
     assert public["portfolio"]["excluded_external_flow"] == 0
     assert public["portfolio"]["adjusted_total_value"] == 0
     assert public["portfolio"]["cash_weight"] == 0
     assert public["portfolio"]["gross_exposure"] == 0
-    assert public["benchmarks"][0]["return"] == source["benchmarks"][0][
-        "return"
-    ]
+    assert public["benchmarks"][0]["return"] == source["benchmarks"][0]["return"]
     assert [row["id"] for row in public["benchmarks"]] == [
         "CSI300",
         "STAR50",
         "CHINEXT",
     ]
-    assert public["portfolio"]["performance_points"][-1][
-        "star50_nav"
-    ] == source["portfolio"]["performance_points"][-1]["star50_nav"]
-    assert public["portfolio"]["performance_points"][-1][
-        "chinext_nav"
-    ] == source["portfolio"]["performance_points"][-1]["chinext_nav"]
+    assert (
+        public["portfolio"]["performance_points"][-1]["star50_nav"]
+        == source["portfolio"]["performance_points"][-1]["star50_nav"]
+    )
+    assert (
+        public["portfolio"]["performance_points"][-1]["chinext_nav"]
+        == source["portfolio"]["performance_points"][-1]["chinext_nav"]
+    )
     assert public["positions"] == []
     assert public["changes"] == []
     assert public["concentration"] == {
@@ -1270,9 +1163,7 @@ def test_public_bundle_keeps_performance_and_removes_holdings_detail(
 
 
 def test_public_template_contains_only_approved_sections_and_copy() -> None:
-    public_html = (ROOT / "portfolio_dashboard" / "public.html").read_text(
-        encoding="utf-8"
-    )
+    public_html = (ROOT / "portfolio_dashboard" / "public.html").read_text(encoding="utf-8")
 
     approved_markers = (
         "public-section-brand",
@@ -1283,22 +1174,68 @@ def test_public_template_contains_only_approved_sections_and_copy() -> None:
     assert all(public_html.count(marker) == 1 for marker in approved_markers)
     assert 'id="method"' not in public_html
     assert 'href="#method"' not in public_html
-    assert not any(
-        phrase in public_html
-        for phrase in ("外部资金流", "入金", "出金", "资金事件")
-    )
+    assert not any(phrase in public_html for phrase in ("外部资金流", "入金", "出金", "资金事件"))
     validate_public_template(public_html)
 
-    with pytest.raises(
-        ValueError, match="public_template_unapproved_method_section"
-    ):
-        validate_public_template(
-            public_html + '<section id="method"></section>'
-        )
-    with pytest.raises(
-        ValueError, match="public_template_forbidden_funding_copy"
-    ):
+    with pytest.raises(ValueError, match="public_template_unapproved_method_section"):
+        validate_public_template(public_html + '<section id="method"></section>')
+    with pytest.raises(ValueError, match="public_template_forbidden_funding_copy"):
         validate_public_template(public_html + "资金事件")
+
+
+def test_public_site_build_omits_private_v2_and_selector_artifacts(
+    tmp_path: Path,
+) -> None:
+    project_root, record_root, benchmark = _fixture(tmp_path)
+    source_dashboard = ROOT / "portfolio_dashboard"
+    dashboard = project_root / "portfolio_dashboard"
+    for relative_path in (
+        Path("public.html"),
+        Path("styles.css"),
+        Path("app.js"),
+        Path("js/cn_aggressive_input.js"),
+        Path("js/cn_aggressive_dashboard_contract_v1.js"),
+        Path("js/cn_aggressive_dashboard_analysis_v1.js"),
+    ):
+        destination = dashboard / relative_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_dashboard / relative_path, destination)
+
+    bundle = build_bundle(
+        project_root=project_root,
+        record_root=record_root,
+        benchmark_path=benchmark,
+        generated_at="2099-01-03T12:00:00+08:00",
+        today=date(2099, 1, 3),
+    )
+    private_generated = dashboard / "private" / "generated"
+    private_generated.mkdir(parents=True, exist_ok=True)
+    v1_path = private_generated / "cn_aggressive_dashboard.v1.json"
+    v1_path.write_text(json.dumps(bundle, ensure_ascii=False), encoding="utf-8")
+    private_secret = "PRIVATE_V2_HOLDINGS_SENTINEL"
+    (private_generated / "cn_aggressive_dashboard.v2.json").write_text(
+        private_secret, encoding="utf-8"
+    )
+    (private_generated / "cn_aggressive_dashboard_selector.v2.json").write_text(
+        private_secret, encoding="utf-8"
+    )
+
+    public_destination = tmp_path.parent / f"{tmp_path.name}-public-site"
+    build_site(
+        source_root=project_root,
+        bundle_path=v1_path,
+        destination=public_destination,
+    )
+
+    public_files = [
+        path.relative_to(public_destination).as_posix() for path in public_destination.rglob("*")
+    ]
+    public_bytes = b"".join(
+        path.read_bytes() for path in public_destination.rglob("*") if path.is_file()
+    )
+    assert not any("dashboard.v2" in path or "selector.v2" in path for path in public_files)
+    assert b"MyQuantCNAggressiveDashboardV2" not in public_bytes
+    assert private_secret.encode("utf-8") not in public_bytes
 
 
 def test_history_integrity_registry_upgrades_legacy_exact_bytes(
@@ -1311,9 +1248,7 @@ def test_history_integrity_registry_upgrades_legacy_exact_bytes(
         project_root=project_root,
         strict_records=valid,
     )
-    registry = build_history_integrity_registry(
-        history, generated_at="2099-01-03T11:00:00+08:00"
-    )
+    registry = build_history_integrity_registry(history, generated_at="2099-01-03T11:00:00+08:00")
     registry_path = (
         project_root
         / "portfolio_dashboard"
@@ -1322,9 +1257,7 @@ def test_history_integrity_registry_upgrades_legacy_exact_bytes(
         / "cn_aggressive_history_integrity.v1.json"
     )
     registry_path.parent.mkdir(parents=True)
-    registry_path.write_text(
-        json.dumps(registry, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    registry_path.write_text(json.dumps(registry, ensure_ascii=False, indent=2), encoding="utf-8")
 
     bundle = build_bundle(
         project_root=project_root,
@@ -1336,24 +1269,15 @@ def test_history_integrity_registry_upgrades_legacy_exact_bytes(
     )
 
     assert bundle["history"]["legacy_exact_byte_record_count"] == 0
-    assert (
-        bundle["history"]["dashboard_integrity_registry_record_count"] == 1
-    )
-    assert bundle["history"]["evidence_status"] == (
-        "DASHBOARD_POST_HOC_SHA_REGISTRY_BOUND"
-    )
+    assert bundle["history"]["dashboard_integrity_registry_record_count"] == 1
+    assert bundle["history"]["evidence_status"] == ("DASHBOARD_POST_HOC_SHA_REGISTRY_BOUND")
     assert bundle["status"] == "FRESH"
     assert "trade_fee_and_net_of_fee_basis_unknown" in bundle["warnings"]
     assert not any(
-        warning.startswith(
-            "historical_performance_legacy_exact_bytes_without_declared_sha"
-        )
+        warning.startswith("historical_performance_legacy_exact_bytes_without_declared_sha")
         for warning in bundle["warnings"]
     )
-    assert not any(
-        risk["code"] == "LEGACY_HISTORY_EVIDENCE_PARTIAL"
-        for risk in bundle["risks"]
-    )
+    assert not any(risk["code"] == "LEGACY_HISTORY_EVIDENCE_PARTIAL" for risk in bundle["risks"])
 
     stale_bundle = build_bundle(
         project_root=project_root,
@@ -1364,10 +1288,7 @@ def test_history_integrity_registry_upgrades_legacy_exact_bytes(
         history_integrity_path=registry_path,
     )
     assert stale_bundle["status"] == "PARTIAL"
-    assert (
-        "latest_performance_stale_calendar_days:1"
-        in stale_bundle["warnings"]
-    )
+    assert "latest_performance_stale_calendar_days:1" in stale_bundle["warnings"]
 
 
 def test_unvalued_current_holdings_do_not_create_performance_point(
@@ -1399,17 +1320,10 @@ def test_unvalued_current_holdings_do_not_create_performance_point(
     assert bundle["portfolio"]["performance_end_date"] == "2099-01-03"
     assert bundle["portfolio"]["total_value"] == 13200
     assert bundle["positions"][0]["price_date"] == "2099-01-03"
-    assert bundle["portfolio"]["performance_points"][-1]["record"] == (
-        "20990103_1200"
-    )
+    assert bundle["portfolio"]["performance_points"][-1]["record"] == ("20990103_1200")
     assert bundle["status"] == "PARTIAL"
-    assert (
-        "latest_performance_stale_calendar_days:1" in bundle["warnings"]
-    )
-    assert (
-        "latest_current_valuation_incomplete:BLOCKED_PENDING_STRICT_CLOSE"
-        in bundle["warnings"]
-    )
+    assert "latest_performance_stale_calendar_days:1" in bundle["warnings"]
+    assert "latest_current_valuation_incomplete:BLOCKED_PENDING_STRICT_CLOSE" in bundle["warnings"]
 
 
 def test_official_tushare_valuation_requires_hash_bound_close_evidence(
@@ -1471,25 +1385,19 @@ def test_official_tushare_valuation_requires_hash_bound_close_evidence(
             "source_contained_ledger_sha256": _sha(source_ledger),
         }
     )
-    manual_path.write_text(
-        json.dumps(manual, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    manual_path.write_text(json.dumps(manual, ensure_ascii=False, indent=2), encoding="utf-8")
     manifest_path = record_dir / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["source_manifest_sha256"] = _sha(source_dir / "manifest.json")
     manifest["manual_execution"] = manual
     manifest["files"]["valuation_evidence"] = evidence_path.name
     manifest["data_snapshot"]["valuation_evidence_sha256"] = evidence_sha
-    manifest_path.write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
     closed = validate_record(record_dir, record_root, project_root)
     assert closed["official_valuation"] is True
     assert closed["positions"][0]["price_date"] == "2099-01-04"
-    assert any(
-        ref["sha256"] == evidence_sha for ref in closed["source_refs"]
-    )
+    assert any(ref["sha256"] == evidence_sha for ref in closed["source_refs"])
 
     evidence["stocks"][0]["close"] = 12
     evidence_path.write_text(
@@ -1545,9 +1453,7 @@ def test_registered_catalog_projection_preserves_dashboard_parity(
         "changes",
     ):
         assert registered[key] == legacy[key]
-    store_refs = {
-        Path(ref["path"]).name for ref in registered["source_refs"]
-    }
+    store_refs = {Path(ref["path"]).name for ref in registered["source_refs"]}
     assert {"current.v1.json", "catalog.v1.json"}.issubset(store_refs)
     assert verify_source_refs(registered, project_root) == []
 
@@ -1576,9 +1482,7 @@ def test_registered_archive_projection_survives_hot_record_absence(
         record_id="20981230_1200",
     )
 
-    projection = dashboard_common.load_dashboard_catalog_projection(
-        record_root, project_root
-    )
+    projection = dashboard_common.load_dashboard_catalog_projection(record_root, project_root)
     candidate = dashboard_common.load_dashboard_candidate_projection(
         record_root=record_root,
         project_root=project_root,
@@ -1591,9 +1495,7 @@ def test_registered_archive_projection_survives_hot_record_absence(
     )
     context = projection["integrity_context"]
     registry_path = project_root / context["history_registry_ref"]["path"]
-    with pytest.raises(
-        DashboardInputError, match="catalog_history_registry_path_required"
-    ):
+    with pytest.raises(DashboardInputError, match="catalog_history_registry_path_required"):
         build_bundle(
             project_root=project_root,
             record_root=record_root,
@@ -1620,20 +1522,12 @@ def test_registered_archive_projection_survives_hot_record_absence(
         point.pop("evidence_status")
     assert registered_portfolio == legacy_portfolio
     assert not (record_root / "20981230_1200").exists()
-    assert all(
-        "20981230_1200" not in ref["path"]
-        for ref in registered["source_refs"]
-    )
-    assert any(
-        ref["path"].endswith("records.tar.zst")
-        for ref in registered["source_refs"]
-    )
+    assert all("20981230_1200" not in ref["path"] for ref in registered["source_refs"])
+    assert any(ref["path"].endswith("records.tar.zst") for ref in registered["source_refs"])
     assert verify_source_refs(registered, project_root) == []
 
     archive_ref = next(
-        ref
-        for ref in registered["source_refs"]
-        if ref["path"].endswith("records.tar.zst")
+        ref for ref in registered["source_refs"] if ref["path"].endswith("records.tar.zst")
     )
     (project_root / archive_ref["path"]).write_bytes(b"tampered")
     with pytest.raises(DashboardInputError, match="archive_binding_invalid"):
@@ -1665,9 +1559,7 @@ def test_registered_history_binding_survives_consecutive_no_actions(
     registry_path = project_root / catalog["history_registry_ref"]["path"]
     registry_bytes = registry_path.read_bytes()
     original_records = json.loads(json.dumps(catalog["records"]))
-    original_projection = json.loads(
-        json.dumps(catalog["dashboard_projection"])
-    )
+    original_projection = json.loads(json.dumps(catalog["dashboard_projection"]))
     original_registry = json.loads(json.dumps(catalog["history_registry"]))
     original_registry_ref = dict(catalog["history_registry_ref"])
 
@@ -1678,15 +1570,9 @@ def test_registered_history_binding_survives_consecutive_no_actions(
             catalog=catalog,
             generation_id=generation_id,
         )
-        projection = dashboard_common.load_dashboard_catalog_projection(
-            record_root, project_root
-        )
-        assert projection["integrity_context"][
-            "publication_generation_id"
-        ] == generation_id
-        assert projection["integrity_context"][
-            "intended_generation_id"
-        ] == "fixture"
+        projection = dashboard_common.load_dashboard_catalog_projection(record_root, project_root)
+        assert projection["integrity_context"]["publication_generation_id"] == generation_id
+        assert projection["integrity_context"]["intended_generation_id"] == "fixture"
 
     assert catalog["records"] == original_records
     assert catalog["dashboard_projection"] == original_projection
@@ -1746,9 +1632,7 @@ def test_registered_history_binding_rejects_malformed_generation(
         DashboardInputError,
         match="catalog_history_registry_generation_invalid",
     ):
-        dashboard_common.load_dashboard_catalog_projection(
-            record_root, project_root
-        )
+        dashboard_common.load_dashboard_catalog_projection(record_root, project_root)
 
 
 def test_registered_history_binding_rejects_projection_change(
@@ -1767,9 +1651,7 @@ def test_registered_history_binding_rejects_projection_change(
         catalog=catalog,
         record_id="20981230_1200",
     )
-    catalog["dashboard_projection"]["historical_rejected"].append(
-        "20980101_1200:changed"
-    )
+    catalog["dashboard_projection"]["historical_rejected"].append("20980101_1200:changed")
     _publish_fixture_metadata_generation(
         record_root=record_root,
         pointer=pointer,
@@ -1781,9 +1663,7 @@ def test_registered_history_binding_rejects_projection_change(
         DashboardInputError,
         match="history_integrity_registry_projection_mismatch",
     ):
-        dashboard_common.load_dashboard_catalog_projection(
-            record_root, project_root
-        )
+        dashboard_common.load_dashboard_catalog_projection(record_root, project_root)
 
 
 def test_registered_archive_rejects_active_row_and_path_escape(
@@ -1802,16 +1682,10 @@ def test_registered_archive_rejects_active_row_and_path_escape(
         catalog=catalog,
         record_id="20981230_1200",
     )
-    archived = next(
-        row for row in catalog["records"] if row["state"] == "ARCHIVED"
-    )
+    archived = next(row for row in catalog["records"] if row["state"] == "ARCHIVED")
     pointer["active_record_id"] = archived["record_id"]
-    with pytest.raises(
-        DashboardInputError, match="record_catalog_pointer_projection_mismatch"
-    ):
-        dashboard_common.load_dashboard_catalog_projection(
-            record_root, project_root
-        )
+    with pytest.raises(DashboardInputError, match="record_catalog_pointer_projection_mismatch"):
+        dashboard_common.load_dashboard_catalog_projection(record_root, project_root)
 
     pointer["active_record_id"] = "20990103_1200"
     original_registry = catalog["history_registry"]
@@ -1819,18 +1693,12 @@ def test_registered_archive_rejects_active_row_and_path_escape(
         **original_registry,
         "generated_at": "2099-01-03T11:00:01+08:00",
     }
-    with pytest.raises(
-        DashboardInputError, match="catalog_history_registry_body_mismatch"
-    ):
-        dashboard_common.load_dashboard_catalog_projection(
-            record_root, project_root
-        )
+    with pytest.raises(DashboardInputError, match="catalog_history_registry_body_mismatch"):
+        dashboard_common.load_dashboard_catalog_projection(record_root, project_root)
     catalog["history_registry"] = original_registry
     archived["archive_locator"]["manifest_path"] = "../escape.json"
     with pytest.raises(DashboardInputError, match="archive_binding_invalid"):
-        dashboard_common.load_dashboard_catalog_projection(
-            record_root, project_root
-        )
+        dashboard_common.load_dashboard_catalog_projection(record_root, project_root)
 
 
 def test_catalog_projection_canonicalizes_duplicate_source_paths(
@@ -1841,9 +1709,7 @@ def test_catalog_projection_canonicalizes_duplicate_source_paths(
         "record": "20990101_0900",
         "source_refs": [dict(source_ref), dict(source_ref)],
     }
-    monkeypatch.setattr(
-        dashboard_common, "load_registered_catalog", lambda _root: None
-    )
+    monkeypatch.setattr(dashboard_common, "load_registered_catalog", lambda _root: None)
     monkeypatch.setattr(
         dashboard_common,
         "scan_valid_records",
@@ -1855,9 +1721,7 @@ def test_catalog_projection_canonicalizes_duplicate_source_paths(
         lambda **_kwargs: ([dict(row)], []),
     )
 
-    projection = dashboard_common.build_dashboard_catalog_projection(
-        tmp_path / "records", tmp_path
-    )
+    projection = dashboard_common.build_dashboard_catalog_projection(tmp_path / "records", tmp_path)
 
     assert projection["valid_records"][0]["source_refs"] == [source_ref]
     assert projection["historical_records"][0]["source_refs"] == [source_ref]
@@ -1876,18 +1740,14 @@ def test_registered_catalog_never_calls_legacy_raw_scanners(
     def unexpected_scan(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("registered Dashboard called legacy raw scanner")
 
-    monkeypatch.setattr(
-        dashboard_common, "scan_valid_records", unexpected_scan
-    )
+    monkeypatch.setattr(dashboard_common, "scan_valid_records", unexpected_scan)
     monkeypatch.setattr(
         dashboard_common,
         "scan_historical_performance_records",
         unexpected_scan,
     )
 
-    projection = dashboard_common.load_dashboard_catalog_projection(
-        record_root, project_root
-    )
+    projection = dashboard_common.load_dashboard_catalog_projection(record_root, project_root)
     assert projection["valid_records"][-1]["record"] == "20990103_1200"
     assert projection["historical_records"]
 
@@ -1955,13 +1815,9 @@ def test_corrupt_registered_pointer_fails_without_legacy_fallback(
     project_root, record_root, benchmark = _fixture(tmp_path)
 
     def corrupt_pointer(_record_root: Path) -> None:
-        raise dashboard_common.StrategyRecordStoreError(
-            "pointer_json_unreadable"
-        )
+        raise dashboard_common.StrategyRecordStoreError("pointer_json_unreadable")
 
-    monkeypatch.setattr(
-        dashboard_common, "load_registered_catalog", corrupt_pointer
-    )
+    monkeypatch.setattr(dashboard_common, "load_registered_catalog", corrupt_pointer)
     monkeypatch.setattr(
         dashboard_common,
         "build_dashboard_catalog_projection",

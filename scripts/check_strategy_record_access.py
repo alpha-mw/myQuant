@@ -159,9 +159,23 @@ ALLOW_RULES: tuple[AllowRule, ...] = (
         ),
     ),
     AllowRule(
-        path="scripts/export_cn_aggressive_dashboard_data.py",
+        path="scripts/cn_dashboard_v2.py",
         operations=(),
-        reason="Passes the registered root to the common exporter and writes bundles elsewhere.",
+        reason=(
+            "Consumes the registered Store pointer/catalog and exact active closure "
+            "through load_registered_catalog, then builds a view-only strict-close "
+            "Dashboard mark without scanning or mutating Strategy Records."
+        ),
+    ),
+    AllowRule(
+        path="scripts/export_cn_aggressive_dashboard_data.py",
+        operations=("open",),
+        reason=(
+            "Passes the registered root to the common exporter and uses exact staged "
+            "readback only for transactional v1/v2 Dashboard outputs outside the "
+            "Strategy Record root. Registered Store resolution remains in the common "
+            "consumer and v2 contract."
+        ),
     ),
     AllowRule(
         path="scripts/export_cn_weekly_review_evidence.py",
@@ -233,9 +247,7 @@ def _tracked_sources(repo_root: Path) -> list[Path]:
 
 def _target_lines(text: str) -> tuple[int, ...]:
     return tuple(
-        number
-        for number, line in enumerate(text.splitlines(), start=1)
-        if TARGET_RE.search(line)
+        number for number, line in enumerate(text.splitlines(), start=1) if TARGET_RE.search(line)
     )
 
 
@@ -278,10 +290,7 @@ def _python_operations(text: str, path: Path) -> tuple[tuple[str, ...], tuple[in
             return True
         return any(
             isinstance(child, ast.Name)
-            and (
-                child.id in tainted_names
-                or TARGETISH_NAME_RE.fullmatch(child.id) is not None
-            )
+            and (child.id in tainted_names or TARGETISH_NAME_RE.fullmatch(child.id) is not None)
             for child in ast.walk(node)
         )
 

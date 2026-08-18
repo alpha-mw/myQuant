@@ -2,11 +2,13 @@
   "use strict";
 
   var Contract = window.CNAggressiveDashboardContractV1;
+  var PrivateDashboardContract = window.__cnAggressivePrivateDashboardContract;
   var Analysis = window.CNAggressiveDashboardAnalysisV1;
   var PublicMode = window.CNPublicDashboard === true;
   var activeBundle = null;
   var activeAnalysis = null;
   var resizeTimer = null;
+  var freshnessTimer = null;
   var chartInteractions = [];
   var activeChartIndex = null;
   var SVG_NS = "http://www.w3.org/2000/svg";
@@ -522,7 +524,12 @@
       weightCell.appendChild(weightValue);
       weightCell.appendChild(track);
       makeCell(row, publicRedacted(money(position.unrealized_pnl)), "numeric " + (PublicMode ? "" : signedClass(position.unrealized_pnl)));
-      makeCell(row, position.thesis_status + " · HASH-BOUND", "evidence-value");
+      makeCell(
+        row,
+        position.thesis_status + " · " +
+          (position.display_evidence_status || "HASH-BOUND"),
+        "evidence-value"
+      );
       body.appendChild(row);
     });
   }
@@ -857,7 +864,90 @@
     setText("internalI1Status", bundle.i1_display_status + " · research-only · no holding authority");
   }
 
-  function renderBundle(bundle) {
+  function markedView(canonical, v2Snapshot) {
+    if (!v2Snapshot || !v2Snapshot.bundle ||
+        v2Snapshot.status.freshness !== "UPDATED") return canonical;
+    var mark = v2Snapshot.bundle.research_mark;
+    var canonicalBySymbol = {};
+    canonical.positions.forEach(function (position) {
+      canonicalBySymbol[position.symbol] = position;
+    });
+    var view = Object.assign({}, canonical);
+    view.positions = mark.positions.map(function (position) {
+      var original = canonicalBySymbol[position.symbol] || {};
+      return Object.assign({}, original, {
+        shares: position.shares,
+        avg_cost: position.avg_cost,
+        cost_basis: position.cost_basis,
+        recorded_price: position.price,
+        market_value: position.market_value,
+        unrealized_pnl: position.unrealized_pnl,
+        nav_weight: position.nav_weight,
+        equity_weight: position.equity_weight,
+        price_date: position.price_date,
+        display_evidence_status: position.price_evidence_status
+      });
+    });
+    var current = mark.current_absolute_performance;
+    view.portfolio = Object.assign({}, canonical.portfolio, {
+      cash: mark.portfolio.cash,
+      market_value: mark.portfolio.market_value,
+      total_value: mark.portfolio.nav,
+      adjusted_total_value: mark.portfolio.nav,
+      cash_weight: mark.portfolio.cash_weight,
+      gross_exposure: mark.portfolio.gross_exposure,
+      portfolio_pnl: mark.portfolio.nav - current.initial_capital,
+      current_unrealized_pnl: mark.portfolio.unrealized_pnl,
+      cumulative_profit_excluding_external_flow:
+        mark.portfolio.nav - current.initial_capital,
+      cumulative_return: current.cumulative_return,
+      latest_record_interval_return: current.continuity_interval_return,
+      max_drawdown: current.max_drawdown,
+      performance_end_date: current.point_date
+    });
+    var equityWeights = view.positions.map(function (position) {
+      return position.equity_weight;
+    }).sort(function (left, right) { return right - left; });
+    view.concentration = Object.assign({}, canonical.concentration, {
+      top1_equity_weight: equityWeights.slice(0, 1).reduce(function (total, value) { return total + value; }, 0),
+      top3_equity_weight: equityWeights.slice(0, 3).reduce(function (total, value) { return total + value; }, 0),
+      equity_hhi: equityWeights.reduce(function (total, value) { return total + value * value; }, 0),
+      holding_count: view.positions.length
+    });
+    view.risks = (canonical.risks || []).map(function (risk) {
+      if (risk.code === "RECORDED_PRICE_STALE") {
+        return {
+          severity: "MEDIUM",
+          code: "CURRENT_VIEW_CONTINUITY_MARK",
+          detail: "股数、现金和成本由财务状态锚点与当日 NO_ACTION 延续；价格按 " +
+            mark.mark_date + " 严格收盘只读估值，未写入 Store。"
+        };
+      }
+      if (risk.code === "EQUITY_CONCENTRATION") {
+        return Object.assign({}, risk, {
+          detail: "最新严格收盘下，权益仓前三大权重 " +
+            percent(view.concentration.top3_equity_weight) +
+            "，权益 HHI " + number(view.concentration.equity_hhi) + "。"
+        });
+      }
+      return risk;
+    });
+    view.warnings = (canonical.warnings || []).filter(function (warning) {
+      return warning !== "current_quote_unavailable_recorded_prices_only" &&
+        warning.indexOf("latest_performance_stale_calendar_days:") !== 0;
+    });
+    view.warnings.push(
+      "strict_close_continuity_mark_view_only_non_store:" + mark.mark_date,
+      "benchmark_relative_as_of_prior_date:" +
+        v2Snapshot.bundle.completeness.benchmark_as_of
+    );
+    view.latest_data_date = mark.mark_date;
+    view.data_age_calendar_days = 0;
+    return view;
+  }
+
+  function renderBundle(bundle, v2Snapshot) {
+    var viewBundle = markedView(bundle, v2Snapshot);
     var csi300 = benchmarkById(bundle, "CSI300");
     var star50 = benchmarkById(bundle, "STAR50");
     var chinext = benchmarkById(bundle, "CHINEXT");
@@ -865,47 +955,111 @@
     activeBundle = bundle;
     activeAnalysis = analysis;
     setText("latestRecord", bundle.latest_valid_record);
-    setText("dataDate", bundle.latest_data_date);
-    setText("totalValue", publicRedacted(money(bundle.portfolio.total_value)));
-    setText("cashExposure", percent(bundle.portfolio.cash_weight) + " / " + percent(bundle.portfolio.gross_exposure));
-    setText("performancePeriod", bundle.portfolio.performance_start_date + " → " + bundle.portfolio.performance_end_date);
-    setText("headerPeriod", bundle.portfolio.performance_start_date + " — " + bundle.portfolio.performance_end_date);
-    setText("freshnessLabel", "截至 " + bundle.portfolio.performance_end_date);
-    setText("portfolioReturnValue", percent(bundle.portfolio.cumulative_return, true));
+    setText(
+      "holdingsSubtitle",
+      v2Snapshot && v2Snapshot.bundle
+        ? "最新严格收盘研究估值，不改变 effective ledger；权益权重按股票仓位内部计算。"
+        : "记录价格，不是当前行情；权益权重按股票仓位内部计算。"
+    );
+    setText("dataDate", viewBundle.latest_data_date);
+    setText("totalValue", publicRedacted(money(viewBundle.portfolio.total_value)));
+    setText("cashExposure", percent(viewBundle.portfolio.cash_weight) + " / " + percent(viewBundle.portfolio.gross_exposure));
+    setText("performancePeriod", bundle.portfolio.performance_start_date + " → " + viewBundle.portfolio.performance_end_date);
+    setText("headerPeriod", bundle.portfolio.performance_start_date + " — " + viewBundle.portfolio.performance_end_date);
+    setText(
+      "freshnessLabel",
+      v2Snapshot && v2Snapshot.bundle
+        ? v2Snapshot.absolute_performance_label
+        : "截至 " + bundle.portfolio.performance_end_date
+    );
+    setText("portfolioReturnValue", percent(viewBundle.portfolio.cumulative_return, true));
     setText("benchmarkReturnValue", percent(csi300.return, true));
     setText("star50ReturnValue", percent(star50.return, true));
     setText("chinextReturnValue", percent(chinext.return, true));
     setText("excessValue", percent(csi300.excess_return, true));
-    setText("drawdownValue", percent(bundle.portfolio.max_drawdown));
-    setText("portfolioDrawdownValue", percent(bundle.portfolio.max_drawdown));
+    setText("drawdownValue", percent(viewBundle.portfolio.max_drawdown));
+    setText("portfolioDrawdownValue", percent(viewBundle.portfolio.max_drawdown));
     setText("benchmarkDrawdownValue", percent(csi300.max_drawdown));
     setText("star50DrawdownValue", percent(star50.max_drawdown));
     setText("chinextDrawdownValue", percent(chinext.max_drawdown));
     setText("performanceInsight", "净值与回撤");
-    setText("performanceSubtitle", bundle.portfolio.performance_start_date + " — " + bundle.portfolio.performance_end_date + " · 100 万起点");
+    setText(
+      "performanceSubtitle",
+      v2Snapshot && v2Snapshot.bundle
+        ? v2Snapshot.anchor_label + " · " + v2Snapshot.benchmark_label
+        : bundle.portfolio.performance_start_date + " — " +
+          bundle.portfolio.performance_end_date + " · 100 万起点"
+    );
     renderQuantMetrics(analysis);
-    renderPositions(bundle);
-    renderAllocation(bundle);
+    renderPositions(viewBundle);
+    renderAllocation(viewBundle);
     renderChanges(bundle);
-    renderMetrics(bundle);
+    renderMetrics(viewBundle);
     renderMonthlyPerformance(analysis);
     renderHistoryAnalysis(bundle, analysis);
     renderHistory(bundle);
-    renderRisks(bundle);
+    renderRisks(viewBundle);
     renderEvidence(bundle);
-    renderWarnings(bundle);
-    renderInternalControl(bundle);
+    renderWarnings(viewBundle);
+    renderInternalControl(viewBundle);
     byId("dashboardContent").hidden = false;
     window.requestAnimationFrame(renderCharts);
+  }
+
+  function scheduleFreshnessRecheck(v2Bundle) {
+    if (freshnessTimer !== null) {
+      window.clearTimeout(freshnessTimer);
+      freshnessTimer = null;
+    }
+    if (!v2Bundle || !PrivateDashboardContract) return;
+    var delay = PrivateDashboardContract.nextFreshnessRecheckDelay(
+      v2Bundle,
+      new Date()
+    );
+    if (!Number.isFinite(delay) || delay < 1) return;
+    freshnessTimer = window.setTimeout(function () {
+      freshnessTimer = null;
+      render();
+    }, delay);
   }
 
   function render() {
     var snapshot = Contract.deriveSnapshot(window.MyQuantCNAggressiveDashboard);
     var status = byId("runtimeStatus");
-    status.textContent = snapshot.status === "FRESH" ? "UPDATED" : snapshot.status;
-    status.className = "status-pill " + snapshot.status.toLowerCase();
-    renderBlockers(snapshot.blockers);
-    if (snapshot.bundle) renderBundle(snapshot.bundle);
+    var v2Snapshot = null;
+    if (!PublicMode && PrivateDashboardContract && snapshot.bundle) {
+      v2Snapshot = PrivateDashboardContract.deriveSnapshot(
+        window.__cnAggressivePrivateDashboardBundle,
+        window.__cnAggressivePrivateDashboardSelector,
+        window.MyQuantCNAggressiveDashboard,
+        new Date()
+      );
+    }
+    if (
+      v2Snapshot &&
+      v2Snapshot.bundle &&
+      v2Snapshot.status.freshness === "UPDATED"
+    ) {
+      status.textContent = v2Snapshot.holdings_label;
+      status.className = "status-pill fresh";
+      renderBlockers(v2Snapshot.blockers);
+      renderBundle(snapshot.bundle, v2Snapshot);
+      scheduleFreshnessRecheck(v2Snapshot.bundle);
+      return;
+    }
+    scheduleFreshnessRecheck(null);
+    if (v2Snapshot) {
+      status.textContent = v2Snapshot.holdings_label;
+      status.className = "status-pill " + (
+        v2Snapshot.status.freshness === "BLOCKED" ? "blocked" : "partial"
+      );
+      renderBlockers(v2Snapshot.blockers);
+    } else {
+      status.textContent = snapshot.status === "FRESH" ? "UPDATED" : snapshot.status;
+      status.className = "status-pill " + snapshot.status.toLowerCase();
+      renderBlockers(snapshot.blockers);
+    }
+    if (snapshot.bundle) renderBundle(snapshot.bundle, null);
   }
 
   window.addEventListener("resize", function () {
