@@ -6,6 +6,8 @@ import copy
 import hashlib
 import math
 from collections.abc import Mapping
+from collections.abc import Sequence
+from enum import Enum
 from typing import Any, Final
 
 import numpy as np
@@ -33,6 +35,27 @@ CANONICAL_PARQUET: Final = "PARQUET"
 LOW_DOLLAR_VOLUME: Final = "pv_low_dollar_volume_5d"
 BLEND_W80: Final = "pv_blend_volstab19x2_mom90_amihud5_w80"
 BLEND_W75_CONTROL: Final = "pv_blend_volstab19x2_mom90_amihud5_w75"
+
+
+class FactorSourceRole(str, Enum):
+    """Finite code-owned source roles that may enter a Factor definition."""
+
+    EXCHANGE_CALENDAR = "EXCHANGE_CALENDAR"
+    MARKET = "MARKET"
+    PIT_MEMBERSHIP = "PIT_MEMBERSHIP"
+    FUNDAMENTAL = "FUNDAMENTAL"
+
+
+BOOTSTRAP_REQUIRED_SOURCE_ROLES: Final = tuple(
+    sorted(
+        (
+            FactorSourceRole.EXCHANGE_CALENDAR.value,
+            FactorSourceRole.MARKET.value,
+            FactorSourceRole.PIT_MEMBERSHIP.value,
+        ),
+        key=lambda value: value.encode("utf-8"),
+    )
+)
 
 _INPUT_CONTRACT: Final = {
     "source_format": CANONICAL_PARQUET,
@@ -69,12 +92,21 @@ def _definition(
         "parameters": dict(parameters),
         "direction": "HIGHER_IS_BETTER",
         "input_fields": sorted(input_fields),
+        "required_source_roles": list(BOOTSTRAP_REQUIRED_SOURCE_ROLES),
         "role": role,
         "selectable": selectable,
         "bootstrap_weight": bootstrap_weight,
         "producer_identity": NOT_CLAIMED,
     }
     return {"spec_id": _identity(spec_body), **spec_body}
+
+
+def required_source_roles_for_factor(factor_id: str) -> tuple[str, ...]:
+    """Return the immutable code-owned source roles for one bootstrap identity."""
+
+    if factor_id not in {LOW_DOLLAR_VOLUME, BLEND_W80, BLEND_W75_CONTROL}:
+        raise FactorGovernanceError("factor source dependency identity is not installed")
+    return BOOTSTRAP_REQUIRED_SOURCE_ROLES
 
 
 def bootstrap_factor_definitions() -> list[dict[str, Any]]:
@@ -145,6 +177,7 @@ def _set_rows(
             "factor_id": row["factor_id"],
             "spec_id": row["spec_id"],
             "direction": row["direction"],
+            "required_source_roles": list(row["required_source_roles"]),
             "weight": row["bootstrap_weight"],
             "role": row["role"],
             "selectable": row["selectable"],
@@ -154,6 +187,75 @@ def _set_rows(
     factor_rows = [row for row in rows if row["selectable"] is True]
     control_rows = [row for row in rows if row["role"] == "CONTROL_ONLY"]
     return factor_rows, control_rows
+
+
+def derive_active_required_source_roles(
+    factor_set_document: Mapping[str, Any] | bytes,
+    *,
+    implementation_rows: Sequence[Mapping[str, Any]],
+) -> tuple[str, ...]:
+    """Replay active policy and installed identities, then return their source-role union."""
+
+    factor_set = validate_bootstrap_factor_set(factor_set_document)
+    rows = factor_set["payload"]["factor_rows"]
+    active_rows = [
+        row for row in rows if row["selectable"] is True and row["weight"] != "0.000000000000"
+    ]
+    active_ids = [row["factor_id"] for row in active_rows]
+    if active_ids != sorted(
+        [LOW_DOLLAR_VOLUME, BLEND_W80], key=lambda value: value.encode("utf-8")
+    ):
+        raise FactorGovernanceError("active bootstrap Factor identities are not exact")
+    installed_by_id = _installed_rows_by_factor_id(
+        implementation_rows,
+        active_ids=active_ids,
+    )
+
+    from .implementations import installed_semantic_row
+
+    role_union: set[str] = set()
+    for active_row in active_rows:
+        factor_id = active_row["factor_id"]
+        expected_roles = list(required_source_roles_for_factor(factor_id))
+        if active_row.get("required_source_roles") != expected_roles:
+            raise FactorGovernanceError("active Factor source dependency identity differs")
+        expected_semantic = installed_semantic_row(factor_id)
+        installed_row = installed_by_id[factor_id]
+        semantic_fields = set(expected_semantic)
+        installed_fields = set(installed_row)
+        if installed_fields not in (
+            semantic_fields,
+            semantic_fields | {"implementation_component_ref"},
+        ):
+            raise FactorGovernanceError("installed Factor semantic fields are not exact")
+        if any(installed_row.get(field) != value for field, value in expected_semantic.items()):
+            raise FactorGovernanceError("installed Factor semantic identity differs")
+        if installed_row.get("required_source_roles") != expected_roles:
+            raise FactorGovernanceError("installed Factor source dependency identity differs")
+        role_union.update(expected_roles)
+    return tuple(sorted(role_union, key=lambda value: value.encode("utf-8")))
+
+
+def _installed_rows_by_factor_id(
+    implementation_rows: Sequence[Mapping[str, Any]],
+    *,
+    active_ids: Sequence[str],
+) -> dict[str, Mapping[str, Any]]:
+    if isinstance(implementation_rows, (str, bytes)) or not isinstance(
+        implementation_rows, Sequence
+    ):
+        raise FactorGovernanceError("installed Factor implementation rows are invalid")
+    installed_by_id: dict[str, Mapping[str, Any]] = {}
+    for row in implementation_rows:
+        if not isinstance(row, Mapping):
+            raise FactorGovernanceError("installed Factor implementation row is invalid")
+        factor_id = row.get("factor_id")
+        if type(factor_id) is not str or factor_id in installed_by_id:
+            raise FactorGovernanceError("installed Factor implementation identities are invalid")
+        installed_by_id[factor_id] = row
+    if set(installed_by_id) != set(active_ids):
+        raise FactorGovernanceError("installed and active Factor identities differ")
+    return installed_by_id
 
 
 def _factor_set_sha256(
@@ -356,13 +458,17 @@ __all__ = [
     "BLEND_W75_CONTROL",
     "BLEND_W80",
     "BOOTSTRAP_LANE",
+    "BOOTSTRAP_REQUIRED_SOURCE_ROLES",
     "BOOTSTRAP_SET_KIND",
     "CANONICAL_PARQUET",
+    "FactorSourceRole",
     "LOW_DOLLAR_VOLUME",
     "NOT_CLAIMED",
     "PROSPECTIVE_LANE",
     "bootstrap_factor_definitions",
     "build_bootstrap_factor_set",
     "compute_bootstrap_signals",
+    "derive_active_required_source_roles",
+    "required_source_roles_for_factor",
     "validate_bootstrap_factor_set",
 ]

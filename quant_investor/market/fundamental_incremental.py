@@ -34,6 +34,18 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from .fundamental_limits import (
+    FUNDAMENTAL_GENERIC_REPLAY_MAX_CELLS,
+    FUNDAMENTAL_GENERIC_JSON_MAX_BYTES,
+    FUNDAMENTAL_PARQUET_MAX_BYTES,
+    FUNDAMENTAL_PARQUET_TABLE_ROLES,
+    FundamentalSizePolicyViolation,
+    fundamental_json_maximum_bytes,
+    fundamental_parquet_max_cells,
+    validate_fundamental_json_size_policy,
+    validate_fundamental_parquet_size_policy,
+)
+
 from quant_investor.factors.pit_fundamentals import normalize_ts_code
 from quant_investor.market.fundamental_provider_contract import (
     _scalar_token,
@@ -157,9 +169,9 @@ MAX_SUCCESSOR_CHAIN_DEPTH = 4096
 SUCCESSOR_REPLAY_BATCH_ROWS = 2_048
 SUCCESSOR_REPLAY_BATCH_BYTES = 16 * 1024**2
 SUCCESSOR_REPLAY_MAX_ROWS = 10_000_000
-SUCCESSOR_REPLAY_MAX_CELLS = 100_000_000
+SUCCESSOR_REPLAY_MAX_CELLS = FUNDAMENTAL_GENERIC_REPLAY_MAX_CELLS
 SUCCESSOR_REPLAY_MAX_COLUMNS = 256
-SUCCESSOR_REPLAY_MAX_FILE_BYTES = 64 * 1024**2
+SUCCESSOR_REPLAY_MAX_FILE_BYTES = FUNDAMENTAL_GENERIC_JSON_MAX_BYTES
 SUPPORT_STREAM_BATCH_ROWS = 2_048
 SUPPORT_STREAM_BATCH_BYTES = 16 * 1024 * 1024
 SUPPORT_SYMBOL_MAX_ROWS = 100_000
@@ -3559,14 +3571,20 @@ def _assert_streamed_prefix_equal(
 def _successor_open_parquet(  # noqa: C901
     path: Path,
     *,
+    table_role: str,
     expected_sha256: str,
     sealed_fileset: Any | None,
 ) -> Iterator[BinaryIO]:
+    if table_role not in FUNDAMENTAL_PARQUET_TABLE_ROLES or path.name != f"{table_role}.parquet":
+        _fail(
+            "SUCCESSOR_PARQUET_ROLE_INVALID",
+            f"Parquet source role/path differs: {path.name}",
+        )
     if sealed_fileset is not None:
         with sealed_fileset.open_parquet(
             path,
             expected_sha256=expected_sha256,
-            maximum_bytes=SUCCESSOR_REPLAY_MAX_FILE_BYTES,
+            maximum_bytes=FUNDAMENTAL_PARQUET_MAX_BYTES,
             decoded_reservation_bytes=SUCCESSOR_REPLAY_BATCH_BYTES,
         ) as governed_stream:
             yield governed_stream
@@ -3598,10 +3616,15 @@ def _successor_open_parquet(  # noqa: C901
                 "SUCCESSOR_FILE_SECURITY_INVALID",
                 f"Parquet source identity is unsafe: {path.name}",
             )
-        if value.st_size <= 0 or value.st_size > SUCCESSOR_REPLAY_MAX_FILE_BYTES:
+        try:
+            validate_fundamental_parquet_size_policy(
+                table_role=table_role,
+                observed_bytes=int(value.st_size),
+            )
+        except (FundamentalSizePolicyViolation, ValueError):
             _fail(
-                "SUCCESSOR_FILE_SIZE_INVALID",
-                f"source byte bound failed: {path.name}",
+                "SUCCESSOR_PARQUET_SIZE_POLICY_VIOLATION",
+                f"Parquet source byte bound failed: {path.name}",
             )
 
     def descriptor_sha256(value: os.stat_result) -> str:
@@ -3610,14 +3633,14 @@ def _successor_open_parquet(  # noqa: C901
         digest = hashlib.sha256()
         seen = 0
         while True:
-            chunk = os.read(descriptor, min(1024 * 1024, SUCCESSOR_REPLAY_MAX_FILE_BYTES + 1))
+            chunk = os.read(descriptor, min(1024 * 1024, FUNDAMENTAL_PARQUET_MAX_BYTES + 1))
             if not chunk:
                 break
             seen += len(chunk)
-            if seen > SUCCESSOR_REPLAY_MAX_FILE_BYTES:
+            if seen > FUNDAMENTAL_PARQUET_MAX_BYTES:
                 _fail(
-                    "SUCCESSOR_FILE_SIZE_INVALID",
-                    f"source byte bound failed: {path.name}",
+                    "SUCCESSOR_PARQUET_SIZE_POLICY_VIOLATION",
+                    f"Parquet source byte bound failed: {path.name}",
                 )
             digest.update(chunk)
         if seen != value.st_size:
@@ -3696,22 +3719,72 @@ def _successor_open_parquet(  # noqa: C901
             os.close(descriptor)
 
 
+def _validate_successor_read_size_policy(
+    *,
+    semantic_role: str,
+    maximum_bytes: int,
+    observed_bytes: int | None = None,
+) -> None:
+    try:
+        validate_fundamental_json_size_policy(
+            semantic_role=semantic_role,
+            maximum_bytes=maximum_bytes,
+            observed_bytes=observed_bytes,
+        )
+    except FundamentalSizePolicyViolation as exc:
+        code = (
+            "SUPPORT_REFERENCE_SIZE_POLICY_VIOLATION"
+            if semantic_role in PERMANENT_SUPPORT_REFERENCE_NAMES
+            else "SUCCESSOR_FILE_SIZE_INVALID"
+        )
+        _fail(code, f"source byte bound failed: {semantic_role}")
+        raise AssertionError from exc
+    except ValueError as exc:
+        _fail(
+            "SUCCESSOR_SIZE_POLICY_INVALID",
+            f"source byte policy is invalid: {semantic_role}",
+        )
+        raise AssertionError from exc
+
+
 def _successor_read_bytes(
     path: Path,
     *,
     expected_sha256: str,
     sealed_fileset: Any | None,
+    semantic_role: str,
+    maximum_bytes: int,
 ) -> bytes:
+    _validate_successor_read_size_policy(
+        semantic_role=semantic_role,
+        maximum_bytes=maximum_bytes,
+    )
+
+    try:
+        metadata = os.lstat(path)
+    except OSError:
+        metadata = None
+    if metadata is not None:
+        _validate_successor_read_size_policy(
+            semantic_role=semantic_role,
+            maximum_bytes=maximum_bytes,
+            observed_bytes=int(metadata.st_size),
+        )
     if sealed_fileset is not None:
         return sealed_fileset.read_bytes(
             path,
             expected_sha256=expected_sha256,
-            maximum_bytes=SUCCESSOR_REPLAY_MAX_FILE_BYTES,
+            maximum_bytes=maximum_bytes,
         )
     metadata = path.stat()
     if metadata.st_size <= 0 or metadata.st_size > SUCCESSOR_REPLAY_MAX_FILE_BYTES:
         _fail("SUCCESSOR_FILE_SIZE_INVALID", f"source byte bound failed: {path.name}")
     raw = path.read_bytes()
+    _validate_successor_read_size_policy(
+        semantic_role=semantic_role,
+        maximum_bytes=maximum_bytes,
+        observed_bytes=len(raw),
+    )
     if hashlib.sha256(raw).hexdigest() != expected_sha256:
         _fail("SUCCESSOR_FILE_HASH_MISMATCH", f"source bytes changed: {path.name}")
     return raw
@@ -3722,11 +3795,15 @@ def _successor_file_sha256(
     *,
     expected_sha256: str,
     sealed_fileset: Any | None,
+    semantic_role: str,
+    maximum_bytes: int,
 ) -> str:
     raw = _successor_read_bytes(
         path,
         expected_sha256=expected_sha256,
         sealed_fileset=sealed_fileset,
+        semantic_role=semantic_role,
+        maximum_bytes=maximum_bytes,
     )
     return hashlib.sha256(raw).hexdigest()
 
@@ -3744,16 +3821,32 @@ def _successor_expected_sha256(
     return _sha256_file(path)
 
 
-def _bounded_parquet_metadata(parquet: pq.ParquetFile, *, label: str) -> tuple[int, list[str]]:
+def _bounded_parquet_metadata(
+    parquet: pq.ParquetFile, *, label: str, table_role: str
+) -> tuple[int, list[str]]:
+    if table_role not in FUNDAMENTAL_PARQUET_TABLE_ROLES:
+        _fail("SUCCESSOR_PARQUET_ROLE_INVALID", f"Parquet metadata role differs: {label}")
     rows = int(parquet.metadata.num_rows)
     columns = list(parquet.schema_arrow.names)
+    observed_cells = rows * len(columns)
+    cell_limit = fundamental_parquet_max_cells(table_role)
     if (
         rows < 0
         or rows > SUCCESSOR_REPLAY_MAX_ROWS
         or len(columns) > SUCCESSOR_REPLAY_MAX_COLUMNS
-        or rows * len(columns) > SUCCESSOR_REPLAY_MAX_CELLS
+        or observed_cells > cell_limit
     ):
-        _fail("SUCCESSOR_PARQUET_RESOURCE_BOUND", f"table metadata exceeds bounds: {label}")
+        _fail(
+            "SUCCESSOR_PARQUET_RESOURCE_BOUND",
+            f"table metadata exceeds bounds: {label}",
+            details={
+                "table_role": table_role,
+                "observed_rows": rows,
+                "observed_columns": len(columns),
+                "observed_cells": observed_cells,
+                "cell_limit": cell_limit,
+            },
+        )
     for index in range(parquet.num_row_groups):
         group = parquet.metadata.row_group(index)
         compressed = 0
@@ -3768,7 +3861,7 @@ def _bounded_parquet_metadata(parquet: pq.ParquetFile, *, label: str) -> tuple[i
             int(group.num_rows) < 0
             or int(group.num_rows) > SUCCESSOR_REPLAY_MAX_ROWS
             or compressed <= 0
-            or compressed > SUCCESSOR_REPLAY_MAX_FILE_BYTES
+            or compressed > FUNDAMENTAL_PARQUET_MAX_BYTES
             or uncompressed <= 0
             or uncompressed > SUCCESSOR_REPLAY_BATCH_BYTES
         ):
@@ -3782,6 +3875,7 @@ def _bounded_parquet_metadata(parquet: pq.ParquetFile, *, label: str) -> tuple[i
 def _streaming_table_evidence(
     path: Path,
     *,
+    table_role: str,
     expected_sha256: str | None = None,
     sealed_fileset: Any | None = None,
 ) -> dict[str, Any]:
@@ -3790,11 +3884,12 @@ def _streaming_table_evidence(
     def batches() -> Iterator[pd.DataFrame]:
         with _successor_open_parquet(
             path,
+            table_role=table_role,
             expected_sha256=expected,
             sealed_fileset=sealed_fileset,
         ) as stream:
             parquet = pq.ParquetFile(stream)
-            _bounded_parquet_metadata(parquet, label=path.name)
+            _bounded_parquet_metadata(parquet, label=path.name, table_role=table_role)
             for batch in parquet.iter_batches(
                 batch_size=SUCCESSOR_REPLAY_BATCH_ROWS,
                 use_threads=False,
@@ -3810,11 +3905,12 @@ def _streaming_table_evidence(
 
     with _successor_open_parquet(
         path,
+        table_role=table_role,
         expected_sha256=expected,
         sealed_fileset=sealed_fileset,
     ) as stream:
         parquet = pq.ParquetFile(stream)
-        rows, columns = _bounded_parquet_metadata(parquet, label=path.name)
+        rows, columns = _bounded_parquet_metadata(parquet, label=path.name, table_role=table_role)
         empty_frame = parquet.schema_arrow.empty_table().to_pandas()
     logical_schema: list[dict[str, Any]] | None = None
     seen = 0
@@ -4298,7 +4394,8 @@ def stage_successor_generation(
             table_name="fundamental_daily",
         )
         table_manifest = {
-            name: _streaming_table_evidence(path) for name, path in table_paths.items()
+            name: _streaming_table_evidence(path, table_role=name)
+            for name, path in table_paths.items()
         }
         evidence_directory = generation_directory / "provider_evidence"
         evidence_inputs = dict(provider_evidence_files or {})
@@ -4862,6 +4959,7 @@ def validate_successor_provenance(
         else evidence_candidate.resolve(strict=True)
     )
     permanent_payloads: dict[str, bytes] = {}
+    permanent_roles_by_relative: dict[str, str] = {}
     for name, value in refs.items():
         if not isinstance(value, Mapping) or not _valid_sha256(value.get("sha256")):
             _fail("INVALID_SUPPORT_REFERENCE", f"permanent support reference is invalid: {name}")
@@ -4871,6 +4969,7 @@ def validate_successor_provenance(
         candidate = evidence_root / relative
         path = candidate if sealed_fileset is not None else candidate.resolve(strict=True)
         expected_sha = str(value["sha256"]).lower()
+        permanent_roles_by_relative[relative.as_posix()] = name
         if evidence_root not in path.parents:
             _fail("SUPPORT_REFERENCE_TAMPER", f"permanent support bytes changed: {name}")
         try:
@@ -4878,9 +4977,11 @@ def validate_successor_provenance(
                 path,
                 expected_sha256=expected_sha,
                 sealed_fileset=sealed_fileset,
+                semantic_role=name,
+                maximum_bytes=fundamental_json_maximum_bytes(name),
             )
         except SafeSuccessorError as exc:
-            if exc.code in {"SUCCESSOR_FILE_HASH_MISMATCH", "SUCCESSOR_FILE_SIZE_INVALID"}:
+            if exc.code == "SUCCESSOR_FILE_HASH_MISMATCH":
                 _fail(
                     "SUPPORT_REFERENCE_TAMPER",
                     f"permanent support bytes changed: {name}",
@@ -4936,6 +5037,8 @@ def validate_successor_provenance(
                 path,
                 expected_sha256=expected_sha,
                 sealed_fileset=sealed_fileset,
+                semantic_role=f"target_sealed_ref.{name}",
+                maximum_bytes=FUNDAMENTAL_GENERIC_JSON_MAX_BYTES,
             )
         except SafeSuccessorError as exc:
             if exc.code in {
@@ -4960,6 +5063,8 @@ def validate_successor_provenance(
                     ref_path,
                     expected_sha256=expected_ref_sha,
                     sealed_fileset=sealed_fileset,
+                    semantic_role=f"target_immutable_ref.{name}",
+                    maximum_bytes=FUNDAMENTAL_GENERIC_JSON_MAX_BYTES,
                 )
             except SafeSuccessorError as exc:
                 if exc.code in {
@@ -5019,11 +5124,15 @@ def validate_successor_provenance(
         pointer_path,
         expected_sha256=pointer_expected_sha,
         sealed_fileset=sealed_fileset,
+        semantic_role="successor_pointer",
+        maximum_bytes=FUNDAMENTAL_GENERIC_JSON_MAX_BYTES,
     )
     manifest_bytes = _successor_read_bytes(
         manifest_path,
         expected_sha256=manifest_expected_sha,
         sealed_fileset=sealed_fileset,
+        semantic_role="successor_manifest",
+        maximum_bytes=FUNDAMENTAL_GENERIC_JSON_MAX_BYTES,
     )
     try:
         pointer_readback = json.loads(pointer_bytes.decode("utf-8"))
@@ -5053,6 +5162,8 @@ def validate_successor_provenance(
             provider_path,
             expected_sha256=hashlib.sha256(provider_raw).hexdigest(),
             sealed_fileset=sealed_fileset,
+            semantic_role="successor_provider_manifest",
+            maximum_bytes=FUNDAMENTAL_GENERIC_JSON_MAX_BYTES,
         )
     except SafeSuccessorError as exc:
         if exc.code in {
@@ -5084,10 +5195,16 @@ def validate_successor_provenance(
                 f"provider evidence changed: {relative}",
             )
         try:
+            semantic_role = permanent_roles_by_relative.get(
+                relative.as_posix(),
+                f"provider_evidence.{relative.as_posix()}",
+            )
             observed_evidence_sha = _successor_file_sha256(
                 evidence_path,
                 expected_sha256=str(digest).lower(),
                 sealed_fileset=sealed_fileset,
+                semantic_role=semantic_role,
+                maximum_bytes=fundamental_json_maximum_bytes(semantic_role),
             )
         except SafeSuccessorError as exc:
             if exc.code in {
@@ -5225,6 +5342,7 @@ def validate_successor_provenance(
         try:
             observed = _streaming_table_evidence(
                 path,
+                table_role=table_name,
                 expected_sha256=str(output_sha[table_name]),
                 sealed_fileset=sealed_fileset,
             )
@@ -5289,14 +5407,21 @@ def validate_successor_provenance(
             expected_evidence_shas[str(sealed["path"])] = str(sealed["sha256"]).lower()
     provider_evidence_files: dict[str, str] = {}
     for path in evidence_files:
+        evidence_relative = path.relative_to(evidence_root).as_posix()
         relative = path.relative_to(evidence_root.parent).as_posix()
-        expected = expected_evidence_shas.get(path.relative_to(evidence_root).as_posix())
+        expected = expected_evidence_shas.get(evidence_relative)
         if expected is None:
             _fail("UNDECLARED_PROVIDER_EVIDENCE", f"provider evidence is undeclared: {relative}")
+        semantic_role = permanent_roles_by_relative.get(
+            evidence_relative,
+            f"provider_evidence.{relative}",
+        )
         provider_evidence_files[relative] = _successor_file_sha256(
             path,
             expected_sha256=expected,
             sealed_fileset=sealed_fileset,
+            semantic_role=semantic_role,
+            maximum_bytes=fundamental_json_maximum_bytes(semantic_role),
         )
     original_seam = dict(chain["original_seam"])["cutoff"]
     immediate_parent_cutoff = dict(chain["append_boundary"])["parent_cutoff"]

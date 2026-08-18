@@ -183,10 +183,12 @@ def test_system_status_complete_when_uninitialized(
         "calendar_source_limitations",
         "capabilities",
         "external_routing_state",
+        "fundamental_advisory",
         "status",
     }
     assert system["status"] == "OK"
     assert system["capabilities"]["system"] == "UNINITIALIZED"
+    assert system["fundamental_advisory"] is None
 
 
 def test_system_bootstrap_assemble_uses_exact_request_and_explicit_input_root(
@@ -228,6 +230,53 @@ def test_system_bootstrap_assemble_uses_exact_request_and_explicit_input_root(
     )
 
     assert _line(capsys)["status"] == "OFFLINE_VERIFIED"
+    assert calls == [
+        {
+            "workspace_root": str(tmp_path),
+            "input_root": input_root,
+            "request_raw": request_path.read_bytes(),
+        }
+    ]
+
+
+def test_system_bootstrap_admission_preflight_is_explicit_and_nonauthorizing(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import quant_investor.factors.governance.production as production
+
+    input_root = tmp_path / "sealed-inputs"
+    input_root.mkdir(mode=0o700)
+    request_path = tmp_path / "bootstrap-request.json"
+    digest = _canonical_request(request_path, {"sealed": True})
+    calls: list[dict[str, object]] = []
+
+    def preflight(**kwargs: object) -> dict[str, object]:
+        calls.append(dict(kwargs))
+        return {
+            "status": "ADMISSION_PREFLIGHT_ONLY",
+            "generation_write_count": 0,
+            "active_pointer_write_count": 0,
+            "marker_write_count": 0,
+        }
+
+    monkeypatch.setattr(production, "prepare_production_bootstrap_admission", preflight)
+    main(
+        [
+            "system",
+            "bootstrap-admission-preflight",
+            "--workspace-root",
+            str(tmp_path),
+            "--input-root",
+            "sealed-inputs",
+            "--request",
+            "bootstrap-request.json",
+            "--expected-request-sha256",
+            digest,
+        ]
+    )
+    assert _line(capsys)["status"] == "ADMISSION_PREFLIGHT_ONLY"
     assert calls == [
         {
             "workspace_root": str(tmp_path),

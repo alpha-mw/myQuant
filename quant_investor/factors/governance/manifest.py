@@ -54,6 +54,7 @@ _IMPLEMENTATION_ROW_FIELDS: Final = {
     "normalized_expression",
     "parameters_json",
     "input_fields",
+    "required_source_roles",
 }
 _VALIDATED_CONTRACT_ROW_FIELDS: Final = {
     "kind",

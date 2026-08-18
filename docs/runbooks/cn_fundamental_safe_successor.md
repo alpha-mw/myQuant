@@ -128,3 +128,52 @@ Fundamental maintenance does not activate System, Factor, Mainline, Dashboard,
 Paper, portfolio, broker, order, execution, trade, or funds-transfer authority.
 It must never recover through a retired numeric runtime, inferred source,
 synthetic row, stale pointer, or ordinary live-merge fallback.
+
+## Unified production age policy
+
+Fundamental remains a mandatory, integrity-valid System source. Its pointer,
+manifest, three canonical Parquet tables, provider evidence, historical
+market/PIT/scope bindings, PIT availability dates, schemas, and exact hashes
+must all replay. Missing, corrupt, future-dated, or self-binding-incomplete
+evidence blocks production.
+
+Snapshot age is different. The unified runtime uses the last known good
+Fundamental generation under `ADVISORY_NO_FIXED_MAXIMUM`. It seals the snapshot
+cutoff, current System cutoff, calendar-day age, exact open-session age, and
+latest admitted `availability_date`. Age has no `fresh`/`stale` bucket, hidden
+maximum, or automatic blocking threshold. LOW, W80, and the W75 control depend
+only on exact current market, PIT membership, and exchange calendar inputs, so
+Fundamental age cannot change their weights or readiness. Investment remains
+`BLOCKED`, and mixed-history limitations remain visible.
+
+An operator may attach an immutable, subject-bound
+`system.fundamental_operator_veto` before generation assembly. The artifact is
+VETO-only: there is no ALLOW or waiver artifact. A valid veto stops before an
+operational generation, final authorization, prepared transaction, or CAS. A
+veto created after activation does not rewrite active history; use a new
+generation or the governed emergency suspension path.
+
+For routine maintenance, use a weekly incremental append as the default and a
+monthly reconciliation/compaction review. A manual refresh remains appropriate
+before a Fundamental-dependent decision or during concentrated disclosure
+periods. This cadence is operational guidance only: it does not enable an
+automation, call a provider, or publish a generation by itself.
+
+The resource policy remains role-specific:
+
+```text
+ordinary JSON/evidence                     64 MiB
+exact predecessor manifest                128 MiB
+canonical Fundamental table Parquet       512 MiB compressed
+canonical fundamental_daily work cells    256,000,000
+other Fundamental table work cells        100,000,000
+decoded Parquet batch                     2,048 rows / 16 MiB
+```
+
+The larger Parquet ceiling applies only to the exact daily, period, and
+quarantine table roles reached through the request, manifest, receipt, and
+System source-object closure. It does not widen JSON, provider evidence,
+market/PIT/calendar, or generic Factor sources.
+The daily cell limit is a deterministic full-table cardinality/work ceiling,
+not a peak-memory allowance or an estimate of total scalar operations across
+the two-pass semantic fingerprint.

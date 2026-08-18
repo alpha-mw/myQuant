@@ -14,6 +14,13 @@ from typing import Any
 import pytest
 
 from quant_investor.market import fundamental_successor_promotion as promotion
+from quant_investor.market.fundamental_limits import (
+    FUNDAMENTAL_GENERIC_JSON_MAX_BYTES,
+    FUNDAMENTAL_PREDECESSOR_MANIFEST_MAX_BYTES,
+    FUNDAMENTAL_PREDECESSOR_MANIFEST_ROLE,
+    FundamentalSizePolicyViolation,
+    validate_fundamental_json_size_policy,
+)
 
 
 def _json_bytes(value: dict[str, Any]) -> bytes:
@@ -53,24 +60,66 @@ def _file_ref(path: Path) -> dict[str, Any]:
     }
 
 
-def test_stable_json_read_has_explicit_per_call_limit(tmp_path: Path) -> None:
+def test_stable_json_read_enforces_role_specific_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     path = tmp_path / "large-for-local-limit.json"
     payload = _json_bytes({"value": "bounded"})
     _write(path, payload)
 
-    with pytest.raises(promotion.SuccessorPromotionError, match="unreasonably large"):
+    oversized = promotion._FileIdentity(
+        path=path,
+        sha256=_sha(payload),
+        size=FUNDAMENTAL_GENERIC_JSON_MAX_BYTES + 1,
+        signature=(0,),
+    )
+    monkeypatch.setattr(
+        promotion,
+        "_stable_file_hash",
+        lambda *_args, **_kwargs: oversized,
+    )
+    with pytest.raises(
+        promotion.SuccessorPromotionError,
+        match="SUPPORT_REFERENCE_SIZE_POLICY_VIOLATION",
+    ):
         promotion._stable_small_bytes(
             path,
             label="fixture manifest",
-            maximum_bytes=len(payload) - 1,
+            semantic_role="successor_manifest",
+            maximum_bytes=FUNDAMENTAL_GENERIC_JSON_MAX_BYTES,
         )
+
+    monkeypatch.undo()
     readback, identity = promotion._stable_small_bytes(
         path,
         label="fixture manifest",
-        maximum_bytes=len(payload),
+        semantic_role="successor_manifest",
+        maximum_bytes=FUNDAMENTAL_GENERIC_JSON_MAX_BYTES,
     )
     assert readback == payload
     assert identity.sha256 == _sha(payload)
+
+
+def test_fundamental_json_size_contract_has_exact_boundaries() -> None:
+    assert FUNDAMENTAL_GENERIC_JSON_MAX_BYTES == 64 * 1024 * 1024
+    assert FUNDAMENTAL_PREDECESSOR_MANIFEST_MAX_BYTES == 128 * 1024 * 1024
+    validate_fundamental_json_size_policy(
+        semantic_role=FUNDAMENTAL_PREDECESSOR_MANIFEST_ROLE,
+        maximum_bytes=FUNDAMENTAL_PREDECESSOR_MANIFEST_MAX_BYTES,
+        observed_bytes=FUNDAMENTAL_PREDECESSOR_MANIFEST_MAX_BYTES,
+    )
+    with pytest.raises(FundamentalSizePolicyViolation):
+        validate_fundamental_json_size_policy(
+            semantic_role=FUNDAMENTAL_PREDECESSOR_MANIFEST_ROLE,
+            maximum_bytes=FUNDAMENTAL_PREDECESSOR_MANIFEST_MAX_BYTES,
+            observed_bytes=FUNDAMENTAL_PREDECESSOR_MANIFEST_MAX_BYTES + 1,
+        )
+    with pytest.raises(ValueError, match="differs from semantic-role policy"):
+        validate_fundamental_json_size_policy(
+            semantic_role="support_manifest",
+            maximum_bytes=FUNDAMENTAL_PREDECESSOR_MANIFEST_MAX_BYTES,
+        )
 
 
 def _pointer_binding(
@@ -659,12 +708,20 @@ def test_predecessor_manifest_limit_does_not_expand_candidate_postcheck(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fixture = _fixture(tmp_path)
-    observed_limits: list[int] = []
+    observed_limits: list[tuple[str, int]] = []
     original = promotion._validate_pointer_references
 
     def traced(*args: Any, **kwargs: Any) -> dict[str, Any]:
         observed_limits.append(
-            int(kwargs.get("manifest_maximum_bytes", promotion._MAX_JSON_BYTES))
+            (
+                str(kwargs.get("manifest_semantic_role", "successor_manifest")),
+                int(
+                    kwargs.get(
+                        "manifest_maximum_bytes",
+                        FUNDAMENTAL_GENERIC_JSON_MAX_BYTES,
+                    )
+                ),
+            )
         )
         return original(*args, **kwargs)
 
@@ -672,9 +729,18 @@ def test_predecessor_manifest_limit_does_not_expand_candidate_postcheck(
     result = _promote(fixture)
 
     assert result["promoted"] is True
-    assert promotion._MAX_PREDECESSOR_MANIFEST_JSON_BYTES in observed_limits
-    assert promotion._MAX_JSON_BYTES in observed_limits
-    assert observed_limits[-1] == promotion._MAX_JSON_BYTES
+    assert (
+        FUNDAMENTAL_PREDECESSOR_MANIFEST_ROLE,
+        FUNDAMENTAL_PREDECESSOR_MANIFEST_MAX_BYTES,
+    ) in observed_limits
+    assert (
+        "successor_manifest",
+        FUNDAMENTAL_GENERIC_JSON_MAX_BYTES,
+    ) in observed_limits
+    assert observed_limits[-1] == (
+        "successor_manifest",
+        FUNDAMENTAL_GENERIC_JSON_MAX_BYTES,
+    )
 
 
 def stat_mode(path: Path) -> int:

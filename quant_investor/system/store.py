@@ -728,6 +728,30 @@ class SystemStore:
         factor_active_set = one("factor_active_set_ref")
         factor_validation_attestation = one("factor_validation_attestation_ref")
         research = many("research_refs")
+        fundamental_veto_subject = None
+        fundamental_advisory = None
+        if len(research) == 1 and research[0].get("kind") == "system.production_bootstrap_receipt":
+            from .historical_activation import (
+                INITIAL_PRODUCTION_RECEIPT_CONTRACT_SHA256,
+                validate_initial_fundamental_advisory,
+                validate_initial_fundamental_veto_subject,
+                validate_initial_production_receipt,
+            )
+
+            if research[0].get("contract_sha256") == INITIAL_PRODUCTION_RECEIPT_CONTRACT_SHA256:
+                historical_receipt = validate_initial_production_receipt(research[0])
+                fundamental_veto_subject = validate_initial_fundamental_veto_subject(
+                    self._historical_get_object(
+                        historical_receipt["payload"]["fundamental_veto_subject_ref"],
+                        dispatch=dispatch,
+                    )
+                )
+                fundamental_advisory = validate_initial_fundamental_advisory(
+                    self._historical_get_object(
+                        historical_receipt["payload"]["fundamental_advisory_ref"],
+                        dispatch=dispatch,
+                    )
+                )
         readiness = one("readiness_matrix_ref")
         readiness_payload = readiness.get("payload")
         if type(readiness_payload) is not dict:
@@ -772,6 +796,8 @@ class SystemStore:
             "factor_validation_receipt": None,
             "mainline": None,
             "research": research,
+            "fundamental_veto_subject": fundamental_veto_subject,
+            "fundamental_advisory": fundamental_advisory,
             "migration_receipt": None,
             "migration_marker": None,
             "readiness": readiness,
@@ -2580,6 +2606,17 @@ class SystemStore:
                 validation_mode="PRE_CAS_CURRENT",
             )
             limitations = list(receipt["payload"]["calendar_source_limitations"])
+            from .fundamental_advisory import (
+                validate_fundamental_advisory,
+                validate_fundamental_veto_subject,
+            )
+
+            fundamental_veto_subject = validate_fundamental_veto_subject(
+                self.get_object(receipt["payload"]["fundamental_veto_subject_ref"])
+            )
+            fundamental_advisory = validate_fundamental_advisory(
+                self.get_object(receipt["payload"]["fundamental_advisory_ref"])
+            )
             verified = {
                 **verified,
                 "calendar_authority_route": (
@@ -2587,6 +2624,8 @@ class SystemStore:
                 ),
                 "calendar_authority_confidence": ("DEGRADED" if limitations else "OFFICIAL"),
                 "calendar_source_limitations": limitations,
+                "fundamental_veto_subject": fundamental_veto_subject,
+                "fundamental_advisory": fundamental_advisory,
             }
         return verified
 
@@ -2818,6 +2857,11 @@ class SystemStore:
                 "calendar_capture_execution_ref",
                 "calendar_authorization_basis",
                 "calendar_source_limitations",
+                "bootstrap_admission_intent_sha256",
+                "factor_dependency_sha256",
+                "fundamental_veto_subject_ref",
+                "fundamental_operator_veto_ref",
+                "fundamental_advisory_ref",
             )
             if (
                 any(
@@ -2828,6 +2872,7 @@ class SystemStore:
                 != target["generation_manifest_ref"]
                 or final_authorization["payload"]["production_bootstrap_receipt_ref"]
                 != target["production_receipt_ref"]
+                or final_authorization["payload"]["fundamental_advisory_authorized"] is not True
             ):
                 raise SystemActivationAuthorizationError(
                     "final authorization target binding differs from production receipt"
@@ -2883,9 +2928,13 @@ class SystemStore:
                     "pointer manifest binding drifted under activation lock"
                 )
             locked_production_receipt = locked_target["production_receipt"]
-            if any(
-                final_authorization["payload"][field] != locked_production_receipt["payload"][field]
-                for field in calendar_fields
+            if (
+                any(
+                    final_authorization["payload"][field]
+                    != locked_production_receipt["payload"][field]
+                    for field in calendar_fields
+                )
+                or final_authorization["payload"]["fundamental_advisory_authorized"] is not True
             ):
                 raise SystemActivationAuthorizationError(
                     "calendar authorization drifted under activation lock"
@@ -3002,6 +3051,28 @@ class SystemStore:
                 deployed_release_ref=deployed_ref,
                 validation_mode="HISTORICAL",
             )
+            from .historical_activation import (
+                validate_initial_fundamental_advisory,
+                validate_initial_fundamental_veto_subject,
+            )
+
+            fundamental_veto_subject = validate_initial_fundamental_veto_subject(
+                self._historical_get_object(
+                    final_authorization["payload"]["fundamental_veto_subject_ref"],
+                    dispatch=dispatch,
+                )
+            )
+            fundamental_advisory = validate_initial_fundamental_advisory(
+                self._historical_get_object(
+                    final_authorization["payload"]["fundamental_advisory_ref"],
+                    dispatch=dispatch,
+                )
+            )
+            generation = {
+                **generation,
+                "fundamental_veto_subject": fundamental_veto_subject,
+                "fundamental_advisory": fundamental_advisory,
+            }
             assembler_path = validate_initial_assembler_module_path(INITIAL_ASSEMBLER_MODULE_PATH)
             _mode, _blob, assembler_raw = _git_blob(
                 self.workspace_root,
@@ -3119,12 +3190,28 @@ class SystemStore:
                     validate_production_bootstrap_generation_closure,
                 )
 
-                validate_production_bootstrap_generation_closure(
+                production_receipt = validate_production_bootstrap_generation_closure(
                     store=self,
                     verified_generation=verified,
                     deployed_release_ref=requested_release_ref,
                     validation_mode="PRE_CAS_CURRENT",
                 )
+                from .fundamental_advisory import (
+                    validate_fundamental_advisory,
+                    validate_fundamental_veto_subject,
+                )
+
+                verified = {
+                    **verified,
+                    "fundamental_veto_subject": validate_fundamental_veto_subject(
+                        self.get_object(
+                            production_receipt["payload"]["fundamental_veto_subject_ref"]
+                        )
+                    ),
+                    "fundamental_advisory": validate_fundamental_advisory(
+                        self.get_object(production_receipt["payload"]["fundamental_advisory_ref"])
+                    ),
+                }
             except SystemError:
                 if deployed_release_ref is not None:
                     raise
@@ -3236,10 +3323,18 @@ class SystemStore:
             chain = self._pointer_chain()
             if chain and chain[-1]["pointer"]["generation_id"] == normalized_id:
                 try:
-                    return self.verify_generation(
+                    current_verified = self.verify_generation(
                         normalized_id,
                         deployed_release_ref=deployed_release_ref,
                     )
+                    if (
+                        current_verified.get("generation_state") == "OPERATIONAL"
+                        and type(current_verified.get("fundamental_advisory")) is not dict
+                    ):
+                        raise SystemContractError(
+                            "operational generation Fundamental advisory is absent"
+                        )
+                    return current_verified
                 except SystemError:
                     pass
                 completion = self.verify_migration_completion(chain)
@@ -3286,7 +3381,7 @@ class SystemStore:
             "blockers": [SYSTEM_ACTIVE_POINTER_ABSENT],
         }
 
-    def status(
+    def status(  # noqa: C901
         self,
         *,
         deployed_release_ref: Mapping[str, Any] | None = None,
@@ -3306,6 +3401,7 @@ class SystemStore:
                     "calendar_authority_route": None,
                     "calendar_authority_confidence": None,
                     "calendar_source_limitations": [],
+                    "fundamental_advisory": None,
                     "blockers": [SYSTEM_ACTIVE_POINTER_ABSENT],
                     "external_routing_state": "UNINITIALIZED",
                 }
@@ -3344,6 +3440,38 @@ class SystemStore:
             calendar_route = (
                 "TRUSTED_PROVIDER_DEGRADED" if calendar_limitations else "EXCHANGE_OFFICIAL"
             )
+            fundamental_artifact = active.get("fundamental_advisory")
+            fundamental_advisory = None
+            if (
+                type(fundamental_artifact) is dict
+                and type(fundamental_artifact.get("payload")) is dict
+            ):
+                fundamental_payload = fundamental_artifact["payload"]
+                fundamental_advisory = {
+                    field: fundamental_payload[field]
+                    for field in (
+                        "integrity_status",
+                        "required_by_active_factor_set",
+                        "system_as_of_date",
+                        "fundamental_snapshot_cutoff_date",
+                        "calendar_age_days",
+                        "open_session_age",
+                        "latest_admitted_available_at",
+                        "last_refresh_basis",
+                        "disclosure_check",
+                        "freshness_policy",
+                        "default_action",
+                        "operator_veto_present",
+                        "effective_action",
+                        "source_limitations",
+                    )
+                }
+            if (
+                fundamental_advisory is None
+                or fundamental_advisory["effective_action"] != "PROCEED"
+            ):
+                state = "BLOCKED"
+                blockers = sorted(set(blockers) | {"SYSTEM_FUNDAMENTAL_ADVISORY_INVALID"})
             return {
                 "state": state,
                 "verified": True,
@@ -3355,6 +3483,7 @@ class SystemStore:
                     "DEGRADED" if calendar_limitations else "OFFICIAL"
                 ),
                 "calendar_source_limitations": calendar_limitations,
+                "fundamental_advisory": fundamental_advisory,
                 "blockers": blockers,
                 "external_routing_state": routing_state,
             }
@@ -3368,6 +3497,7 @@ class SystemStore:
                 "calendar_authority_route": None,
                 "calendar_authority_confidence": None,
                 "calendar_source_limitations": [],
+                "fundamental_advisory": None,
                 "blockers": [exc.code],
                 "external_routing_state": "BLOCKED",
             }
@@ -3378,6 +3508,7 @@ class SystemStore:
                 "active_pointer_sha256": None,
                 "generation_id": None,
                 "readiness": None,
+                "fundamental_advisory": None,
                 "blockers": ["SYSTEM_ERROR"],
                 "external_routing_state": "BLOCKED",
             }

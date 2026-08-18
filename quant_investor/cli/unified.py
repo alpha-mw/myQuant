@@ -100,6 +100,7 @@ def system_status(
         "calendar_authority_route": observed.get("calendar_authority_route"),
         "calendar_authority_confidence": observed.get("calendar_authority_confidence"),
         "calendar_source_limitations": list(observed.get("calendar_source_limitations", [])),
+        "fundamental_advisory": observed.get("fundamental_advisory"),
         "external_routing_state": observed.get("external_routing_state", "BLOCKED"),
         "blockers": list(observed.get("blockers", [])),
     }
@@ -148,6 +149,23 @@ def system_verify(
             "verified": False,
             "blockers": ["SYSTEM_DEPLOYED_RELEASE_UNCONFIRMED"],
         }
+    fundamental_artifact = verified.get("fundamental_advisory")
+    fundamental_advisory = (
+        fundamental_artifact.get("payload")
+        if type(fundamental_artifact) is dict and type(fundamental_artifact.get("payload")) is dict
+        else None
+    )
+    if verified.get("generation_state") == "OPERATIONAL" and (
+        fundamental_advisory is None or fundamental_advisory.get("effective_action") != "PROCEED"
+    ):
+        return {
+            "status": "BLOCKED",
+            "active_generation_id": verified["generation_id"],
+            "generation_state": verified["generation_state"],
+            "verified": False,
+            "fundamental_advisory": fundamental_advisory,
+            "blockers": ["SYSTEM_FUNDAMENTAL_ADVISORY_INVALID"],
+        }
     return {
         "status": "VERIFIED",
         "active_generation_id": verified["generation_id"],
@@ -156,6 +174,7 @@ def system_verify(
         "calendar_authority_route": verified.get("calendar_authority_route"),
         "calendar_authority_confidence": verified.get("calendar_authority_confidence"),
         "calendar_source_limitations": list(verified.get("calendar_source_limitations", [])),
+        "fundamental_advisory": fundamental_advisory,
         "blockers": [],
     }
 
@@ -198,6 +217,31 @@ def system_bootstrap_assemble(
         expected_request_sha256=expected_request_sha256,
     )
     return assemble_production_bootstrap(
+        workspace_root=workspace_root,
+        input_root=Path(workspace_root) / input_root,
+        request_raw=raw,
+    )
+
+
+def system_bootstrap_admission_preflight(
+    *,
+    workspace_root: str,
+    input_root: str,
+    request_path: str,
+    expected_request_sha256: str,
+) -> dict[str, Any]:
+    """Derive the immutable veto subject without building a generation."""
+
+    from quant_investor.factors.governance.production import (
+        prepare_production_bootstrap_admission,
+    )
+
+    raw, _ = _request(
+        workspace_root=workspace_root,
+        request_path=request_path,
+        expected_request_sha256=expected_request_sha256,
+    )
+    return prepare_production_bootstrap_admission(
         workspace_root=workspace_root,
         input_root=Path(workspace_root) / input_root,
         request_raw=raw,
@@ -760,6 +804,9 @@ __all__ = [
     "research_readiness",
     "system_activate",
     "system_assemble",
+    "system_bootstrap_admission_preflight",
+    "system_bootstrap_assemble",
+    "system_calendar_capture",
     "system_status",
     "system_suspend",
     "system_verify",

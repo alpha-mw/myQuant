@@ -90,7 +90,12 @@ not accepted request fields or calendar authority. The assembler reconstructs
 the canonical layout under owner-only staging and
 replays predecessor, target-source, derivation, readiness, resource, provider,
 table and response-evidence bindings. A homogeneous v1 claim, partial fileset,
-or market/PIT/Fundamental cutoff drift fails before generation publication.
+or current market/PIT/calendar cutoff drift fails before generation
+publication. Fundamental independently replays its own immutable historical
+target refs. Its cutoff may precede the current System cutoff; the exact age is
+sealed as advisory evidence and has no fixed maximum. A future cutoff, future
+admitted availability date, corrupt self-binding, or explicit operator veto
+still fails before generation publication.
 The staging directory is always the workspace-relative
 `data/private/system_source_staging/<operation-id>` authority beneath the
 default `SystemStore`; the request's `source_root_id` is only an assertion of
@@ -99,6 +104,11 @@ production receipt binds the complete acyclic generation intent, including
 timestamp, assembly identity, catalog, mandatory-null migration tombstones and
 `mainline_ref = null`. Source blockers are the exact repository-owned
 projection of replayed Fundamental machine states, never operator labels.
+LOW, W80, and W75 carry code-owned `required_source_roles` identities for
+exchange calendar, market, and PIT membership. The request cannot add, remove,
+or relabel those dependencies. `system bootstrap-admission-preflight` may
+derive a non-authorizing veto subject; only a null veto slot can proceed to an
+operational generation.
 
 ## Mapping template
 

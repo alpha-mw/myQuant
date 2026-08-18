@@ -123,6 +123,11 @@ _SCHEMAS: Final = {
                 pa.list_(pa.field("element", pa.string(), nullable=True)),
                 nullable=False,
             ),
+            pa.field(
+                "required_source_roles",
+                pa.list_(pa.field("element", pa.string(), nullable=True)),
+                nullable=False,
+            ),
         ]
     ),
     "pit_universe": pa.schema(
@@ -384,9 +389,20 @@ def _normalize_implementation_row(row: Mapping[str, Any], index: int) -> dict[st
             _canonical_text(value, label=f"row[{index}].input_fields[]")
             for value in row["input_fields"]
         ],
+        "required_source_roles": [
+            _canonical_text(value, label=f"row[{index}].required_source_roles[]")
+            for value in row["required_source_roles"]
+        ],
     }
     if observed["input_fields"] != sorted(set(observed["input_fields"])):
         raise _error("SOURCE_VALUE_INVALID", "implementation input fields are not exact")
+    if observed["required_source_roles"] != sorted(
+        set(observed["required_source_roles"]), key=lambda value: value.encode("utf-8")
+    ):
+        raise _error(
+            "SOURCE_VALUE_INVALID",
+            "implementation required source roles are not exact",
+        )
     if observed != expected:
         raise _error("SOURCE_VALUE_INVALID", "implementation row differs from installed semantics")
     return {

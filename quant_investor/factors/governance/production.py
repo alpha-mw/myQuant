@@ -47,6 +47,7 @@ from quant_investor.factors.governance.bootstrap import (
     _set_rows,
     bootstrap_factor_definitions,
     compute_bootstrap_signals,
+    derive_active_required_source_roles,
 )
 from quant_investor.factors.governance.contextual import (
     _bootstrap_sources,
@@ -61,6 +62,13 @@ from quant_investor.intelligence import assess_readiness
 from quant_investor.market.fundamental_incremental import (
     SafeSuccessorError,
     validate_successor_provenance,
+)
+from quant_investor.market.fundamental_limits import (
+    FUNDAMENTAL_DAILY_REPLAY_MAX_CELLS,
+    FUNDAMENTAL_GENERIC_JSON_MAX_BYTES,
+    FUNDAMENTAL_GENERIC_REPLAY_MAX_CELLS,
+    FUNDAMENTAL_PARQUET_MAX_BYTES,
+    FUNDAMENTAL_PREDECESSOR_MANIFEST_MAX_BYTES,
 )
 from quant_investor.market.exchange_calendar_closure import (
     validate_exchange_calendar_compilation,
@@ -86,6 +94,17 @@ from quant_investor.market.tushare_calendar_authority import (
 )
 
 from quant_investor.system.controller import build_emergency_controller
+from quant_investor.system.fundamental_advisory import (
+    FUNDAMENTAL_DEFAULT_ACTION,
+    build_fundamental_advisory,
+    build_fundamental_veto_subject,
+    factor_dependency_sha256,
+    require_fundamental_proceed,
+    validate_fundamental_operator_veto,
+    validate_fundamental_advisory,
+    validate_fundamental_veto_subject,
+    validate_factor_dependency_rows,
+)
 from quant_investor.system.errors import (
     SystemContractError,
     SystemPreconditionError,
@@ -112,10 +131,12 @@ from quant_investor.system.historical_activation import (
     INITIAL_ASSEMBLER_MODULE_PATH,
     INITIAL_PRODUCTION_RECEIPT_CONTRACT_SHA256,
     INITIAL_PRODUCTION_RECEIPT_FIELDS,
+    frozen_object_ref,
     validate_frozen_object_ref,
     validate_initial_assembler_module_path,
 )
 from quant_investor.system.store import (
+    OBJECT_REF_SORT_FIELDS,
     SystemStore,
     generation_assembly_identity,
     object_ref_for_artifact,
@@ -130,6 +151,7 @@ BOOTSTRAP_OPERATOR_REQUEST_CONTRACT_SHA256: Final = get_contract(
 BOOTSTRAP_OPERATOR_REQUEST_FIELDS: Final = frozenset(
     {
         "bootstrap_operation_id",
+        "bootstrap_admission_intent_sha256",
         "state",
         "source_root_id",
         "release_manifest_ref",
@@ -159,6 +181,7 @@ BOOTSTRAP_OPERATOR_REQUEST_FIELDS: Final = frozenset(
         "fundamental_generation_manifest_file_ref",
         "fundamental_table_file_refs",
         "fundamental_evidence_file_refs",
+        "fundamental_operator_veto_file_ref",
         "bootstrap_decision_file_ref",
         "skill_tree_sha256",
         "automation_semantic_sha256",
@@ -166,6 +189,8 @@ BOOTSTRAP_OPERATOR_REQUEST_FIELDS: Final = frozenset(
         "trusted_at",
     }
 )
+BOOTSTRAP_ADMISSION_INTENT_DOMAIN: Final = "myquant-fundamental-admission-intent"
+FUNDAMENTAL_OPERATOR_VETO_SENTINEL: Final = "UNBOUND_OPTIONAL_FUNDAMENTAL_OPERATOR_VETO"
 FILE_REF_FIELDS: Final = frozenset({"relative_path", "byte_sha256"})
 INITIAL_INPUT_SOURCE_ROW_FIELDS: Final = frozenset(
     {"field", "ordinal", "input_file_ref", "source_object_ref"}
@@ -180,6 +205,7 @@ _IDENTIFIER_RE: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
 _A_SHARE_SYMBOL_RE: Final = re.compile(r"^[0-9]{6}\.(?:SH|SZ|BJ)$")
 _MAX_INPUT_BYTES: Final = 4 * 1024 * 1024 * 1024
 _JSON_MAX_BYTES: Final = 64 * 1024 * 1024
+_FUNDAMENTAL_VETO_MAX_BYTES: Final = 1024 * 1024
 _MAX_MARKET_TABLES: Final = 24
 _MINIMUM_MARKET_SESSIONS: Final = 91
 _PARQUET_BATCH_ROWS: Final = 2_048
@@ -375,6 +401,27 @@ def _preflight_calendar_input_budget(*, normalized: Mapping[str, Any], input_roo
     _validate_calendar_size_rows(sizes)
 
 
+def bootstrap_admission_intent_sha256(payload: Mapping[str, Any]) -> str:
+    """Hash every request field while replacing only the optional veto slot."""
+
+    if type(payload) is not dict or set(payload) != BOOTSTRAP_OPERATOR_REQUEST_FIELDS:
+        raise SystemContractError("bootstrap admission intent request fields are not exact")
+    projection = {
+        key: payload[key]
+        for key in sorted(BOOTSTRAP_OPERATOR_REQUEST_FIELDS)
+        if key != "bootstrap_admission_intent_sha256"
+    }
+    projection["fundamental_operator_veto_file_ref"] = FUNDAMENTAL_OPERATOR_VETO_SENTINEL
+    return _sha256(
+        canonical_json_bytes(
+            {
+                "domain": BOOTSTRAP_ADMISSION_INTENT_DOMAIN,
+                "normalized_request_payload": projection,
+            }
+        )
+    )
+
+
 def validate_bootstrap_operator_request(  # noqa: C901
     document: Mapping[str, Any] | bytes,
 ) -> dict[str, Any]:
@@ -393,12 +440,24 @@ def validate_bootstrap_operator_request(  # noqa: C901
         raise SystemContractError("bootstrap operator request fields are not exact")
     if payload["state"] != "SEALED":
         raise SystemContractError("bootstrap operator request is not SEALED")
+    admission_intent_sha = _sha(
+        payload["bootstrap_admission_intent_sha256"],
+        label="bootstrap_admission_intent_sha256",
+    )
+    if admission_intent_sha != bootstrap_admission_intent_sha256(payload):
+        raise SystemContractError("bootstrap admission intent SHA differs")
     operation_id = _identifier(payload["bootstrap_operation_id"], label="bootstrap_operation_id")
     source_root_id = _identifier(payload["source_root_id"], label="source_root_id")
     trusted_at = _timestamp(payload["trusted_at"], label="trusted_at")
     if request["created_at"] != trusted_at:
         raise SystemContractError("request created_at/trusted_at binding differs")
     release_ref = validate_object_ref(payload["release_manifest_ref"], label="release_manifest_ref")
+    veto_value = payload["fundamental_operator_veto_file_ref"]
+    fundamental_veto_ref = (
+        None
+        if veto_value is None
+        else _file_ref(veto_value, label="fundamental_operator_veto_file_ref")
+    )
     source_blockers = payload["source_blockers"]
     if type(source_blockers) is not list:
         raise SystemContractError("source_blockers must be a list")
@@ -574,11 +633,14 @@ def validate_bootstrap_operator_request(  # noqa: C901
     ):
         if reference is not None:
             all_paths.append(reference["relative_path"])
+    if fundamental_veto_ref is not None:
+        all_paths.append(fundamental_veto_ref["relative_path"])
     if len(all_paths) != len(set(all_paths)):
         raise SystemContractError("bootstrap input paths must be globally unique")
     return {
         "document": request,
         "operation_id": operation_id,
+        "bootstrap_admission_intent_sha256": admission_intent_sha,
         "source_root_id": source_root_id,
         "trusted_at": trusted_at,
         "release_manifest_ref": release_ref,
@@ -603,6 +665,7 @@ def validate_bootstrap_operator_request(  # noqa: C901
         "market_table_file_refs": market_tables,
         "fundamental_table_file_refs": fundamental_tables,
         "fundamental_evidence_file_refs": fundamental_evidence,
+        "fundamental_operator_veto_file_ref": fundamental_veto_ref,
     }
 
 
@@ -1410,6 +1473,8 @@ def _copy_request_inputs(  # noqa: C901
     def copy_one(field: str, reference: Mapping[str, str], target: Path) -> None:
         nonlocal calendar_bytes
         maximum = _MAX_INPUT_BYTES
+        if field == "fundamental_table_file_refs":
+            maximum = FUNDAMENTAL_PARQUET_MAX_BYTES
         if field in _CALENDAR_INPUT_BYTE_LIMITS:
             remaining = _MAXIMUM_CALENDAR_REPLAY_BYTES - calendar_bytes
             if remaining <= 0:
@@ -1472,6 +1537,16 @@ def _copy_request_inputs(  # noqa: C901
         target = _destination(staging_root, relative)
         copy_one(field, reference, target)
         copied[field] = relative
+    veto_reference = normalized["fundamental_operator_veto_file_ref"]
+    if veto_reference is not None:
+        relative = "authority/fundamental-operator-veto.json"
+        _copy_verified_input(
+            input_root=input_root,
+            reference=veto_reference,
+            target=_destination(staging_root, relative),
+            maximum_bytes=_FUNDAMENTAL_VETO_MAX_BYTES,
+        )
+        copied["fundamental_operator_veto_file_ref"] = relative
     for field, prefix in (("market_table_file_refs", "closure/market_tables"),):
         rows: list[str] = []
         for index, reference in enumerate(normalized[field]):
@@ -2181,27 +2256,51 @@ def _validate_fundamental_closure(  # noqa: C901
     if validated["provider_evidence_files"] != expected_evidence:
         raise SystemContractError("Fundamental provider evidence fileset differs")
 
-    target_bindings = validated["target_bindings"]
-    expected_target_shas = {
-        "market_pointer": normalized["files"]["market_pointer_file_ref"]["byte_sha256"],
-        "pit_pointer": normalized["files"]["pit_pointer_file_ref"]["byte_sha256"],
-        "pit_membership": normalized["files"]["pit_membership_file_ref"]["byte_sha256"],
-        "expected_scope": normalized["files"]["market_scope_file_ref"]["byte_sha256"],
-    }
-    if validated["target_cutoff"] != expected_cutoff or any(
-        target_bindings.get(name, {}).get("sha256") != digest
-        for name, digest in expected_target_shas.items()
-    ):
-        raise SystemContractError("Fundamental target source binding differs")
+    fundamental_cutoff = _compact_date(
+        validated["target_cutoff"], label="Fundamental target cutoff"
+    )
+    runtime_cutoff = _compact_date(expected_cutoff, label="System runtime cutoff")
+    if fundamental_cutoff > runtime_cutoff:
+        raise SystemContractError("Fundamental target cutoff is later than System cutoff")
     if manifest_tables["fundamental_daily"]["rows"] <= 0 or (
         manifest_tables["fundamental_period"]["rows"] <= 0
     ):
         raise SystemContractError("Fundamental production tables are empty")
+    provenance = _mapping(pointer.get("primary_provenance"), label="Fundamental primary provenance")
+    permanent_refs = _mapping(
+        provenance.get("permanent_support_refs"),
+        label="Fundamental permanent support refs",
+    )
+    predecessor_manifest_ref = _mapping(
+        permanent_refs.get("predecessor_manifest"),
+        label="Fundamental predecessor manifest ref",
+    )
+    predecessor_support_path = predecessor_manifest_ref.get("path")
+    if (
+        type(predecessor_support_path) is not str
+        or not predecessor_support_path
+        or PurePosixPath(predecessor_support_path).is_absolute()
+        or ".." in PurePosixPath(predecessor_support_path).parts
+    ):
+        raise SystemContractError("Fundamental predecessor manifest role path differs")
+    predecessor_manifest_relative_path = str(
+        evidence_prefix / "provider_evidence" / predecessor_support_path
+    )
+    if predecessor_manifest_relative_path not in {
+        reference["relative_path"] for reference in normalized["fundamental_evidence_file_refs"]
+    }:
+        raise SystemContractError("Fundamental predecessor manifest evidence is absent")
     return {
         "generation_id": generation_id,
         "table_sha256s": validated["table_sha256"],
         "provenance_binding_sha256": validated["provenance_binding_sha256"],
         "machine_states": validated["machine_states"],
+        "target_cutoff": fundamental_cutoff,
+        "target_bindings_sha256": _sha256(canonical_json_bytes(validated["target_bindings"])),
+        "pointer_sha256": validated["pointer_sha256"],
+        "manifest_sha256": validated["manifest_sha256"],
+        "predecessor_manifest_relative_path": predecessor_manifest_relative_path,
+        "table_readback": validated["table_readback"],
     }
 
 
@@ -2216,6 +2315,162 @@ def _derive_source_blockers(fundamental_closure: Mapping[str, Any]) -> list[str]
     if type(machine_states) is not dict or machine_states != expected:
         raise SystemContractError("Fundamental machine-state projection is unsupported")
     return sorted(FUNDAMENTAL_SOURCE_BLOCKERS)
+
+
+def _fundamental_admitted_date(value: Any, *, label: str) -> str:
+    if isinstance(value, pd.Timestamp):
+        if value.tzinfo is not None:
+            value = value.tz_convert("UTC").tz_localize(None)
+        return value.date().isoformat()
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if type(value) is str:
+        for pattern in ("%Y%m%d", "%Y-%m-%d", "%Y-%m-%dT%H:%M:%S"):
+            try:
+                parsed = datetime.strptime(value, pattern)
+            except ValueError:
+                continue
+            if parsed.strftime(pattern) == value:
+                return parsed.date().isoformat()
+    raise SystemContractError(f"{label} is not a canonical admitted date")
+
+
+def _validate_fundamental_admitted_dates(  # noqa: C901
+    *,
+    normalized: Mapping[str, Any],
+    staging_root: Path,
+    copied: Mapping[str, list[str] | str],
+    fundamental_cutoff: str,
+    system_cutoff: str,
+) -> dict[str, Any]:
+    """Replay every admitted date column without loading a full table."""
+
+    refs_by_name: dict[str, dict[str, str]] = {}
+    copied_by_name: dict[str, str] = {}
+    for reference, relative in zip(
+        normalized["fundamental_table_file_refs"],
+        _copied_paths(copied, "fundamental_table_file_refs"),
+        strict=True,
+    ):
+        name = PurePosixPath(reference["relative_path"]).name
+        if name in refs_by_name:
+            raise SystemContractError("Fundamental admitted-date table identity is duplicated")
+        refs_by_name[name] = reference
+        copied_by_name[name] = relative
+    if set(refs_by_name) != {
+        "fundamental_daily.parquet",
+        "fundamental_period.parquet",
+        "fundamental_quarantine.parquet",
+    }:
+        raise SystemContractError("Fundamental admitted-date table set differs")
+
+    fundamental_iso = datetime.strptime(fundamental_cutoff, "%Y%m%d").date().isoformat()
+    system_iso = datetime.strptime(system_cutoff, "%Y%m%d").date().isoformat()
+    admitted: list[str] = []
+    period_rows = 0
+    for index, row in enumerate(
+        _iter_bounded_parquet_rows(
+            path=staging_root / copied_by_name["fundamental_period.parquet"],
+            expected_sha256=refs_by_name["fundamental_period.parquet"]["byte_sha256"],
+            columns=("availability_date",),
+        )
+    ):
+        value = row.get("availability_date")
+        if value is None:
+            raise SystemContractError("Fundamental period availability_date is null")
+        observed = _fundamental_admitted_date(
+            value, label=f"fundamental_period.availability_date[{index}]"
+        )
+        if observed > fundamental_iso or observed > system_iso:
+            raise SystemContractError("Fundamental period contains future admitted information")
+        admitted.append(observed)
+        period_rows += 1
+
+    daily_rows = 0
+    forecast_rows = 0
+    for index, row in enumerate(
+        _iter_bounded_parquet_rows(
+            path=staging_root / copied_by_name["fundamental_daily.parquet"],
+            expected_sha256=refs_by_name["fundamental_daily.parquet"]["byte_sha256"],
+            columns=("availability_date", "forecast_ann_date", "trade_date"),
+        )
+    ):
+        availability = row.get("availability_date")
+        trade_date = row.get("trade_date")
+        if availability is None or trade_date is None:
+            raise SystemContractError("Fundamental daily required admitted date is null")
+        observed_availability = _fundamental_admitted_date(
+            availability, label=f"fundamental_daily.availability_date[{index}]"
+        )
+        observed_trade = _fundamental_admitted_date(
+            trade_date, label=f"fundamental_daily.trade_date[{index}]"
+        )
+        if (
+            observed_availability > fundamental_iso
+            or observed_availability > system_iso
+            or observed_trade > fundamental_iso
+            or observed_trade > system_iso
+            or observed_availability > observed_trade
+        ):
+            raise SystemContractError("Fundamental daily contains future admitted information")
+        admitted.append(observed_availability)
+        forecast = row.get("forecast_ann_date")
+        if forecast is not None:
+            observed_forecast = _fundamental_admitted_date(
+                forecast, label=f"fundamental_daily.forecast_ann_date[{index}]"
+            )
+            if observed_forecast > fundamental_iso or observed_forecast > system_iso:
+                raise SystemContractError("Fundamental daily forecast contains future information")
+            admitted.append(observed_forecast)
+            forecast_rows += 1
+        daily_rows += 1
+    if period_rows <= 0 or daily_rows <= 0 or not admitted:
+        raise SystemContractError("Fundamental admitted availability projection is empty")
+    return {
+        "latest_admitted_available_at": max(admitted),
+        "period_row_count": period_rows,
+        "daily_row_count": daily_rows,
+        "forecast_announcement_count": forecast_rows,
+        "quarantine_admission": "EXCLUDED_NOT_ADMITTED",
+    }
+
+
+def _fundamental_age_projection(
+    *,
+    calendar_compilation: Mapping[str, Any],
+    fundamental_cutoff: str,
+    system_cutoff: str,
+) -> dict[str, Any]:
+    fundamental_iso = datetime.strptime(fundamental_cutoff, "%Y%m%d").date().isoformat()
+    system_iso = datetime.strptime(system_cutoff, "%Y%m%d").date().isoformat()
+    runtime = calendar_compilation.get("payload", {}).get("runtime_projection")
+    if type(runtime) is not list or not runtime:
+        raise SystemContractError("Fundamental age calendar projection is absent")
+    dates: list[str] = []
+    open_dates: list[str] = []
+    for index, row in enumerate(runtime):
+        if type(row) is not dict or row.get("status") not in {"OPEN", "CLOSED"}:
+            raise SystemContractError("Fundamental age calendar row is invalid")
+        observed = _calendar_date(row.get("date"), label=f"runtime_projection[{index}].date")
+        dates.append(observed)
+        if row["status"] == "OPEN":
+            open_dates.append(observed)
+    if (
+        dates != sorted(set(dates))
+        or dates[0] > fundamental_iso
+        or dates[-1] < system_iso
+        or fundamental_iso > system_iso
+    ):
+        raise SystemContractError("Fundamental age calendar coverage is incomplete")
+    calendar_age = (date.fromisoformat(system_iso) - date.fromisoformat(fundamental_iso)).days
+    return {
+        "system_as_of_date": system_iso,
+        "fundamental_snapshot_cutoff_date": fundamental_iso,
+        "calendar_age_days": calendar_age,
+        "open_session_age": sum(fundamental_iso < value <= system_iso for value in open_dates),
+    }
 
 
 def _calendar_date(value: Any, *, label: str) -> str:
@@ -2990,6 +3245,8 @@ def _receipt_input_source_rows(  # noqa: C901
     ):
         if normalized[field] is not None:
             expected_scalar.add(field)
+    if normalized["fundamental_operator_veto_file_ref"] is not None:
+        expected_scalar.add("fundamental_operator_veto_file_ref")
     if set(scalar_refs) != expected_scalar:
         raise SystemContractError("production receipt scalar input closure differs")
     expected_lists = {
@@ -3062,6 +3319,19 @@ def _receipt_input_source_rows(  # noqa: C901
                     ),
                 }
             )
+    veto_ref = normalized["fundamental_operator_veto_file_ref"]
+    if veto_ref is not None:
+        rows.append(
+            {
+                "field": "fundamental_operator_veto_file_ref",
+                "ordinal": 0,
+                "input_file_ref": dict(veto_ref),
+                "source_object_ref": validate_object_ref(
+                    scalar_refs["fundamental_operator_veto_file_ref"],
+                    label="fundamental_operator_veto_file_ref source object",
+                ),
+            }
+        )
     for field in sorted(expected_lists):
         inputs = normalized[field]
         sources = list_refs[field]
@@ -3111,6 +3381,9 @@ def _receipt_copied_paths(  # noqa: C901
         reference = normalized[field]
         if reference is not None:
             expected[(field, 0)] = dict(reference)
+    veto_ref = normalized["fundamental_operator_veto_file_ref"]
+    if veto_ref is not None:
+        expected[("fundamental_operator_veto_file_ref", 0)] = dict(veto_ref)
     for field in (
         "official_calendar_raw_file_refs",
         "official_calendar_capture_file_refs",
@@ -3172,6 +3445,7 @@ def _receipt_copied_paths(  # noqa: C901
             "trusted_provider_calendar_capture_execution_file_ref",
             "trusted_provider_calendar_capture_success_file_ref",
             "trusted_provider_release_install_input_file_ref",
+            "fundamental_operator_veto_file_ref",
         }:
             copied[field] = payload["relative_path"]
         else:
@@ -3194,6 +3468,109 @@ def _receipt_copied_paths(  # noqa: C901
     ):
         copied.setdefault(field, [])
     return copied, observed
+
+
+def _sorted_object_refs(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, str]]:
+    normalized = [validate_object_ref(row, label="Fundamental authority ref") for row in rows]
+    ordered = sorted(
+        normalized,
+        key=lambda row: tuple(row[field] for field in OBJECT_REF_SORT_FIELDS),
+    )
+    if len({tuple(row[field] for field in OBJECT_REF_SORT_FIELDS) for row in ordered}) != len(
+        ordered
+    ):
+        raise SystemContractError("Fundamental authority refs are duplicated")
+    return ordered
+
+
+def _fundamental_table_authority_rows(
+    *,
+    source_refs_by_name: Mapping[str, Mapping[str, Any]],
+    table_readback: Mapping[str, Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    expected_names = [
+        "fundamental_daily",
+        "fundamental_period",
+        "fundamental_quarantine",
+    ]
+    if set(source_refs_by_name) != set(expected_names) or set(table_readback) != set(
+        expected_names
+    ):
+        raise SystemContractError("Fundamental table authority roles differ")
+    rows: list[dict[str, Any]] = []
+    for name in expected_names:
+        evidence = table_readback[name]
+        row_count = evidence.get("rows")
+        columns = evidence.get("columns")
+        if (
+            type(row_count) is not int
+            or row_count < 0
+            or type(columns) is not list
+            or any(type(column) is not str or not column for column in columns)
+        ):
+            raise SystemContractError("Fundamental table authority shape differs")
+        column_count = len(columns)
+        cell_limit = (
+            FUNDAMENTAL_DAILY_REPLAY_MAX_CELLS
+            if name == "fundamental_daily"
+            else FUNDAMENTAL_GENERIC_REPLAY_MAX_CELLS
+        )
+        observed_cells = row_count * column_count
+        if observed_cells > cell_limit:
+            raise SystemContractError("Fundamental table authority cell bound differs")
+        rows.append(
+            {
+                "table_name": name,
+                "source_ref": validate_object_ref(
+                    source_refs_by_name[name], label=f"Fundamental table {name}"
+                ),
+                "row_count": row_count,
+                "column_count": column_count,
+                "observed_cells": observed_cells,
+                "cell_limit": cell_limit,
+            }
+        )
+    return rows
+
+
+def _fundamental_size_role_source_refs(
+    *,
+    normalized: Mapping[str, Any],
+    observed_inputs: Mapping[tuple[str, int], Mapping[str, Any]],
+    predecessor_manifest_relative_path: str,
+) -> tuple[dict[str, str], list[dict[str, str]]]:
+    matches = [
+        index
+        for index, reference in enumerate(normalized["fundamental_evidence_file_refs"])
+        if reference["relative_path"] == predecessor_manifest_relative_path
+    ]
+    if len(matches) != 1:
+        raise SystemContractError("Fundamental predecessor-manifest source role is not unique")
+    predecessor_index = matches[0]
+    predecessor = validate_object_ref(
+        observed_inputs[("fundamental_evidence_file_refs", predecessor_index)],
+        label="predecessor_manifest_source_ref",
+    )
+    ordinary = [
+        validate_object_ref(
+            observed_inputs[("fundamental_pointer_file_ref", 0)],
+            label="Fundamental pointer source ref",
+        ),
+        validate_object_ref(
+            observed_inputs[("fundamental_generation_manifest_file_ref", 0)],
+            label="Fundamental manifest source ref",
+        ),
+        *[
+            validate_object_ref(
+                observed_inputs[("fundamental_evidence_file_refs", index)],
+                label=f"Fundamental evidence source ref {index}",
+            )
+            for index, reference in enumerate(normalized["fundamental_evidence_file_refs"])
+            if index != predecessor_index
+            and PurePosixPath(reference["relative_path"]).suffix.lower() == ".json"
+        ],
+    ]
+    return predecessor, _sorted_object_refs(ordinary)
 
 
 def _canonical_table_scalar(value: Any) -> Any:
@@ -3666,6 +4043,107 @@ def _validate_historical_production_bootstrap_generation_closure(  # noqa: C901
         "homogeneous_history_ready": False,
     }:
         raise SystemContractError("historical Fundamental machine states differ")
+    if receipt["contract_sha256"] == INITIAL_PRODUCTION_RECEIPT_CONTRACT_SHA256:
+        from quant_investor.system.historical_activation import (
+            INITIAL_FACTOR_DEPENDENCY_SHA256,
+            INITIAL_FUNDAMENTAL_DAILY_REPLAY_MAX_CELLS,
+            INITIAL_FUNDAMENTAL_GENERIC_JSON_MAX_BYTES,
+            INITIAL_FUNDAMENTAL_GENERIC_REPLAY_MAX_CELLS,
+            INITIAL_FUNDAMENTAL_PARQUET_MAX_BYTES,
+            INITIAL_FUNDAMENTAL_PREDECESSOR_MANIFEST_MAX_BYTES,
+            validate_initial_fundamental_advisory,
+            validate_initial_factor_dependency_rows,
+            validate_initial_fundamental_veto_subject,
+        )
+
+        validate_initial_factor_dependency_rows(payload["factor_dependency_rows"])
+        if (
+            payload["factor_dependency_sha256"] != INITIAL_FACTOR_DEPENDENCY_SHA256
+            or payload["fundamental_operator_veto_ref"] is not None
+        ):
+            raise SystemContractError("historical Factor/Fundamental authority differs")
+        subject = validate_initial_fundamental_veto_subject(
+            store._historical_get_object(payload["fundamental_veto_subject_ref"], dispatch=dispatch)
+        )
+        advisory = validate_initial_fundamental_advisory(
+            store._historical_get_object(payload["fundamental_advisory_ref"], dispatch=dispatch)
+        )
+        if (
+            frozen_object_ref(subject) != payload["fundamental_veto_subject_ref"]
+            or frozen_object_ref(advisory) != payload["fundamental_advisory_ref"]
+            or advisory["payload"]["veto_subject_ref"] != payload["fundamental_veto_subject_ref"]
+            or advisory["payload"]["operator_veto_ref"] is not None
+            or advisory["payload"]["effective_action"] != "PROCEED"
+            or advisory["payload"]["generic_json_max_bytes"]
+            != INITIAL_FUNDAMENTAL_GENERIC_JSON_MAX_BYTES
+            or advisory["payload"]["predecessor_manifest_max_bytes"]
+            != INITIAL_FUNDAMENTAL_PREDECESSOR_MANIFEST_MAX_BYTES
+            or advisory["payload"]["fundamental_parquet_max_bytes"]
+            != INITIAL_FUNDAMENTAL_PARQUET_MAX_BYTES
+            or advisory["payload"]["generic_replay_max_cells"]
+            != INITIAL_FUNDAMENTAL_GENERIC_REPLAY_MAX_CELLS
+            or advisory["payload"]["daily_replay_max_cells"]
+            != INITIAL_FUNDAMENTAL_DAILY_REPLAY_MAX_CELLS
+        ):
+            raise SystemContractError("historical Fundamental advisory binding differs")
+
+        def frozen_source(
+            ref: Mapping[str, Any],
+            *,
+            label: str,
+            maximum_bytes: int,
+            expected_format: str,
+            expected_media: str,
+            expected_name: str | None = None,
+        ) -> None:
+            source = store._historical_get_object(ref, dispatch=dispatch)
+            store._verify_historical_source_object(source)
+            source_payload = source["payload"]
+            path = PurePosixPath(source_payload["relative_path"])
+            if (
+                source_payload["source_format"] != expected_format
+                or source_payload["media_type"] != expected_media
+                or (expected_name is not None and path.name != expected_name)
+            ):
+                raise SystemContractError(f"historical {label} source role differs")
+            absolute = store.source_root / path
+            metadata = os.lstat(absolute)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or stat.S_ISLNK(metadata.st_mode)
+                or metadata.st_uid != os.geteuid()
+                or metadata.st_nlink != 1
+                or stat.S_IMODE(metadata.st_mode) != 0o600
+                or metadata.st_size <= 0
+                or metadata.st_size > maximum_bytes
+            ):
+                raise SystemContractError(f"historical {label} size/storage differs")
+
+        frozen_source(
+            advisory["payload"]["predecessor_manifest_source_ref"],
+            label="predecessor manifest",
+            maximum_bytes=INITIAL_FUNDAMENTAL_PREDECESSOR_MANIFEST_MAX_BYTES,
+            expected_format="JSON",
+            expected_media="application/json",
+            expected_name="predecessor_manifest.json",
+        )
+        for ref in advisory["payload"]["ordinary_json_source_refs"]:
+            frozen_source(
+                ref,
+                label="ordinary Fundamental JSON",
+                maximum_bytes=INITIAL_FUNDAMENTAL_GENERIC_JSON_MAX_BYTES,
+                expected_format="JSON",
+                expected_media="application/json",
+            )
+        for row in advisory["payload"]["fundamental_table_source_rows"]:
+            frozen_source(
+                row["source_ref"],
+                label=f"Fundamental table {row['table_name']}",
+                maximum_bytes=INITIAL_FUNDAMENTAL_PARQUET_MAX_BYTES,
+                expected_format="PARQUET",
+                expected_media="application/vnd.apache.parquet",
+                expected_name=f"{row['table_name']}.parquet",
+            )
     statistics = payload["signal_statistics"]
     if (
         type(statistics) is not list
@@ -4034,6 +4512,152 @@ def _validate_production_bootstrap_generation_closure(  # noqa: C901
     ):
         raise SystemContractError("production source blocker projection differs")
 
+    definitions = bootstrap_factor_definitions()
+    dependency_rows = validate_factor_dependency_rows(
+        [
+            {
+                "factor_id": row["factor_id"],
+                "required_source_roles": list(row["required_source_roles"]),
+            }
+            for row in definitions
+        ]
+    )
+    dependency_sha = factor_dependency_sha256(dependency_rows)
+    implementation_rows = documents["implementation"]["document"].get("implementation_rows")
+    active_required_roles = derive_active_required_source_roles(
+        verified_generation["factor_active_set"],
+        implementation_rows=implementation_rows,
+    )
+    if (
+        active_required_roles != ("EXCHANGE_CALENDAR", "MARKET", "PIT_MEMBERSHIP")
+        or payload["factor_dependency_rows"] != dependency_rows
+        or payload["factor_dependency_sha256"] != dependency_sha
+    ):
+        raise SystemContractError("production Factor dependency closure differs")
+    factor_set_sha = verified_generation["factor_active_set"]["payload"]["factor_set_sha256"]
+    fundamental_admitted = _validate_fundamental_admitted_dates(
+        normalized=normalized,
+        staging_root=store.source_root,
+        copied=copied,
+        fundamental_cutoff=fundamental_closure["target_cutoff"],
+        system_cutoff=market_closure["cutoff"],
+    )
+    fundamental_age = _fundamental_age_projection(
+        calendar_compilation=calendar_compilation,
+        fundamental_cutoff=fundamental_closure["target_cutoff"],
+        system_cutoff=market_closure["cutoff"],
+    )
+    table_source_refs = _sorted_object_refs(
+        [
+            observed_inputs[("fundamental_table_file_refs", index)]
+            for index in range(len(normalized["fundamental_table_file_refs"]))
+        ]
+    )
+    evidence_source_refs = _sorted_object_refs(
+        [
+            observed_inputs[("fundamental_evidence_file_refs", index)]
+            for index in range(len(normalized["fundamental_evidence_file_refs"]))
+        ]
+    )
+    predecessor_source_ref, ordinary_json_refs = _fundamental_size_role_source_refs(
+        normalized=normalized,
+        observed_inputs=observed_inputs,
+        predecessor_manifest_relative_path=fundamental_closure[
+            "predecessor_manifest_relative_path"
+        ],
+    )
+    table_source_by_name = {
+        PurePosixPath(reference["relative_path"]).stem: validate_object_ref(
+            observed_inputs[("fundamental_table_file_refs", index)],
+            label=f"Fundamental table source ref {index}",
+        )
+        for index, reference in enumerate(normalized["fundamental_table_file_refs"])
+    }
+    if set(table_source_by_name) != {
+        "fundamental_daily",
+        "fundamental_period",
+        "fundamental_quarantine",
+    }:
+        raise SystemContractError("production Fundamental table roles differ")
+    table_source_rows = _fundamental_table_authority_rows(
+        source_refs_by_name=table_source_by_name,
+        table_readback=fundamental_closure["table_readback"],
+    )
+    expected_subject = build_fundamental_veto_subject(
+        bootstrap_admission_intent_sha256=normalized["bootstrap_admission_intent_sha256"],
+        deployed_release_ref=release_ref,
+        release_code_manifest_sha256=release["payload"]["code_manifest_sha256"],
+        system_as_of_date=fundamental_age["system_as_of_date"],
+        calendar_compilation_ref=observed_inputs[("calendar_compilation_file_ref", 0)],
+        exchange_calendar_ref=calendar_ref,
+        current_market_pointer_ref=observed_inputs[("market_pointer_file_ref", 0)],
+        current_pit_pointer_ref=observed_inputs[("pit_pointer_file_ref", 0)],
+        current_pit_membership_ref=observed_inputs[("pit_membership_file_ref", 0)],
+        fundamental_pointer_ref=observed_inputs[("fundamental_pointer_file_ref", 0)],
+        fundamental_manifest_ref=observed_inputs[("fundamental_generation_manifest_file_ref", 0)],
+        fundamental_table_refs=table_source_refs,
+        fundamental_evidence_refs=evidence_source_refs,
+        fundamental_provenance_binding_sha256=fundamental_closure["provenance_binding_sha256"],
+        fundamental_target_bindings_sha256=fundamental_closure["target_bindings_sha256"],
+        fundamental_snapshot_cutoff_date=fundamental_age["fundamental_snapshot_cutoff_date"],
+        factor_set_sha256=factor_set_sha,
+        factor_dependency_rows=dependency_rows,
+        factor_dependency_sha256=dependency_sha,
+        created_at=receipt["created_at"],
+    )
+    subject_ref = validate_object_ref(
+        payload["fundamental_veto_subject_ref"], label="fundamental_veto_subject_ref"
+    )
+    subject = validate_fundamental_veto_subject(store.get_object(subject_ref))
+    if subject != expected_subject or object_ref_for_artifact(subject) != subject_ref:
+        raise SystemContractError("production Fundamental veto subject replay differs")
+    if normalized["fundamental_operator_veto_file_ref"] is not None:
+        raise SystemContractError("verified production request unexpectedly contains a veto")
+    if payload["fundamental_operator_veto_ref"] is not None:
+        raise SystemContractError("verified production receipt unexpectedly contains a veto")
+    expected_advisory = build_fundamental_advisory(
+        veto_subject_ref=subject_ref,
+        operator_veto_ref=None,
+        integrity_status="VERIFIED",
+        required_by_active_factor_set="FUNDAMENTAL" in active_required_roles,
+        system_as_of_date=fundamental_age["system_as_of_date"],
+        fundamental_snapshot_cutoff_date=fundamental_age["fundamental_snapshot_cutoff_date"],
+        calendar_age_days=fundamental_age["calendar_age_days"],
+        open_session_age=fundamental_age["open_session_age"],
+        latest_admitted_available_at=fundamental_admitted["latest_admitted_available_at"],
+        last_refresh_basis="SNAPSHOT_CUTOFF_DATE",
+        disclosure_check="PASS",
+        freshness_policy="ADVISORY_NO_FIXED_MAXIMUM",
+        default_action=FUNDAMENTAL_DEFAULT_ACTION,
+        operator_veto_present=False,
+        effective_action=FUNDAMENTAL_DEFAULT_ACTION,
+        factor_dependency_rows=dependency_rows,
+        factor_dependency_sha256=dependency_sha,
+        fundamental_machine_states=fundamental_closure["machine_states"],
+        source_limitations=derived_source_blockers,
+        generic_json_max_bytes=FUNDAMENTAL_GENERIC_JSON_MAX_BYTES,
+        predecessor_manifest_max_bytes=FUNDAMENTAL_PREDECESSOR_MANIFEST_MAX_BYTES,
+        fundamental_parquet_max_bytes=FUNDAMENTAL_PARQUET_MAX_BYTES,
+        generic_replay_max_cells=FUNDAMENTAL_GENERIC_REPLAY_MAX_CELLS,
+        daily_replay_max_cells=FUNDAMENTAL_DAILY_REPLAY_MAX_CELLS,
+        fundamental_table_source_rows=table_source_rows,
+        predecessor_manifest_source_ref=predecessor_source_ref,
+        ordinary_json_source_refs=ordinary_json_refs,
+        created_at=receipt["created_at"],
+    )
+    advisory_ref = validate_object_ref(
+        payload["fundamental_advisory_ref"], label="fundamental_advisory_ref"
+    )
+    advisory = validate_fundamental_advisory(store.get_object(advisory_ref))
+    if advisory != expected_advisory or object_ref_for_artifact(advisory) != advisory_ref:
+        raise SystemContractError("production Fundamental advisory replay differs")
+    require_fundamental_proceed(advisory)
+    if (
+        payload["bootstrap_admission_intent_sha256"]
+        != normalized["bootstrap_admission_intent_sha256"]
+    ):
+        raise SystemContractError("production admission-intent binding differs")
+
     recomputation = documents["recomputation"]["document"]
     if (
         recomputation.get("signal_statistics") != payload["signal_statistics"]
@@ -4066,13 +4690,14 @@ def validate_production_bootstrap_generation_closure(
         raise SystemContractError("production bootstrap Factor closure replay failed") from exc
 
 
-def assemble_production_bootstrap(  # noqa: C901
+def _run_production_bootstrap(  # noqa: C901
     *,
     workspace_root: str | os.PathLike[str],
     input_root: str | os.PathLike[str],
     request_raw: bytes,
+    preflight_only: bool,
 ) -> dict[str, Any]:
-    """Materialize, validate, and offline-assemble; never activate."""
+    """Replay production inputs; optionally stop at non-authorizing admission."""
 
     normalized = validate_bootstrap_operator_request(request_raw)
     workspace = Path(workspace_root).absolute()
@@ -4165,6 +4790,13 @@ def assemble_production_bootstrap(  # noqa: C901
         copied=copied_local,
         expected_cutoff=materialized["cutoff"],
     )
+    fundamental_admitted = _validate_fundamental_admitted_dates(
+        normalized=normalized,
+        staging_root=staging,
+        copied=copied_local,
+        fundamental_cutoff=fundamental_closure["target_cutoff"],
+        system_cutoff=materialized["cutoff"],
+    )
     derived_source_blockers = _derive_source_blockers(fundamental_closure)
     if normalized["source_blockers"] != derived_source_blockers:
         raise SystemContractError("declared source blockers differ from machine projection")
@@ -4243,6 +4875,11 @@ def assemble_production_bootstrap(  # noqa: C901
         source_projection=source_projection,
         release_ref=release_ref,
     )
+    fundamental_age = _fundamental_age_projection(
+        calendar_compilation=calendar_compilation,
+        fundamental_cutoff=fundamental_closure["target_cutoff"],
+        system_cutoff=materialized["cutoff"],
+    )
     if (
         source_projection["all_pit_symbols"] != materialized["scope_symbols"]
         or eligible != materialized["eligible_symbols"]
@@ -4264,6 +4901,16 @@ def assemble_production_bootstrap(  # noqa: C901
         factor_rows=factor_rows,
         control_rows=control_rows,
     )
+    factor_dependency_rows = validate_factor_dependency_rows(
+        [
+            {
+                "factor_id": row["factor_id"],
+                "required_source_roles": list(row["required_source_roles"]),
+            }
+            for row in definitions
+        ]
+    )
+    dependency_sha = factor_dependency_sha256(factor_dependency_rows)
     implementation_raw = canonical_json_bytes(
         {
             "domain": "myquant-bootstrap-implementation-tree-manifest",
@@ -4414,6 +5061,16 @@ def assemble_production_bootstrap(  # noqa: C901
             created_at=created_at,
         ),
     )
+    active_required_roles = derive_active_required_source_roles(
+        store.get_object(bootstrap.active_set_ref),
+        implementation_rows=validator_manifest["payload"]["implementation_rows"],
+    )
+    if active_required_roles != (
+        "EXCHANGE_CALENDAR",
+        "MARKET",
+        "PIT_MEMBERSHIP",
+    ):
+        raise SystemContractError("active Factor source dependency projection differs")
     validation_request = store.build_validation_run_request(
         release_manifest_ref=release_ref,
         factor_validator_manifest_ref=validator_manifest_ref,
@@ -4592,6 +5249,154 @@ def assemble_production_bootstrap(  # noqa: C901
                 created_at=created_at,
             )
         )
+    table_ref_by_name = {
+        PurePosixPath(reference["relative_path"]).stem: source_ref
+        for reference, source_ref in zip(
+            normalized["fundamental_table_file_refs"],
+            fundamental_table_refs,
+            strict=True,
+        )
+    }
+    if set(table_ref_by_name) != {
+        "fundamental_daily",
+        "fundamental_period",
+        "fundamental_quarantine",
+    }:
+        raise SystemContractError("Fundamental table source roles differ")
+    fundamental_table_source_rows = _fundamental_table_authority_rows(
+        source_refs_by_name=table_ref_by_name,
+        table_readback=fundamental_closure["table_readback"],
+    )
+    veto_input_source_ref: dict[str, str] | None = None
+    if normalized["fundamental_operator_veto_file_ref"] is not None:
+        veto_input_source_ref = _source(
+            store,
+            _copied_path(copied, "fundamental_operator_veto_file_ref"),
+            source_format="JSON",
+            media_type="application/json",
+            created_at=created_at,
+        )
+
+    def sorted_refs(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, str]]:
+        normalized_rows = [
+            validate_object_ref(row, label="Fundamental authority ref") for row in rows
+        ]
+        return sorted(
+            normalized_rows,
+            key=lambda row: tuple(row[field] for field in OBJECT_REF_SORT_FIELDS),
+        )
+
+    predecessor_matches = [
+        reference
+        for reference, source_ref in zip(
+            normalized["fundamental_evidence_file_refs"],
+            fundamental_evidence_refs,
+            strict=True,
+        )
+        if reference["relative_path"] == fundamental_closure["predecessor_manifest_relative_path"]
+    ]
+    if len(predecessor_matches) != 1:
+        raise SystemContractError("Fundamental predecessor-manifest source role is not unique")
+    predecessor_index = normalized["fundamental_evidence_file_refs"].index(predecessor_matches[0])
+    predecessor_manifest_source_ref = fundamental_evidence_refs[predecessor_index]
+    ordinary_json_refs = [
+        raw_objects["fundamental_pointer_file_ref"],
+        raw_objects["fundamental_generation_manifest_file_ref"],
+        *[
+            source_ref
+            for index, (reference, source_ref) in enumerate(
+                zip(
+                    normalized["fundamental_evidence_file_refs"],
+                    fundamental_evidence_refs,
+                    strict=True,
+                )
+            )
+            if index != predecessor_index
+            and PurePosixPath(reference["relative_path"]).suffix.lower() == ".json"
+        ],
+    ]
+    veto_subject = build_fundamental_veto_subject(
+        bootstrap_admission_intent_sha256=normalized["bootstrap_admission_intent_sha256"],
+        deployed_release_ref=release_ref,
+        release_code_manifest_sha256=release["payload"]["code_manifest_sha256"],
+        system_as_of_date=fundamental_age["system_as_of_date"],
+        calendar_compilation_ref=raw_objects["calendar_compilation_file_ref"],
+        exchange_calendar_ref=calendar_ref,
+        current_market_pointer_ref=raw_objects["market_pointer_file_ref"],
+        current_pit_pointer_ref=raw_objects["pit_pointer_file_ref"],
+        current_pit_membership_ref=raw_objects["pit_membership_file_ref"],
+        fundamental_pointer_ref=raw_objects["fundamental_pointer_file_ref"],
+        fundamental_manifest_ref=raw_objects["fundamental_generation_manifest_file_ref"],
+        fundamental_table_refs=sorted_refs(fundamental_table_refs),
+        fundamental_evidence_refs=sorted_refs(fundamental_evidence_refs),
+        fundamental_provenance_binding_sha256=fundamental_closure["provenance_binding_sha256"],
+        fundamental_target_bindings_sha256=fundamental_closure["target_bindings_sha256"],
+        fundamental_snapshot_cutoff_date=fundamental_age["fundamental_snapshot_cutoff_date"],
+        factor_set_sha256=factor_set_sha,
+        factor_dependency_rows=factor_dependency_rows,
+        factor_dependency_sha256=dependency_sha,
+        created_at=created_at,
+    )
+    veto_subject_ref = store.put_object(veto_subject)
+    operator_veto_ref: dict[str, str] | None = None
+    if veto_input_source_ref is not None:
+        _source_payload, veto_raw = store.read_source_object_bytes(
+            veto_input_source_ref,
+            maximum_bytes=_FUNDAMENTAL_VETO_MAX_BYTES,
+        )
+        operator_veto = validate_fundamental_operator_veto(veto_raw)
+        if operator_veto["payload"]["veto_subject_ref"] != veto_subject_ref:
+            raise SystemContractError("Fundamental operator veto subject differs")
+        operator_veto_ref = store.put_object(operator_veto)
+    advisory = build_fundamental_advisory(
+        veto_subject_ref=veto_subject_ref,
+        operator_veto_ref=operator_veto_ref,
+        integrity_status="VERIFIED",
+        required_by_active_factor_set="FUNDAMENTAL" in active_required_roles,
+        system_as_of_date=fundamental_age["system_as_of_date"],
+        fundamental_snapshot_cutoff_date=fundamental_age["fundamental_snapshot_cutoff_date"],
+        calendar_age_days=fundamental_age["calendar_age_days"],
+        open_session_age=fundamental_age["open_session_age"],
+        latest_admitted_available_at=fundamental_admitted["latest_admitted_available_at"],
+        last_refresh_basis="SNAPSHOT_CUTOFF_DATE",
+        disclosure_check="PASS",
+        freshness_policy="ADVISORY_NO_FIXED_MAXIMUM",
+        default_action=FUNDAMENTAL_DEFAULT_ACTION,
+        operator_veto_present=operator_veto_ref is not None,
+        effective_action=("BLOCK" if operator_veto_ref is not None else FUNDAMENTAL_DEFAULT_ACTION),
+        factor_dependency_rows=factor_dependency_rows,
+        factor_dependency_sha256=dependency_sha,
+        fundamental_machine_states=fundamental_closure["machine_states"],
+        source_limitations=derived_source_blockers,
+        generic_json_max_bytes=FUNDAMENTAL_GENERIC_JSON_MAX_BYTES,
+        predecessor_manifest_max_bytes=FUNDAMENTAL_PREDECESSOR_MANIFEST_MAX_BYTES,
+        fundamental_parquet_max_bytes=FUNDAMENTAL_PARQUET_MAX_BYTES,
+        generic_replay_max_cells=FUNDAMENTAL_GENERIC_REPLAY_MAX_CELLS,
+        daily_replay_max_cells=FUNDAMENTAL_DAILY_REPLAY_MAX_CELLS,
+        fundamental_table_source_rows=fundamental_table_source_rows,
+        predecessor_manifest_source_ref=predecessor_manifest_source_ref,
+        ordinary_json_source_refs=sorted_refs(ordinary_json_refs),
+        created_at=created_at,
+    )
+    advisory_ref = store.put_object(advisory)
+    if preflight_only:
+        return {
+            "status": "ADMISSION_PREFLIGHT_ONLY",
+            "operation_id": normalized["operation_id"],
+            "bootstrap_operator_request_ref": bootstrap_operator_request_ref,
+            "bootstrap_admission_intent_sha256": normalized["bootstrap_admission_intent_sha256"],
+            "fundamental_veto_subject_ref": veto_subject_ref,
+            "fundamental_veto_subject": veto_subject,
+            "fundamental_operator_veto_ref": operator_veto_ref,
+            "fundamental_advisory_ref": advisory_ref,
+            "fundamental_advisory": advisory,
+            "generation_write_count": 0,
+            "final_authorization_write_count": 0,
+            "prepared_transaction_write_count": 0,
+            "active_pointer_write_count": 0,
+            "marker_write_count": 0,
+        }
+    require_fundamental_proceed(advisory)
     calendar_top = _bundle(
         store,
         normalized["operation_id"],
@@ -4783,6 +5588,13 @@ def assemble_production_bootstrap(  # noqa: C901
                 if provider_release_input_ref is not None
                 else {}
             ),
+            **(
+                {
+                    "fundamental_operator_veto_file_ref": veto_input_source_ref,
+                }
+                if veto_input_source_ref is not None
+                else {}
+            ),
         },
         list_refs={
             **calendar_list_refs,
@@ -4793,6 +5605,7 @@ def assemble_production_bootstrap(  # noqa: C901
     )
     production_receipt = build_production_bootstrap_receipt(
         bootstrap_operator_request_ref=bootstrap_operator_request_ref,
+        bootstrap_admission_intent_sha256=normalized["bootstrap_admission_intent_sha256"],
         source_root_id=store.source_root_id,
         input_source_rows=input_source_rows,
         deployed_release_ref=release_ref,
@@ -4857,6 +5670,11 @@ def assemble_production_bootstrap(  # noqa: C901
         automation_semantic_sha256=normalized["automation_semantic_sha256"],
         source_blockers=derived_source_blockers,
         fundamental_machine_states=fundamental_closure["machine_states"],
+        factor_dependency_rows=factor_dependency_rows,
+        factor_dependency_sha256=dependency_sha,
+        fundamental_veto_subject_ref=veto_subject_ref,
+        fundamental_operator_veto_ref=operator_veto_ref,
+        fundamental_advisory_ref=advisory_ref,
         signal_statistics=statistics,
         assembler_code_sha256=_sha256(Path(__file__).resolve(strict=True).read_bytes()),
         created_at=created_at,
@@ -4915,6 +5733,10 @@ def assemble_production_bootstrap(  # noqa: C901
         "source_root": str(staging),
         "assembly_request_ref": assembly_request_ref,
         "production_bootstrap_receipt_ref": production_receipt_ref,
+        "bootstrap_admission_intent_sha256": normalized["bootstrap_admission_intent_sha256"],
+        "fundamental_veto_subject_ref": veto_subject_ref,
+        "fundamental_advisory_ref": advisory_ref,
+        "fundamental_advisory": advisory["payload"],
         "generation_id": generation["generation_id"],
         "generation": verified,
         "suspended_generation_id": suspended["generation_id"],
@@ -4926,12 +5748,46 @@ def assemble_production_bootstrap(  # noqa: C901
     }
 
 
+def prepare_production_bootstrap_admission(
+    *,
+    workspace_root: str | os.PathLike[str],
+    input_root: str | os.PathLike[str],
+    request_raw: bytes,
+) -> dict[str, Any]:
+    """Build only the immutable veto subject/advisory; never a generation."""
+
+    return _run_production_bootstrap(
+        workspace_root=workspace_root,
+        input_root=input_root,
+        request_raw=request_raw,
+        preflight_only=True,
+    )
+
+
+def assemble_production_bootstrap(
+    *,
+    workspace_root: str | os.PathLike[str],
+    input_root: str | os.PathLike[str],
+    request_raw: bytes,
+) -> dict[str, Any]:
+    """Materialize, validate, and offline-assemble; never activate."""
+
+    return _run_production_bootstrap(
+        workspace_root=workspace_root,
+        input_root=input_root,
+        request_raw=request_raw,
+        preflight_only=False,
+    )
+
+
 __all__ = [
     "BOOTSTRAP_OPERATOR_REQUEST_CONTRACT_SHA256",
     "BOOTSTRAP_OPERATOR_REQUEST_FIELDS",
     "BOOTSTRAP_OPERATOR_REQUEST_KIND",
     "FILE_REF_FIELDS",
     "assemble_production_bootstrap",
+    "bootstrap_admission_intent_sha256",
+    "prepare_production_bootstrap_admission",
     "validate_bootstrap_operator_request",
     "validate_production_bootstrap_generation_closure",
 ]

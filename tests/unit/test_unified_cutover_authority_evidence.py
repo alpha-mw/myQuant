@@ -44,6 +44,32 @@ BASE = "2026-08-16T00:00:00Z"
 
 
 def _production_target(reference: dict[str, str]) -> tuple[dict, dict]:
+    dependency_rows = [
+        {
+            "factor_id": "pv_blend_volstab19x2_mom90_amihud5_w75",
+            "required_source_roles": [
+                "EXCHANGE_CALENDAR",
+                "MARKET",
+                "PIT_MEMBERSHIP",
+            ],
+        },
+        {
+            "factor_id": "pv_blend_volstab19x2_mom90_amihud5_w80",
+            "required_source_roles": [
+                "EXCHANGE_CALENDAR",
+                "MARKET",
+                "PIT_MEMBERSHIP",
+            ],
+        },
+        {
+            "factor_id": "pv_low_dollar_volume_5d",
+            "required_source_roles": [
+                "EXCHANGE_CALENDAR",
+                "MARKET",
+                "PIT_MEMBERSHIP",
+            ],
+        },
+    ]
     basis = {
         "authority_route": "EXCHANGE_OFFICIAL",
         "policy_ref": reference,
@@ -54,6 +80,7 @@ def _production_target(reference: dict[str, str]) -> tuple[dict, dict]:
     }
     receipt = build_production_bootstrap_receipt(
         bootstrap_operator_request_ref=reference,
+        bootstrap_admission_intent_sha256="0" * 64,
         source_root_id="authority-evidence-test-source",
         input_source_rows=[
             {
@@ -98,6 +125,11 @@ def _production_target(reference: dict[str, str]) -> tuple[dict, dict]:
             "binding_aware_research_ready": True,
             "homogeneous_history_ready": False,
         },
+        factor_dependency_rows=dependency_rows,
+        factor_dependency_sha256=hashlib.sha256(canonical_json_bytes(dependency_rows)).hexdigest(),
+        fundamental_veto_subject_ref=reference,
+        fundamental_operator_veto_ref=None,
+        fundamental_advisory_ref=reference,
         signal_statistics=[
             {"factor_id": "factor-a", "finite_count": 2, "distinct_finite_count": 2},
             {"factor_id": "factor-b", "finite_count": 2, "distinct_finite_count": 2},
@@ -656,6 +688,12 @@ def test_final_cutover_authorization_rejects_synthetic_production_target(
         calendar_capture_execution_ref=receipt_payload["calendar_capture_execution_ref"],
         calendar_authorization_basis=receipt_payload["calendar_authorization_basis"],
         calendar_source_limitations=receipt_payload["calendar_source_limitations"],
+        bootstrap_admission_intent_sha256=receipt_payload["bootstrap_admission_intent_sha256"],
+        factor_dependency_sha256=receipt_payload["factor_dependency_sha256"],
+        fundamental_veto_subject_ref=receipt_payload["fundamental_veto_subject_ref"],
+        fundamental_operator_veto_ref=receipt_payload["fundamental_operator_veto_ref"],
+        fundamental_advisory_ref=receipt_payload["fundamental_advisory_ref"],
+        fundamental_advisory_authorized=True,
         release_commit="4" * 40,
         release_tree="5" * 40,
         final_integration_commit="4" * 40,

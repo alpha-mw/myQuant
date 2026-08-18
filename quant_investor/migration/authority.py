@@ -1569,6 +1569,12 @@ def _seal_final_cutover_authorization(  # noqa: C901
     calendar_capture_execution_ref: Mapping[str, Any] | None,
     calendar_authorization_basis: Mapping[str, Any],
     calendar_source_limitations: Sequence[str],
+    bootstrap_admission_intent_sha256: str,
+    factor_dependency_sha256: str,
+    fundamental_veto_subject_ref: Mapping[str, Any],
+    fundamental_operator_veto_ref: None,
+    fundamental_advisory_ref: Mapping[str, Any],
+    fundamental_advisory_authorized: bool,
     release_commit: str,
     release_tree: str,
     final_integration_commit: str,
@@ -1585,6 +1591,10 @@ def _seal_final_cutover_authorization(  # noqa: C901
         raise SystemPreconditionError(
             "prospective-adoption final authority requires null handoff tombstone"
         )
+    if fundamental_operator_veto_ref is not None:
+        raise SystemPreconditionError("final authority requires null Fundamental veto")
+    if fundamental_advisory_authorized is not True:
+        raise SystemPreconditionError("Fundamental advisory did not authorize production")
     ancestry: list[dict[str, Any]] = []
     for index, value in enumerate(ancestry_rows):
         row = dict(value)
@@ -1725,6 +1735,24 @@ def _seal_final_cutover_authorization(  # noqa: C901
             "calendar_authorization_basis": normalized_calendar_basis,
             "calendar_source_limitations": limitations,
             "calendar_policy_authorized": True,
+            "bootstrap_admission_intent_sha256": _sha(
+                bootstrap_admission_intent_sha256,
+                label="bootstrap_admission_intent_sha256",
+            ),
+            "factor_dependency_sha256": _sha(
+                factor_dependency_sha256,
+                label="factor_dependency_sha256",
+            ),
+            "fundamental_veto_subject_ref": validate_object_ref(
+                fundamental_veto_subject_ref,
+                label="fundamental_veto_subject_ref",
+            ),
+            "fundamental_operator_veto_ref": None,
+            "fundamental_advisory_ref": validate_object_ref(
+                fundamental_advisory_ref,
+                label="fundamental_advisory_ref",
+            ),
+            "fundamental_advisory_authorized": True,
             "release_commit": _git_oid(release_commit, label="release_commit"),
             "release_tree": _git_oid(release_tree, label="release_tree"),
             "final_integration_commit": _git_oid(
@@ -1886,6 +1914,12 @@ def build_final_cutover_authorization(  # noqa: C901
         calendar_capture_execution_ref=receipt_payload["calendar_capture_execution_ref"],
         calendar_authorization_basis=receipt_payload["calendar_authorization_basis"],
         calendar_source_limitations=receipt_payload["calendar_source_limitations"],
+        bootstrap_admission_intent_sha256=receipt_payload["bootstrap_admission_intent_sha256"],
+        factor_dependency_sha256=receipt_payload["factor_dependency_sha256"],
+        fundamental_veto_subject_ref=receipt_payload["fundamental_veto_subject_ref"],
+        fundamental_operator_veto_ref=receipt_payload["fundamental_operator_veto_ref"],
+        fundamental_advisory_ref=receipt_payload["fundamental_advisory_ref"],
+        fundamental_advisory_authorized=True,
         release_commit=release_commit,
         release_tree=release_tree,
         final_integration_commit=commit,
@@ -1909,6 +1943,7 @@ def validate_final_cutover_authorization(
         payload.get("final_build_authorized") is not True
         or payload.get("cas_authorized") is not True
         or payload.get("calendar_policy_authorized") is not True
+        or payload.get("fundamental_advisory_authorized") is not True
     ):
         raise SystemPreconditionError("final cutover authorization is not machine-authorized")
     rebuilt = _seal_final_cutover_authorization(
@@ -1928,6 +1963,12 @@ def validate_final_cutover_authorization(
         calendar_capture_execution_ref=payload["calendar_capture_execution_ref"],
         calendar_authorization_basis=payload["calendar_authorization_basis"],
         calendar_source_limitations=payload["calendar_source_limitations"],
+        bootstrap_admission_intent_sha256=payload["bootstrap_admission_intent_sha256"],
+        factor_dependency_sha256=payload["factor_dependency_sha256"],
+        fundamental_veto_subject_ref=payload["fundamental_veto_subject_ref"],
+        fundamental_operator_veto_ref=payload["fundamental_operator_veto_ref"],
+        fundamental_advisory_ref=payload["fundamental_advisory_ref"],
+        fundamental_advisory_authorized=payload["fundamental_advisory_authorized"],
         release_commit=payload["release_commit"],
         release_tree=payload["release_tree"],
         final_integration_commit=payload["final_integration_commit"],
@@ -2032,8 +2073,57 @@ def validate_final_cutover_authorization_closure(  # noqa: C901
         or payload["calendar_authorization_basis"]
         != receipt_payload["calendar_authorization_basis"]
         or payload["calendar_source_limitations"] != receipt_payload["calendar_source_limitations"]
+        or payload["bootstrap_admission_intent_sha256"]
+        != receipt_payload["bootstrap_admission_intent_sha256"]
+        or payload["factor_dependency_sha256"] != receipt_payload["factor_dependency_sha256"]
+        or payload["fundamental_veto_subject_ref"]
+        != receipt_payload["fundamental_veto_subject_ref"]
+        or payload["fundamental_operator_veto_ref"]
+        != receipt_payload["fundamental_operator_veto_ref"]
+        or payload["fundamental_advisory_ref"] != receipt_payload["fundamental_advisory_ref"]
+        or payload["fundamental_advisory_authorized"] is not True
     ):
         raise SystemPreconditionError("final authorization production receipt differs")
+    if receipt_payload["fundamental_operator_veto_ref"] is not None:
+        raise SystemPreconditionError("final authorization cannot carry Fundamental veto")
+    subject_ref = normalize_ref(
+        receipt_payload["fundamental_veto_subject_ref"],
+        "fundamental_veto_subject_ref",
+    )
+    advisory_ref = normalize_ref(
+        receipt_payload["fundamental_advisory_ref"],
+        "fundamental_advisory_ref",
+    )
+    fundamental_subject = dict(object_resolver(subject_ref))
+    fundamental_advisory = dict(object_resolver(advisory_ref))
+    if validation_mode == "PRE_CAS_CURRENT":
+        from quant_investor.system.fundamental_advisory import (
+            require_fundamental_proceed,
+            validate_fundamental_veto_subject,
+        )
+
+        fundamental_subject = validate_fundamental_veto_subject(fundamental_subject)
+        fundamental_advisory = require_fundamental_proceed(fundamental_advisory)
+    else:
+        from quant_investor.system.historical_activation import (
+            validate_initial_fundamental_advisory,
+            validate_initial_fundamental_veto_subject,
+        )
+
+        fundamental_subject = validate_initial_fundamental_veto_subject(fundamental_subject)
+        fundamental_advisory = validate_initial_fundamental_advisory(fundamental_advisory)
+    if (
+        exact_ref(fundamental_subject) != subject_ref
+        or exact_ref(fundamental_advisory) != advisory_ref
+        or fundamental_advisory["payload"]["veto_subject_ref"] != subject_ref
+        or fundamental_advisory["payload"]["operator_veto_ref"] is not None
+        or fundamental_advisory["payload"]["effective_action"] != "PROCEED"
+        or fundamental_advisory["payload"]["factor_dependency_sha256"]
+        != receipt_payload["factor_dependency_sha256"]
+        or fundamental_subject["payload"]["bootstrap_admission_intent_sha256"]
+        != receipt_payload["bootstrap_admission_intent_sha256"]
+    ):
+        raise SystemPreconditionError("final Fundamental advisory closure differs")
     calendar_refs = [
         payload["calendar_authority_policy_ref"],
         payload["calendar_compilation_ref"],

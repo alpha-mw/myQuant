@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 
 import numpy as np
@@ -7,6 +8,7 @@ import pandas as pd
 import pytest
 
 from quant_investor.contracts import (
+    ContractError,
     artifact_byte_sha256,
     canonical_json_bytes,
     seal_artifact,
@@ -24,6 +26,13 @@ from quant_investor.factors.governance import (
     validate_bootstrap_exception_evidence,
     validate_bootstrap_factor_set,
 )
+from quant_investor.factors.governance.bootstrap import (
+    BOOTSTRAP_REQUIRED_SOURCE_ROLES,
+    FactorSourceRole,
+    derive_active_required_source_roles,
+    required_source_roles_for_factor,
+)
+from quant_investor.factors.governance.implementations import installed_semantic_row
 
 STAMP = "2026-01-02T00:00:00Z"
 
@@ -146,6 +155,20 @@ def test_bootstrap_definitions_are_exact_two_plus_w75_control() -> None:
     assert by_id[BLEND_W75_CONTROL]["bootstrap_weight"] == "0.000000000000"
     assert all(row["direction"] == "HIGHER_IS_BETTER" for row in rows)
     assert all(row["producer_identity"] == "NOT_CLAIMED" for row in rows)
+    assert [role.value for role in FactorSourceRole] == [
+        "EXCHANGE_CALENDAR",
+        "MARKET",
+        "PIT_MEMBERSHIP",
+        "FUNDAMENTAL",
+    ]
+    assert list(BOOTSTRAP_REQUIRED_SOURCE_ROLES) == [
+        "EXCHANGE_CALENDAR",
+        "MARKET",
+        "PIT_MEMBERSHIP",
+    ]
+    assert all(
+        row["required_source_roles"] == list(BOOTSTRAP_REQUIRED_SOURCE_ROLES) for row in rows
+    )
     assert all(
         forbidden not in row
         for row in rows
@@ -189,6 +212,7 @@ def test_bootstrap_exception_evidence_binds_raw_shas_but_authorizes_nothing() ->
         assert row["code_sha256"] != artifact_byte_sha256(sources["code"])
         assert row["implementation_sha256"] == implementation_sha
         assert row["implementation_sha256"] != artifact_byte_sha256(sources["implementation"])
+        assert row["required_source_roles"] == list(BOOTSTRAP_REQUIRED_SOURCE_ROLES)
 
 
 def test_bootstrap_evidence_requires_locked_inner_source_roles() -> None:
@@ -226,6 +250,124 @@ def test_bootstrap_set_binds_evidence_but_never_activates() -> None:
     assert [row["factor_id"] for row in payload["factor_rows"]] == sorted(
         [BLEND_W80, LOW_DOLLAR_VOLUME]
     )
+    assert (
+        derive_active_required_source_roles(
+            factor_set,
+            implementation_rows=[
+                installed_semantic_row(BLEND_W80),
+                installed_semantic_row(LOW_DOLLAR_VOLUME),
+            ],
+        )
+        == BOOTSTRAP_REQUIRED_SOURCE_ROLES
+    )
+
+
+@pytest.mark.parametrize(
+    ("factor_id", "mutated_roles"),
+    [
+        (BLEND_W75_CONTROL, ["EXCHANGE_CALENDAR", "MARKET"]),
+        (
+            BLEND_W80,
+            ["EXCHANGE_CALENDAR", "MARKET", "PIT_MEMBERSHIP", "FUNDAMENTAL"],
+        ),
+        (LOW_DOLLAR_VOLUME, ["MARKET", "EXCHANGE_CALENDAR", "PIT_MEMBERSHIP"]),
+        (LOW_DOLLAR_VOLUME, ["EXCHANGE_CALENDAR", "MARKET", "UNKNOWN"]),
+        (
+            BLEND_W75_CONTROL,
+            ["EXCHANGE_CALENDAR", "FUNDAMENTAL", "MARKET", "PIT_MEMBERSHIP"],
+        ),
+    ],
+)
+def test_bootstrap_rejects_source_role_mutation_with_reused_identities(
+    factor_id: str,
+    mutated_roles: list[str],
+) -> None:
+    decision, sources, implementation_sha, _ = _evidence_inputs()
+    evidence = build_bootstrap_exception_evidence(
+        decision_source_bytes=decision,
+        source_artifacts=sources,
+        implementation_source_sha256=implementation_sha,
+        created_at=STAMP,
+    )
+    factor_set = build_bootstrap_factor_set(
+        bootstrap_exception_evidence=evidence,
+        created_at="2026-01-03T00:00:00Z",
+    )
+    payload = copy.deepcopy(factor_set["payload"])
+    target = next(row for row in payload["factor_definitions"] if row["factor_id"] == factor_id)
+    original_spec_id = target["spec_id"]
+    original_factor_set_sha = payload["factor_set_sha256"]
+    target["required_source_roles"] = mutated_roles
+    matching = next(
+        row
+        for row in [*payload["factor_rows"], *payload["control_rows"]]
+        if row["factor_id"] == target["factor_id"]
+    )
+    matching["required_source_roles"] = mutated_roles
+    assert target["spec_id"] == original_spec_id
+    assert payload["factor_set_sha256"] == original_factor_set_sha
+    with pytest.raises((ContractError, FactorGovernanceError)):
+        validate_bootstrap_factor_set(
+            seal_artifact(
+                "factor.bootstrap_set",
+                payload,
+                created_at=factor_set["created_at"],
+            )
+        )
+
+
+def test_source_dependencies_are_code_owned_and_w75_cannot_mutate() -> None:
+    for factor_id in (LOW_DOLLAR_VOLUME, BLEND_W80, BLEND_W75_CONTROL):
+        assert required_source_roles_for_factor(factor_id) == (
+            "EXCHANGE_CALENDAR",
+            "MARKET",
+            "PIT_MEMBERSHIP",
+        )
+    with pytest.raises(FactorGovernanceError, match="not installed"):
+        required_source_roles_for_factor("caller-supplied-factor")
+
+    definitions = bootstrap_factor_definitions()
+    w75 = next(row for row in definitions if row["factor_id"] == BLEND_W75_CONTROL)
+    old_spec_id = w75["spec_id"]
+    old_body = {
+        key: value for key, value in w75.items() if key not in {"spec_id", "required_source_roles"}
+    }
+    assert hashlib.sha256(canonical_json_bytes(old_body)).hexdigest() != old_spec_id
+
+
+@pytest.mark.parametrize(
+    "mutated_roles",
+    [
+        ["EXCHANGE_CALENDAR", "MARKET"],
+        ["EXCHANGE_CALENDAR", "FUNDAMENTAL", "MARKET", "PIT_MEMBERSHIP"],
+        ["MARKET", "EXCHANGE_CALENDAR", "PIT_MEMBERSHIP"],
+        ["EXCHANGE_CALENDAR", "MARKET", "PIT_MEMBERSHIP", "UNKNOWN"],
+    ],
+)
+def test_active_dependency_union_rejects_installed_role_mutation(
+    mutated_roles: list[str],
+) -> None:
+    decision, sources, implementation_sha, _ = _evidence_inputs()
+    evidence = build_bootstrap_exception_evidence(
+        decision_source_bytes=decision,
+        source_artifacts=sources,
+        implementation_source_sha256=implementation_sha,
+        created_at=STAMP,
+    )
+    factor_set = build_bootstrap_factor_set(
+        bootstrap_exception_evidence=evidence,
+        created_at="2026-01-03T00:00:00Z",
+    )
+    installed_rows = [
+        installed_semantic_row(BLEND_W80),
+        installed_semantic_row(LOW_DOLLAR_VOLUME),
+    ]
+    installed_rows[0]["required_source_roles"] = mutated_roles
+    with pytest.raises(FactorGovernanceError, match="semantic identity differs"):
+        derive_active_required_source_roles(
+            factor_set,
+            implementation_rows=installed_rows,
+        )
 
 
 def test_bootstrap_signal_helper_rejects_csv_and_amount_fallbacks() -> None:

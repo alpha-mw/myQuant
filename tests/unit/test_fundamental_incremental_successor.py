@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -27,6 +28,16 @@ from quant_investor.market.fundamental_incremental import (
     seal_support_plan,
     stage_successor_generation,
     validate_successor_provenance,
+)
+from quant_investor.market.fundamental_limits import (
+    FUNDAMENTAL_DAILY_REPLAY_MAX_CELLS,
+    FUNDAMENTAL_GENERIC_JSON_MAX_BYTES,
+    FUNDAMENTAL_GENERIC_REPLAY_MAX_CELLS,
+    FUNDAMENTAL_PARQUET_MAX_BYTES,
+    FUNDAMENTAL_PREDECESSOR_MANIFEST_MAX_BYTES,
+    FUNDAMENTAL_PREDECESSOR_MANIFEST_ROLE,
+    FundamentalSizePolicyViolation,
+    validate_fundamental_parquet_size_policy,
 )
 from quant_investor.market.fundamental_provider_contract import (
     canonical_json_sha256,
@@ -64,6 +75,207 @@ def _support_refs() -> dict[str, dict[str, str]]:
     return {
         name: {"path": f"sealed/{name}.json", "sha256": _sha(payload)}
         for name, payload in _support_bytes().items()
+    }
+
+
+def test_secure_support_read_enforces_role_boundary_and_distinct_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "sealed-predecessor-manifest.json"
+    payload = b'{"generation_id":"parent_v2"}\n'
+
+    class SealedFileset:
+        def __init__(self) -> None:
+            self.maximum_bytes: list[int] = []
+
+        def read_bytes(
+            self,
+            _path: Path,
+            *,
+            expected_sha256: str,
+            maximum_bytes: int,
+        ) -> bytes:
+            assert expected_sha256 == _sha(payload)
+            self.maximum_bytes.append(maximum_bytes)
+            return payload
+
+    sealed = SealedFileset()
+    observed_size = {"value": FUNDAMENTAL_PREDECESSOR_MANIFEST_MAX_BYTES}
+    monkeypatch.setattr(
+        incremental_module.os,
+        "lstat",
+        lambda _path: SimpleNamespace(st_size=observed_size["value"]),
+    )
+
+    assert (
+        incremental_module._successor_read_bytes(
+            path,
+            expected_sha256=_sha(payload),
+            sealed_fileset=sealed,
+            semantic_role=FUNDAMENTAL_PREDECESSOR_MANIFEST_ROLE,
+            maximum_bytes=FUNDAMENTAL_PREDECESSOR_MANIFEST_MAX_BYTES,
+        )
+        == payload
+    )
+    assert sealed.maximum_bytes == [FUNDAMENTAL_PREDECESSOR_MANIFEST_MAX_BYTES]
+
+    observed_size["value"] = FUNDAMENTAL_PREDECESSOR_MANIFEST_MAX_BYTES + 1
+    with pytest.raises(
+        SafeSuccessorError,
+        match="SUPPORT_REFERENCE_SIZE_POLICY_VIOLATION",
+    ):
+        incremental_module._successor_read_bytes(
+            path,
+            expected_sha256=_sha(payload),
+            sealed_fileset=sealed,
+            semantic_role=FUNDAMENTAL_PREDECESSOR_MANIFEST_ROLE,
+            maximum_bytes=FUNDAMENTAL_PREDECESSOR_MANIFEST_MAX_BYTES,
+        )
+
+    observed_size["value"] = FUNDAMENTAL_GENERIC_JSON_MAX_BYTES + 1
+    with pytest.raises(
+        SafeSuccessorError,
+        match="SUPPORT_REFERENCE_SIZE_POLICY_VIOLATION",
+    ):
+        incremental_module._successor_read_bytes(
+            path,
+            expected_sha256=_sha(payload),
+            sealed_fileset=sealed,
+            semantic_role="support_manifest",
+            maximum_bytes=FUNDAMENTAL_GENERIC_JSON_MAX_BYTES,
+        )
+
+    with pytest.raises(
+        SafeSuccessorError,
+        match="SUCCESSOR_SIZE_POLICY_INVALID",
+    ):
+        incremental_module._successor_read_bytes(
+            path,
+            expected_sha256=_sha(payload),
+            sealed_fileset=sealed,
+            semantic_role="support_manifest",
+            maximum_bytes=FUNDAMENTAL_PREDECESSOR_MANIFEST_MAX_BYTES,
+        )
+
+    monkeypatch.undo()
+    path.write_bytes(payload)
+    with pytest.raises(SafeSuccessorError) as failure:
+        incremental_module._successor_read_bytes(
+            path,
+            expected_sha256="0" * 64,
+            sealed_fileset=None,
+            semantic_role="predecessor_pointer",
+            maximum_bytes=FUNDAMENTAL_GENERIC_JSON_MAX_BYTES,
+        )
+    assert failure.value.code == "SUCCESSOR_FILE_HASH_MISMATCH"
+
+
+def test_fundamental_parquet_size_policy_is_exact_and_role_closed() -> None:
+    assert FUNDAMENTAL_PARQUET_MAX_BYTES == 512 * 1024 * 1024
+    validate_fundamental_parquet_size_policy(
+        table_role="fundamental_daily",
+        observed_bytes=FUNDAMENTAL_PARQUET_MAX_BYTES,
+    )
+    with pytest.raises(FundamentalSizePolicyViolation):
+        validate_fundamental_parquet_size_policy(
+            table_role="fundamental_daily",
+            observed_bytes=FUNDAMENTAL_PARQUET_MAX_BYTES + 1,
+        )
+    with pytest.raises(ValueError, match="table role"):
+        validate_fundamental_parquet_size_policy(
+            table_role="provider_evidence",
+            observed_bytes=1,
+        )
+
+
+def test_sealed_fundamental_parquet_uses_512mib_without_eager_read(
+    tmp_path: Path,
+) -> None:
+    observed: dict[str, int] = {}
+
+    class SealedFileset:
+        @contextmanager
+        def open_parquet(
+            self,
+            _path: Path,
+            *,
+            expected_sha256: str,
+            maximum_bytes: int,
+            decoded_reservation_bytes: int,
+        ):
+            assert expected_sha256 == "0" * 64
+            observed["maximum_bytes"] = maximum_bytes
+            observed["decoded_reservation_bytes"] = decoded_reservation_bytes
+            yield object()
+
+    with successor_module._successor_open_parquet(
+        tmp_path / "fundamental_daily.parquet",
+        table_role="fundamental_daily",
+        expected_sha256="0" * 64,
+        sealed_fileset=SealedFileset(),
+    ):
+        pass
+    assert observed == {
+        "maximum_bytes": FUNDAMENTAL_PARQUET_MAX_BYTES,
+        "decoded_reservation_bytes": successor_module.SUCCESSOR_REPLAY_BATCH_BYTES,
+    }
+    with pytest.raises(SafeSuccessorError, match="SUCCESSOR_PARQUET_ROLE_INVALID"):
+        with successor_module._successor_open_parquet(
+            tmp_path / "provider_evidence.parquet",
+            table_role="provider_evidence",
+            expected_sha256="0" * 64,
+            sealed_fileset=SealedFileset(),
+        ):
+            pass
+
+
+@pytest.mark.parametrize(
+    ("table_role", "rows", "columns", "limit"),
+    [
+        ("fundamental_daily", 1_000_000, 256, FUNDAMENTAL_DAILY_REPLAY_MAX_CELLS),
+        (
+            "fundamental_period",
+            390_625,
+            256,
+            FUNDAMENTAL_GENERIC_REPLAY_MAX_CELLS,
+        ),
+    ],
+)
+def test_fundamental_table_cell_limits_are_role_specific_and_inclusive(
+    table_role: str,
+    rows: int,
+    columns: int,
+    limit: int,
+) -> None:
+    parquet = SimpleNamespace(
+        metadata=SimpleNamespace(num_rows=rows),
+        schema_arrow=SimpleNamespace(names=[f"c{index}" for index in range(columns)]),
+        num_row_groups=0,
+    )
+    observed_rows, observed_columns = successor_module._bounded_parquet_metadata(
+        parquet,
+        label=f"{table_role}.parquet",
+        table_role=table_role,
+    )
+    assert observed_rows == rows
+    assert len(observed_columns) == columns
+    assert rows * columns == limit
+
+    parquet.metadata.num_rows = rows + 1
+    with pytest.raises(SafeSuccessorError) as failure:
+        successor_module._bounded_parquet_metadata(
+            parquet,
+            label=f"{table_role}.parquet",
+            table_role=table_role,
+        )
+    assert failure.value.code == "SUCCESSOR_PARQUET_RESOURCE_BOUND"
+    assert failure.value.details == {
+        "table_role": table_role,
+        "observed_rows": rows + 1,
+        "observed_columns": columns,
+        "observed_cells": (rows + 1) * columns,
+        "cell_limit": limit,
     }
 
 
@@ -1776,7 +1988,8 @@ def test_sealed_descriptor_system_errors_are_not_relabelled(
 
     with pytest.raises(error_type, match="governed descriptor rejection"):
         with successor_module._successor_open_parquet(
-            tmp_path / "unused.parquet",
+            tmp_path / "fundamental_daily.parquet",
+            table_role="fundamental_daily",
             expected_sha256="0" * 64,
             sealed_fileset=RejectingFileset(),
         ):

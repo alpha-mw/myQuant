@@ -31,16 +31,25 @@ _SHA_RE: Final = re.compile(r"^[0-9a-f]{64}$")
 _KIND_RE: Final = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
 
 INITIAL_PRODUCTION_RECEIPT_CONTRACT_SHA256: Final = (
-    "8242ab01dbe9bd3b939d388e198c77edeee4d3f0b74eba7d392e70d7343a48a0"
+    "68d435900214aa34e2793d012adaaf2da93243ce45d7d4ecd864006e8083516c"
 )
 INITIAL_FINAL_AUTHORIZATION_CONTRACT_SHA256: Final = (
-    "621c315342a2906134a6a4e36185aa8fbac0669f2d6eb3533b1c2dd04baf7363"
+    "be1088a3239033dc2d18c1a1dd98f38af8e63c69c74c1f4f94741c94a706640b"
 )
 INITIAL_ACTIVATION_AUTHORIZATION_CONTRACT_SHA256: Final = (
-    "ad0949a37faaa4d6abadb465fe6b5d146fb3d4347df0919b731ac9fe870ab0e5"
+    "cdf9b7b3b390b1f7267a6f829efbbebedabfcab6db43eb6e2cbb16f14db84e9a"
 )
 INITIAL_ACTIVATION_PREPARED_CONTRACT_SHA256: Final = (
-    "48d4ab79ab58a76444aa7df431943f8ac56e62d6d573bda27c760940105277d8"
+    "353daaaa56b15e26a09ad00196a27e019771f2d0402292645de363cac7534005"
+)
+INITIAL_FUNDAMENTAL_VETO_SUBJECT_CONTRACT_SHA256: Final = (
+    "f69ed8077158661caf95b95b0a8c3f45f5aa3d4f295c6c72aaa1b9d3c993eb2f"
+)
+INITIAL_FUNDAMENTAL_OPERATOR_VETO_CONTRACT_SHA256: Final = (
+    "e7adb34a58b6030bf3d43d67bb946b2ad49174c2f72e516b40e40e7fadd2ff31"
+)
+INITIAL_FUNDAMENTAL_ADVISORY_CONTRACT_SHA256: Final = (
+    "9d95c19096d4ec42ed4971dd9f6e01a5364eddc0b662d3d33d1982d47def0f46"
 )
 INITIAL_PERMANENT_MARKER_CONTRACT_SHA256: Final = (
     "7ddfeaf9b7e675a25a2c1486f9607e5b68a13519a34ec52f60c9948695fc2b40"
@@ -67,6 +76,15 @@ INITIAL_RELEASE_INSTALL_EVIDENCE_CONTRACT_SHA256: Final = (
 # make an authentic initial graph unreadable.
 INITIAL_ASSEMBLER_MODULE_PATH: Final = "quant_investor/factors/governance/production.py"
 INITIAL_HISTORICAL_SOURCE_MAX_BYTES: Final = 1024 * 1024 * 1024 * 1024
+INITIAL_FUNDAMENTAL_GENERIC_JSON_MAX_BYTES: Final = 64 * 1024 * 1024
+INITIAL_FUNDAMENTAL_PREDECESSOR_MANIFEST_MAX_BYTES: Final = 128 * 1024 * 1024
+INITIAL_FUNDAMENTAL_PARQUET_MAX_BYTES: Final = 512 * 1024 * 1024
+INITIAL_FUNDAMENTAL_GENERIC_REPLAY_MAX_CELLS: Final = 100_000_000
+INITIAL_FUNDAMENTAL_DAILY_REPLAY_MAX_CELLS: Final = 256_000_000
+INITIAL_FACTOR_DEPENDENCY_SHA256: Final = (
+    "c9f3654a8a809fd000cf1a654cc51edb1f3c4a3f086d079e596d766709ba3a8c"
+)
+_INITIAL_FACTOR_SOURCE_ROLES: Final = ["EXCHANGE_CALENDAR", "MARKET", "PIT_MEMBERSHIP"]
 INITIAL_SOURCE_FORMAT_MEDIA_TYPES: Final = MappingProxyType(
     {
         "BINARY": ("application/octet-stream", ()),
@@ -167,6 +185,7 @@ INITIAL_PRODUCTION_RECEIPT_FIELDS: Final = frozenset(
         "production_bootstrap_receipt_id",
         "state",
         "bootstrap_operator_request_ref",
+        "bootstrap_admission_intent_sha256",
         "source_root_id",
         "input_source_rows",
         "deployed_release_ref",
@@ -193,10 +212,93 @@ INITIAL_PRODUCTION_RECEIPT_FIELDS: Final = frozenset(
         "automation_semantic_sha256",
         "source_blockers",
         "fundamental_machine_states",
+        "factor_dependency_rows",
+        "factor_dependency_sha256",
+        "fundamental_veto_subject_ref",
+        "fundamental_operator_veto_ref",
+        "fundamental_advisory_ref",
         "signal_statistics",
         "signal_statistics_sha256",
         "assembler_module_path",
         "assembler_code_sha256",
+    }
+)
+INITIAL_FUNDAMENTAL_VETO_SUBJECT_FIELDS: Final = frozenset(
+    {
+        "veto_subject_id",
+        "state",
+        "bootstrap_admission_intent_sha256",
+        "deployed_release_ref",
+        "release_code_manifest_sha256",
+        "system_as_of_date",
+        "calendar_compilation_ref",
+        "exchange_calendar_ref",
+        "current_market_pointer_ref",
+        "current_pit_pointer_ref",
+        "current_pit_membership_ref",
+        "fundamental_pointer_ref",
+        "fundamental_manifest_ref",
+        "fundamental_table_refs",
+        "fundamental_evidence_refs",
+        "fundamental_provenance_binding_sha256",
+        "fundamental_target_bindings_sha256",
+        "fundamental_snapshot_cutoff_date",
+        "factor_set_sha256",
+        "factor_dependency_rows",
+        "factor_dependency_sha256",
+    }
+)
+INITIAL_FUNDAMENTAL_OPERATOR_VETO_FIELDS: Final = frozenset(
+    {
+        "veto_id",
+        "state",
+        "veto_subject_ref",
+        "reason_codes",
+        "issued_at",
+        "actor_uid",
+        "os_actor",
+        "human_signature_claimed",
+        "system_activation_authorized",
+        "factor_activation_authorized",
+        "portfolio_authority",
+        "strategy_record_authority",
+        "broker_authority",
+        "order_authority",
+        "trade_authority",
+        "funds_transfer_authority",
+    }
+)
+INITIAL_FUNDAMENTAL_ADVISORY_FIELDS: Final = frozenset(
+    {
+        "fundamental_advisory_id",
+        "state",
+        "veto_subject_ref",
+        "operator_veto_ref",
+        "integrity_status",
+        "required_by_active_factor_set",
+        "system_as_of_date",
+        "fundamental_snapshot_cutoff_date",
+        "calendar_age_days",
+        "open_session_age",
+        "latest_admitted_available_at",
+        "last_refresh_basis",
+        "disclosure_check",
+        "freshness_policy",
+        "default_action",
+        "operator_veto_present",
+        "effective_action",
+        "factor_dependency_rows",
+        "factor_dependency_sha256",
+        "fundamental_machine_states",
+        "source_limitations",
+        "generic_json_max_bytes",
+        "predecessor_manifest_max_bytes",
+        "fundamental_parquet_max_bytes",
+        "generic_replay_max_cells",
+        "daily_replay_max_cells",
+        "fundamental_table_source_rows",
+        "predecessor_manifest_source_ref",
+        "ordinary_json_source_refs",
     }
 )
 INITIAL_FINAL_AUTHORIZATION_FIELDS: Final = frozenset(
@@ -219,6 +321,12 @@ INITIAL_FINAL_AUTHORIZATION_FIELDS: Final = frozenset(
         "calendar_authorization_basis",
         "calendar_source_limitations",
         "calendar_policy_authorized",
+        "bootstrap_admission_intent_sha256",
+        "factor_dependency_sha256",
+        "fundamental_veto_subject_ref",
+        "fundamental_operator_veto_ref",
+        "fundamental_advisory_ref",
+        "fundamental_advisory_authorized",
         "release_commit",
         "release_tree",
         "final_integration_commit",
@@ -248,6 +356,12 @@ INITIAL_ACTIVATION_AUTHORIZATION_FIELDS: Final = frozenset(
         "calendar_capture_execution_ref",
         "calendar_authorization_basis",
         "calendar_source_limitations",
+        "bootstrap_admission_intent_sha256",
+        "factor_dependency_sha256",
+        "fundamental_veto_subject_ref",
+        "fundamental_operator_veto_ref",
+        "fundamental_advisory_ref",
+        "fundamental_advisory_authorized",
         "target_active_pointer",
         "target_active_pointer_ref",
         "target_active_pointer_path",
@@ -267,6 +381,11 @@ INITIAL_ACTIVATION_PREPARED_FIELDS: Final = frozenset(
         "activation_authorization_ref",
         "final_cutover_authorization_ref",
         "migration_receipt_ref",
+        "bootstrap_admission_intent_sha256",
+        "factor_dependency_sha256",
+        "fundamental_veto_subject_ref",
+        "fundamental_operator_veto_ref",
+        "fundamental_advisory_ref",
         "target_active_pointer",
         "target_active_pointer_ref",
         "permanent_marker_ref",
@@ -462,6 +581,18 @@ def _timestamp(value: Any, *, label: str) -> str:
         raise SystemContractError(f"{label} is not canonical UTC") from exc
     if parsed.strftime("%Y-%m-%dT%H:%M:%SZ") != value:
         raise SystemContractError(f"{label} is not canonical UTC")
+    return value
+
+
+def _iso_date(value: Any, *, label: str) -> str:
+    if type(value) is not str:
+        raise SystemContractError(f"{label} is not an ISO date")
+    try:
+        parsed = datetime.strptime(value, "%Y-%m-%d")
+    except ValueError as exc:
+        raise SystemContractError(f"{label} is not an ISO date") from exc
+    if parsed.strftime("%Y-%m-%d") != value:
+        raise SystemContractError(f"{label} is not an ISO date")
     return value
 
 
@@ -1073,6 +1204,272 @@ def validate_initial_release_install_gate_binding(
         raise SystemPreconditionError("historical release gate output differs")
 
 
+def validate_initial_factor_dependency_rows(value: Any) -> list[dict[str, Any]]:
+    """Authenticate the frozen dependency projection without owning Factor identities."""
+
+    if type(value) is not list or len(value) != 3:
+        raise SystemContractError("historical Factor dependency rows differ")
+    rows: list[dict[str, Any]] = []
+    for raw in value:
+        if type(raw) is not dict or set(raw) != {"factor_id", "required_source_roles"}:
+            raise SystemContractError("historical Factor dependency row fields differ")
+        factor_id = raw["factor_id"]
+        roles = raw["required_source_roles"]
+        if (
+            type(factor_id) is not str
+            or _KIND_RE.fullmatch(factor_id) is None
+            or roles != _INITIAL_FACTOR_SOURCE_ROLES
+        ):
+            raise SystemContractError("historical Factor dependency row differs")
+        rows.append({"factor_id": factor_id, "required_source_roles": list(roles)})
+    if rows != sorted(rows, key=lambda row: row["factor_id"].encode("utf-8")) or len(
+        {row["factor_id"] for row in rows}
+    ) != len(rows):
+        raise SystemContractError("historical Factor dependency rows are not sorted/unique")
+    observed_sha = hashlib.sha256(canonical_json_bytes(rows)).hexdigest()
+    if observed_sha != INITIAL_FACTOR_DEPENDENCY_SHA256:
+        raise SystemContractError("historical Factor dependency identity differs")
+    return rows
+
+
+def _initial_factor_dependency_sha256(value: Any) -> str:
+    validate_initial_factor_dependency_rows(value)
+    return INITIAL_FACTOR_DEPENDENCY_SHA256
+
+
+def validate_initial_fundamental_veto_subject(
+    document: Mapping[str, Any] | bytes,
+) -> dict[str, Any]:
+    artifact = _artifact(
+        document,
+        kind="system.fundamental_veto_subject",
+        contract_sha256=INITIAL_FUNDAMENTAL_VETO_SUBJECT_CONTRACT_SHA256,
+        identity_field="veto_subject_id",
+        payload_fields=INITIAL_FUNDAMENTAL_VETO_SUBJECT_FIELDS,
+    )
+    payload = artifact["payload"]
+    if payload["state"] != "VERIFIED":
+        raise SystemPreconditionError("historical Fundamental veto subject is not VERIFIED")
+    for field in (
+        "bootstrap_admission_intent_sha256",
+        "release_code_manifest_sha256",
+        "fundamental_provenance_binding_sha256",
+        "fundamental_target_bindings_sha256",
+        "factor_set_sha256",
+    ):
+        _sha(payload[field], label=f"historical {field}")
+    dependency_sha = _initial_factor_dependency_sha256(payload["factor_dependency_rows"])
+    if payload["factor_dependency_sha256"] != dependency_sha:
+        raise SystemContractError("historical Fundamental subject dependency SHA differs")
+    for field in (
+        "deployed_release_ref",
+        "calendar_compilation_ref",
+        "exchange_calendar_ref",
+        "current_market_pointer_ref",
+        "current_pit_pointer_ref",
+        "current_pit_membership_ref",
+        "fundamental_pointer_ref",
+        "fundamental_manifest_ref",
+    ):
+        _initial_ref(payload[field], label=f"historical {field}")
+    for field in ("fundamental_table_refs", "fundamental_evidence_refs"):
+        rows = payload[field]
+        if type(rows) is not list or not rows:
+            raise SystemContractError(f"historical {field} is absent")
+        refs = [_initial_ref(row, label=f"historical {field}") for row in rows]
+        if refs != sorted(
+            refs,
+            key=lambda row: tuple(
+                row[name]
+                for name in (
+                    "kind",
+                    "contract_sha256",
+                    "artifact_id",
+                    "semantic_sha256",
+                    "byte_sha256",
+                )
+            ),
+        ):
+            raise SystemContractError(f"historical {field} is not sorted")
+    _iso_date(payload["system_as_of_date"], label="historical system_as_of_date")
+    _iso_date(
+        payload["fundamental_snapshot_cutoff_date"],
+        label="historical fundamental_snapshot_cutoff_date",
+    )
+    body = {key: payload[key] for key in sorted(payload) if key != "veto_subject_id"}
+    expected = (
+        "fundamental-veto-subject-"
+        + hashlib.sha256(
+            canonical_json_bytes({"domain": "myquant-fundamental-veto-subject", "payload": body})
+        ).hexdigest()
+    )
+    if payload["veto_subject_id"] != expected:
+        raise SystemContractError("historical Fundamental veto subject identity differs")
+    return artifact
+
+
+def validate_initial_fundamental_operator_veto(
+    document: Mapping[str, Any] | bytes,
+) -> dict[str, Any]:
+    artifact = _artifact(
+        document,
+        kind="system.fundamental_operator_veto",
+        contract_sha256=INITIAL_FUNDAMENTAL_OPERATOR_VETO_CONTRACT_SHA256,
+        identity_field="veto_id",
+        payload_fields=INITIAL_FUNDAMENTAL_OPERATOR_VETO_FIELDS,
+    )
+    payload = artifact["payload"]
+    if payload["state"] != "VETO":
+        raise SystemPreconditionError("historical Fundamental veto state differs")
+    _initial_ref(payload["veto_subject_ref"], label="historical veto_subject_ref")
+    _timestamp(payload["issued_at"], label="historical veto issued_at")
+    if (
+        type(payload["actor_uid"]) is not int
+        or payload["actor_uid"] < 0
+        or payload["os_actor"] != f"uid:{payload['actor_uid']}"
+        or any(
+            payload[field] is not False
+            for field in (
+                "human_signature_claimed",
+                "system_activation_authorized",
+                "factor_activation_authorized",
+                "portfolio_authority",
+                "strategy_record_authority",
+                "broker_authority",
+                "order_authority",
+                "trade_authority",
+                "funds_transfer_authority",
+            )
+        )
+    ):
+        raise SystemContractError("historical Fundamental veto authority differs")
+    body = {key: payload[key] for key in sorted(payload) if key != "veto_id"}
+    expected = (
+        "fundamental-veto-"
+        + hashlib.sha256(
+            canonical_json_bytes({"domain": "myquant-fundamental-operator-veto", "payload": body})
+        ).hexdigest()
+    )
+    if payload["veto_id"] != expected:
+        raise SystemContractError("historical Fundamental veto identity differs")
+    return artifact
+
+
+def validate_initial_fundamental_advisory(  # noqa: C901
+    document: Mapping[str, Any] | bytes,
+) -> dict[str, Any]:
+    artifact = _artifact(
+        document,
+        kind="system.fundamental_advisory_evidence",
+        contract_sha256=INITIAL_FUNDAMENTAL_ADVISORY_CONTRACT_SHA256,
+        identity_field="fundamental_advisory_id",
+        payload_fields=INITIAL_FUNDAMENTAL_ADVISORY_FIELDS,
+    )
+    payload = artifact["payload"]
+    if (
+        payload["state"] != "VERIFIED"
+        or payload["integrity_status"] != "VERIFIED"
+        or payload["required_by_active_factor_set"] is not False
+        or payload["operator_veto_ref"] is not None
+        or payload["operator_veto_present"] is not False
+        or payload["default_action"] != "PROCEED"
+        or payload["effective_action"] != "PROCEED"
+        or payload["freshness_policy"] != "ADVISORY_NO_FIXED_MAXIMUM"
+        or payload["last_refresh_basis"] != "SNAPSHOT_CUTOFF_DATE"
+        or payload["disclosure_check"] != "PASS"
+    ):
+        raise SystemPreconditionError("historical Fundamental advisory state differs")
+    _initial_ref(payload["veto_subject_ref"], label="historical veto_subject_ref")
+    system_date = _iso_date(payload["system_as_of_date"], label="historical system date")
+    fundamental_date = _iso_date(
+        payload["fundamental_snapshot_cutoff_date"], label="historical Fundamental date"
+    )
+    _iso_date(
+        payload["latest_admitted_available_at"],
+        label="historical latest admitted available_at",
+    )
+    expected_days = (
+        datetime.strptime(system_date, "%Y-%m-%d") - datetime.strptime(fundamental_date, "%Y-%m-%d")
+    ).days
+    if (
+        expected_days < 0
+        or payload["calendar_age_days"] != expected_days
+        or type(payload["open_session_age"]) is not int
+        or payload["open_session_age"] < 0
+    ):
+        raise SystemContractError("historical Fundamental advisory age differs")
+    dependency_sha = _initial_factor_dependency_sha256(payload["factor_dependency_rows"])
+    if payload["factor_dependency_sha256"] != dependency_sha:
+        raise SystemContractError("historical Fundamental advisory dependency SHA differs")
+    if (
+        payload["generic_json_max_bytes"] != INITIAL_FUNDAMENTAL_GENERIC_JSON_MAX_BYTES
+        or payload["predecessor_manifest_max_bytes"]
+        != INITIAL_FUNDAMENTAL_PREDECESSOR_MANIFEST_MAX_BYTES
+        or payload["fundamental_parquet_max_bytes"] != INITIAL_FUNDAMENTAL_PARQUET_MAX_BYTES
+        or payload["generic_replay_max_cells"] != INITIAL_FUNDAMENTAL_GENERIC_REPLAY_MAX_CELLS
+        or payload["daily_replay_max_cells"] != INITIAL_FUNDAMENTAL_DAILY_REPLAY_MAX_CELLS
+    ):
+        raise SystemContractError("historical Fundamental advisory size policy differs")
+    _initial_ref(
+        payload["predecessor_manifest_source_ref"],
+        label="historical predecessor_manifest_source_ref",
+    )
+    ordinary = payload["ordinary_json_source_refs"]
+    if type(ordinary) is not list:
+        raise SystemContractError("historical ordinary JSON source refs are invalid")
+    for row in ordinary:
+        _initial_ref(row, label="historical ordinary JSON source ref")
+    table_rows = payload["fundamental_table_source_rows"]
+    expected_names = [
+        "fundamental_daily",
+        "fundamental_period",
+        "fundamental_quarantine",
+    ]
+    if (
+        type(table_rows) is not list
+        or len(table_rows) != 3
+        or [row.get("table_name") if type(row) is dict else None for row in table_rows]
+        != expected_names
+    ):
+        raise SystemContractError("historical Fundamental table roles differ")
+    for row in table_rows:
+        if set(row) != {
+            "table_name",
+            "source_ref",
+            "row_count",
+            "column_count",
+            "observed_cells",
+            "cell_limit",
+        }:
+            raise SystemContractError("historical Fundamental table row fields differ")
+        _initial_ref(row["source_ref"], label="historical Fundamental table source ref")
+        expected_limit = (
+            INITIAL_FUNDAMENTAL_DAILY_REPLAY_MAX_CELLS
+            if row["table_name"] == "fundamental_daily"
+            else INITIAL_FUNDAMENTAL_GENERIC_REPLAY_MAX_CELLS
+        )
+        if (
+            type(row["row_count"]) is not int
+            or row["row_count"] < 0
+            or type(row["column_count"]) is not int
+            or row["column_count"] < 0
+            or row["observed_cells"] != row["row_count"] * row["column_count"]
+            or row["cell_limit"] != expected_limit
+            or row["observed_cells"] > expected_limit
+        ):
+            raise SystemContractError("historical Fundamental table cell policy differs")
+    body = {key: payload[key] for key in sorted(payload) if key != "fundamental_advisory_id"}
+    expected = (
+        "fundamental-advisory-"
+        + hashlib.sha256(
+            canonical_json_bytes({"domain": "myquant-fundamental-advisory", "payload": body})
+        ).hexdigest()
+    )
+    if payload["fundamental_advisory_id"] != expected:
+        raise SystemContractError("historical Fundamental advisory identity differs")
+    return artifact
+
+
 def validate_initial_production_receipt(document: Mapping[str, Any] | bytes) -> dict[str, Any]:
     artifact = _artifact(
         document,
@@ -1088,6 +1485,24 @@ def validate_initial_production_receipt(document: Mapping[str, Any] | bytes) -> 
     expected = "production-bootstrap-" + hashlib.sha256(canonical_json_bytes(body)).hexdigest()
     if payload["state"] != "VERIFIED" or payload["production_bootstrap_receipt_id"] != expected:
         raise SystemPreconditionError("historical production receipt is not VERIFIED")
+    dependency_sha = _initial_factor_dependency_sha256(payload["factor_dependency_rows"])
+    if (
+        payload["factor_dependency_sha256"] != dependency_sha
+        or payload["fundamental_operator_veto_ref"] is not None
+    ):
+        raise SystemPreconditionError("historical production Fundamental authority differs")
+    _sha(
+        payload["bootstrap_admission_intent_sha256"],
+        label="historical bootstrap_admission_intent_sha256",
+    )
+    _initial_ref(
+        payload["fundamental_veto_subject_ref"],
+        label="historical fundamental_veto_subject_ref",
+    )
+    _initial_ref(
+        payload["fundamental_advisory_ref"],
+        label="historical fundamental_advisory_ref",
+    )
     return artifact
 
 
@@ -1105,10 +1520,16 @@ def validate_initial_final_authorization(
     if (
         payload["state"] != "AUTHORIZED"
         or payload["calendar_policy_authorized"] is not True
+        or payload["fundamental_advisory_authorized"] is not True
         or payload["final_build_authorized"] is not True
         or payload["cas_authorized"] is not True
+        or payload["fundamental_operator_veto_ref"] is not None
     ):
         raise SystemPreconditionError("historical final authorization is not authorized")
+    for field in ("bootstrap_admission_intent_sha256", "factor_dependency_sha256"):
+        _sha(payload[field], label=f"historical {field}")
+    for field in ("fundamental_veto_subject_ref", "fundamental_advisory_ref"):
+        _initial_ref(payload[field], label=f"historical {field}")
     return artifact
 
 
@@ -1157,8 +1578,17 @@ def validate_initial_activation_authorization(
     )
     body = dict(artifact["payload"])
     identity = body.pop("authorization_id")
-    if body["state"] != "AUTHORIZED" or identity != _activation_identity(body):
+    if (
+        body["state"] != "AUTHORIZED"
+        or body["fundamental_advisory_authorized"] is not True
+        or body["fundamental_operator_veto_ref"] is not None
+        or identity != _activation_identity(body)
+    ):
         raise SystemPreconditionError("historical activation authorization is invalid")
+    for field in ("bootstrap_admission_intent_sha256", "factor_dependency_sha256"):
+        _sha(body[field], label=f"historical activation {field}")
+    for field in ("fundamental_veto_subject_ref", "fundamental_advisory_ref"):
+        _initial_ref(body[field], label=f"historical activation {field}")
     return artifact
 
 
@@ -1176,6 +1606,12 @@ def validate_initial_activation_prepared(
     identity = body.pop("transaction_id")
     if body["state"] != "PREPARED" or identity != _prepared_identity(body):
         raise SystemPreconditionError("historical prepared transaction is invalid")
+    if body["fundamental_operator_veto_ref"] is not None:
+        raise SystemPreconditionError("historical prepared transaction carries a veto")
+    for field in ("bootstrap_admission_intent_sha256", "factor_dependency_sha256"):
+        _sha(body[field], label=f"historical prepared {field}")
+    for field in ("fundamental_veto_subject_ref", "fundamental_advisory_ref"):
+        _initial_ref(body[field], label=f"historical prepared {field}")
     return artifact
 
 
@@ -1292,6 +1728,12 @@ def validate_initial_activation_bundle(
         "calendar_capture_execution_ref": final_payload["calendar_capture_execution_ref"],
         "calendar_authorization_basis": final_payload["calendar_authorization_basis"],
         "calendar_source_limitations": final_payload["calendar_source_limitations"],
+        "bootstrap_admission_intent_sha256": final_payload["bootstrap_admission_intent_sha256"],
+        "factor_dependency_sha256": final_payload["factor_dependency_sha256"],
+        "fundamental_veto_subject_ref": final_payload["fundamental_veto_subject_ref"],
+        "fundamental_operator_veto_ref": None,
+        "fundamental_advisory_ref": final_payload["fundamental_advisory_ref"],
+        "fundamental_advisory_authorized": True,
         "target_active_pointer": pointer,
         "target_active_pointer_ref": pointer_ref,
         "target_active_pointer_path": "results/system/_active.json",
@@ -1329,6 +1771,11 @@ def validate_initial_activation_bundle(
         "activation_authorization_ref": authorization_ref,
         "final_cutover_authorization_ref": final_ref,
         "migration_receipt_ref": receipt_ref,
+        "bootstrap_admission_intent_sha256": auth_payload["bootstrap_admission_intent_sha256"],
+        "factor_dependency_sha256": auth_payload["factor_dependency_sha256"],
+        "fundamental_veto_subject_ref": auth_payload["fundamental_veto_subject_ref"],
+        "fundamental_operator_veto_ref": None,
+        "fundamental_advisory_ref": auth_payload["fundamental_advisory_ref"],
         "target_active_pointer": pointer,
         "target_active_pointer_ref": pointer_ref,
         "permanent_marker_ref": marker_ref,
@@ -1355,6 +1802,15 @@ __all__ = [
     "INITIAL_CUTOVER_GATE_EVIDENCE_CONTRACT_SHA256",
     "INITIAL_FINAL_PREFLIGHT_GATES",
     "INITIAL_FINAL_AUTHORIZATION_CONTRACT_SHA256",
+    "INITIAL_FACTOR_DEPENDENCY_SHA256",
+    "INITIAL_FUNDAMENTAL_ADVISORY_CONTRACT_SHA256",
+    "INITIAL_FUNDAMENTAL_OPERATOR_VETO_CONTRACT_SHA256",
+    "INITIAL_FUNDAMENTAL_PARQUET_MAX_BYTES",
+    "INITIAL_FUNDAMENTAL_GENERIC_REPLAY_MAX_CELLS",
+    "INITIAL_FUNDAMENTAL_DAILY_REPLAY_MAX_CELLS",
+    "INITIAL_FUNDAMENTAL_PREDECESSOR_MANIFEST_MAX_BYTES",
+    "INITIAL_FUNDAMENTAL_GENERIC_JSON_MAX_BYTES",
+    "INITIAL_FUNDAMENTAL_VETO_SUBJECT_CONTRACT_SHA256",
     "INITIAL_GATE_RUNNER_ID",
     "INITIAL_LEGACY_DISPOSITION_CONTRACT_SHA256",
     "INITIAL_MAIN_CHECKOUT_ADOPTION_CONTRACT_SHA256",
@@ -1368,6 +1824,10 @@ __all__ = [
     "validate_initial_activation_prepared",
     "validate_initial_cutover_gate_evidence",
     "validate_initial_final_authorization",
+    "validate_initial_factor_dependency_rows",
+    "validate_initial_fundamental_advisory",
+    "validate_initial_fundamental_operator_veto",
+    "validate_initial_fundamental_veto_subject",
     "validate_initial_legacy_source_disposition",
     "validate_initial_main_checkout_adoption",
     "validate_initial_migration_receipt",
