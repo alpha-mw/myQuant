@@ -223,6 +223,68 @@ def _generation_timestamp(value: Any, *, label: str) -> datetime:
     return parsed
 
 
+def _expected_change_type(previous_shares: float, current_shares: float) -> str:
+    if previous_shares == 0 and current_shares > 0:
+        return "NEW"
+    if current_shares == 0 and previous_shares > 0:
+        return "CLOSED"
+    if current_shares > previous_shares:
+        return "INCREASED"
+    if current_shares < previous_shares:
+        return "REDUCED"
+    return "UNCHANGED"
+
+
+def _validate_v1_changes(changes: Any) -> list[str]:
+    if not isinstance(changes, list) or not changes:
+        return ["canonical_v1_changes_missing"]
+
+    errors: list[str] = []
+    seen_symbols: set[str] = set()
+    number_fields = (
+        "previous_shares",
+        "current_shares",
+        "share_delta",
+        "previous_market_value",
+        "current_market_value",
+        "market_value_delta",
+        "nav_weight_delta",
+        "equity_weight_delta",
+    )
+    for change in changes:
+        if (
+            not isinstance(change, dict)
+            or not isinstance(change.get("symbol"), str)
+            or _SYMBOL_RE.fullmatch(change["symbol"]) is None
+            or change["symbol"] in seen_symbols
+            or not isinstance(change.get("name"), str)
+            or not change["name"]
+            or change.get("change_type")
+            not in {"NEW", "INCREASED", "REDUCED", "CLOSED", "UNCHANGED"}
+        ):
+            errors.append("canonical_v1_change_identity_invalid")
+            continue
+        seen_symbols.add(change["symbol"])
+        if any(not _finite_number(change.get(field)) for field in number_fields):
+            errors.append("canonical_v1_change_values_invalid")
+            continue
+        previous_shares = float(change["previous_shares"])
+        current_shares = float(change["current_shares"])
+        if abs(float(change["share_delta"]) - (current_shares - previous_shares)) > 1e-9 or change[
+            "change_type"
+        ] != _expected_change_type(previous_shares, current_shares):
+            errors.append("canonical_v1_change_share_delta_invalid")
+        if (
+            abs(
+                float(change["market_value_delta"])
+                - (float(change["current_market_value"]) - float(change["previous_market_value"]))
+            )
+            > 0.01
+        ):
+            errors.append("canonical_v1_change_market_value_delta_invalid")
+    return errors
+
+
 def _validate_v1(v1_bundle: Any) -> list[str]:
     errors: list[str] = []
     if not isinstance(v1_bundle, dict):
@@ -263,6 +325,7 @@ def _validate_v1(v1_bundle: Any) -> list[str]:
     positions = v1_bundle.get("positions")
     if not isinstance(positions, list) or not positions:
         errors.append("canonical_v1_positions_missing")
+    errors.extend(_validate_v1_changes(v1_bundle.get("changes")))
     return errors
 
 

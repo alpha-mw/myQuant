@@ -79,6 +79,7 @@
   "changes": [{
     "symbol": "000001.SZ", "name": "合成样例A", "change_type": "UNCHANGED",
     "previous_shares": 100, "current_shares": 100, "share_delta": 0,
+    "previous_market_value": 1100, "current_market_value": 1100, "market_value_delta": 0,
     "nav_weight_delta": -0.0011111111111111183, "equity_weight_delta": 0
   }],
   "portfolio": {
@@ -148,5 +149,5 @@
     {"path": "SYNTHETIC/cn_index_benchmark.csv", "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
     {"path": "SYNTHETIC/cn_govt_bond_yield.csv", "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}
   ],
-  "content_sha256": "f1b1d6d09d359df786f3538389f4e659c7971a7bf7cd5fc155cdd788db98897e"
+  "content_sha256": "ae9beb5b3d2cd2ff3b91b816d99825fceb3846f7da6f6619a378548e8949506d"
 }

@@ -765,7 +765,11 @@ def test_build_bundle_excludes_external_funding_and_is_read_only(
     assert bundle["portfolio"]["cash_weight"] == pytest.approx(12000 / 13100)
     assert bundle["portfolio"]["gross_exposure"] == pytest.approx(1100 / 13100)
     assert bundle["positions"][0]["nav_weight"] == pytest.approx(1100 / 13100)
-    assert bundle["changes"][0]["nav_weight_delta"] == pytest.approx(1100 / 13100 - 1100 / 11000)
+    change = bundle["changes"][0]
+    assert change["previous_market_value"] == 1100
+    assert change["current_market_value"] == 1100
+    assert change["market_value_delta"] == 0
+    assert change["nav_weight_delta"] == pytest.approx(1100 / 13100 - 1100 / 11000)
     assert bundle["portfolio"]["cumulative_profit_excluding_external_flow"] == 3100
     assert bundle["portfolio"]["cumulative_return"] == pytest.approx(0.31)
     assert bundle["portfolio"]["performance_points"][2]["adjusted_total_value"] == 11000
@@ -793,6 +797,145 @@ def test_build_bundle_excludes_external_funding_and_is_read_only(
     without_hash = dict(bundle)
     content_hash = without_hash.pop("content_sha256")
     assert hashlib.sha256(canonical_json_bytes(without_hash)).hexdigest() == content_hash
+
+
+def test_holding_change_market_value_delta_uses_adjacent_snapshots() -> None:
+    changes = dashboard_common._changes(
+        {
+            "positions": [
+                {
+                    "symbol": "000001.SZ",
+                    "name": "合成样例A",
+                    "shares": 120,
+                    "market_value": 1440,
+                    "nav_weight": 0.12,
+                    "equity_weight": 0.6,
+                },
+                {
+                    "symbol": "000002.SZ",
+                    "name": "合成样例B",
+                    "shares": 50,
+                    "market_value": 500,
+                    "nav_weight": 0.05,
+                    "equity_weight": 0.2,
+                },
+            ]
+        },
+        {
+            "positions": [
+                {
+                    "symbol": "000001.SZ",
+                    "name": "合成样例A",
+                    "shares": 100,
+                    "market_value": 1000,
+                    "nav_weight": 0.1,
+                    "equity_weight": 0.5,
+                },
+                {
+                    "symbol": "000003.SZ",
+                    "name": "合成样例C",
+                    "shares": 25,
+                    "market_value": 250,
+                    "nav_weight": 0.025,
+                    "equity_weight": 0.125,
+                },
+            ]
+        },
+    )
+
+    changes_by_symbol = {change["symbol"]: change for change in changes}
+    assert changes_by_symbol["000001.SZ"] == {
+        "symbol": "000001.SZ",
+        "name": "合成样例A",
+        "change_type": "INCREASED",
+        "previous_shares": 100,
+        "current_shares": 120,
+        "share_delta": 20,
+        "previous_market_value": 1000,
+        "current_market_value": 1440,
+        "market_value_delta": 440,
+        "nav_weight_delta": pytest.approx(0.02),
+        "equity_weight_delta": pytest.approx(0.1),
+    }
+    assert changes_by_symbol["000002.SZ"]["change_type"] == "NEW"
+    assert changes_by_symbol["000002.SZ"]["previous_market_value"] == 0
+    assert changes_by_symbol["000002.SZ"]["current_market_value"] == 500
+    assert changes_by_symbol["000002.SZ"]["market_value_delta"] == 500
+    assert changes_by_symbol["000003.SZ"]["change_type"] == "CLOSED"
+    assert changes_by_symbol["000003.SZ"]["previous_market_value"] == 250
+    assert changes_by_symbol["000003.SZ"]["current_market_value"] == 0
+    assert changes_by_symbol["000003.SZ"]["market_value_delta"] == -250
+
+
+def test_bundle_shape_rejects_inconsistent_holding_market_value_delta(
+    tmp_path: Path,
+) -> None:
+    project_root, record_root, benchmark = _fixture(tmp_path)
+    bundle = build_bundle(
+        project_root=project_root,
+        record_root=record_root,
+        benchmark_path=benchmark,
+        generated_at="2099-01-03T12:00:00+08:00",
+        today=date(2099, 1, 3),
+    )
+    bundle["changes"][0]["market_value_delta"] = 1
+    without_hash = dict(bundle)
+    without_hash.pop("content_sha256")
+    content_bytes = canonical_json_bytes(without_hash)
+    bundle["content_sha256"] = hashlib.sha256(content_bytes).hexdigest()
+
+    assert "holding_change_market_value_delta_invalid" in validate_bundle_shape(bundle)
+
+    bundle["changes"][0]["market_value_delta"] = 0
+    del bundle["changes"][0]["current_market_value"]
+    without_hash = dict(bundle)
+    without_hash.pop("content_sha256")
+    content_bytes = canonical_json_bytes(without_hash)
+    bundle["content_sha256"] = hashlib.sha256(content_bytes).hexdigest()
+
+    assert "holding_change_market_value_group_invalid" in validate_bundle_shape(bundle)
+
+
+def test_v1_change_validation_is_strict_and_legacy_market_values_are_optional(
+    tmp_path: Path,
+) -> None:
+    project_root, record_root, benchmark = _fixture(tmp_path)
+    bundle = build_bundle(
+        project_root=project_root,
+        record_root=record_root,
+        benchmark_path=benchmark,
+        generated_at="2099-01-03T12:00:00+08:00",
+        today=date(2099, 1, 3),
+    )
+
+    legacy = json.loads(json.dumps(bundle))
+    for field in ("previous_market_value", "current_market_value", "market_value_delta"):
+        legacy["changes"][0].pop(field)
+    legacy["content_sha256"] = hashlib.sha256(
+        canonical_json_bytes(
+            {key: value for key, value in legacy.items() if key != "content_sha256"}
+        )
+    ).hexdigest()
+    assert validate_bundle_shape(legacy) == []
+
+    partial_group = json.loads(json.dumps(bundle))
+    partial_group["changes"][0].pop("current_market_value")
+    assert "holding_change_market_value_group_invalid" in validate_bundle_shape(partial_group)
+
+    bool_value = json.loads(json.dumps(bundle))
+    bool_value["changes"][0]["nav_weight_delta"] = True
+    assert "holding_change_values_invalid" in validate_bundle_shape(bool_value)
+
+    share_drift = json.loads(json.dumps(bundle))
+    share_drift["changes"][0]["previous_shares"] = 0.0
+    share_drift["changes"][0]["current_shares"] = 100_000_000.0
+    share_drift["changes"][0]["share_delta"] = 100_000_000.005
+    share_drift["changes"][0]["change_type"] = "NEW"
+    assert "holding_change_share_delta_invalid" in validate_bundle_shape(share_drift)
+
+    market_value_drift = json.loads(json.dumps(bundle))
+    market_value_drift["changes"][0]["market_value_delta"] += 0.011
+    assert "holding_change_market_value_delta_invalid" in validate_bundle_shape(market_value_drift)
 
 
 def test_bundle_shape_accepts_flow_neutral_unitization_with_raw_holdings_nav(
@@ -1160,6 +1303,31 @@ def test_public_bundle_keeps_performance_and_removes_holdings_detail(
         {"PUBLIC_REDACTED", "0" * 64, False, None}
     )
     assert validate_bundle_shape(public) == []
+
+    private_values = {
+        "positions": [
+            {
+                "symbol": "000001.SZ",
+                "name": "PRIVATE_SENTINEL_POSITION",
+                "nav_weight": 0.0,
+            }
+        ],
+        "changes": [
+            {
+                "symbol": "000001.SZ",
+                "name": "PRIVATE_SENTINEL_CHANGE",
+                "market_value_delta": 987654321,
+            }
+        ],
+        "source_refs": [{"path": "PRIVATE/SENTINEL.json", "sha256": "1" * 64}],
+    }
+    for status in ("PARTIAL", "BLOCKED"):
+        for field, value in private_values.items():
+            leaked = json.loads(json.dumps(public))
+            leaked["status"] = status
+            leaked["blockers"] = [] if status == "PARTIAL" else ["PUBLIC_TEST_BLOCKER"]
+            leaked[field] = value
+            assert "public_redaction_invalid" in validate_bundle_shape(leaked)
 
 
 def test_public_template_contains_only_approved_sections_and_copy() -> None:

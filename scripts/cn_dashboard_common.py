@@ -379,6 +379,14 @@ def _almost_equal(left: Any, right: Any, *, tolerance: float = 0.01) -> bool:
         return False
 
 
+def _finite_number(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+    )
+
+
 def _is_owner_corrected_initial_capital_path(
     points: list[dict[str, Any]],
 ) -> bool:
@@ -2550,6 +2558,8 @@ def _changes(current: dict[str, Any], previous: dict[str, Any]) -> list[dict[str
         before = previous_by_symbol.get(symbol)
         before_shares = before["shares"] if before else 0.0
         now_shares = now["shares"] if now else 0.0
+        before_market_value = before["market_value"] if before else 0.0
+        now_market_value = now["market_value"] if now else 0.0
         delta = now_shares - before_shares
         if before is None:
             change_type = "NEW"
@@ -2570,6 +2580,9 @@ def _changes(current: dict[str, Any], previous: dict[str, Any]) -> list[dict[str
                 "previous_shares": before_shares,
                 "current_shares": now_shares,
                 "share_delta": delta,
+                "previous_market_value": before_market_value,
+                "current_market_value": now_market_value,
+                "market_value_delta": now_market_value - before_market_value,
                 "nav_weight_delta": (now["nav_weight"] if now else 0.0)
                 - (before["nav_weight"] if before else 0.0),
                 "equity_weight_delta": (now["equity_weight"] if now else 0.0)
@@ -3336,11 +3349,17 @@ def validate_bundle_shape(bundle: Any) -> list[str]:
     flags = bundle.get("authority_flags")
     if flags != AUTHORITY_FLAGS:
         errors.append("authority_flags_invalid")
+    public_redacted = bundle.get("public_redacted") is True
+    if public_redacted and (
+        bundle.get("positions") != []
+        or bundle.get("changes") != []
+        or bundle.get("source_refs") != []
+    ):
+        errors.append("public_redaction_invalid")
     if bundle.get("status") in {"FRESH", "PARTIAL"}:
         if bundle.get("blockers") != []:
             errors.append("usable_bundle_has_blockers")
         positions = bundle.get("positions")
-        public_redacted = bundle.get("public_redacted") is True
         position_nav_weights_valid = isinstance(positions, list) and all(
             isinstance(row, dict)
             and isinstance(row.get("nav_weight"), (int, float))
@@ -3351,6 +3370,79 @@ def validate_bundle_shape(bundle: Any) -> list[str]:
             errors.append("usable_bundle_has_no_positions")
         elif not position_nav_weights_valid:
             errors.append("position_nav_weight_invalid")
+        changes = bundle.get("changes")
+        if not isinstance(changes, list) or (not public_redacted and not changes):
+            errors.append("holding_changes_invalid")
+        elif not public_redacted:
+            change_symbols: set[str] = set()
+            base_change_number_fields = (
+                "previous_shares",
+                "current_shares",
+                "share_delta",
+                "nav_weight_delta",
+                "equity_weight_delta",
+            )
+            market_value_fields = (
+                "previous_market_value",
+                "current_market_value",
+                "market_value_delta",
+            )
+            for change in changes:
+                if (
+                    not isinstance(change, dict)
+                    or not isinstance(change.get("name"), str)
+                    or not change["name"]
+                    or not isinstance(change.get("symbol"), str)
+                    or not SYMBOL_RE.fullmatch(change["symbol"])
+                    or change["symbol"] in change_symbols
+                    or change.get("change_type")
+                    not in {"NEW", "INCREASED", "REDUCED", "CLOSED", "UNCHANGED"}
+                ):
+                    errors.append("holding_change_identity_invalid")
+                    continue
+                change_symbols.add(change["symbol"])
+                market_value_presence = [key in change for key in market_value_fields]
+                if any(market_value_presence) and not all(market_value_presence):
+                    errors.append("holding_change_market_value_group_invalid")
+                    continue
+                if any(not _finite_number(change.get(key)) for key in base_change_number_fields):
+                    errors.append("holding_change_values_invalid")
+                    continue
+                if all(market_value_presence) and any(
+                    not _finite_number(change.get(key)) for key in market_value_fields
+                ):
+                    errors.append("holding_change_values_invalid")
+                    continue
+                previous_shares = float(change["previous_shares"])
+                current_shares = float(change["current_shares"])
+                if previous_shares == 0 and current_shares > 0:
+                    expected_change_type = "NEW"
+                elif current_shares == 0 and previous_shares > 0:
+                    expected_change_type = "CLOSED"
+                elif current_shares > previous_shares:
+                    expected_change_type = "INCREASED"
+                elif current_shares < previous_shares:
+                    expected_change_type = "REDUCED"
+                else:
+                    expected_change_type = "UNCHANGED"
+                if (
+                    not _almost_equal(
+                        float(change["share_delta"]),
+                        current_shares - previous_shares,
+                        tolerance=1e-9,
+                    )
+                    or change["change_type"] != expected_change_type
+                ):
+                    errors.append("holding_change_share_delta_invalid")
+                if all(market_value_presence):
+                    previous_market_value = float(change["previous_market_value"])
+                    current_market_value = float(change["current_market_value"])
+                    if not _almost_equal(
+                        float(change["market_value_delta"]),
+                        current_market_value - previous_market_value,
+                        tolerance=0.01,
+                    ):
+                        errors.append("holding_change_market_value_delta_invalid")
         benchmarks = bundle.get("benchmarks") or []
         expected_benchmarks = {
             spec["id"]: (spec["name"], spec["ts_code"]) for spec in BENCHMARK_SPECS

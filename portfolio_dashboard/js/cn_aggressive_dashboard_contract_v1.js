@@ -54,6 +54,13 @@
       });
     }
     if (!SHA256_RE.test(value.content_sha256 || "")) errors.push("content_sha256 is invalid");
+    if (value.public_redacted && (
+      !Array.isArray(value.positions) || value.positions.length !== 0 ||
+      !Array.isArray(value.changes) || value.changes.length !== 0 ||
+      !Array.isArray(value.source_refs) || value.source_refs.length !== 0
+    )) {
+      errors.push("public redaction arrays must be empty");
+    }
     if (value.status !== "BLOCKED") {
       if (!RECORD_RE.test(value.latest_valid_record || "")) errors.push("latest_valid_record is invalid");
       if (!RECORD_RE.test(value.previous_valid_record || "")) errors.push("previous_valid_record is invalid");
@@ -74,6 +81,77 @@
           });
           if (position.evidence_status !== "HASH_BOUND_EFFECTIVE_LEDGER") {
             errors.push("positions[" + index + "] is not hash-bound");
+          }
+        });
+      }
+      if (!Array.isArray(value.changes) ||
+          (!value.public_redacted && value.changes.length < 1)) {
+        errors.push("changes are missing");
+      } else if (!value.public_redacted) {
+        var seenChanges = {};
+        value.changes.forEach(function (change, index) {
+          if (!isObject(change) || !SYMBOL_RE.test(change.symbol || "") || !change.name) {
+            errors.push("changes[" + index + "] identity is invalid");
+            return;
+          }
+          if (seenChanges[change.symbol]) {
+            errors.push("changes contain duplicate symbols");
+          }
+          seenChanges[change.symbol] = true;
+          if (["NEW", "INCREASED", "REDUCED", "CLOSED", "UNCHANGED"].indexOf(change.change_type) < 0) {
+            errors.push("changes[" + index + "].change_type is invalid");
+          }
+          var numberKeys = [
+            "previous_shares",
+            "current_shares",
+            "share_delta",
+            "nav_weight_delta",
+            "equity_weight_delta"
+          ];
+          var marketValueKeys = [
+            "previous_market_value",
+            "current_market_value",
+            "market_value_delta"
+          ];
+          var marketValuePresent = marketValueKeys.map(function (key) {
+            return Object.prototype.hasOwnProperty.call(change, key);
+          });
+          if (marketValuePresent.some(Boolean) && !marketValuePresent.every(Boolean)) {
+            errors.push("changes[" + index + "] market value group is incomplete");
+            return;
+          }
+          if (numberKeys.some(function (key) { return !finite(change[key]); })) {
+            errors.push("changes[" + index + "] values are invalid");
+            return;
+          }
+          if (marketValuePresent.every(Boolean) && marketValueKeys.some(function (key) {
+            return !finite(change[key]);
+          })) {
+            errors.push("changes[" + index + "] values are invalid");
+            return;
+          }
+          if (Math.abs(change.share_delta - (change.current_shares - change.previous_shares)) > 1e-9) {
+            errors.push("changes[" + index + "] share delta is inconsistent");
+          }
+          var expectedChangeType;
+          if (change.previous_shares === 0 && change.current_shares > 0) {
+            expectedChangeType = "NEW";
+          } else if (change.current_shares === 0 && change.previous_shares > 0) {
+            expectedChangeType = "CLOSED";
+          } else if (change.current_shares > change.previous_shares) {
+            expectedChangeType = "INCREASED";
+          } else if (change.current_shares < change.previous_shares) {
+            expectedChangeType = "REDUCED";
+          } else {
+            expectedChangeType = "UNCHANGED";
+          }
+          if (change.change_type !== expectedChangeType) {
+            errors.push("changes[" + index + "] change type is inconsistent");
+          }
+          if (marketValuePresent.every(Boolean) && Math.abs(change.market_value_delta - (
+            change.current_market_value - change.previous_market_value
+          )) > 0.01) {
+            errors.push("changes[" + index + "] market value delta is inconsistent");
           }
         });
       }

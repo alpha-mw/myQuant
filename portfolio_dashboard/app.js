@@ -576,6 +576,12 @@
       makeCell(row, publicRedacted(number(change.previous_shares)), "numeric");
       makeCell(row, publicRedacted(number(change.current_shares)), "numeric");
       makeCell(row, publicRedacted(number(change.share_delta)), "numeric " + (PublicMode ? "" : signedClass(change.share_delta)));
+      var hasMarketValueChange = ["previous_market_value", "current_market_value", "market_value_delta"].every(function (key) {
+        return Number.isFinite(Number(change[key]));
+      });
+      makeCell(row, publicRedacted(hasMarketValueChange ? money(change.previous_market_value) : "—"), "numeric");
+      makeCell(row, publicRedacted(hasMarketValueChange ? money(change.current_market_value) : "—"), "numeric");
+      makeCell(row, publicRedacted(hasMarketValueChange ? money(change.market_value_delta) : "—"), "numeric " + (PublicMode || !hasMarketValueChange ? "" : signedClass(change.market_value_delta)));
       makeCell(row, percent(change.nav_weight_delta, true), "numeric " + signedClass(change.nav_weight_delta));
       makeCell(row, percent(change.equity_weight_delta, true), "numeric " + signedClass(change.equity_weight_delta));
       body.appendChild(row);

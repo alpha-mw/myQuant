@@ -259,6 +259,21 @@ def _fixture(
                 "cost_basis": 100000.0,
             }
         ],
+        "changes": [
+            {
+                "symbol": SYMBOL,
+                "name": "示例科技",
+                "change_type": "UNCHANGED",
+                "previous_shares": 1000.0,
+                "current_shares": 1000.0,
+                "share_delta": 0.0,
+                "previous_market_value": 100000.0,
+                "current_market_value": 100000.0,
+                "market_value_delta": 0.0,
+                "nav_weight_delta": 0.0,
+                "equity_weight_delta": 0.0,
+            }
+        ],
         "portfolio": {
             "cash": 900000.0,
             "performance_initial_capital": 1000000.0,
@@ -528,6 +543,73 @@ def test_fixed_initial_capital_method_and_zero_flow_are_required(
     inputs[1].write_text(json.dumps(v1_bundle, ensure_ascii=False), encoding="utf-8")
 
     with pytest.raises(v2.DashboardV2Error, match="canonical_v1_return_method_invalid"):
+        _build(*inputs[:4])
+
+
+def test_v2_rejects_canonical_v1_change_type_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inputs = _fixture(tmp_path, monkeypatch)
+    v1_bundle = inputs[0]
+    v1_bundle["changes"][0]["change_type"] = "NEW"
+    v1_bundle["content_sha256"] = v2.content_sha256(v1_bundle)
+    inputs[1].write_text(json.dumps(v1_bundle, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(v2.DashboardV2Error, match="canonical_v1_change_share_delta_invalid"):
+        _build(*inputs[:4])
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_error"),
+    [
+        ("legacy_market_values_missing", "canonical_v1_change_values_invalid"),
+        ("boolean_value", "canonical_v1_change_values_invalid"),
+        ("share_delta_drift", "canonical_v1_change_share_delta_invalid"),
+        ("market_value_delta_drift", "canonical_v1_change_market_value_delta_invalid"),
+        ("duplicate_symbol", "canonical_v1_change_identity_invalid"),
+    ],
+)
+def test_v2_rejects_v1_change_mutation_vectors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+    expected_error: str,
+) -> None:
+    inputs = _fixture(tmp_path, monkeypatch)
+    v1_bundle = inputs[0]
+    change = v1_bundle["changes"][0]
+    if mutation == "legacy_market_values_missing":
+        for field in ("previous_market_value", "current_market_value", "market_value_delta"):
+            change.pop(field)
+    elif mutation == "boolean_value":
+        change["nav_weight_delta"] = True
+    elif mutation == "share_delta_drift":
+        change["share_delta"] += 0.005
+    elif mutation == "market_value_delta_drift":
+        change["market_value_delta"] += 0.011
+    else:
+        v1_bundle["changes"].append(dict(change))
+    v1_bundle["content_sha256"] = v2.content_sha256(v1_bundle)
+    inputs[1].write_text(json.dumps(v1_bundle, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(v2.DashboardV2Error, match=expected_error):
+        _build(*inputs[:4])
+
+
+def test_v2_share_delta_tolerance_is_absolute_at_high_magnitude(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inputs = _fixture(tmp_path, monkeypatch)
+    v1_bundle = inputs[0]
+    change = v1_bundle["changes"][0]
+    change["previous_shares"] = 0.0
+    change["current_shares"] = 100_000_000.0
+    change["share_delta"] = 100_000_000.005
+    change["change_type"] = "NEW"
+    v1_bundle["content_sha256"] = v2.content_sha256(v1_bundle)
+    inputs[1].write_text(json.dumps(v1_bundle, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(v2.DashboardV2Error, match="canonical_v1_change_share_delta_invalid"):
         _build(*inputs[:4])
 
 

@@ -111,11 +111,18 @@
     "change": {
       "type": "object", "additionalProperties": false,
       "required": ["symbol", "name", "change_type", "previous_shares", "current_shares", "share_delta", "nav_weight_delta", "equity_weight_delta"],
+      "dependentRequired": {
+        "previous_market_value": ["current_market_value", "market_value_delta"],
+        "current_market_value": ["previous_market_value", "market_value_delta"],
+        "market_value_delta": ["previous_market_value", "current_market_value"]
+      },
       "properties": {
         "symbol": {"$ref": "#/$defs/symbol"}, "name": {"type": "string"},
         "change_type": {"enum": ["NEW", "INCREASED", "REDUCED", "CLOSED", "UNCHANGED"]},
         "previous_shares": {"$ref": "#/$defs/finiteNumber"}, "current_shares": {"$ref": "#/$defs/finiteNumber"},
-        "share_delta": {"$ref": "#/$defs/finiteNumber"}, "nav_weight_delta": {"$ref": "#/$defs/finiteNumber"},
+        "share_delta": {"$ref": "#/$defs/finiteNumber"},
+        "previous_market_value": {"$ref": "#/$defs/finiteNumber"}, "current_market_value": {"$ref": "#/$defs/finiteNumber"},
+        "market_value_delta": {"$ref": "#/$defs/finiteNumber"}, "nav_weight_delta": {"$ref": "#/$defs/finiteNumber"},
         "equity_weight_delta": {"$ref": "#/$defs/finiteNumber"}
       }
     },

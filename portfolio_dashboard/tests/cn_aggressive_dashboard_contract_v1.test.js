@@ -34,12 +34,20 @@ assert.match(app, /预计年化收益/);
 assert.match(publicHtml, /Sharpe 使用中国1年期国债收益率/);
 assert.match(html, /id="historySummary"/);
 assert.match(html, /id="performanceRows"/);
+assert.match(html, /<th class="numeric">前市值<\/th>/);
+assert.match(html, /<th class="numeric">现市值<\/th>/);
+assert.match(html, /<th class="numeric">市值变化<\/th>/);
+assert.match(app, /change\.previous_market_value/);
+assert.match(app, /change\.current_market_value/);
+assert.match(app, /change\.market_value_delta/);
 assert.match(html, /cn_aggressive_dashboard\.v1\.js\?cache=/);
 assert.match(publicHtml, /cn_aggressive_dashboard\.v1\.js\?cache=/);
 assert.match(html, /js\/cn_aggressive_dashboard_analysis_v1\.js\?v=dashboard-v2/);
 assert.match(html, /js\/cn_aggressive_dashboard_contract_v1\.js\?v=dashboard-v2/);
-assert.match(html, /app\.js\?v=dashboard-v4/);
-assert.match(publicHtml, /app\.js\?v=dashboard-v4/);
+assert.match(html, /app\.js\?v=dashboard-v5/);
+assert.match(publicHtml, /app\.js\?v=dashboard-v5/);
+assert.doesNotMatch(html, /app\.js\?v=dashboard-v4/);
+assert.doesNotMatch(publicHtml, /app\.js\?v=dashboard-v4/);
 assert.match(html, /styles\.css\?v=dashboard-v5/);
 assert.match(publicHtml, /styles\.css\?v=dashboard-v5/);
 assert.match(html, /js\/cn_aggressive_public_mode\.js\?mode=internal-v1/);
@@ -93,6 +101,24 @@ assert.strictEqual(sample.portfolio.total_value, sample.portfolio.adjusted_total
 assert.strictEqual(sample.portfolio.portfolio_pnl, sample.portfolio.total_value - sample.portfolio.performance_initial_capital);
 assert.ok(Math.abs(sample.portfolio.cash_weight + sample.portfolio.gross_exposure - 1) < 1e-12);
 assert.ok(Math.abs(sample.positions.reduce((total, position) => total + position.nav_weight, 0) - sample.portfolio.gross_exposure) < 1e-12);
+assert.deepStrictEqual(
+  schema.$defs.change.required,
+  [
+    "symbol", "name", "change_type", "previous_shares", "current_shares", "share_delta",
+    "nav_weight_delta", "equity_weight_delta"
+  ]
+);
+assert.deepStrictEqual(
+  schema.$defs.change.dependentRequired,
+  {
+    previous_market_value: ["current_market_value", "market_value_delta"],
+    current_market_value: ["previous_market_value", "market_value_delta"],
+    market_value_delta: ["previous_market_value", "current_market_value"]
+  }
+);
+assert.strictEqual(sample.changes[0].previous_market_value, 1100);
+assert.strictEqual(sample.changes[0].current_market_value, 1100);
+assert.strictEqual(sample.changes[0].market_value_delta, 0);
 
 const analysis = Analysis.buildAnalysis(sample);
 assert.strictEqual(analysis.points.length, 2);
@@ -155,6 +181,83 @@ const drawdownAnalysis = Analysis.buildAnalysis(drawdownSample);
 assert.ok(Math.abs(drawdownAnalysis.deepest_portfolio_drawdown.value + 0.1) < 1e-12);
 
 assert.deepStrictEqual(Contract.validateBundle(sample), { valid: true, errors: [] });
+const missingChangeMarketValue = structuredClone(sample);
+delete missingChangeMarketValue.changes[0].current_market_value;
+assert.strictEqual(Contract.validateBundle(missingChangeMarketValue).valid, false);
+assert.match(
+  Contract.validateBundle(missingChangeMarketValue).errors.join("; "),
+  /changes\[0\] market value group is incomplete/
+);
+const legacyChangeWithoutMarketValues = structuredClone(sample);
+delete legacyChangeWithoutMarketValues.changes[0].previous_market_value;
+delete legacyChangeWithoutMarketValues.changes[0].current_market_value;
+delete legacyChangeWithoutMarketValues.changes[0].market_value_delta;
+assert.deepStrictEqual(
+  Contract.validateBundle(legacyChangeWithoutMarketValues),
+  { valid: true, errors: [] }
+);
+const inconsistentChangeMarketValue = structuredClone(sample);
+inconsistentChangeMarketValue.changes[0].market_value_delta = 0.011;
+assert.strictEqual(Contract.validateBundle(inconsistentChangeMarketValue).valid, false);
+assert.match(
+  Contract.validateBundle(inconsistentChangeMarketValue).errors.join("; "),
+  /changes\[0\] market value delta is inconsistent/
+);
+const inconsistentChangeType = structuredClone(sample);
+inconsistentChangeType.changes[0].change_type = "NEW";
+assert.strictEqual(Contract.validateBundle(inconsistentChangeType).valid, false);
+assert.match(
+  Contract.validateBundle(inconsistentChangeType).errors.join("; "),
+  /changes\[0\] change type is inconsistent/
+);
+const booleanChangeValue = structuredClone(sample);
+booleanChangeValue.changes[0].nav_weight_delta = true;
+assert.match(
+  Contract.validateBundle(booleanChangeValue).errors.join("; "),
+  /changes\[0\] values are invalid/
+);
+const nonFiniteChangeValue = structuredClone(sample);
+nonFiniteChangeValue.changes[0].current_market_value = Infinity;
+assert.match(
+  Contract.validateBundle(nonFiniteChangeValue).errors.join("; "),
+  /changes\[0\] values are invalid/
+);
+const shareDeltaDrift = structuredClone(sample);
+shareDeltaDrift.changes[0].previous_shares = 0;
+shareDeltaDrift.changes[0].current_shares = 100000000;
+shareDeltaDrift.changes[0].share_delta = 100000000.005;
+shareDeltaDrift.changes[0].change_type = "NEW";
+assert.match(
+  Contract.validateBundle(shareDeltaDrift).errors.join("; "),
+  /changes\[0\] share delta is inconsistent/
+);
+const duplicateChange = structuredClone(sample);
+duplicateChange.changes.push(structuredClone(duplicateChange.changes[0]));
+assert.match(
+  Contract.validateBundle(duplicateChange).errors.join("; "),
+  /changes contain duplicate symbols/
+);
+const privatePublicValues = {
+  positions: [{ name: "PRIVATE_SENTINEL_POSITION" }],
+  changes: [{ name: "PRIVATE_SENTINEL_CHANGE", market_value_delta: 987654321 }],
+  source_refs: [{ path: "PRIVATE/SENTINEL.json", sha256: "1".repeat(64) }]
+};
+["PARTIAL", "BLOCKED"].forEach((status) => {
+  Object.keys(privatePublicValues).forEach((field) => {
+    const publicHoldingLeak = structuredClone(sample);
+    publicHoldingLeak.public_redacted = true;
+    publicHoldingLeak.status = status;
+    publicHoldingLeak.blockers = status === "BLOCKED" ? ["PUBLIC_TEST_BLOCKER"] : [];
+    publicHoldingLeak.positions = [];
+    publicHoldingLeak.changes = [];
+    publicHoldingLeak.source_refs = [];
+    publicHoldingLeak[field] = structuredClone(privatePublicValues[field]);
+    assert.match(
+      Contract.validateBundle(publicHoldingLeak).errors.join("; "),
+      /public redaction arrays must be empty/
+    );
+  });
+});
 const usable = Contract.deriveSnapshot(sample);
 assert.strictEqual(usable.status, "PARTIAL");
 assert.strictEqual(usable.bundle, sample);
@@ -213,6 +316,7 @@ const publicRedacted = structuredClone(sample);
 publicRedacted.public_redacted = true;
 publicRedacted.positions = [];
 publicRedacted.changes = [];
+publicRedacted.source_refs = [];
 publicRedacted.portfolio.cash = 0;
 publicRedacted.portfolio.market_value = 0;
 publicRedacted.portfolio.total_value = 0;
