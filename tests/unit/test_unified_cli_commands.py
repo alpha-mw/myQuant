@@ -191,6 +191,87 @@ def test_system_status_complete_when_uninitialized(
     assert system["fundamental_advisory"] is None
 
 
+def test_factor_production_status_and_verify_are_read_only_when_uninitialized(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    main(["factor", "production-status", "--workspace-root", str(tmp_path)])
+    status = _line(capsys)
+    assert status["command_status"] == "COMPLETED"
+    assert status["authority_domain"] == "FACTOR_PRODUCTION_ONLY"
+    assert status["factor_authority"] == "INACTIVE"
+    assert status["system_runtime_state"] == "NOT_EVALUATED"
+    assert status["grants_system_authority"] is False
+    assert status["grants_trading_authority"] is False
+    assert status["blockers"] == ["FACTOR_ACTIVE_POINTER_ABSENT"]
+
+    main(["factor", "production-verify", "--workspace-root", str(tmp_path)])
+    verified = _line(capsys)
+    assert verified["command_status"] == "BLOCKED"
+    assert verified["verified"] is False
+    assert not (tmp_path / "results/factors/_active.json").exists()
+    assert not (tmp_path / "results/factors/_production_complete.json").exists()
+    assert not (tmp_path / "results/system/_active.json").exists()
+
+
+def test_factor_production_activate_exposes_one_expected_empty_operator(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import quant_investor.cli.main as main_module
+
+    calls: list[dict[str, object]] = []
+
+    def activate(**kwargs: object) -> dict[str, object]:
+        calls.append(dict(kwargs))
+        return {
+            "command_status": "ACTIVATED",
+            "authority_domain": "FACTOR_PRODUCTION_ONLY",
+            "factor_authority": "ACTIVE",
+            "grants_system_authority": False,
+            "grants_trading_authority": False,
+        }
+
+    monkeypatch.setattr(main_module, "factor_production_activate", activate)
+    main(
+        [
+            "factor",
+            "production-activate",
+            "--workspace-root",
+            str(tmp_path),
+            "--market-data-root",
+            str(tmp_path / "market"),
+            "--calendar-capture-root",
+            str(tmp_path / "calendar"),
+            "--expected-calendar-success-sha256",
+            "1" * 64,
+            "--release-repository-root",
+            str(tmp_path / "release"),
+            "--activation-inputs",
+            "factor-activation-inputs.json",
+            "--expected-activation-inputs-sha256",
+            "2" * 64,
+            "--expected-empty",
+        ]
+    )
+    result = _line(capsys)
+    assert result["factor_authority"] == "ACTIVE"
+    assert result["grants_system_authority"] is False
+    assert result["grants_trading_authority"] is False
+    assert calls == [
+        {
+            "workspace_root": str(tmp_path),
+            "market_data_root": str(tmp_path / "market"),
+            "calendar_capture_root": str(tmp_path / "calendar"),
+            "expected_calendar_success_sha256": "1" * 64,
+            "release_repository_root": str(tmp_path / "release"),
+            "activation_inputs_path": "factor-activation-inputs.json",
+            "expected_activation_inputs_sha256": "2" * 64,
+            "expected_empty": True,
+        }
+    ]
+
+
 def test_system_bootstrap_assemble_uses_exact_request_and_explicit_input_root(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

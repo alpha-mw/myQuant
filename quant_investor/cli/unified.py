@@ -7,6 +7,7 @@ Factor or Research handlers can call System activation.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -430,6 +431,251 @@ def factor_status(
     }
 
 
+def factor_production_status(*, workspace_root: str) -> dict[str, Any]:
+    """Return the isolated Factor production authority state without System access."""
+
+    from quant_investor.factors.production_authority import verify_factor_production
+
+    observed = verify_factor_production(workspace_root)
+    return {
+        "command_status": "COMPLETED",
+        "authority_domain": "FACTOR_PRODUCTION_ONLY",
+        "activation_scope": observed["activation_scope"],
+        "factor_readiness": observed["factor_readiness"],
+        "factor_authority": observed["factor_authority"],
+        "factor_generation_id": observed.get("factor_generation_id"),
+        "factor_generation_sha256": observed.get("factor_generation_sha256"),
+        "factor_pointer_byte_sha256": observed.get("factor_pointer_byte_sha256"),
+        "factor_pointer_semantic_sha256": observed.get("factor_pointer_semantic_sha256"),
+        "marker_byte_sha256": observed.get("marker_byte_sha256"),
+        "marker_semantic_sha256": observed.get("marker_semantic_sha256"),
+        "as_of": observed.get("as_of"),
+        "active_factors": list(observed.get("active_factors", [])),
+        "control_factors": list(observed.get("control_factors", [])),
+        "fundamental_dependency_state": observed.get("fundamental_dependency_state"),
+        "fundamental_freshness_policy": observed.get("fundamental_freshness_policy"),
+        "system_authority": observed.get("system_authority", "NONE"),
+        "mainline_authority": observed.get("mainline_authority", "NONE"),
+        "investment_authority": observed.get("investment_authority", "NONE"),
+        "portfolio_authority": observed.get("portfolio_authority", "NONE"),
+        "broker_authority": observed.get("broker_authority", "NONE"),
+        "order_authority": observed.get("order_authority", "NONE"),
+        "trade_authority": observed.get("trade_authority", "NONE"),
+        "funds_transfer_authority": observed.get("funds_transfer_authority", "NONE"),
+        "system_runtime_state": "NOT_EVALUATED",
+        "grants_system_authority": False,
+        "grants_trading_authority": False,
+        "blockers": list(observed.get("blockers", [])),
+    }
+
+
+def factor_production_verify(*, workspace_root: str) -> dict[str, Any]:
+    """Revalidate pointer, marker, generation, sources, and sealed signals."""
+
+    status = factor_production_status(workspace_root=workspace_root)
+    verified = status["factor_authority"] == "ACTIVE" and not status["blockers"]
+    return {
+        **status,
+        "command_status": "VERIFIED" if verified else "BLOCKED",
+        "verified": verified,
+    }
+
+
+def factor_production_signal(*, workspace_root: str, factor_id: str) -> dict[str, Any]:
+    """Read one deterministic signal from the verified active generation."""
+
+    from quant_investor.factors.production_authority import read_factor_production_signal
+
+    return {
+        "command_status": "VERIFIED_ACTIVE_SIGNAL",
+        "authority_domain": "FACTOR_PRODUCTION_ONLY",
+        "system_runtime_state": "NOT_EVALUATED",
+        "grants_system_authority": False,
+        "grants_trading_authority": False,
+        **read_factor_production_signal(workspace_root, factor_id=factor_id),
+    }
+
+
+def _factor_activation_projection(
+    activated: dict[str, Any],
+    *,
+    command_status: str,
+    prepared_sources: dict[str, Any] | None,
+) -> dict[str, Any]:
+    activation = activated["activation"]
+    return {
+        "command_status": command_status,
+        "authority_domain": "FACTOR_PRODUCTION_ONLY",
+        "factor_authority": activated["factor_authority"],
+        "factor_readiness": activated["factor_readiness"],
+        "factor_generation_id": activated["factor_generation_id"],
+        "factor_generation_sha256": activated["factor_generation_sha256"],
+        "factor_pointer_byte_sha256": activated["factor_pointer_byte_sha256"],
+        "factor_pointer_semantic_sha256": activated["factor_pointer_semantic_sha256"],
+        "marker_byte_sha256": activated["marker_byte_sha256"],
+        "marker_semantic_sha256": activated["marker_semantic_sha256"],
+        "active_factors": activated["active_factors"],
+        "control_factors": activated["control_factors"],
+        "as_of": activated["as_of"],
+        "operation_id": (None if prepared_sources is None else prepared_sources["operation_id"]),
+        "operation_inputs_sha256": (
+            None if prepared_sources is None else prepared_sources["operation_inputs_sha256"]
+        ),
+        "operation_inputs_ref": (
+            None if prepared_sources is None else prepared_sources["operation_inputs_ref"]
+        ),
+        "cas_performed": activation["cas_performed"],
+        "marker_only_recovery": activation["marker_only_recovery"],
+        "system_runtime_state": "NOT_EVALUATED",
+        "grants_system_authority": False,
+        "grants_trading_authority": False,
+        "broker_order_trade_fund_writes": 0,
+    }
+
+
+def factor_production_activate(  # noqa: C901 - one atomic public operator boundary
+    *,
+    workspace_root: str,
+    market_data_root: str,
+    calendar_capture_root: str,
+    expected_calendar_success_sha256: str,
+    release_repository_root: str,
+    activation_inputs_path: str,
+    expected_activation_inputs_sha256: str,
+    expected_empty: bool,
+) -> dict[str, Any]:
+    """Prepare and perform the sole expected-EMPTY Factor production cutover."""
+
+    from quant_investor.factors.governance.factor_production_prepare import (
+        prepare_factor_production,
+    )
+    from quant_investor.factors.production_authority import (
+        FACTOR_AUTHORITY_ACTIVE,
+        FactorProductionStore,
+        verify_factor_production,
+    )
+    from quant_investor.system import SystemStore, validate_object_ref
+
+    if expected_empty is not True:
+        raise CommandError("FACTOR_EXPECTED_EMPTY_REQUIRED")
+    initial = verify_factor_production(workspace_root)
+    if initial.get("factor_authority") == "BLOCKED" and initial.get("blockers") == [
+        "FACTOR_PRODUCTION_MARKER_ABSENT"
+    ]:
+        recovered = FactorProductionStore(
+            workspace_root
+        ).recover_initial_marker_from_active_pointer()
+        if recovered.get("factor_authority") != FACTOR_AUTHORITY_ACTIVE:
+            raise CommandError("FACTOR_PRODUCTION_FINAL_VERIFY_FAILED")
+        return _factor_activation_projection(
+            recovered,
+            command_status="MARKER_RECOVERED",
+            prepared_sources=None,
+        )
+    if initial.get("factor_authority") != "INACTIVE" or initial.get("blockers") != [
+        "FACTOR_ACTIVE_POINTER_ABSENT"
+    ]:
+        raise CommandError("FACTOR_EXPECTED_EMPTY_FAILED")
+    _, inputs_document = _request(
+        workspace_root=workspace_root,
+        request_path=activation_inputs_path,
+        expected_request_sha256=expected_activation_inputs_sha256,
+    )
+    inputs = _exact_fields(
+        inputs_document,
+        {
+            "as_of",
+            "deployed_release_ref",
+            "factor_active_set_ref",
+            "factor_implementation_refs",
+            "factor_policy_ref",
+            "factor_validation_attestation_ref",
+            "final_commit",
+            "final_tree",
+        },
+        code="FACTOR_PRODUCTION_ACTIVATION_INPUTS_INVALID",
+    )
+    for field in (
+        "deployed_release_ref",
+        "factor_active_set_ref",
+        "factor_policy_ref",
+        "factor_validation_attestation_ref",
+    ):
+        inputs[field] = validate_object_ref(inputs[field], label=field)
+    implementation_values = inputs["factor_implementation_refs"]
+    if type(implementation_values) is not list or len(implementation_values) != 2:
+        raise CommandError("FACTOR_PRODUCTION_IMPLEMENTATIONS_INVALID")
+    implementations = [
+        validate_object_ref(value, label=f"factor_implementation_refs[{index}]")
+        for index, value in enumerate(implementation_values)
+    ]
+    prepared_sources = prepare_factor_production(
+        workspace_root=workspace_root,
+        market_data_root=market_data_root,
+        calendar_capture_root=calendar_capture_root,
+        expected_calendar_success_sha256=expected_calendar_success_sha256,
+        deployed_release_ref=inputs["deployed_release_ref"],
+        factor_policy_ref=inputs["factor_policy_ref"],
+        factor_active_set_ref=inputs["factor_active_set_ref"],
+        factor_validation_attestation_ref=inputs["factor_validation_attestation_ref"],
+        factor_implementation_refs=implementations,
+        final_commit=inputs["final_commit"],
+        final_tree=inputs["final_tree"],
+        as_of=inputs["as_of"],
+    )
+    workspace = Path(workspace_root).resolve(strict=True)
+    current_release_root = Path(release_repository_root).resolve(strict=True)
+    prepared_release_root = Path(prepared_sources["release_repository_root"]).resolve(strict=True)
+    if current_release_root != prepared_release_root:
+        raise CommandError("FACTOR_RELEASE_ROOT_MISMATCH")
+    source_root = (workspace / prepared_sources["source_root"]).resolve(strict=True)
+    if workspace not in source_root.parents:
+        raise CommandError("FACTOR_PREPARED_SOURCE_ROOT_INVALID")
+    source_store = SystemStore(
+        workspace,
+        source_root=source_root,
+        source_root_id=prepared_sources["source_root_id"],
+    )
+    generation = source_store.get_object(prepared_sources["factor_production_generation_ref"])
+    source_closure = source_store.get_object(
+        prepared_sources["factor_production_source_closure_ref"]
+    )
+    recomputation = source_store.get_object(prepared_sources["factor_production_recomputation_ref"])
+    source_payload = source_closure["payload"]
+    legacy = source_store.get_object(source_payload["legacy_zero_call_ref"])
+    market_input = source_store.get_object(source_payload["market_input_ref"])
+    factor_store = FactorProductionStore.from_system_source_custody(
+        workspace,
+        source_root=source_root,
+        source_root_id=prepared_sources["source_root_id"],
+        release_repository_root=current_release_root,
+    )
+    activated_at = datetime.now(timezone.utc).replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
+    prepared_activation = factor_store.prepare_initial_activation(
+        factor_generation=generation,
+        source_closure=source_closure,
+        recomputation_evidence=recomputation,
+        legacy_zero_call_certificate=legacy,
+        market_input=market_input,
+        prepared_at=activated_at,
+        activated_at=activated_at,
+    )
+    activated = factor_store.activate_initial_generation(
+        target_factor_pointer_raw=prepared_activation["target_factor_pointer_raw"],
+        factor_generation_receipt_raw=prepared_activation["factor_generation_receipt_raw"],
+        activation_bundle_raw=prepared_activation["activation_bundle_raw"],
+        prepared_transaction_raw=prepared_activation["prepared_transaction_raw"],
+        permanent_marker_raw=prepared_activation["permanent_marker_raw"],
+    )
+    if activated.get("factor_authority") != FACTOR_AUTHORITY_ACTIVE:
+        raise CommandError("FACTOR_PRODUCTION_FINAL_VERIFY_FAILED")
+    return _factor_activation_projection(
+        activated,
+        command_status="ACTIVATED",
+        prepared_sources=prepared_sources,
+    )
+
+
 def factor_mine(
     *, workspace_root: str, request_path: str, expected_request_sha256: str
 ) -> dict[str, Any]:
@@ -796,6 +1042,10 @@ __all__ = [
     "factor_history",
     "factor_mine",
     "factor_observe",
+    "factor_production_activate",
+    "factor_production_signal",
+    "factor_production_status",
+    "factor_production_verify",
     "factor_status",
     "research_compile_evidence",
     "research_evaluate",
