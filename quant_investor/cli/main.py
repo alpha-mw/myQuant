@@ -19,6 +19,10 @@ from quant_investor.cli.unified import (
     factor_history,
     factor_mine,
     factor_observe,
+    factor_production_activate,
+    factor_production_signal,
+    factor_production_status,
+    factor_production_verify,
     factor_status,
     research_compile_evidence,
     research_evaluate,
@@ -524,6 +528,44 @@ def _build_parser() -> argparse.ArgumentParser:
         "history", help="读取统一 generation 绑定的 Factor lineage"
     )
     _add_workspace_argument(factor_history_parser)
+    for name, help_text in (
+        ("production-status", "读取隔离 Factor 生产权威状态"),
+        ("production-verify", "验证 Factor pointer、marker 与 generation 闭包"),
+    ):
+        production_read_parser = factor_subparsers.add_parser(name, help=help_text)
+        _add_workspace_argument(production_read_parser)
+    factor_signal_parser = factor_subparsers.add_parser(
+        "production-signal", help="读取活动 generation 中封存的确定性 Factor signal"
+    )
+    _add_workspace_argument(factor_signal_parser)
+    factor_signal_parser.add_argument(
+        "--factor-id",
+        required=True,
+        choices=(
+            "pv_low_dollar_volume_5d",
+            "pv_blend_volstab19x2_mom90_amihud5_w80",
+        ),
+    )
+    factor_activate_parser = factor_subparsers.add_parser(
+        "production-activate",
+        help="从严格 source closure 执行唯一 expected-EMPTY Factor 首次激活",
+    )
+    _add_workspace_argument(factor_activate_parser)
+    factor_activate_parser.add_argument("--market-data-root", required=True)
+    factor_activate_parser.add_argument("--calendar-capture-root", required=True)
+    factor_activate_parser.add_argument(
+        "--expected-calendar-success-sha256", required=True, type=_sha256_argument
+    )
+    factor_activate_parser.add_argument("--release-repository-root", required=True)
+    factor_activate_parser.add_argument(
+        "--activation-inputs",
+        required=True,
+        type=_workspace_relative_canonical_path,
+    )
+    factor_activate_parser.add_argument(
+        "--expected-activation-inputs-sha256", required=True, type=_sha256_argument
+    )
+    factor_activate_parser.add_argument("--expected-empty", action="store_true", required=True)
 
     research_parser = subparsers.add_parser("research", help="统一主线研究能力")
     research_subparsers = research_parser.add_subparsers(
@@ -1053,6 +1095,38 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
                 workspace_root=args.workspace_root,
                 request_path=args.request,
                 expected_request_sha256=args.expected_request_sha256,
+            )
+        )
+        return
+
+    if args.command == "factor" and args.factor_command == "production-status":
+        _print_json(factor_production_status(workspace_root=args.workspace_root))
+        return
+
+    if args.command == "factor" and args.factor_command == "production-verify":
+        _print_json(factor_production_verify(workspace_root=args.workspace_root))
+        return
+
+    if args.command == "factor" and args.factor_command == "production-signal":
+        _print_json(
+            factor_production_signal(
+                workspace_root=args.workspace_root,
+                factor_id=args.factor_id,
+            )
+        )
+        return
+
+    if args.command == "factor" and args.factor_command == "production-activate":
+        _print_json(
+            factor_production_activate(
+                workspace_root=args.workspace_root,
+                market_data_root=args.market_data_root,
+                calendar_capture_root=args.calendar_capture_root,
+                expected_calendar_success_sha256=args.expected_calendar_success_sha256,
+                release_repository_root=args.release_repository_root,
+                activation_inputs_path=args.activation_inputs,
+                expected_activation_inputs_sha256=(args.expected_activation_inputs_sha256),
+                expected_empty=args.expected_empty,
             )
         )
         return

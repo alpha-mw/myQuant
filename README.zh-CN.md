@@ -199,6 +199,10 @@ quant-investor system verify --help
 quant-investor system status --help
 quant-investor system activate --help
 quant-investor factor status --help
+quant-investor factor production-status --help
+quant-investor factor production-verify --help
+quant-investor factor production-signal --help
+quant-investor factor production-activate --help
 quant-investor market maintain --help
 quant-investor market storage-validate --help
 quant-investor research run --help

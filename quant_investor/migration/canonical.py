@@ -27,6 +27,44 @@ from .errors import (
 
 DEFAULT_MAX_FILE_BYTES: Final = 512 * 1024 * 1024
 SHA256_RE: Final = __import__("re").compile(r"^[0-9a-f]{64}$")
+_RESERVED_FACTOR_AUTHORITY_SUFFIXES: Final = frozenset(
+    {
+        ("results", "factors", "_active.json"),
+        ("results", "factors", "_production_complete.json"),
+    }
+)
+_RESERVED_SYSTEM_AUTHORITY_SUFFIXES: Final = frozenset(
+    {
+        ("results", "system", "_active.json"),
+        ("results", "system", "_migration_complete.json"),
+    }
+)
+
+
+def _reject_reserved_factor_authority_path(path: Path) -> None:
+    """Keep generic cutover publishers out of Factor production authority."""
+
+    if any(part in {"", ".", ".."} for part in path.parts):
+        raise UnifiedCutoverError(
+            UNSAFE_PATH,
+            "generic publisher path is not lexically canonical",
+        )
+    candidates = (path, path.resolve(strict=False))
+    all_reserved = (
+        ("Factor", _RESERVED_FACTOR_AUTHORITY_SUFFIXES),
+        ("System", _RESERVED_SYSTEM_AUTHORITY_SUFFIXES),
+    )
+    for authority, suffixes in all_reserved:
+        if any(
+            tuple(candidate.parts[index : index + len(suffix)]) == suffix
+            for candidate in candidates
+            for suffix in suffixes
+            for index in range(max(0, len(candidate.parts) - len(suffix) + 1))
+        ):
+            raise UnifiedCutoverError(
+                UNSAFE_PATH,
+                f"reserved {authority} authority path requires its sealed activation",
+            )
 
 
 def sha256_bytes(raw: bytes) -> str:
@@ -230,6 +268,7 @@ def validate_sealed_document(
 def write_idempotent_bytes(path: Path, raw: bytes, *, mode: int = 0o600) -> bool:
     """Create ``path`` once; return False only for an exact existing replay."""
 
+    _reject_reserved_factor_authority_path(path)
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     try:
         metadata = os.lstat(path)

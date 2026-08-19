@@ -17,9 +17,21 @@ The canonical operator read is:
 quant-investor factor status --help
 ```
 
-`factor status` consumes one exact canonical request file plus its expected
-SHA-256. It is read-only: it cannot publish or compare-and-swap an active
-generation, admit a stock, change portfolio weights, or authorize new risk.
+`factor status` is the prospective validation-status builder: it consumes one
+exact canonical request plus its SHA-256 and grants no production authority.
+It is intentionally different from the isolated production readers:
+
+```bash
+quant-investor factor production-status --workspace-root <root>
+quant-investor factor production-verify --workspace-root <root>
+quant-investor factor production-signal --workspace-root <root> --factor-id <LOW-or-W80>
+```
+
+Production reads resolve only the Factor pointer, permanent marker, immutable
+Factor generation, and sealed signals. They report
+`authority_domain=FACTOR_PRODUCTION_ONLY`, never evaluate System runtime state,
+and grant neither System nor trading authority. The sole first-activation
+operator is documented in `docs/runbooks/factor_production.md`.
 
 ## Lifecycle
 
@@ -143,8 +155,11 @@ protected attestation, and completion record. `FactorValidationStore.build_statu
 requires exact receipt, contextual result, active set, and protected System
 attestation agreement before projecting `READY`; intrinsic-only or mismatched
 input is blocked. `validate_factor_status` validates only the sealed projection.
-The System generation compare-and-swap remains the only active-pointer
-authority.
+The System generation compare-and-swap remains the only **System** active-pointer
+authority. The separate `results/factors/_active.json` pointer grants only
+`FACTOR_PRODUCTION_ONLY` authority and can be created only by
+`quant-investor factor production-activate --expected-empty`; it never grants
+System, Mainline, Investment, portfolio, Strategy Record, or trading authority.
 
 Invalid stable factor input raises `FactorGovernanceError` with exit code 2,
 default public code `FACTOR_VALIDATION_FAILED`, and no path-bearing public
