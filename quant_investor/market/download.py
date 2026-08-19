@@ -363,6 +363,10 @@ class CNParquetBatchMaintainer:
             "\n".join(sorted(target_symbols)).encode("utf-8")
         ).hexdigest()
         daily_symbols = set(daily_df["ts_code"].astype(str)) if not daily_df.empty else set()
+        adj_symbols = set(adj_df["ts_code"].astype(str)) if not adj_df.empty else set()
+        daily_basic_all_symbols = (
+            set(daily_basic_df["ts_code"].astype(str)) if not daily_basic_df.empty else set()
+        )
         allowed = self.downloader._normalize_allowed_symbols(allowed_stale_symbols)
         suspended_symbols = self.downloader._load_latest_suspended_symbols(target_trade_date)
         inactive_symbols = self._load_inactive_symbols(target_trade_date, target_symbols)
@@ -624,7 +628,10 @@ class CNParquetBatchMaintainer:
             adj_values = pd.to_numeric(bars_frame["adj_factor"], errors="coerce")
             valid_adj_symbols = set(bars_frame.loc[adj_values > 0, "ts_code"].astype(str))
         missing_adj = sorted(daily_symbols - valid_adj_symbols)
-        daily_basic_symbols = set(daily_basic_df["ts_code"].astype(str)) & daily_symbols if not daily_basic_df.empty else set()
+        daily_basic_symbols = daily_basic_all_symbols & daily_symbols
+        missing_daily_basic = sorted(daily_symbols - daily_basic_all_symbols)
+        extra_daily_basic = sorted(daily_basic_all_symbols - daily_symbols)
+        extra_adj = sorted(adj_symbols - daily_symbols)
         daily_basic_coverage = _coverage_payload(
             covered_count=len(daily_basic_symbols),
             expected_count=len(daily_symbols),
@@ -640,6 +647,8 @@ class CNParquetBatchMaintainer:
         blockers: list[str] = []
         if daily_error:
             blockers.append(f"daily_endpoint_error:{daily_error}")
+        if daily_symbols - target_symbols:
+            blockers.append(f"daily_out_of_scope:{len(daily_symbols - target_symbols)}")
         terminal_evidence_blockers = list(
             terminal_delisting_evidence.get("blockers", []) or []
         )
@@ -654,6 +663,14 @@ class CNParquetBatchMaintainer:
             blockers.append("adj_factor_missing")
         if adj_error:
             blockers.append(f"adj_factor_endpoint_error:{adj_error}")
+        if extra_adj:
+            blockers.append(f"adj_factor_keyset_extra:{len(extra_adj)}")
+        if daily_basic_error:
+            blockers.append(f"daily_basic_endpoint_error:{daily_basic_error}")
+        if missing_daily_basic:
+            blockers.append(f"daily_basic_keyset_missing:{len(missing_daily_basic)}")
+        if extra_daily_basic:
+            blockers.append(f"daily_basic_keyset_extra:{len(extra_daily_basic)}")
         if scope_allowed_symbols:
             blockers.append("unverified_allowed_stale_symbols_not_permitted")
         if not blockers and verified_terminal_delisting_absent:
@@ -984,11 +1001,27 @@ class CNParquetBatchMaintainer:
             try:
                 frame = func(trade_date=trade_date)
             except Exception as exc:
-                return pd.DataFrame(), str(exc)
+                return pd.DataFrame(), f"provider_exception:{type(exc).__name__}"
         except Exception as exc:
-            return pd.DataFrame(), str(exc)
+            return pd.DataFrame(), f"provider_exception:{type(exc).__name__}"
         if frame is None or not isinstance(frame, pd.DataFrame) or frame.empty:
             return pd.DataFrame(), "empty"
+        if "ts_code" not in frame.columns:
+            return pd.DataFrame(), "missing_ts_code"
+        raw_dates = (
+            frame["trade_date"].map(_compact_trade_date)
+            if "trade_date" in frame.columns
+            else pd.Series([trade_date] * len(frame), index=frame.index)
+        )
+        raw_symbols = frame["ts_code"].astype(str).str.strip().str.upper()
+        if not raw_dates.eq(trade_date).all():
+            return pd.DataFrame(), "wrong_trade_date"
+        raw_keys = pd.DataFrame({"ts_code": raw_symbols, "trade_date": raw_dates})
+        duplicate_count = int(
+            raw_keys.duplicated(subset=["ts_code", "trade_date"], keep=False).sum()
+        )
+        if duplicate_count:
+            return pd.DataFrame(), f"duplicate_keys:{duplicate_count}"
         cleaned, _quarantined, _row_flags, _cell_flags, report = clean_tushare_dataframe(
             frame,
             table_name=endpoint,
@@ -999,12 +1032,10 @@ class CNParquetBatchMaintainer:
         work = cleaned.copy()
         if "trade_date" not in work.columns:
             work["trade_date"] = trade_date
-        if "ts_code" not in work.columns:
-            return pd.DataFrame(), "missing_ts_code"
         work["ts_code"] = work["ts_code"].astype(str).str.strip().str.upper()
         work["trade_date"] = work["trade_date"].map(_compact_trade_date)
         work = work.loc[work["ts_code"].ne("") & work["trade_date"].eq(trade_date)].copy()
-        return work.drop_duplicates(subset=["ts_code", "trade_date"], keep="last").reset_index(drop=True), ""
+        return work.reset_index(drop=True), ""
 
     def _load_inactive_symbols(self, target_trade_date: str, target_symbols: set[str]) -> set[str]:
         target_date = _compact_trade_date(target_trade_date)

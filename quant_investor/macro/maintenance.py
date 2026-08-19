@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import stat
 import shutil
 import tempfile
 from dataclasses import asdict
@@ -14,6 +16,13 @@ from typing import Any, Callable, Mapping
 import requests
 
 from quant_investor.macro.contracts import normalize_source_url
+from quant_investor.macro.maintenance_transaction import (
+    MacroMaintenanceTransactionError,
+    commit_prepared_macro_transaction,
+    recover_macro_transaction,
+    rollback_macro_transaction,
+    seal_prepared_macro_transaction,
+)
 from quant_investor.macro.production_observation_bundle import (
     publish_local_market_breadth_roll,
 )
@@ -31,6 +40,56 @@ MAX_COVERAGE_RESPONSE_BYTES = 8 * 1024 * 1024
 
 class MacroMaintenanceError(RuntimeError):
     """Raised before a governed pointer write when maintenance cannot close."""
+
+
+def _private_preparation_root(path: str | Path) -> Path:
+    unresolved = Path(path).expanduser()
+    if not unresolved.is_absolute():
+        raise MacroMaintenanceError("macro_preparation_root_must_be_absolute")
+    try:
+        current = os.lstat(unresolved)
+        resolved = unresolved.resolve(strict=True)
+    except OSError as exc:
+        raise MacroMaintenanceError("macro_preparation_root_invalid") from exc
+    if (
+        stat.S_ISLNK(current.st_mode)
+        or not stat.S_ISDIR(current.st_mode)
+        or stat.S_IMODE(current.st_mode) & 0o077
+    ):
+        raise MacroMaintenanceError("macro_preparation_root_not_private")
+    return resolved
+
+
+def _copy_canonical_parent(source: Path, destination: Path) -> None:
+    """Copy only canonical generations and the exact pointer to a private root."""
+
+    destination.mkdir(mode=0o700)
+    generations = source / "_generations"
+    if generations.is_symlink() or not generations.is_dir():
+        raise MacroMaintenanceError("macro_canonical_generations_root_invalid")
+    for item in generations.rglob("*"):
+        current = os.lstat(item)
+        if stat.S_ISLNK(current.st_mode) or not (
+            stat.S_ISDIR(current.st_mode)
+            or (stat.S_ISREG(current.st_mode) and current.st_nlink == 1)
+        ):
+            raise MacroMaintenanceError("macro_canonical_generation_tree_unsafe")
+    shutil.copytree(generations, destination / "_generations", symlinks=False)
+    pointer = source / "_latest.json"
+    try:
+        pointer_stat = os.lstat(pointer)
+    except OSError as exc:
+        raise MacroMaintenanceError("macro_canonical_pointer_invalid") from exc
+    if (
+        stat.S_ISLNK(pointer_stat.st_mode)
+        or not stat.S_ISREG(pointer_stat.st_mode)
+        or pointer_stat.st_nlink != 1
+    ):
+        raise MacroMaintenanceError("macro_canonical_pointer_invalid")
+    shutil.copy2(pointer, destination / "_latest.json")
+    for item in destination.rglob("*"):
+        os.chmod(item, 0o700 if item.is_dir() else 0o600)
+    os.chmod(destination, 0o700)
 
 
 def _sha256_bytes(value: bytes) -> str:
@@ -294,4 +353,178 @@ def run_cn_macro_maintenance(
     }
 
 
-__all__ = ["MacroMaintenanceError", "run_cn_macro_maintenance"]
+def prepare_cn_macro_maintenance_transaction(
+    *,
+    market: str,
+    target_date: str,
+    snapshot_manifest_path: str | Path,
+    expected_snapshot_manifest_sha256: str,
+    coverage_manifest_path: str | Path,
+    expected_coverage_manifest_sha256: str,
+    scope_artifact_path: str | Path,
+    expected_scope_artifact_sha256: str,
+    release_root: str | Path,
+    expected_release_pointer_sha256: str,
+    observations_root: str | Path,
+    expected_observations_pointer_sha256: str,
+    market_pointer_path: str | Path,
+    expected_market_pointer_sha256: str,
+    pit_pointer_path: str | Path,
+    expected_pit_pointer_sha256: str,
+    authority_mode: str,
+    release_run_id: str,
+    observations_run_id: str,
+    private_run_root: str | Path,
+    transaction_run_id: str,
+    allow_live: bool = False,
+    fetcher: Callable[[str, str], tuple[bytes, str]] | None = None,
+) -> dict[str, Any]:
+    """Prepare both component-owned candidates without canonical pointer writes.
+
+    The existing publishers run against isolated copies of the two canonical
+    parents.  Their private pointers are candidate artifacts only; canonical
+    generation installation and pointer writes are reserved for the journaled
+    commit API.  ``authority_mode='candidate'`` is shadow-only; only a prepared
+    transaction sealed against exact canonical Market and PIT pointers is
+    executable.
+    """
+
+    if not allow_live:
+        raise MacroMaintenanceError("macro_maintenance_allow_live_required")
+    parent = _private_preparation_root(private_run_root)
+    token = str(transaction_run_id or "")
+    if (
+        not token
+        or len(token) > 80
+        or not token[0].isalnum()
+        or any(
+            character not in (
+                "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                "0123456789_.-"
+            )
+            for character in token
+        )
+    ):
+        raise MacroMaintenanceError("macro_transaction_run_id_invalid")
+    run_root = parent / token
+    try:
+        run_root.mkdir(mode=0o700)
+    except FileExistsError as exc:
+        raise MacroMaintenanceError("macro_transaction_prepare_no_clobber") from exc
+
+    release_canonical = Path(release_root).expanduser().resolve(strict=True)
+    observations_canonical = Path(observations_root).expanduser().resolve(strict=True)
+    release_candidate = run_root / "release_candidate"
+    observations_candidate = run_root / "observations_candidate"
+    prepared_root = run_root / "prepared"
+    try:
+        market_authority_raw = _file_bytes(
+            market_pointer_path,
+            expected_market_pointer_sha256,
+            "macro_market_authority_pointer_invalid",
+        )
+        pit_authority_raw = _file_bytes(
+            pit_pointer_path,
+            expected_pit_pointer_sha256,
+            "macro_pit_authority_pointer_invalid",
+        )
+        _copy_canonical_parent(release_canonical, release_candidate)
+        _copy_canonical_parent(observations_canonical, observations_candidate)
+        prepared_root.mkdir(mode=0o700)
+        legacy_result = run_cn_macro_maintenance(
+            market=market,
+            target_date=target_date,
+            snapshot_manifest_path=snapshot_manifest_path,
+            expected_snapshot_manifest_sha256=expected_snapshot_manifest_sha256,
+            coverage_manifest_path=coverage_manifest_path,
+            expected_coverage_manifest_sha256=expected_coverage_manifest_sha256,
+            scope_artifact_path=scope_artifact_path,
+            expected_scope_artifact_sha256=expected_scope_artifact_sha256,
+            release_root=release_candidate,
+            expected_release_pointer_sha256=expected_release_pointer_sha256,
+            observations_root=observations_candidate,
+            expected_observations_pointer_sha256=expected_observations_pointer_sha256,
+            release_run_id=release_run_id,
+            observations_run_id=observations_run_id,
+            allow_live=True,
+            commit=True,
+            fetcher=fetcher,
+        )
+        if legacy_result.get("status") != "OK":
+            raise MacroMaintenanceError(
+                "macro_transaction_candidate_preparation_incomplete:"
+                + ":".join(str(item) for item in legacy_result.get("blockers", ()))
+            )
+        if _file_bytes(
+            market_pointer_path,
+            expected_market_pointer_sha256,
+            "macro_market_authority_pointer_invalid",
+        ) != market_authority_raw:
+            raise MacroMaintenanceError("macro_market_authority_pointer_drift")
+        if _file_bytes(
+            pit_pointer_path,
+            expected_pit_pointer_sha256,
+            "macro_pit_authority_pointer_invalid",
+        ) != pit_authority_raw:
+            raise MacroMaintenanceError("macro_pit_authority_pointer_drift")
+        sealed = seal_prepared_macro_transaction(
+            prepared_root=prepared_root,
+            release_candidate_root=release_candidate,
+            observations_candidate_root=observations_candidate,
+            release_canonical_root=release_canonical,
+            observations_canonical_root=observations_canonical,
+            expected_release_pointer_sha256=expected_release_pointer_sha256,
+            expected_observations_pointer_sha256=expected_observations_pointer_sha256,
+            market_pointer_path=market_pointer_path,
+            expected_market_pointer_sha256=expected_market_pointer_sha256,
+            pit_pointer_path=pit_pointer_path,
+            expected_pit_pointer_sha256=expected_pit_pointer_sha256,
+            authority_mode=authority_mode,
+            target_date=target_date,
+            input_bindings={
+                "snapshot_manifest": {
+                    "path": str(Path(snapshot_manifest_path).expanduser().resolve()),
+                    "sha256": expected_snapshot_manifest_sha256,
+                },
+                "coverage_manifest": {
+                    "path": str(Path(coverage_manifest_path).expanduser().resolve()),
+                    "sha256": expected_coverage_manifest_sha256,
+                },
+                "scope_artifact": {
+                    "path": str(Path(scope_artifact_path).expanduser().resolve()),
+                    "sha256": expected_scope_artifact_sha256,
+                },
+            },
+        )
+    except Exception:
+        # Evidence is intentionally retained for diagnosis.  It is isolated,
+        # private and never a source of canonical fallback.
+        raise
+    return {
+        "schema_version": "cn-macro-maintenance-preparation-receipt.v1",
+        "status": "PREPARED",
+        "promoted": False,
+        "target_date": str(target_date).replace("-", ""),
+        "prepared_path": sealed["prepared_path"],
+        "prepared_sha256": sealed["prepared_sha256"],
+        "release_candidate_generation_id": sealed["release"]["generation_id"],
+        "observations_candidate_generation_id": sealed["observations"]["generation_id"],
+        "market_pointer_path": str(Path(market_pointer_path).resolve()),
+        "market_pointer_sha256": expected_market_pointer_sha256,
+        "pit_pointer_path": str(Path(pit_pointer_path).resolve()),
+        "pit_pointer_sha256": expected_pit_pointer_sha256,
+        "authority_mode": authority_mode,
+        "provider_calls": legacy_result.get("provider_calls", []),
+        "canonical_writes": [],
+    }
+
+
+__all__ = [
+    "MacroMaintenanceError",
+    "MacroMaintenanceTransactionError",
+    "commit_prepared_macro_transaction",
+    "prepare_cn_macro_maintenance_transaction",
+    "recover_macro_transaction",
+    "rollback_macro_transaction",
+    "run_cn_macro_maintenance",
+]

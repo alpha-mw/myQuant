@@ -161,9 +161,107 @@ def run_fundamental_promotion(**kwargs):
 
 
 def run_macro_maintenance(**kwargs):
-    from quant_investor.macro.maintenance import run_cn_macro_maintenance
+    from quant_investor.macro.maintenance import (
+        commit_prepared_macro_transaction,
+        prepare_cn_macro_maintenance_transaction,
+        recover_macro_transaction,
+        rollback_macro_transaction,
+        run_cn_macro_maintenance,
+    )
 
-    return run_cn_macro_maintenance(**kwargs)
+    values = dict(kwargs)
+    prepare = bool(values.pop("prepare_transaction", False))
+    commit_prepared = bool(values.pop("commit_prepared", False))
+    legacy_commit = bool(values.pop("commit", False))
+    recover = bool(values.pop("recover", False))
+    execute_forward = bool(values.pop("execute_forward", False))
+    execute_rollback = bool(values.pop("execute_rollback", False))
+    journal_root = values.pop("journal_root", "")
+    journal_run_id = values.pop("journal_run_id", "")
+    prepared_path = values.pop("prepared_path", "")
+    expected_prepared_sha256 = values.pop("expected_prepared_sha256", "")
+    authority_mode = values.pop("authority_mode", "")
+    market_pointer_path = values.pop("market_pointer_path", "")
+    expected_market_pointer_sha256 = values.pop("expected_market_pointer_sha256", "")
+    pit_pointer_path = values.pop("pit_pointer_path", "")
+    expected_pit_pointer_sha256 = values.pop("expected_pit_pointer_sha256", "")
+    rollback_shas = {
+        name: values.pop(name, "")
+        for name in (
+            "old_release_pointer_sha256",
+            "new_release_pointer_sha256",
+            "old_observations_pointer_sha256",
+            "new_observations_pointer_sha256",
+        )
+    }
+    if prepare:
+        journal_base = Path(journal_root).expanduser()
+        journal_base.mkdir(parents=True, exist_ok=True, mode=0o700)
+        journal_base.chmod(0o700)
+        preparation_root = journal_base / "_prepared"
+        preparation_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        preparation_root.chmod(0o700)
+        return prepare_cn_macro_maintenance_transaction(
+            **values,
+            private_run_root=preparation_root,
+            transaction_run_id=journal_run_id,
+            market_pointer_path=market_pointer_path,
+            expected_market_pointer_sha256=(expected_market_pointer_sha256),
+            pit_pointer_path=pit_pointer_path,
+            expected_pit_pointer_sha256=expected_pit_pointer_sha256,
+            authority_mode=authority_mode,
+        )
+    if commit_prepared:
+        journal_base = Path(journal_root).expanduser()
+        journal_base.mkdir(parents=True, exist_ok=True, mode=0o700)
+        journal_base.chmod(0o700)
+        return commit_prepared_macro_transaction(
+            prepared_path=prepared_path,
+            expected_prepared_sha256=expected_prepared_sha256,
+            journal_root=journal_base,
+            journal_run_id=journal_run_id,
+            market_pointer_path=market_pointer_path,
+            expected_market_pointer_sha256=(expected_market_pointer_sha256),
+            pit_pointer_path=pit_pointer_path,
+            expected_pit_pointer_sha256=expected_pit_pointer_sha256,
+        )
+    if recover and execute_rollback:
+        return rollback_macro_transaction(
+            journal_root=journal_root,
+            journal_run_id=journal_run_id,
+            market_pointer_path=market_pointer_path,
+            expected_market_pointer_sha256=(expected_market_pointer_sha256),
+            pit_pointer_path=pit_pointer_path,
+            expected_pit_pointer_sha256=expected_pit_pointer_sha256,
+            **rollback_shas,
+        )
+    if recover:
+        return recover_macro_transaction(
+            journal_root=journal_root,
+            journal_run_id=journal_run_id,
+            market_pointer_path=market_pointer_path,
+            expected_market_pointer_sha256=(expected_market_pointer_sha256),
+            pit_pointer_path=pit_pointer_path,
+            expected_pit_pointer_sha256=expected_pit_pointer_sha256,
+            execute_forward=execute_forward,
+        )
+    return run_cn_macro_maintenance(**values, commit=legacy_commit)
+
+
+def run_cn_daily_maintenance(**kwargs):
+    from quant_investor.market.daily_maintenance import (
+        run_cn_daily_maintenance as _run_cn_daily_maintenance,
+    )
+
+    return _run_cn_daily_maintenance(**kwargs)
+
+
+def clear_cn_daily_write_veto(**kwargs):
+    from quant_investor.market.daily_maintenance import (
+        clear_cn_daily_write_veto as _clear_cn_daily_write_veto,
+    )
+
+    return _clear_cn_daily_write_veto(**kwargs)
 
 
 def run_storage_validate(**kwargs):
@@ -621,6 +719,34 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    market_daily_maintain = market_subparsers.add_parser(
+        "daily-maintain",
+        help="收盘后执行可审计的 CN 日度维护协调器",
+    )
+    market_daily_maintain.add_argument("--market", required=True, choices=["CN"])
+    _add_workspace_argument(market_daily_maintain)
+    market_daily_maintain.add_argument(
+        "--run-root",
+        required=True,
+        type=_canonical_absolute_path,
+        help="owner-only private attempt evidence root",
+    )
+    market_daily_maintain.add_argument("--mode", required=True, choices=["shadow", "execute"])
+    market_daily_maintain.add_argument(
+        "--attempt-slot",
+        default="auto",
+        choices=["auto", "1620", "1720", "1820", "2020"],
+    )
+
+    market_clear_veto = market_subparsers.add_parser(
+        "clear-write-veto",
+        help="按 exact SHA 封存并清除 CN 日度维护 write veto",
+    )
+    market_clear_veto.add_argument("--market", required=True, choices=["CN"])
+    market_clear_veto.add_argument("--run-root", required=True, type=_canonical_absolute_path)
+    market_clear_veto.add_argument("--expected-veto-sha256", required=True, type=_sha256_argument)
+    market_clear_veto.add_argument("--reason", required=True)
+
     market_download = market_subparsers.add_parser(
         "download",
         help="兼容别名：维护全市场本地数据到最新可得交易日",
@@ -792,21 +918,47 @@ def _build_parser() -> argparse.ArgumentParser:
         help="维护 CN Macro observations 与 official release calendar",
     )
     market_macro.add_argument("--market", required=True, choices=["CN"])
-    market_macro.add_argument("--target-date", required=True)
-    market_macro.add_argument("--snapshot-manifest-path", required=True)
-    market_macro.add_argument("--expected-snapshot-manifest-sha256", required=True)
-    market_macro.add_argument("--coverage-manifest-path", required=True)
-    market_macro.add_argument("--expected-coverage-manifest-sha256", required=True)
-    market_macro.add_argument("--scope-artifact-path", required=True)
-    market_macro.add_argument("--expected-scope-artifact-sha256", required=True)
+    market_macro.add_argument("--target-date", default="")
+    market_macro.add_argument("--snapshot-manifest-path", default="")
+    market_macro.add_argument("--expected-snapshot-manifest-sha256", default="")
+    market_macro.add_argument("--coverage-manifest-path", default="")
+    market_macro.add_argument("--expected-coverage-manifest-sha256", default="")
+    market_macro.add_argument("--scope-artifact-path", default="")
+    market_macro.add_argument("--expected-scope-artifact-sha256", default="")
     market_macro.add_argument("--release-root", default="data/parquet/cn/macro_release_calendar")
-    market_macro.add_argument("--expected-release-pointer-sha256", required=True)
+    market_macro.add_argument("--expected-release-pointer-sha256", default="")
     market_macro.add_argument("--observations-root", default="data/parquet/cn/macro_observations")
-    market_macro.add_argument("--expected-observations-pointer-sha256", required=True)
-    market_macro.add_argument("--release-run-id", required=True)
-    market_macro.add_argument("--observations-run-id", required=True)
+    market_macro.add_argument("--expected-observations-pointer-sha256", default="")
+    market_macro.add_argument("--release-run-id", default="")
+    market_macro.add_argument("--observations-run-id", default="")
     market_macro.add_argument("--allow-live", action="store_true")
     market_macro.add_argument("--commit", action="store_true")
+    market_macro.add_argument("--prepare-transaction", action="store_true")
+    market_macro.add_argument("--authority-mode", choices=["candidate", "canonical"], default="")
+    market_macro.add_argument("--commit-prepared", action="store_true")
+    market_macro.add_argument("--journal-root", default=None, type=_canonical_absolute_path)
+    market_macro.add_argument("--journal-run-id", default="")
+    market_macro.add_argument("--prepared-path", default=None, type=_canonical_absolute_path)
+    market_macro.add_argument("--expected-prepared-sha256", default="")
+    market_macro.add_argument("--market-pointer-path", default=None, type=_canonical_absolute_path)
+    market_macro.add_argument(
+        "--expected-market-pointer-sha256", default=None, type=_sha256_argument
+    )
+    market_macro.add_argument("--pit-pointer-path", default=None, type=_canonical_absolute_path)
+    market_macro.add_argument("--expected-pit-pointer-sha256", default=None, type=_sha256_argument)
+    market_macro.add_argument("--recover", action="store_true")
+    market_macro.add_argument("--execute-forward", action="store_true")
+    market_macro.add_argument("--execute-rollback", action="store_true")
+    market_macro.add_argument(
+        "--old-release-pointer-sha256", default=None, type=_pointer_sha_argument
+    )
+    market_macro.add_argument("--new-release-pointer-sha256", default=None, type=_sha256_argument)
+    market_macro.add_argument(
+        "--old-observations-pointer-sha256", default=None, type=_pointer_sha_argument
+    )
+    market_macro.add_argument(
+        "--new-observations-pointer-sha256", default=None, type=_sha256_argument
+    )
 
     market_storage_validate = market_subparsers.add_parser(
         "storage-validate",
@@ -1145,6 +1297,30 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
         )
         return
 
+    if args.command == "market" and args.market_command == "daily-maintain":
+        from quant_investor.market.daily_maintenance import cli_exit_required
+
+        result = run_cn_daily_maintenance(
+            workspace_root=args.workspace_root,
+            run_root=args.run_root,
+            mode=args.mode,
+            attempt_slot=args.attempt_slot,
+        )
+        _print_json(result)
+        if cli_exit_required(result):
+            raise SystemExit(2)
+        return
+
+    if args.command == "market" and args.market_command == "clear-write-veto":
+        _print_json(
+            clear_cn_daily_write_veto(
+                run_root=args.run_root,
+                expected_veto_sha256=args.expected_veto_sha256,
+                reason=args.reason,
+            )
+        )
+        return
+
     if args.command == "market" and args.market_command == "download":
         if not args.categories:
             parser.error("market download compatibility alias requires at least one --category")
@@ -1404,6 +1580,96 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
         return
 
     if args.command == "market" and args.market_command == "macro-maintain":
+        special_modes = sum(
+            bool(value)
+            for value in (
+                args.prepare_transaction,
+                args.commit_prepared,
+                args.recover,
+            )
+        )
+        if special_modes > 1 or (args.commit and special_modes):
+            parser.error(
+                "legacy --commit, --prepare-transaction, --commit-prepared, "
+                "and --recover are mutually exclusive"
+            )
+        if args.execute_forward and not args.recover:
+            parser.error("--execute-forward requires --recover")
+        if args.execute_rollback and not args.recover:
+            parser.error("--execute-rollback requires --recover")
+        if args.execute_forward and args.execute_rollback:
+            parser.error("--execute-forward and --execute-rollback are mutually exclusive")
+        core_values = {
+            "--target-date": args.target_date,
+            "--snapshot-manifest-path": args.snapshot_manifest_path,
+            "--expected-snapshot-manifest-sha256": (args.expected_snapshot_manifest_sha256),
+            "--coverage-manifest-path": args.coverage_manifest_path,
+            "--expected-coverage-manifest-sha256": (args.expected_coverage_manifest_sha256),
+            "--scope-artifact-path": args.scope_artifact_path,
+            "--expected-scope-artifact-sha256": (args.expected_scope_artifact_sha256),
+            "--expected-release-pointer-sha256": (args.expected_release_pointer_sha256),
+            "--expected-observations-pointer-sha256": (args.expected_observations_pointer_sha256),
+            "--release-run-id": args.release_run_id,
+            "--observations-run-id": args.observations_run_id,
+        }
+        if not args.commit_prepared and not args.recover:
+            missing = [name for name, value in core_values.items() if not value]
+            if missing:
+                parser.error("macro maintenance requires " + ", ".join(missing))
+        if args.prepare_transaction and (
+            not args.allow_live
+            or not args.journal_root
+            or not args.journal_run_id
+            or not args.authority_mode
+            or not args.market_pointer_path
+            or not args.expected_market_pointer_sha256
+            or not args.pit_pointer_path
+            or not args.expected_pit_pointer_sha256
+        ):
+            parser.error(
+                "--prepare-transaction requires --allow-live, --journal-root, "
+                "--journal-run-id, --authority-mode, and exact Market/PIT "
+                "pointer path+SHA pairs"
+            )
+        if args.authority_mode and not args.prepare_transaction:
+            parser.error("--authority-mode requires --prepare-transaction")
+        if args.commit_prepared and (
+            not args.prepared_path
+            or not args.expected_prepared_sha256
+            or not args.journal_root
+            or not args.journal_run_id
+        ):
+            parser.error(
+                "--commit-prepared requires --prepared-path, "
+                "--expected-prepared-sha256, --journal-root, and --journal-run-id"
+            )
+        if args.recover and (not args.journal_root or not args.journal_run_id):
+            parser.error("--recover requires --journal-root and --journal-run-id")
+        authority_values = (
+            args.market_pointer_path,
+            args.expected_market_pointer_sha256,
+            args.pit_pointer_path,
+            args.expected_pit_pointer_sha256,
+        )
+        if special_modes and not all(authority_values):
+            parser.error(
+                "transaction prepare/commit/recover requires exact Market/PIT "
+                "pointer path+SHA pairs"
+            )
+        if any(authority_values) and not special_modes:
+            parser.error(
+                "Market/PIT authority arguments require transaction " "prepare/commit/recover"
+            )
+        rollback_values = (
+            args.old_release_pointer_sha256,
+            args.new_release_pointer_sha256,
+            args.old_observations_pointer_sha256,
+            args.new_observations_pointer_sha256,
+        )
+        if args.execute_rollback and not all(rollback_values):
+            parser.error("--execute-rollback requires all four rollback SHA arguments")
+        if any(rollback_values) and not args.execute_rollback:
+            parser.error("rollback SHA arguments require --execute-rollback")
         result = run_macro_maintenance(
             market=args.market,
             target_date=args.target_date,
@@ -1421,9 +1687,31 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
             observations_run_id=args.observations_run_id,
             allow_live=args.allow_live,
             commit=args.commit,
+            prepare_transaction=args.prepare_transaction,
+            authority_mode=args.authority_mode,
+            commit_prepared=args.commit_prepared,
+            journal_root=args.journal_root,
+            journal_run_id=args.journal_run_id,
+            prepared_path=args.prepared_path,
+            expected_prepared_sha256=args.expected_prepared_sha256,
+            market_pointer_path=args.market_pointer_path,
+            expected_market_pointer_sha256=(args.expected_market_pointer_sha256),
+            pit_pointer_path=args.pit_pointer_path,
+            expected_pit_pointer_sha256=args.expected_pit_pointer_sha256,
+            recover=args.recover,
+            execute_forward=args.execute_forward,
+            execute_rollback=args.execute_rollback,
+            old_release_pointer_sha256=args.old_release_pointer_sha256,
+            new_release_pointer_sha256=args.new_release_pointer_sha256,
+            old_observations_pointer_sha256=(args.old_observations_pointer_sha256),
+            new_observations_pointer_sha256=(args.new_observations_pointer_sha256),
         )
         _print_json(result)
-        if str(result.get("status")) not in {"OK", "DRY_RUN_OK"}:
+        if str(result.get("status")) in {
+            "BLOCKED",
+            "PARTIAL",
+            "PROMOTION_UNCERTAIN",
+        }:
             raise SystemExit(2)
         return
 

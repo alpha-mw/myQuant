@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
@@ -91,6 +93,74 @@ def _atomic_json_write(path: Path, payload: Mapping[str, Any]) -> None:
         encoding="utf-8",
     )
     temporary.replace(path)
+
+
+def _lexical_absolute(path: str | Path) -> Path:
+    return Path(os.path.abspath(os.fspath(path)))
+
+
+def _pointer_state(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {"exists": False, "sha256": "", "size_bytes": 0}
+    if path.is_symlink() or not path.is_file():
+        raise RuntimeError(f"market pointer is not a regular file: {path}")
+    payload = path.read_bytes()
+    return {
+        "exists": True,
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "size_bytes": len(payload),
+    }
+
+
+def _candidate_audit_paths(
+    *,
+    active_data_root: Path,
+    candidate_data_root: str | Path | None,
+    candidate_pointer_path: str | Path | None,
+    output_root: Path,
+) -> tuple[Path, Path] | None:
+    if candidate_data_root is None and candidate_pointer_path is None:
+        return None
+    if candidate_data_root is None or candidate_pointer_path is None:
+        raise ValueError(
+            "candidate_data_root and candidate_pointer_path must be supplied "
+            "together"
+        )
+    raw_root = Path(candidate_data_root)
+    raw_pointer = Path(candidate_pointer_path)
+    if not raw_root.is_absolute() or not raw_pointer.is_absolute():
+        raise ValueError("candidate data root and pointer must be absolute")
+    root = _lexical_absolute(raw_root)
+    pointer = _lexical_absolute(raw_pointer)
+    active_root = _lexical_absolute(active_data_root)
+    if root == active_root:
+        raise ValueError(
+            "candidate data root must differ from active data root"
+        )
+    if root.is_symlink() or not root.exists() or not root.is_dir():
+        raise ValueError(
+            "candidate data root must be an existing non-symlink directory"
+        )
+    if pointer.is_symlink() or not pointer.exists() or not pointer.is_file():
+        raise ValueError(
+            "candidate pointer must be an existing non-symlink file"
+        )
+    try:
+        pointer.resolve(strict=True).relative_to(root.resolve(strict=True))
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ValueError(
+            "candidate pointer must be contained by candidate data root"
+        ) from exc
+    output = _lexical_absolute(output_root)
+    try:
+        output.relative_to(active_root)
+    except ValueError:
+        pass
+    else:
+        raise ValueError(
+            "candidate audit output must not use the active data root"
+        )
+    return root, pointer
 
 
 def _membership_split(
@@ -1094,6 +1164,8 @@ def _read_canonical_window(
 def run_cn_history_audit(
     *,
     data_root: str | Path = "data",
+    candidate_data_root: str | Path | None = None,
+    candidate_pointer_path: str | Path | None = None,
     output_root: str | Path = "data/cn_market_full",
     days: int = 100,
     end_date: str = "auto",
@@ -1102,27 +1174,51 @@ def run_cn_history_audit(
     suspended_loader: Callable[..., Iterable[str]] | None = None,
     trade_dates: Iterable[str] | None = None,
 ) -> tuple[dict[str, Any], Path]:
-    """Recompute the entire audit window without reading a prior audit."""
+    """Recompute the entire audit window without reading a prior audit.
+
+    ``candidate_data_root`` and ``candidate_pointer_path`` select an isolated,
+    explicitly prepared shadow snapshot.  Candidate mode never discovers or
+    substitutes the active canonical pointer and cannot confer canonical or
+    portfolio readiness.
+    """
 
     if days <= 0:
         raise ValueError("days must be positive")
-    root = Path(data_root)
+    active_root = Path(data_root)
     output = Path(output_root)
+    candidate_paths = _candidate_audit_paths(
+        active_data_root=active_root,
+        candidate_data_root=candidate_data_root,
+        candidate_pointer_path=candidate_pointer_path,
+        output_root=output,
+    )
+    candidate_mode = candidate_paths is not None
+    if candidate_paths is None:
+        root = active_root
+        latest_path = root / "parquet" / "cn" / "_latest.json"
+    else:
+        root, latest_path = candidate_paths
+        output = _lexical_absolute(output)
+    protected_active_path = active_root / "parquet" / "cn" / "_latest.json"
+    protected_active_before = _pointer_state(protected_active_path)
+
+    reader = MarketDataReader(
+        market="CN",
+        data_root=root,
+        mode_policy="strict",
+    )
+    if candidate_mode:
+        reader.latest_pointer_path = latest_path
     store = MarketDataStore(market="CN", data_root=root)
+    store.reader = reader
     validation = store.validate_latest()
     if validation.get("status") != "passed":
         raise RuntimeError(
             "strict storage validation failed: "
             + "; ".join(validation.get("blockers", []) or [])
         )
-    latest_path = root / "parquet" / "cn" / "_latest.json"
-    reader = MarketDataReader(
-        market="CN",
-        data_root=root,
-        mode_policy="strict",
-    )
     latest_payload = reader._load_latest_payload(refresh=True)
-    active_latest_sha256 = file_sha256(latest_path)
+    input_latest_sha256 = file_sha256(latest_path)
     effective_end = (
         _compact_trade_date(latest_payload.get("latest_complete_trade_date"))
         if str(end_date).strip().lower() == "auto"
@@ -1292,6 +1388,7 @@ def run_cn_history_audit(
     if not manifest_path.is_absolute():
         manifest_path = Path.cwd() / manifest_path
     canonical_binding = {
+        "audit_input_kind": "candidate" if candidate_mode else "canonical",
         "snapshot_id": str(latest_payload.get("snapshot_id") or ""),
         "latest_path": str(latest_path),
         "latest_file_sha256": file_sha256(latest_path),
@@ -1730,14 +1827,39 @@ def run_cn_history_audit(
         raise RuntimeError(
             "history audit did not recompute the requested full window"
         )
-    if file_sha256(latest_path) != active_latest_sha256:
+    if file_sha256(latest_path) != input_latest_sha256:
         raise RuntimeError(
-            "active market pointer changed during history audit"
+            "candidate market pointer changed during history audit"
+            if candidate_mode
+            else "active market pointer changed during history audit"
         )
+    protected_active_after = _pointer_state(protected_active_path)
+    protected_active_unchanged = (
+        protected_active_after == protected_active_before
+    )
+    if not protected_active_unchanged:
+        raise RuntimeError(
+            "protected active market pointer changed during history audit"
+        )
+    audit_input_kind = "candidate" if candidate_mode else "canonical"
+    audit["audit_method"] = f"full_recompute_from_{audit_input_kind}"
+    input_state = {
+        "snapshot_id": str(latest_payload.get("snapshot_id") or ""),
+        "latest_path": str(latest_path),
+        "latest_sha256": input_latest_sha256,
+        "manifest_path": str(manifest_path),
+        "manifest_sha256": file_sha256(manifest_path),
+        "coverage_fingerprint_sha256": coverage_fingerprint(
+            latest_payload.get("coverage", {})
+        ),
+        "latest_complete_trade_date": effective_end,
+        "storage_validation": validation,
+    }
     report: dict[str, Any] = {
         "schema_version": CN_HISTORY_AUDIT_SCHEMA_VERSION,
         "generated_at": _utc_now_iso(),
         "market": "CN",
+        "audit_input_kind": audit_input_kind,
         "target_trade_date": effective_end,
         "effective_trade_date": effective_end,
         "stable_trade_date": effective_end,
@@ -1755,18 +1877,23 @@ def run_cn_history_audit(
                 list(triplet) for triplet in sorted(refreshed_triplets)
             ],
         },
-        "canonical_window_evidence": canonical_window_evidence,
-        "canonical": {
-            "snapshot_id": str(latest_payload.get("snapshot_id") or ""),
-            "latest_path": str(latest_path),
-            "latest_sha256": active_latest_sha256,
-            "manifest_path": str(manifest_path),
-            "manifest_sha256": file_sha256(manifest_path),
-            "coverage_fingerprint_sha256": coverage_fingerprint(
-                latest_payload.get("coverage", {})
-            ),
-            "latest_complete_trade_date": effective_end,
-            "storage_validation": validation,
+        "input_window_evidence": canonical_window_evidence,
+        "canonical_window_evidence": (
+            canonical_window_evidence if not candidate_mode else {}
+        ),
+        "candidate_window_evidence": (
+            canonical_window_evidence if candidate_mode else {}
+        ),
+        "canonical": input_state if not candidate_mode else {},
+        "candidate": input_state if candidate_mode else {},
+        "protected_active_pointer": {
+            "path": str(protected_active_path),
+            "exists_before": protected_active_before["exists"],
+            "exists_after": protected_active_after["exists"],
+            "sha256_before": protected_active_before["sha256"],
+            "sha256_after": protected_active_after["sha256"],
+            "unchanged": protected_active_unchanged,
+            "used_as_audit_input": not candidate_mode,
         },
         "components_evidence": {
             "path": str(components_path),
@@ -1793,7 +1920,11 @@ def run_cn_history_audit(
             "generation_manifest_sha256": str(
                 coverage.get("pit_generation_manifest_sha256") or ""
             ),
-            "binding_source": "active_market_coverage",
+            "binding_source": (
+                "candidate_market_coverage"
+                if candidate_mode
+                else "active_market_coverage"
+            ),
         },
         "terminal_delisting_evidence": {
             "path": (
@@ -1811,15 +1942,24 @@ def run_cn_history_audit(
         "maintenance_status": (
             "complete" if audit["history_audit_status"] == "passed" else "partial"
         ),
-        "latest_canonical_ready": True,
-        "portfolio_data_ready": audit["history_audit_status"] == "passed",
+        "latest_canonical_ready": not candidate_mode,
+        "candidate_data_ready": (
+            candidate_mode and audit["history_audit_status"] == "passed"
+        ),
+        "portfolio_data_ready": (
+            not candidate_mode and audit["history_audit_status"] == "passed"
+        ),
+        "canonical_write_authorized": False,
         "historical_upsert_count": 0,
         "synthetic_bar_count": 0,
         "no_analysis_or_trading_side_effects": True,
     }
     report["audit_sha256"] = canonical_json_sha256(report)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    output_path = output / f"history_audit_{timestamp}_full_recompute.json"
+    filename_suffix = (
+        "candidate_full_recompute" if candidate_mode else "full_recompute"
+    )
+    output_path = output / f"history_audit_{timestamp}_{filename_suffix}.json"
     _atomic_json_write(output_path, report)
     return report, output_path
 

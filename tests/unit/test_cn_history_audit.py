@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 import pandas as pd
 
+import quant_investor.market.cn_history_audit as history_audit_module
 from quant_investor.market.cn_history_audit import (
     _missing_pit_components,
     _query_open_trade_dates,
@@ -12,6 +15,7 @@ from quant_investor.market.cn_history_audit import (
     _select_suspension_continuity_symbols,
     _suspension_continuity_cache_path,
     build_cn_history_audit,
+    run_cn_history_audit,
 )
 from quant_investor.market.cn_nontrading_evidence import (
     canonical_json_sha256,
@@ -422,3 +426,157 @@ def test_suspend_v5_readback_replays_all_exact_event_types(tmp_path):
         trade_date=trade_date,
     )
     assert "suspend_evidence_resume_records_mismatch" in blockers
+
+
+def test_candidate_root_audit_is_explicit_and_preserves_active_pointer(
+    tmp_path,
+    monkeypatch,
+):
+    active_root = tmp_path / "active-data"
+    active_pointer = active_root / "parquet" / "cn" / "_latest.json"
+    active_pointer.parent.mkdir(parents=True)
+    active_pointer_bytes = b'{"snapshot_id":"protected-active"}\n'
+    active_pointer.write_bytes(active_pointer_bytes)
+
+    candidate_root = tmp_path / "private-candidate-data"
+    candidate_pointer = candidate_root / "prepared" / "candidate-pointer.json"
+    candidate_pointer.parent.mkdir(parents=True)
+    components_path = (
+        candidate_root / "cn_universe" / "cn_index_components.json"
+    )
+    components_path.parent.mkdir(parents=True)
+    components_path.write_text(
+        json.dumps({"full_a": ["000001.SZ"]}),
+        encoding="utf-8",
+    )
+    pit_path = candidate_root / "pit.parquet"
+    pit_path.write_bytes(b"sealed-pit")
+    pit_sha256 = hashlib.sha256(pit_path.read_bytes()).hexdigest()
+    manifest_path = candidate_root / "candidate-manifest.json"
+    manifest_path.write_text("{}\n", encoding="utf-8")
+    candidate_payload = {
+        "snapshot_id": "candidate-20260818",
+        "latest_complete_trade_date": "20260818",
+        "manifest_path": str(manifest_path),
+        "coverage": {
+            "coverage_schema_version": "cn-full-a-coverage.v4",
+            "pit_membership_path": str(pit_path),
+            "pit_membership_sha256": pit_sha256,
+        },
+    }
+    candidate_pointer.write_text(
+        json.dumps(candidate_payload, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    pointer_reads = []
+
+    def _validate_latest(store):
+        assert store.reader.latest_pointer_path == candidate_pointer
+        return {"status": "passed", "blockers": []}
+
+    def _load_latest_payload(reader, *, refresh=False):
+        pointer_reads.append(reader.latest_pointer_path)
+        return json.loads(
+            reader.latest_pointer_path.read_text(encoding="utf-8")
+        )
+
+    monkeypatch.setattr(
+        history_audit_module.MarketDataStore,
+        "validate_latest",
+        _validate_latest,
+    )
+    monkeypatch.setattr(
+        history_audit_module.MarketDataReader,
+        "_load_latest_payload",
+        _load_latest_payload,
+    )
+    monkeypatch.setattr(
+        history_audit_module.MarketDataReader,
+        "coverage_bound_pit",
+        lambda _reader: {
+            "status": "passed",
+            "blockers": [],
+            "canonical_sha256": pit_sha256,
+            "records": {"000001.SZ": _record("000001.SZ")},
+        },
+    )
+    monkeypatch.setattr(
+        history_audit_module.MarketDataReader,
+        "_require_snapshot",
+        lambda _reader: SimpleNamespace(
+            table_root=candidate_root / "table",
+            serving_root=candidate_root / "serving",
+        ),
+    )
+    monkeypatch.setattr(
+        history_audit_module,
+        "_read_canonical_window",
+        lambda *_args, **_kwargs: (
+            pd.DataFrame(
+                [
+                    {
+                        "ts_code": "000001.SZ",
+                        "trade_date": "20260818",
+                        "open": 1.0,
+                        "high": 1.0,
+                        "low": 1.0,
+                        "close": 1.0,
+                        "vol": 1.0,
+                        "amount": 1.0,
+                        "adj_factor": 1.0,
+                    }
+                ]
+            ),
+            {
+                "table_sha256": "a" * 64,
+                "serving_sha256": "a" * 64,
+                "table_serving_match": True,
+            },
+        ),
+    )
+
+    report, output_path = run_cn_history_audit(
+        data_root=active_root,
+        candidate_data_root=candidate_root,
+        candidate_pointer_path=candidate_pointer,
+        output_root=candidate_root / "audit-output",
+        days=1,
+        end_date="20260818",
+        trade_dates=["20260818"],
+    )
+
+    assert output_path.is_relative_to(candidate_root)
+    assert pointer_reads and set(pointer_reads) == {candidate_pointer}
+    assert active_pointer.read_bytes() == active_pointer_bytes
+    assert report["audit_input_kind"] == "candidate"
+    assert report["audit_method"] == "full_recompute_from_candidate"
+    assert report["candidate"]["latest_path"] == str(candidate_pointer)
+    assert report["pit_membership_evidence"]["binding_source"] == (
+        "candidate_market_coverage"
+    )
+    assert report["candidate_data_ready"] is True
+    assert report["latest_canonical_ready"] is False
+    assert report["portfolio_data_ready"] is False
+    assert report["protected_active_pointer"]["unchanged"] is True
+    assert report["protected_active_pointer"]["sha256_before"] == (
+        hashlib.sha256(active_pointer_bytes).hexdigest()
+    )
+
+
+def test_history_audit_script_accepts_explicit_candidate_input_flags():
+    from scripts.run_cn_history_audit import _parse_args
+
+    args = _parse_args(
+        [
+            "--candidate-data-root",
+            "/private/tmp/candidate-data",
+            "--candidate-pointer-path",
+            "/private/tmp/candidate-data/candidate-pointer.json",
+            "--output-root",
+            "/private/tmp/candidate-audit",
+        ]
+    )
+
+    assert args.candidate_data_root == "/private/tmp/candidate-data"
+    assert args.candidate_pointer_path.endswith("candidate-pointer.json")

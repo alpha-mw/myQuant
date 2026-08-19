@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Run a full-window CN strict-Parquet coverage audit.
 
-This command is maintenance-only.  It reads canonical Parquet bars and calls
-only Tushare reference/evidence endpoints when ``--allow-online`` is supplied;
-it never invokes market analysis, portfolio review, execution, or broker APIs.
+This command is maintenance-only.  It reads either canonical Parquet bars or
+an explicitly supplied private candidate root/pointer and calls only Tushare
+reference/evidence endpoints when ``--allow-online`` is supplied; it never
+invokes market analysis, portfolio review, execution, or broker APIs.
 """
 
 from __future__ import annotations
@@ -28,11 +29,30 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="YYYYMMDD or auto (latest_complete_trade_date).",
     )
     parser.add_argument("--data-root", default="data")
+    parser.add_argument(
+        "--candidate-data-root",
+        default=None,
+        help=(
+            "Absolute private candidate data root. Must be paired with "
+            "--candidate-pointer-path; never falls back to the active pointer."
+        ),
+    )
+    parser.add_argument(
+        "--candidate-pointer-path",
+        default=None,
+        help=(
+            "Absolute sealed Market candidate pointer inside the candidate "
+            "root."
+        ),
+    )
     parser.add_argument("--output-root", default="data/cn_market_full")
     parser.add_argument(
         "--allow-online",
         action="store_true",
-        help="Authorize read-only Tushare trade_cal/suspend_d/bak_daily evidence calls.",
+        help=(
+            "Authorize read-only Tushare trade_cal/suspend_d/bak_daily "
+            "evidence calls."
+        ),
     )
     return parser.parse_args(argv)
 
@@ -55,6 +75,16 @@ def main(argv: Sequence[str] | None = None) -> dict:
 
     report, output_path = run_cn_history_audit(
         data_root=Path(args.data_root),
+        candidate_data_root=(
+            Path(args.candidate_data_root)
+            if args.candidate_data_root is not None
+            else None
+        ),
+        candidate_pointer_path=(
+            Path(args.candidate_pointer_path)
+            if args.candidate_pointer_path is not None
+            else None
+        ),
         output_root=Path(args.output_root),
         days=int(args.days),
         end_date=str(args.end_date),
@@ -64,6 +94,7 @@ def main(argv: Sequence[str] | None = None) -> dict:
     )
     summary = {
         "market": args.market,
+        "audit_input_kind": report["audit_input_kind"],
         "output_path": str(output_path),
         "history_audit_status": report["history_audit_status"],
         "audited_trade_dates_count": report["audited_trade_dates_count"],
@@ -76,6 +107,7 @@ def main(argv: Sequence[str] | None = None) -> dict:
         ],
         "synthetic_bar_count": report["synthetic_bar_count"],
         "portfolio_data_ready": report["portfolio_data_ready"],
+        "candidate_data_ready": report["candidate_data_ready"],
     }
     print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
     if report["history_audit_status"] != "passed":

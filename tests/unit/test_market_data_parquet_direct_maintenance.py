@@ -141,6 +141,27 @@ def test_cn_parquet_direct_requires_publish_bindings_before_provider_init(
         )
 
 
+def test_parquet_maintainer_sanitizes_provider_exception_text():
+    class _Provider:
+        def daily(self, **_kwargs):
+            raise RuntimeError("token=SUPER_SECRET_PROVIDER_VALUE")
+
+    maintainer = download_module.CNParquetBatchMaintainer.__new__(
+        download_module.CNParquetBatchMaintainer
+    )
+    maintainer.downloader = type("_Downloader", (), {"pro": _Provider()})()
+
+    frame, error = maintainer._fetch_endpoint(
+        "daily",
+        "20260818",
+        "ts_code,trade_date,open,high,low,close,pre_close,change,pct_chg,vol,amount",
+    )
+
+    assert frame.empty
+    assert error == "provider_exception:RuntimeError"
+    assert "SUPER_SECRET_PROVIDER_VALUE" not in error
+
+
 def _write_seed_snapshot(root: Path) -> None:
     table_root, serving_root, manifest_path = v4_snapshot_paths(root, "seed")
     month_dir = table_root / "year=2026" / "month=03"
@@ -1251,13 +1272,14 @@ def test_run_market_maintenance_parquet_direct_upserts_and_writes_audit_artifact
     )
 
     assert result["storage_mode"] == "parquet-direct"
-    assert result["parquet_commit"]["status"] == "OK"
-    assert result["parquet_commit"]["latest_complete_trade_date"] == "20260316"
+    assert result["parquet_commit"]["status"] == "BLOCKED"
+    assert result["parquet_commit"]["latest_complete_trade_date"] == "20260315"
+    assert "daily_basic_keyset_missing:1" in result["completeness"]["blockers"]
     assert not list(audit_root.glob("*/*.csv"))
     progress = json.loads((audit_root / "progress_summary.json").read_text(encoding="utf-8"))
     failed = json.loads((audit_root / "failed_batches.json").read_text(encoding="utf-8"))
     assert progress["storage_mode"] == "parquet-direct"
-    assert progress["status"] == "OK"
+    assert progress["status"] == "BLOCKED"
     assert progress["daily_basic_coverage"]["coverage_ratio"] == 0.5
     assert failed["failed_batch_count"] == 0
 
