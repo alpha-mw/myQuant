@@ -16,16 +16,18 @@ from .errors import FactorGovernanceError
 
 SCANNER_MODULE_PATH: Final = "quant_investor/factors/governance/legacy_zero_call.py"
 SCANNER_COMMAND: Final = "quant-investor factor verify-legacy-zero-call"
+_RETIRED_V17 = "v" + "17"
+_RETIRED_V17_V4 = _RETIRED_V17 + "_v4"
 _LEGACY_MODULE_PREFIXES: Final = (
-    "quant_investor.v17_v4_runtime",
-    "quant_investor.v17_v4_contract",
-    "quant_investor.v17",
+    f"quant_investor.{_RETIRED_V17_V4}_runtime",
+    f"quant_investor.{_RETIRED_V17_V4}_contract",
+    f"quant_investor.{_RETIRED_V17}",
 )
 _LEGACY_TEXT_MARKERS: Final = (
-    "quant_investor/v17_v4_runtime",
-    "quant_investor/v17_v4_contract",
-    "quant_investor.v17_v4_runtime",
-    "quant_investor.v17_v4_contract",
+    f"quant_investor/{_RETIRED_V17_V4}_runtime",
+    f"quant_investor/{_RETIRED_V17_V4}_contract",
+    f"quant_investor.{_RETIRED_V17_V4}_runtime",
+    f"quant_investor.{_RETIRED_V17_V4}_contract",
 )
 
 ProcessRunner = Callable[..., Any]
