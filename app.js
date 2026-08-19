@@ -576,6 +576,9 @@
       makeCell(row, publicRedacted(number(change.previous_shares)), "numeric");
       makeCell(row, publicRedacted(number(change.current_shares)), "numeric");
       makeCell(row, publicRedacted(number(change.share_delta)), "numeric " + (PublicMode ? "" : signedClass(change.share_delta)));
+      makeCell(row, publicRedacted(money(change.previous_market_value)), "numeric");
+      makeCell(row, publicRedacted(money(change.current_market_value)), "numeric");
+      makeCell(row, publicRedacted(money(change.market_value_delta)), "numeric " + (PublicMode ? "" : signedClass(change.market_value_delta)));
       makeCell(row, percent(change.nav_weight_delta, true), "numeric " + signedClass(change.nav_weight_delta));
       makeCell(row, percent(change.equity_weight_delta, true), "numeric " + signedClass(change.equity_weight_delta));
       body.appendChild(row);

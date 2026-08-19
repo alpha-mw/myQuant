@@ -77,6 +77,62 @@
           }
         });
       }
+      if (!Array.isArray(value.changes) ||
+          (!value.public_redacted && value.changes.length < 1)) {
+        errors.push("changes are missing");
+      } else if (!value.public_redacted) {
+        var seenChanges = {};
+        value.changes.forEach(function (change, index) {
+          if (!isObject(change) || !SYMBOL_RE.test(change.symbol || "") || !change.name) {
+            errors.push("changes[" + index + "] identity is invalid");
+            return;
+          }
+          if (seenChanges[change.symbol]) {
+            errors.push("changes contain duplicate symbols");
+          }
+          seenChanges[change.symbol] = true;
+          if (["NEW", "INCREASED", "REDUCED", "CLOSED", "UNCHANGED"].indexOf(change.change_type) < 0) {
+            errors.push("changes[" + index + "].change_type is invalid");
+          }
+          var numberKeys = [
+            "previous_shares",
+            "current_shares",
+            "share_delta",
+            "previous_market_value",
+            "current_market_value",
+            "market_value_delta",
+            "nav_weight_delta",
+            "equity_weight_delta"
+          ];
+          if (numberKeys.some(function (key) { return !finite(change[key]); })) {
+            errors.push("changes[" + index + "] values are invalid");
+            return;
+          }
+          if (Math.abs(change.share_delta - (change.current_shares - change.previous_shares)) > 1e-9) {
+            errors.push("changes[" + index + "] share delta is inconsistent");
+          }
+          var expectedChangeType;
+          if (change.previous_shares === 0 && change.current_shares > 0) {
+            expectedChangeType = "NEW";
+          } else if (change.current_shares === 0 && change.previous_shares > 0) {
+            expectedChangeType = "CLOSED";
+          } else if (change.current_shares > change.previous_shares) {
+            expectedChangeType = "INCREASED";
+          } else if (change.current_shares < change.previous_shares) {
+            expectedChangeType = "REDUCED";
+          } else {
+            expectedChangeType = "UNCHANGED";
+          }
+          if (change.change_type !== expectedChangeType) {
+            errors.push("changes[" + index + "] change type is inconsistent");
+          }
+          if (Math.abs(change.market_value_delta - (
+            change.current_market_value - change.previous_market_value
+          )) > 0.01) {
+            errors.push("changes[" + index + "] market value delta is inconsistent");
+          }
+        });
+      }
       var returnMethod = isObject(value.portfolio) ? value.portfolio.return_method : "";
       var canonicalReturn = returnMethod === CANONICAL_RETURN_METHOD;
       if (!isObject(value.portfolio) ||
