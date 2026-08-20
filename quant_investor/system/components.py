@@ -396,6 +396,57 @@ def validate_installed_component_manifest(
     return document
 
 
+def validate_sealed_installed_component_manifest(
+    artifact: Mapping[str, Any] | bytes,
+) -> dict[str, Any]:
+    """Validate an immutable historical component without consulting current source files."""
+
+    document = validate_artifact(artifact, expected_kind="system.installed_component_manifest")
+    payload = document["payload"]
+    projection_fields = {
+        "component_id",
+        "component_registry_sha256",
+        "component_role",
+        "package_name",
+        "module_names",
+        "entrypoints",
+        "files",
+        "release_manifest_ref",
+        "installed_code_manifest_sha256",
+        "allowed_source_formats",
+        "fallback_allowed",
+    }
+    if set(payload) != projection_fields | {
+        "component_manifest_id",
+        "component_sha256",
+        "outcome",
+        "authority",
+    }:
+        raise SystemContractError("sealed installed component fields differ")
+    projection = {field: payload[field] for field in projection_fields}
+    component_sha = hashlib.sha256(
+        canonical_json_bytes({"domain": "myquant-installed-component", **projection})
+    ).hexdigest()
+    manifest_id = hashlib.sha256(
+        canonical_json_bytes(
+            {
+                "domain": "myquant-installed-component-manifest-id",
+                "component_id": payload["component_id"],
+                "component_sha256": component_sha,
+                "release_manifest_ref": payload["release_manifest_ref"],
+            }
+        )
+    ).hexdigest()
+    if (
+        payload["component_sha256"] != component_sha
+        or payload["component_manifest_id"] != manifest_id
+        or payload["outcome"] != "VALIDATED"
+        or payload["authority"] != "NON_AUTHORIZING"
+    ):
+        raise SystemContractError("sealed installed component identity differs")
+    return document
+
+
 __all__ = [
     "BOOTSTRAP_VALIDATION_PROFILE",
     "COMPONENT_REGISTRY_SHA256",
@@ -417,5 +468,6 @@ __all__ = [
     "derive_installed_component_payload",
     "seal_installed_component_manifest",
     "validate_installed_component_manifest",
+    "validate_sealed_installed_component_manifest",
     "validation_profile",
 ]

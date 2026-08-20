@@ -415,7 +415,7 @@ def _system_usability(context: MaintenanceContext, callback: StatusCallback | No
 
             observed = system_status(workspace_root=str(context.workspace_root))
         else:
-            observed = callback(context)
+            observed = dict(callback(context))
     except Exception:
         return "UNCONFIRMED"
     if type(observed.get("usable_for_investment_research")) is bool:
@@ -440,8 +440,10 @@ def _overall_status(*, stage_results: list[dict[str, Any]], slot: str, mode: str
     return "SHADOW_COMPLETE" if mode == "shadow" else "COMPLETE"
 
 
-def _write_veto(run_root: Path, payload: Mapping[str, Any]) -> tuple[str, str]:
-    path = run_root / "WRITE_VETO.json"
+def _write_veto(
+    run_root: Path, payload: Mapping[str, Any], *, filename: str = "WRITE_VETO.json"
+) -> tuple[str, str]:
+    path = run_root / filename
     raw = _canonical_json_bytes(payload)
     try:
         sha = _write_once(path, raw)
@@ -675,7 +677,7 @@ def run_cn_daily_maintenance(
                     prior_results=stage_results,
                 )
             stage_results.append(result)
-            core_halted = result["status"] in {"BLOCKED", "RETRY_PENDING"}
+            core_halted = core_halted or result["status"] in {"BLOCKED", "RETRY_PENDING"}
         core_results = list(stage_results)
         if core_halted:
             for stage in ("FUNDAMENTAL", "MACRO_RELEASE"):
@@ -695,15 +697,49 @@ def run_cn_daily_maintenance(
                 context=context,
                 prior_results=core_results,
             )
-            macro_result = _run_component(
-                stage="MACRO_RELEASE",
-                callback=selected_components.macro_release,
-                context=context,
-                prior_results=core_results,
-            )
+            macro_veto = root / "MACRO_WRITE_VETO.json"
+            if mode == "execute" and _path_present(macro_veto):
+                veto_raw = _read_owner_file(macro_veto, code="MACRO_WRITE_VETO_UNSAFE")
+                macro_result = {
+                    "stage": "MACRO_RELEASE",
+                    "status": "BLOCKED",
+                    "write_performed": False,
+                    "blockers": ["MACRO_WRITE_VETO_ACTIVE"],
+                    "evidence": {
+                        "macro_write_veto_ref": {
+                            "path": str(macro_veto),
+                            "sha256": hashlib.sha256(veto_raw).hexdigest(),
+                        }
+                    },
+                }
+            else:
+                macro_result = _run_component(
+                    stage="MACRO_RELEASE",
+                    callback=selected_components.macro_release,
+                    context=context,
+                    prior_results=core_results,
+                )
             stage_results.extend((fundamental_result, macro_result))
         fundamental_result = next(item for item in stage_results if item["stage"] == "FUNDAMENTAL")
         same_day_results = [item for item in stage_results if item["stage"] != "FUNDAMENTAL"]
+        factor_core_results = [
+            item for item in stage_results if item["stage"] in {"PIT", "MARKET", "HISTORY"}
+        ]
+        core_ready = (
+            all(
+                item["status"] in {"READY", "NO_ACTION"}
+                and not item["blockers"]
+                and item["evidence"].get("skipped") is not True
+                for item in factor_core_results
+            )
+            and len(factor_core_results) == 3
+        )
+        core_hard_block = any(item["status"] == "BLOCKED" for item in factor_core_results)
+        factor_input_readiness = "READY" if mode == "execute" and core_ready else "BLOCKED"
+        factor_input_shadow_readiness = "READY" if mode == "shadow" and core_ready else "BLOCKED"
+        core_blockers = sorted(
+            {blocker for item in factor_core_results for blocker in item["blockers"]}
+        )
         same_day_status = _overall_status(stage_results=same_day_results, slot=slot, mode=mode)
         if fundamental_result["evidence"].get("skipped") is True:
             fundamental_integrity_status = "UNCONFIRMED"
@@ -713,7 +749,17 @@ def run_cn_daily_maintenance(
             fundamental_integrity_status = "BLOCKED"
         else:
             fundamental_integrity_status = "UNCONFIRMED"
-        if same_day_status in {
+        macro_result = next(item for item in stage_results if item["stage"] == "MACRO_RELEASE")
+        macro_status = macro_result["status"]
+        raw_macro_blockers = macro_result.get("blockers")
+        macro_blockers = (
+            [str(value) for value in raw_macro_blockers]
+            if isinstance(raw_macro_blockers, list)
+            else []
+        )
+        if core_ready and macro_status == "BLOCKED":
+            maintenance_status = "PARTIAL"
+        elif same_day_status in {
             "BLOCKED",
             "RETRY_PENDING",
             "SAME_DAY_SLA_MISSED",
@@ -730,6 +776,15 @@ def run_cn_daily_maintenance(
             "status": maintenance_status,
             "maintenance_status": maintenance_status,
             "same_day_status": same_day_status,
+            "factor_input_readiness": factor_input_readiness,
+            "factor_input_shadow_readiness": factor_input_shadow_readiness,
+            "factor_input_change": "UNKNOWN",
+            "core_blockers": core_blockers,
+            "macro_status": macro_status,
+            "macro_blockers": macro_blockers,
+            "macro_used_by_factor": False,
+            "fundamental_used_by_factor": False,
+            "factor_rollover_eligible": factor_input_readiness == "READY",
             "fundamental_integrity_status": fundamental_integrity_status,
             "fundamental_refresh_status": "HEALTH_ONLY",
             "mode": mode,
@@ -748,7 +803,7 @@ def run_cn_daily_maintenance(
             "blockers": blockers,
             "protected_surfaces": list(_PROTECTED_SURFACES),
         }
-        if mode == "execute" and maintenance_status == "BLOCKED":
+        if mode == "execute" and core_hard_block:
             veto_path, veto_sha = _write_veto(
                 root,
                 {
@@ -759,13 +814,37 @@ def run_cn_daily_maintenance(
                     "blockers": blockers,
                     "attempt_root": str(attempt),
                 },
+                filename="WRITE_VETO.json",
             )
             payload["write_veto_ref"] = {"path": veto_path, "sha256": veto_sha}
+        elif mode == "execute" and macro_status == "BLOCKED":
+            veto_path, veto_sha = _write_veto(
+                root,
+                {
+                    "schema_version": "cn-daily-maintenance-macro-write-veto.v1",
+                    "created_at": local_now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "attempt_slot": slot,
+                    "target_date": context.target_date,
+                    "blockers": macro_blockers,
+                    "attempt_root": str(attempt),
+                },
+                filename="MACRO_WRITE_VETO.json",
+            )
+            payload["macro_write_veto_ref"] = {"path": veto_path, "sha256": veto_sha}
         state = {
             "schema_version": "cn-daily-maintenance-state.v1",
             "status": maintenance_status,
             "maintenance_status": maintenance_status,
             "same_day_status": same_day_status,
+            "factor_input_readiness": factor_input_readiness,
+            "factor_input_shadow_readiness": factor_input_shadow_readiness,
+            "factor_input_change": "UNKNOWN",
+            "core_blockers": core_blockers,
+            "macro_status": macro_status,
+            "macro_blockers": macro_blockers,
+            "macro_used_by_factor": False,
+            "fundamental_used_by_factor": False,
+            "factor_rollover_eligible": factor_input_readiness == "READY",
             "fundamental_integrity_status": fundamental_integrity_status,
             "fundamental_refresh_status": "HEALTH_ONLY",
             "mode": mode,
@@ -780,7 +859,11 @@ def run_cn_daily_maintenance(
 
 
 def clear_cn_daily_write_veto(
-    *, run_root: str | Path, expected_veto_sha256: str, reason: str
+    *,
+    run_root: str | Path,
+    expected_veto_sha256: str,
+    reason: str,
+    lane: str = "global",
 ) -> dict[str, Any]:
     """Archive one exact veto under the same lock; never delete its evidence."""
 
@@ -791,16 +874,18 @@ def clear_cn_daily_write_veto(
         or reason.strip() != reason
         or len(reason) > 240
         or any(ord(character) < 0x20 for character in reason)
+        or lane not in {"global", "macro"}
     ):
         raise DailyMaintenanceError("CLEAR_WRITE_VETO_ARGUMENTS_INVALID")
     root = _owner_only_directory(Path(run_root), create=False)
     with _RunLock(root / ".daily-maintenance.lock"):
-        veto = root / "WRITE_VETO.json"
+        veto = root / ("WRITE_VETO.json" if lane == "global" else "MACRO_WRITE_VETO.json")
         if not _path_present(veto):
             return {
                 "schema_version": "cn-daily-maintenance-veto-clear.v1",
                 "status": "NO_ACTION",
                 "cleared": False,
+                "lane": lane,
             }
         raw = _read_owner_file(veto, code="WRITE_VETO_UNSAFE")
         observed_sha = hashlib.sha256(raw).hexdigest()
@@ -822,6 +907,7 @@ def clear_cn_daily_write_veto(
             "cleared": True,
             "cleared_at": cleared_at,
             "reason": reason,
+            "lane": lane,
             "archived_veto_ref": {
                 "path": str(archived_path),
                 "sha256": observed_sha,

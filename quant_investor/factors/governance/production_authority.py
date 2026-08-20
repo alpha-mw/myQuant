@@ -48,7 +48,10 @@ from quant_investor.factors.governance.bootstrap_selection import (
     build_market_pit_selection,
     validate_market_pit_selection,
 )
-from quant_investor.system.components import validate_installed_component_manifest
+from quant_investor.system.components import (
+    validate_installed_component_manifest,
+    validate_sealed_installed_component_manifest,
+)
 from quant_investor.system.store import validate_object_ref
 
 from .bootstrap import (
@@ -2384,6 +2387,7 @@ def _validate_deep_factor_policy(
     expected_code_manifest_sha256: str,
     primary_source_leaves: Mapping[str, Mapping[str, Any]],
     recomputation: Mapping[str, Any],
+    validation_mode: str,
 ) -> None:
     policy = _resolve_exact_artifact(
         payload["factor_policy_ref"],
@@ -2438,9 +2442,12 @@ def _validate_deep_factor_policy(
             expected_kinds=frozenset({"system.installed_component_manifest"}),
         )
         try:
-            implementation_payload = validate_installed_component_manifest(implementation)[
-                "payload"
-            ]
+            validator = (
+                validate_installed_component_manifest
+                if validation_mode == PRE_CAS_CURRENT
+                else validate_sealed_installed_component_manifest
+            )
+            implementation_payload = validator(implementation)["payload"]
         except Exception as exc:
             raise FactorGovernanceError("Factor implementation semantic replay failed") from exc
         if (
@@ -3100,6 +3107,7 @@ def _deep_replay_source_closure(  # noqa: C901
             "pit_universe": pit_leaf,
         },
         recomputation=replay,
+        validation_mode=validation_mode,
     )
     return replay
 

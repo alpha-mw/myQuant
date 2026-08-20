@@ -443,6 +443,28 @@ def test_blocked_execute_sets_exact_veto_and_clear_archives_it(tmp_path):
     assert Path(cleared["archived_veto_ref"]["path"]).is_file()
 
 
+def test_macro_veto_has_registered_exact_sha_clear_path(tmp_path):
+    run_root = tmp_path / "private-runs"
+    run_root.mkdir(mode=0o700)
+    veto_path = run_root / "MACRO_WRITE_VETO.json"
+    raw = b'{"schema_version":"cn-daily-maintenance-macro-write-veto.v1"}\n'
+    veto_path.write_bytes(raw)
+    veto_path.chmod(0o600)
+    digest = hashlib.sha256(raw).hexdigest()
+
+    cleared = clear_cn_daily_write_veto(
+        run_root=run_root,
+        expected_veto_sha256=digest,
+        reason="reviewed macro recovery",
+        lane="macro",
+    )
+
+    assert cleared["status"] == "CLEARED"
+    assert cleared["lane"] == "macro"
+    assert not veto_path.exists()
+    assert Path(cleared["archived_veto_ref"]["path"]).is_file()
+
+
 def test_nonblocking_lock_truth_table(tmp_path):
     run_root = tmp_path / "private-runs"
     run_root.mkdir(mode=0o700)

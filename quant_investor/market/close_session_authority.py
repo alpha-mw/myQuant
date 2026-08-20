@@ -71,14 +71,13 @@ def _validated_rows(
         response.api_name != API_NAME
         or tuple(response.fields) != EXPECTED_FIELDS
         or response.has_more is not False
-        or response.reported_count != response.provider_reported_count
         or response.item_count != len(response.rows)
         or response.reported_count != response.item_count
+        or response.provider_reported_count not in {0, response.item_count}
     ):
         raise CloseSessionAuthorityError("CLOSE_CALENDAR_ENVELOPE_INVALID")
     result: list[tuple[date, bool, str]] = []
     observed: set[date] = set()
-    prior: date | None = None
     for raw_row in response.rows:
         if type(raw_row) is not tuple or len(raw_row) != len(EXPECTED_FIELDS):
             raise CloseSessionAuthorityError("CLOSE_CALENDAR_ROW_INVALID")
@@ -91,7 +90,6 @@ def _validated_rows(
             or type(pretrade_date) is not str
             or (pretrade_date and len(pretrade_date) != 8)
             or cal_date in observed
-            or (prior is not None and cal_date <= prior)
         ):
             raise CloseSessionAuthorityError("CLOSE_CALENDAR_ROW_INVALID")
         if not pretrade_date:
@@ -100,10 +98,12 @@ def _validated_rows(
         if parsed_pretrade >= cal_date:
             raise CloseSessionAuthorityError("CLOSE_CALENDAR_PRETRADE_CHAIN_INVALID")
         observed.add(cal_date)
-        prior = cal_date
         result.append((cal_date, raw_is_open == 1, pretrade_date))
     if not result:
         raise CloseSessionAuthorityError("CLOSE_CALENDAR_EMPTY")
+    # The official endpoint currently returns newest-first.  Provider order is
+    # retained in raw evidence; the semantic calendar is normalized by date.
+    result.sort(key=lambda row: row[0])
     requested_dates = [
         start_date + timedelta(days=offset) for offset in range((end_date - start_date).days + 1)
     ]
@@ -137,7 +137,10 @@ def acquire_close_session_authority(
         "start_date": start_date.strftime("%Y%m%d"),
         "end_date": end_date.strftime("%Y%m%d"),
     }
-    response = (client or OfficialTushareHttpsClient()).request(
+    # Official Tushare batch responses use ``count=0`` as a placeholder even
+    # when items are present.  Strict decoding preserves the provider count
+    # separately while binding the accepted count to exact item cardinality.
+    response = (client or OfficialTushareHttpsClient(strict_decimal_decode=True)).request(
         api_name=API_NAME,
         params=params,
         expected_fields=EXPECTED_FIELDS,

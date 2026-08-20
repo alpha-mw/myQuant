@@ -101,6 +101,10 @@ _PREPARED_RECEIPT_FIELDS: Final = frozenset(
         "exact_replay_sha256",
         "factor_readiness",
         "factor_authority",
+        "authority_scope",
+        "dynamic_whole_market_complete",
+        "scope_expansion_pending_count",
+        "scope_expansion_pending_sha256",
         "system_pointer_writes",
         "factor_pointer_writes",
         "broker_order_trade_fund_writes",
@@ -445,6 +449,10 @@ def _validate_existing_preparation(
         "exact_replay_sha256": generation_payload["exact_replay_sha256"],
         "factor_readiness": "READY",
         "factor_authority": "INACTIVE",
+        "authority_scope": "FROZEN_FULL_A",
+        "dynamic_whole_market_complete": (operation_document["scope_expansion_pending_count"] == 0),
+        "scope_expansion_pending_count": operation_document["scope_expansion_pending_count"],
+        "scope_expansion_pending_sha256": operation_document["scope_expansion_pending_sha256"],
         "system_pointer_writes": 0,
         "factor_pointer_writes": 0,
         "broker_order_trade_fund_writes": 0,
@@ -695,6 +703,7 @@ def prepare_factor_production(  # noqa: C901
     pit_manifest_path = Path(str(pit_binding["generation_manifest_path"])).resolve(strict=True)
     canonical_pit_raw = _read_regular(canonical_pit_path, label="Market-bound PIT membership")
     pit_manifest_raw = _read_regular(pit_manifest_path, label="Market-bound PIT manifest")
+    pit_manifest_document = _strict_json(pit_manifest_raw, label="PIT manifest")
     market_scope_symbols, market_scope_raw = _canonical_market_scope(market_root)
     expected_scope_sha256 = _sha256("\n".join(market_scope_symbols).encode("utf-8"))
     coverage = pointer_document.get("coverage")
@@ -707,6 +716,29 @@ def prepare_factor_production(  # noqa: C901
         raise FactorGovernanceError("canonical Market full-A scope SHA differs")
     if not set(market_scope_symbols) <= set(pit_binding["records"]):
         raise FactorGovernanceError("canonical Market scope is outside Market-bound PIT")
+    pending = dict(
+        dict(pit_manifest_document.get("source_bindings") or {}).get("scope_expansion_pending")
+        or {}
+    )
+    pending_identities = pending.get("identities")
+    if (
+        pending.get("schema_version") != "cn_pit_scope_expansion_pending.v1"
+        or pending.get("authority_scope") != "FROZEN_FULL_A"
+        or pending.get("admission_status") != "NOT_CONFIGURED"
+        or not isinstance(pending_identities, list)
+        or pending_identities != sorted(set(pending_identities))
+        or pending.get("count") != len(pending_identities)
+        or type(pending.get("sha256")) is not str
+        or len(pending["sha256"]) != 64
+        or set(pending_identities) & set(market_scope_symbols)
+        or any(
+            identity not in pit_binding["records"]
+            or getattr(pit_binding["records"][identity], "membership_quality", "")
+            != "outside_frozen_scope_pending"
+            for identity in pending_identities
+        )
+    ):
+        raise FactorGovernanceError("PIT scope-expansion pending evidence differs")
     bound_pointer_path, bound_pointer_raw, bound_pointer_document = (
         _resolve_market_bound_pit_pointer(
             pit_manifest_path=pit_manifest_path,
@@ -789,6 +821,8 @@ def prepare_factor_production(  # noqa: C901
         "market_scope_sha256": _sha256(market_scope_raw),
         "pit_membership_sha256": _sha256(canonical_pit_raw),
         "pit_manifest_sha256": _sha256(pit_manifest_raw),
+        "scope_expansion_pending_count": len(pending_identities),
+        "scope_expansion_pending_sha256": pending["sha256"],
         "market_bound_pit_pointer_sha256": _sha256(bound_pointer_raw),
         "observed_current_pit_pointer_sha256": _sha256(observed_raw),
         "calendar_success_sha256": expected_calendar_success_sha256,
@@ -1459,6 +1493,10 @@ def prepare_factor_production(  # noqa: C901
         "exact_replay_sha256": recomputation["exact_replay_sha256"],
         "factor_readiness": "READY",
         "factor_authority": "INACTIVE",
+        "authority_scope": "FROZEN_FULL_A",
+        "dynamic_whole_market_complete": len(pending_identities) == 0,
+        "scope_expansion_pending_count": len(pending_identities),
+        "scope_expansion_pending_sha256": pending["sha256"],
         "system_pointer_writes": 0,
         "factor_pointer_writes": 0,
         "broker_order_trade_fund_writes": 0,

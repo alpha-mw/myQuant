@@ -78,6 +78,14 @@ FACTOR_PRODUCTION_RECEIPT_KIND: Final = "factor.production_generation_receipt"
 FACTOR_PRODUCTION_BUNDLE_KIND: Final = "factor.production_activation_bundle"
 FACTOR_PRODUCTION_PREPARED_KIND: Final = "factor.production_prepared"
 FACTOR_PRODUCTION_MARKER_KIND: Final = "factor.production_marker"
+FACTOR_PRODUCTION_ROLLOVER_BUNDLE_KIND: Final = "factor.production_rollover_bundle"
+FACTOR_PRODUCTION_ROLLOVER_PREPARED_KIND: Final = "factor.production_rollover_prepared"
+FACTOR_PRODUCTION_ROLLOVER_COMMIT_KIND: Final = "factor.production_rollover_commit"
+FACTOR_ROLLOVER_BUNDLES_ROOT: Final = FACTOR_ROOT / "rollover_bundles"
+FACTOR_ROLLOVER_TRANSACTIONS_ROOT: Final = FACTOR_ROOT / "rollover_transactions"
+FACTOR_ROLLOVER_COMMITS_ROOT: Final = FACTOR_ROOT / "rollover_commits"
+FACTOR_ROLLOVER_INPUT_INDEX_ROOT: Final = FACTOR_ROOT / "rollover_input_index"
+FACTOR_POINTER_CHAIN_MAX: Final = 4096
 
 FACTOR_READINESS_READY: Final = "READY"
 FACTOR_AUTHORITY_ACTIVE: Final = "ACTIVE"
@@ -384,6 +392,56 @@ _MARKER_FIELDS: Final = frozenset(
         "broker_authority",
     }
 )
+_ROLLOVER_BUNDLE_FIELDS: Final = frozenset(
+    {
+        "factor_production_rollover_bundle_id",
+        "state",
+        "activation_scope",
+        "predecessor_pointer_ref",
+        "target_pointer_ref",
+        "previous_pointer_sha256",
+        "target_pointer_sha256",
+        "factor_generation_receipt_ref",
+        "target_factor_generation_ref",
+        "maintenance_receipt_path",
+        "maintenance_receipt_sha256",
+        "market_pointer_sha256",
+        "market_manifest_sha256",
+        "pit_pointer_sha256",
+        "pit_manifest_sha256",
+        "target_date",
+        "prepared_at",
+        "actor_uid",
+        *_NO_AUTHORITY_FIELDS,
+    }
+)
+_ROLLOVER_PREPARED_FIELDS: Final = frozenset(
+    {
+        "factor_production_rollover_prepared_id",
+        "state",
+        "activation_scope",
+        "rollover_bundle_ref",
+        "expected_pointer_sha256",
+        "target_pointer_sha256",
+        "prepared_at",
+        "actor_uid",
+    }
+)
+_ROLLOVER_COMMIT_FIELDS: Final = frozenset(
+    {
+        "factor_production_rollover_commit_id",
+        "state",
+        "activation_scope",
+        "rollover_bundle_ref",
+        "rollover_prepared_ref",
+        "previous_pointer_sha256",
+        "target_pointer_sha256",
+        "committed_at",
+        "actor_uid",
+        "cas_performed",
+        *_NO_AUTHORITY_FIELDS,
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -397,6 +455,22 @@ class FactorStoredBytes:
 
 def _sha256(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
+
+
+def _rollover_input_key(*, previous_pointer_sha256: str, maintenance_sha256: str) -> str:
+    return _sha256(
+        canonical_json_bytes(
+            {
+                "domain": "factor-production-rollover-input",
+                "previous_pointer_sha256": _require_sha(
+                    previous_pointer_sha256, label="rollover input previous pointer"
+                ),
+                "maintenance_sha256": _require_sha(
+                    maintenance_sha256, label="rollover input maintenance"
+                ),
+            }
+        )
+    )
 
 
 def _atomic_no_replace_rename(
@@ -495,6 +569,41 @@ def _canonical_path(value: str | PurePosixPath) -> PurePosixPath:
     except UnicodeEncodeError as exc:
         raise FactorGovernanceError("Factor authority path must be ASCII") from exc
     return path
+
+
+def _stable_workspace_file_sha256(
+    workspace_root: Path, value: str | os.PathLike[str], *, label: str
+) -> str:
+    """Hash one owner-controlled regular workspace file with stable double read."""
+
+    try:
+        root = workspace_root.resolve(strict=True)
+        path = Path(value).resolve(strict=True)
+        path.relative_to(root)
+        before = path.lstat()
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or stat.S_ISLNK(before.st_mode)
+            or before.st_uid != os.geteuid()
+            or before.st_nlink != 1
+            or before.st_size <= 0
+            or before.st_size > MAX_CANONICAL_JSON_BYTES
+        ):
+            _raise(f"{label} is not a safe bounded regular file")
+        first = path.read_bytes()
+        middle = path.lstat()
+        second = path.read_bytes()
+        after = path.lstat()
+    except (OSError, ValueError) as exc:
+        raise FactorGovernanceError(f"{label} is unavailable") from exc
+    if (
+        _stat_identity(before) != _stat_identity(middle)
+        or _stat_identity(middle) != _stat_identity(after)
+        or first != second
+        or len(first) != after.st_size
+    ):
+        _raise(f"{label} changed during stable read")
+    return _sha256(first)
 
 
 def _is_reserved_factor_authority_path(path: PurePosixPath) -> bool:
@@ -1277,7 +1386,11 @@ def validate_factor_production_generation_receipt(  # noqa: C901 - atomic exact 
 
 
 def _build_factor_pointer(
-    *, receipt: Mapping[str, Any], activated_at: str, actor_uid: int
+    *,
+    receipt: Mapping[str, Any],
+    activated_at: str,
+    actor_uid: int,
+    previous_pointer_sha256: str = FACTOR_EMPTY_POINTER_SHA256,
 ) -> dict[str, Any]:
     _timestamp(activated_at, label="activated_at")
     if type(actor_uid) is not int or actor_uid < 0:
@@ -1290,7 +1403,7 @@ def _build_factor_pointer(
     pointer_payload = {
         "factor_generation_id": generation_id,
         "factor_generation_sha256": generation_ref["byte_sha256"],
-        "previous_pointer_sha256": FACTOR_EMPTY_POINTER_SHA256,
+        "previous_pointer_sha256": previous_pointer_sha256,
         "activated_at": activated_at,
         "os_actor": f"uid:{actor_uid}",
         "authority_scope": FACTOR_PRODUCTION_SCOPE,
@@ -1345,8 +1458,9 @@ def validate_factor_active_pointer(raw: bytes) -> dict[str, Any]:
     ):
         _raise("Factor pointer generation identity differs")
     _require_sha(value["factor_generation_sha256"], label="Factor pointer factor_generation_sha256")
-    if value["previous_pointer_sha256"] != FACTOR_EMPTY_POINTER_SHA256:
-        _raise("Factor active pointer preimage must be literal EMPTY")
+    previous = value["previous_pointer_sha256"]
+    if previous != FACTOR_EMPTY_POINTER_SHA256:
+        _require_sha(previous, label="Factor pointer previous_pointer_sha256")
     _timestamp(value["activated_at"], label="Factor pointer activated_at")
     actor = value.get("os_actor")
     if type(actor) is not str or _ACTOR_RE.fullmatch(actor) is None:
@@ -1739,6 +1853,307 @@ def validate_factor_production_marker(
         ):
             if payload[field] != expected:
                 _raise(f"Factor production marker {field} differs from receipt")
+    return artifact
+
+
+def _build_rollover_bundle(
+    *,
+    predecessor_pointer: Mapping[str, Any],
+    target_pointer: Mapping[str, Any],
+    receipt: Mapping[str, Any],
+    maintenance: Mapping[str, str],
+    canonical_inputs: Mapping[str, str],
+    target_date: str,
+    prepared_at: str,
+    actor_uid: int,
+) -> dict[str, Any]:
+    predecessor = validate_factor_production_pointer(predecessor_pointer)
+    target = validate_factor_production_pointer(target_pointer)
+    validated_receipt = validate_factor_production_generation_receipt(receipt)
+    predecessor_raw = _factor_pointer_raw(predecessor)
+    target_raw = _factor_pointer_raw(target)
+    previous_sha = _sha256(predecessor_raw)
+    target_sha = _sha256(target_raw)
+    target_payload = validate_factor_active_pointer(target_raw)
+    if target_payload["previous_pointer_sha256"] != previous_sha:
+        _raise("Factor rollover target pointer preimage differs")
+    for key in (
+        "receipt_path",
+        "receipt_sha256",
+        "market_pointer_sha256",
+        "market_manifest_sha256",
+        "pit_pointer_sha256",
+        "pit_manifest_sha256",
+    ):
+        if key not in {"receipt_path"}:
+            _require_sha(
+                (maintenance if key.startswith("receipt_") else canonical_inputs)[key],
+                label=f"Factor rollover {key}",
+            )
+    body: dict[str, Any] = {
+        "state": "PREPARED",
+        "activation_scope": FACTOR_PRODUCTION_SCOPE,
+        "predecessor_pointer_ref": _artifact_ref(predecessor),
+        "target_pointer_ref": _artifact_ref(target),
+        "previous_pointer_sha256": previous_sha,
+        "target_pointer_sha256": target_sha,
+        "factor_generation_receipt_ref": _artifact_ref(validated_receipt),
+        "target_factor_generation_ref": validated_receipt["payload"]["factor_generation_ref"],
+        "maintenance_receipt_path": _require_text(
+            maintenance["receipt_path"], label="Factor rollover maintenance path"
+        ),
+        "maintenance_receipt_sha256": maintenance["receipt_sha256"],
+        "market_pointer_sha256": canonical_inputs["market_pointer_sha256"],
+        "market_manifest_sha256": canonical_inputs["market_manifest_sha256"],
+        "pit_pointer_sha256": canonical_inputs["pit_pointer_sha256"],
+        "pit_manifest_sha256": canonical_inputs["pit_manifest_sha256"],
+        "target_date": _require_text(target_date, label="Factor rollover target date"),
+        "prepared_at": prepared_at,
+        "actor_uid": actor_uid,
+        **{field: "NONE" for field in _NO_AUTHORITY_FIELDS},
+    }
+    identity = "factor-production-rollover-bundle-" + _sha256(canonical_json_bytes(body))
+    return validate_factor_production_rollover_bundle(
+        seal_artifact(
+            FACTOR_PRODUCTION_ROLLOVER_BUNDLE_KIND,
+            {"factor_production_rollover_bundle_id": identity, **body},
+            created_at=prepared_at,
+            contract_sha256=get_contract(FACTOR_PRODUCTION_ROLLOVER_BUNDLE_KIND).contract_sha256,
+        ),
+        predecessor_pointer=predecessor,
+        target_pointer=target,
+        receipt=validated_receipt,
+    )
+
+
+def validate_factor_production_rollover_bundle(
+    document: Mapping[str, Any] | bytes,
+    *,
+    predecessor_pointer: Mapping[str, Any] | bytes | None = None,
+    target_pointer: Mapping[str, Any] | bytes | None = None,
+    receipt: Mapping[str, Any] | bytes | None = None,
+) -> dict[str, Any]:
+    artifact = _validate_artifact_kind(document, FACTOR_PRODUCTION_ROLLOVER_BUNDLE_KIND)
+    payload = artifact["payload"]
+    if set(payload) != _ROLLOVER_BUNDLE_FIELDS:
+        _raise("Factor rollover bundle fields differ")
+    if payload["state"] != "PREPARED" or payload["activation_scope"] != FACTOR_PRODUCTION_SCOPE:
+        _raise("Factor rollover bundle policy differs")
+    _require_no_authority(payload)
+    _require_sha(payload["previous_pointer_sha256"], label="rollover predecessor SHA")
+    _require_sha(payload["target_pointer_sha256"], label="rollover target SHA")
+    for field in (
+        "maintenance_receipt_sha256",
+        "market_pointer_sha256",
+        "market_manifest_sha256",
+        "pit_pointer_sha256",
+        "pit_manifest_sha256",
+    ):
+        _require_sha(payload[field], label=f"rollover {field}")
+    _require_text(payload["maintenance_receipt_path"], label="rollover maintenance path")
+    target_date = _require_text(payload["target_date"], label="rollover target date")
+    if len(target_date) != 8 or not target_date.isdigit():
+        _raise("Factor rollover target date differs")
+    _timestamp(payload["prepared_at"], label="rollover prepared_at")
+    if type(payload["actor_uid"]) is not int or payload["actor_uid"] < 0:
+        _raise("Factor rollover actor differs")
+    predecessor_ref = _validate_ref(
+        payload["predecessor_pointer_ref"],
+        label="rollover predecessor pointer ref",
+        expected_kind=FACTOR_PRODUCTION_POINTER_KIND,
+    )
+    target_ref = _validate_ref(
+        payload["target_pointer_ref"],
+        label="rollover target pointer ref",
+        expected_kind=FACTOR_PRODUCTION_POINTER_KIND,
+    )
+    receipt_ref = _validate_ref(
+        payload["factor_generation_receipt_ref"],
+        label="rollover receipt ref",
+        expected_kind=FACTOR_PRODUCTION_RECEIPT_KIND,
+    )
+    generation_ref = _validate_factor_generation_ref(
+        payload["target_factor_generation_ref"], label="rollover generation ref"
+    )
+    _identity(
+        "factor-production-rollover-bundle-",
+        payload,
+        "factor_production_rollover_bundle_id",
+    )
+    supplied = (predecessor_pointer, target_pointer, receipt)
+    if any(value is not None for value in supplied):
+        if any(value is None for value in supplied):
+            _raise("Factor rollover bundle closure is incomplete")
+        predecessor = validate_factor_production_pointer(predecessor_pointer)  # type: ignore[arg-type]
+        target = validate_factor_production_pointer(target_pointer)  # type: ignore[arg-type]
+        validated_receipt = validate_factor_production_generation_receipt(receipt)  # type: ignore[arg-type]
+        predecessor_raw = _factor_pointer_raw(predecessor)
+        target_raw = _factor_pointer_raw(target)
+        target_payload = validate_factor_active_pointer(target_raw)
+        if (
+            predecessor_ref != _artifact_ref(predecessor)
+            or target_ref != _artifact_ref(target)
+            or receipt_ref != _artifact_ref(validated_receipt)
+            or generation_ref != validated_receipt["payload"]["factor_generation_ref"]
+            or payload["previous_pointer_sha256"] != _sha256(predecessor_raw)
+            or payload["target_pointer_sha256"] != _sha256(target_raw)
+            or target_payload["previous_pointer_sha256"] != _sha256(predecessor_raw)
+            or target_payload["factor_generation_sha256"] != generation_ref["byte_sha256"]
+        ):
+            _raise("Factor rollover bundle binding differs")
+    return artifact
+
+
+def _build_rollover_prepared(
+    *, bundle: Mapping[str, Any], prepared_at: str, actor_uid: int
+) -> dict[str, Any]:
+    validated = validate_factor_production_rollover_bundle(bundle)
+    payload = validated["payload"]
+    body = {
+        "state": "PREPARED",
+        "activation_scope": FACTOR_PRODUCTION_SCOPE,
+        "rollover_bundle_ref": _artifact_ref(validated),
+        "expected_pointer_sha256": payload["previous_pointer_sha256"],
+        "target_pointer_sha256": payload["target_pointer_sha256"],
+        "prepared_at": prepared_at,
+        "actor_uid": actor_uid,
+    }
+    identity = "factor-production-rollover-prepared-" + _sha256(canonical_json_bytes(body))
+    return validate_factor_production_rollover_prepared(
+        seal_artifact(
+            FACTOR_PRODUCTION_ROLLOVER_PREPARED_KIND,
+            {"factor_production_rollover_prepared_id": identity, **body},
+            created_at=prepared_at,
+            contract_sha256=get_contract(FACTOR_PRODUCTION_ROLLOVER_PREPARED_KIND).contract_sha256,
+        ),
+        bundle=validated,
+    )
+
+
+def validate_factor_production_rollover_prepared(
+    document: Mapping[str, Any] | bytes,
+    *,
+    bundle: Mapping[str, Any] | bytes | None = None,
+) -> dict[str, Any]:
+    artifact = _validate_artifact_kind(document, FACTOR_PRODUCTION_ROLLOVER_PREPARED_KIND)
+    payload = artifact["payload"]
+    if set(payload) != _ROLLOVER_PREPARED_FIELDS:
+        _raise("Factor rollover prepared fields differ")
+    if payload["state"] != "PREPARED" or payload["activation_scope"] != FACTOR_PRODUCTION_SCOPE:
+        _raise("Factor rollover prepared policy differs")
+    bundle_ref = _validate_ref(
+        payload["rollover_bundle_ref"],
+        label="rollover prepared bundle ref",
+        expected_kind=FACTOR_PRODUCTION_ROLLOVER_BUNDLE_KIND,
+    )
+    _require_sha(payload["expected_pointer_sha256"], label="rollover expected pointer SHA")
+    _require_sha(payload["target_pointer_sha256"], label="rollover target pointer SHA")
+    _timestamp(payload["prepared_at"], label="rollover prepared timestamp")
+    if type(payload["actor_uid"]) is not int or payload["actor_uid"] < 0:
+        _raise("Factor rollover prepared actor differs")
+    _identity(
+        "factor-production-rollover-prepared-",
+        payload,
+        "factor_production_rollover_prepared_id",
+    )
+    if bundle is not None:
+        validated = validate_factor_production_rollover_bundle(bundle)
+        if (
+            bundle_ref != _artifact_ref(validated)
+            or payload["expected_pointer_sha256"] != validated["payload"]["previous_pointer_sha256"]
+            or payload["target_pointer_sha256"] != validated["payload"]["target_pointer_sha256"]
+        ):
+            _raise("Factor rollover prepared binding differs")
+    return artifact
+
+
+def _build_rollover_commit(
+    *, bundle: Mapping[str, Any], prepared: Mapping[str, Any], committed_at: str, actor_uid: int
+) -> dict[str, Any]:
+    validated_bundle = validate_factor_production_rollover_bundle(bundle)
+    validated_prepared = validate_factor_production_rollover_prepared(
+        prepared, bundle=validated_bundle
+    )
+    bundle_payload = validated_bundle["payload"]
+    body: dict[str, Any] = {
+        "state": "COMMITTED",
+        "activation_scope": FACTOR_PRODUCTION_SCOPE,
+        "rollover_bundle_ref": _artifact_ref(validated_bundle),
+        "rollover_prepared_ref": _artifact_ref(validated_prepared),
+        "previous_pointer_sha256": bundle_payload["previous_pointer_sha256"],
+        "target_pointer_sha256": bundle_payload["target_pointer_sha256"],
+        "committed_at": committed_at,
+        "actor_uid": actor_uid,
+        "cas_performed": True,
+        **{field: "NONE" for field in _NO_AUTHORITY_FIELDS},
+    }
+    identity = "factor-production-rollover-commit-" + _sha256(canonical_json_bytes(body))
+    return validate_factor_production_rollover_commit(
+        seal_artifact(
+            FACTOR_PRODUCTION_ROLLOVER_COMMIT_KIND,
+            {"factor_production_rollover_commit_id": identity, **body},
+            created_at=committed_at,
+            contract_sha256=get_contract(FACTOR_PRODUCTION_ROLLOVER_COMMIT_KIND).contract_sha256,
+        ),
+        bundle=validated_bundle,
+        prepared=validated_prepared,
+    )
+
+
+def validate_factor_production_rollover_commit(
+    document: Mapping[str, Any] | bytes,
+    *,
+    bundle: Mapping[str, Any] | bytes | None = None,
+    prepared: Mapping[str, Any] | bytes | None = None,
+) -> dict[str, Any]:
+    artifact = _validate_artifact_kind(document, FACTOR_PRODUCTION_ROLLOVER_COMMIT_KIND)
+    payload = artifact["payload"]
+    if set(payload) != _ROLLOVER_COMMIT_FIELDS:
+        _raise("Factor rollover commit fields differ")
+    if (
+        payload["state"] != "COMMITTED"
+        or payload["activation_scope"] != FACTOR_PRODUCTION_SCOPE
+        or payload["cas_performed"] is not True
+    ):
+        _raise("Factor rollover commit policy differs")
+    _require_no_authority(payload)
+    bundle_ref = _validate_ref(
+        payload["rollover_bundle_ref"],
+        label="rollover commit bundle ref",
+        expected_kind=FACTOR_PRODUCTION_ROLLOVER_BUNDLE_KIND,
+    )
+    prepared_ref = _validate_ref(
+        payload["rollover_prepared_ref"],
+        label="rollover commit prepared ref",
+        expected_kind=FACTOR_PRODUCTION_ROLLOVER_PREPARED_KIND,
+    )
+    _require_sha(payload["previous_pointer_sha256"], label="rollover commit previous SHA")
+    _require_sha(payload["target_pointer_sha256"], label="rollover commit target SHA")
+    _timestamp(payload["committed_at"], label="rollover commit timestamp")
+    if type(payload["actor_uid"]) is not int or payload["actor_uid"] < 0:
+        _raise("Factor rollover commit actor differs")
+    _identity(
+        "factor-production-rollover-commit-",
+        payload,
+        "factor_production_rollover_commit_id",
+    )
+    supplied = (bundle, prepared)
+    if any(value is not None for value in supplied):
+        if any(value is None for value in supplied):
+            _raise("Factor rollover commit closure is incomplete")
+        validated_bundle = validate_factor_production_rollover_bundle(bundle)  # type: ignore[arg-type]
+        validated_prepared = validate_factor_production_rollover_prepared(
+            prepared, bundle=validated_bundle  # type: ignore[arg-type]
+        )
+        if (
+            bundle_ref != _artifact_ref(validated_bundle)
+            or prepared_ref != _artifact_ref(validated_prepared)
+            or payload["previous_pointer_sha256"]
+            != validated_bundle["payload"]["previous_pointer_sha256"]
+            or payload["target_pointer_sha256"]
+            != validated_bundle["payload"]["target_pointer_sha256"]
+        ):
+            _raise("Factor rollover commit binding differs")
     return artifact
 
 
@@ -2178,6 +2593,49 @@ class _FactorSecureStorage:
             after_rename_point="AFTER_MARKER_RENAME",
         )
 
+    def replace_active_pointer_under_lock(
+        self, raw: bytes, *, expected_pointer_sha256: str
+    ) -> FactorStoredBytes:
+        """Cooperatively replace the active pointer after an exact under-lock preimage read."""
+
+        _require_sha(expected_pointer_sha256, label="expected Factor pointer SHA")
+        if type(raw) is not bytes or not raw or len(raw) > MAX_CANONICAL_JSON_BYTES:
+            _raise("Factor rollover pointer bytes are invalid")
+        validate_factor_active_pointer(raw)
+        parent, leaf, relative = self._parent_leaf(FACTOR_ACTIVE_POINTER_PATH, create=False)
+        temporary = f".{leaf}.rollover-{os.getpid()}-{secrets.token_hex(8)}"
+        descriptor: int | None = None
+        try:
+            current = self._read_leaf(parent, leaf, relative_path=relative, optional=False)
+            if current is None or current.byte_sha256 != expected_pointer_sha256:
+                _raise("Factor rollover pointer preimage changed")
+            descriptor = os.open(temporary, _CREATE_FLAGS, 0o600, dir_fd=parent)
+            os.fchmod(descriptor, 0o600)
+            self._write_all(descriptor, raw)
+            os.fsync(descriptor)
+            _verify_factor_file(os.fstat(descriptor))
+            os.close(descriptor)
+            descriptor = None
+            self._fault_hook("BEFORE_ROLLOVER_POINTER_REPLACE")
+            observed = self._read_leaf(parent, leaf, relative_path=relative, optional=False)
+            if observed is None or observed.byte_sha256 != expected_pointer_sha256:
+                _raise("Factor rollover pointer preimage changed")
+            os.replace(temporary, leaf, src_dir_fd=parent, dst_dir_fd=parent)
+            os.fsync(parent)
+            self._fault_hook("AFTER_ROLLOVER_POINTER_REPLACE")
+            stored = self._read_leaf(parent, leaf, relative_path=relative, optional=False)
+            if stored is None or stored.data != raw:
+                _raise("Factor rollover pointer readback differs")
+            return stored
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            try:
+                os.unlink(temporary, dir_fd=parent)
+            except FileNotFoundError:
+                pass
+            os.close(parent)
+
 
 class FactorReadOnlySystemCustody:
     """Narrow read-only resolver for immutable System source custody.
@@ -2297,6 +2755,13 @@ class FactorProductionStore:
     def _write_permanent_marker_under_lock(self, raw: bytes) -> FactorStoredBytes:
         return self._storage.write_permanent_marker_under_lock(raw)
 
+    def _replace_active_pointer_under_lock(
+        self, raw: bytes, *, expected_pointer_sha256: str
+    ) -> FactorStoredBytes:
+        return self._storage.replace_active_pointer_under_lock(
+            raw, expected_pointer_sha256=expected_pointer_sha256
+        )
+
     @staticmethod
     def _artifact_path(ref: Mapping[str, str]) -> PurePosixPath:
         kind = ref["kind"]
@@ -2334,6 +2799,26 @@ class FactorProductionStore:
         stored = self._storage.read(generation_path)
         if stored.data != canonical_json_bytes(generation):
             _raise(f"{label} immutable generation bytes differ")
+        return generation
+
+    def _read_generation_for_pointer(self, pointer_raw: bytes, *, label: str) -> dict[str, Any]:
+        pointer = validate_factor_active_pointer(pointer_raw)
+        generation_path = (
+            FACTOR_GENERATIONS_ROOT / pointer["factor_generation_id"] / "generation.json"
+        )
+        stored = self._storage.read(generation_path)
+        try:
+            generation = validate_artifact(
+                stored.data, expected_kind=FACTOR_PRODUCTION_GENERATION_KIND
+            )
+        except ContractError as exc:
+            raise FactorGovernanceError(f"{label} generation contract differs") from exc
+        if (
+            stored.byte_sha256 != pointer["factor_generation_sha256"]
+            or generation["payload"]["factor_production_generation_id"]
+            != pointer["factor_generation_id"]
+        ):
+            _raise(f"{label} generation differs from pointer")
         return generation
 
     @staticmethod
@@ -2656,6 +3141,171 @@ class FactorProductionStore:
             "factor_marker_path": str(FACTOR_PRODUCTION_MARKER_PATH),
         }
 
+    def prepare_rollover_activation(
+        self,
+        *,
+        factor_generation: Mapping[str, Any] | bytes,
+        source_closure: Mapping[str, Any] | bytes,
+        recomputation_evidence: Mapping[str, Any] | bytes,
+        legacy_zero_call_certificate: Mapping[str, Any] | bytes,
+        market_input: Mapping[str, Any] | bytes,
+        expected_pointer_sha256: str,
+        maintenance: Mapping[str, str],
+        canonical_inputs: Mapping[str, str],
+        prepared_at: str,
+        activated_at: str,
+    ) -> dict[str, Any]:
+        """Seal one successor package without mutating the active pointer."""
+
+        _require_sha(expected_pointer_sha256, label="expected Factor pointer SHA")
+        current = self.read(FACTOR_ACTIVE_POINTER_PATH)
+        marker = self.read_optional(FACTOR_PRODUCTION_MARKER_PATH)
+        if current.byte_sha256 != expected_pointer_sha256 or marker is None:
+            _raise("Factor rollover predecessor or genesis marker differs")
+        predecessor_generation = self._read_generation_for_pointer(
+            current.data, label="Factor rollover predecessor"
+        )
+        generation = _validate_factor_generation(factor_generation)
+        source = _validate_source_closure(source_closure)
+        recomputation = _validate_recomputation_evidence(recomputation_evidence)
+        legacy = _validate_legacy_zero_call_certificate(legacy_zero_call_certificate)
+        market = _validate_market_input(market_input)
+        _cross_bind_factor_generation(generation, source, recomputation, legacy, market)
+        target_date = generation["payload"]["as_of"]
+        predecessor_date = predecessor_generation["payload"]["as_of"]
+        if target_date < predecessor_date:
+            _raise("Factor rollover target precedes active generation")
+        if target_date != maintenance.get("target_date"):
+            _raise("Factor rollover generation date differs from maintenance")
+        actor_uid = os.geteuid()
+        _timestamp(prepared_at, label="prepared_at")
+        _timestamp(activated_at, label="activated_at")
+        for artifact in (generation, source, recomputation, legacy, market):
+            self._publish_artifact(artifact)
+        live_artifacts, live_sources, release_root = self._require_live_resolvers()
+        self._deep_validate_factor_closure(
+            factor_generation=generation,
+            source_closure=source,
+            recomputation_evidence=recomputation,
+            legacy_zero_call_certificate=legacy,
+            artifact_resolver=self._capture_artifact_resolver(live_artifacts),
+            source_resolver=self._capture_source_resolver(live_sources),
+            validation_mode="PRE_CAS_CURRENT",
+            current_release_root=release_root,
+        )
+        receipt = build_factor_production_generation_receipt(
+            factor_generation=generation,
+            source_closure=source,
+            recomputation_evidence=recomputation,
+            legacy_zero_call_certificate=legacy,
+            market_input=market,
+            created_at=prepared_at,
+        )
+        predecessor_pointer = _factor_pointer_record_from_raw(current.data)
+        target_pointer = _build_factor_pointer(
+            receipt=receipt,
+            activated_at=activated_at,
+            actor_uid=actor_uid,
+            previous_pointer_sha256=expected_pointer_sha256,
+        )
+        bundle = _build_rollover_bundle(
+            predecessor_pointer=predecessor_pointer,
+            target_pointer=target_pointer,
+            receipt=receipt,
+            maintenance=maintenance,
+            canonical_inputs=canonical_inputs,
+            target_date=target_date,
+            prepared_at=prepared_at,
+            actor_uid=actor_uid,
+        )
+        prepared = _build_rollover_prepared(
+            bundle=bundle, prepared_at=prepared_at, actor_uid=actor_uid
+        )
+        commit = _build_rollover_commit(
+            bundle=bundle,
+            prepared=prepared,
+            committed_at=activated_at,
+            actor_uid=actor_uid,
+        )
+        for artifact in (
+            generation,
+            source,
+            recomputation,
+            legacy,
+            market,
+            receipt,
+            predecessor_pointer,
+            target_pointer,
+            bundle,
+            prepared,
+            commit,
+        ):
+            self._publish_artifact(artifact)
+        generation_path = (
+            FACTOR_GENERATIONS_ROOT
+            / generation["payload"]["factor_production_generation_id"]
+            / "generation.json"
+        )
+        self.write_exact_once(generation_path, canonical_json_bytes(generation))
+        target_raw = _factor_pointer_raw(target_pointer)
+        target_sha = _sha256(target_raw)
+        derived_root = FACTOR_PREPARATIONS_ROOT / target_sha
+        for name, artifact in (
+            ("receipt.json", receipt),
+            ("pointer.json", target_pointer),
+            ("rollover-bundle.json", bundle),
+            ("rollover-prepared.json", prepared),
+            ("rollover-commit.json", commit),
+        ):
+            self.write_exact_once(derived_root / name, canonical_json_bytes(artifact))
+        canonical_paths_document = {
+            key: canonical_inputs[key]
+            for key in (
+                "market_pointer_path",
+                "market_manifest_path",
+                "pit_pointer_path",
+                "pit_manifest_path",
+            )
+        }
+        self.write_exact_once(
+            derived_root / "canonical-paths.json",
+            canonical_json_bytes(canonical_paths_document),
+        )
+        self.write_exact_once(
+            FACTOR_ROLLOVER_BUNDLES_ROOT / f"{target_sha}.json", canonical_json_bytes(bundle)
+        )
+        self.write_exact_once(
+            FACTOR_ROLLOVER_TRANSACTIONS_ROOT / f"{target_sha}.json",
+            canonical_json_bytes(prepared),
+        )
+        input_key = _rollover_input_key(
+            previous_pointer_sha256=expected_pointer_sha256,
+            maintenance_sha256=maintenance["receipt_sha256"],
+        )
+        self.write_exact_once(
+            FACTOR_ROLLOVER_INPUT_INDEX_ROOT / f"{input_key}.json",
+            canonical_json_bytes(
+                {
+                    "schema_version": "factor-production-rollover-input-index.v1",
+                    "previous_pointer_sha256": expected_pointer_sha256,
+                    "maintenance_sha256": maintenance["receipt_sha256"],
+                    "target_pointer_sha256": target_sha,
+                }
+            ),
+        )
+        return {
+            "target_factor_pointer_raw": target_raw,
+            "previous_factor_pointer_raw": current.data,
+            "factor_generation_receipt_raw": canonical_json_bytes(receipt),
+            "rollover_bundle_raw": canonical_json_bytes(bundle),
+            "rollover_prepared_raw": canonical_json_bytes(prepared),
+            "rollover_commit_raw": canonical_json_bytes(commit),
+            "target_pointer_sha256": target_sha,
+            "previous_pointer_sha256": expected_pointer_sha256,
+            "target_date": target_date,
+            "canonical_paths": canonical_paths_document,
+        }
+
     def _validate_stored_activation_package(  # noqa: C901 - atomic pre-CAS closure
         self,
         *,
@@ -2888,8 +3538,182 @@ class FactorProductionStore:
             _raise("Factor pointer-only recovery attempted a non-marker transition")
         return recovered
 
+    def activate_rollover_generation(
+        self,
+        *,
+        target_factor_pointer_raw: bytes,
+        previous_factor_pointer_raw: bytes,
+        factor_generation_receipt_raw: bytes,
+        rollover_bundle_raw: bytes,
+        rollover_prepared_raw: bytes,
+        rollover_commit_raw: bytes,
+        canonical_paths: Mapping[str, str],
+    ) -> dict[str, Any]:
+        """Perform or recover one forward-only cooperative exact-preimage rollover."""
+
+        predecessor = _factor_pointer_record_from_raw(previous_factor_pointer_raw)
+        target = _factor_pointer_record_from_raw(target_factor_pointer_raw)
+        receipt = validate_factor_production_generation_receipt(factor_generation_receipt_raw)
+        bundle = validate_factor_production_rollover_bundle(
+            rollover_bundle_raw,
+            predecessor_pointer=predecessor,
+            target_pointer=target,
+            receipt=receipt,
+        )
+        prepared = validate_factor_production_rollover_prepared(
+            rollover_prepared_raw, bundle=bundle
+        )
+        commit = validate_factor_production_rollover_commit(
+            rollover_commit_raw, bundle=bundle, prepared=prepared
+        )
+        bundle_payload = bundle["payload"]
+        expected_sha = bundle_payload["previous_pointer_sha256"]
+        target_sha = bundle_payload["target_pointer_sha256"]
+        if (
+            _sha256(previous_factor_pointer_raw) != expected_sha
+            or _sha256(target_factor_pointer_raw) != target_sha
+        ):
+            _raise("Factor rollover pointer package SHA differs")
+        expected_paths = {
+            "market_pointer_path",
+            "market_manifest_path",
+            "pit_pointer_path",
+            "pit_manifest_path",
+        }
+        if set(canonical_paths) != expected_paths:
+            _raise("Factor rollover canonical path set differs")
+        cas_performed = False
+        recovered_commit = False
+        with self._active_lock():
+            marker = self.read_optional(FACTOR_PRODUCTION_MARKER_PATH)
+            if marker is None:
+                _raise("Factor rollover requires the immutable genesis marker")
+            current = self.read(FACTOR_ACTIVE_POINTER_PATH)
+            if current.byte_sha256 == expected_sha:
+                if current.data != previous_factor_pointer_raw:
+                    _raise("Factor rollover predecessor bytes differ")
+                for path_key, sha_key in (
+                    ("market_pointer_path", "market_pointer_sha256"),
+                    ("market_manifest_path", "market_manifest_sha256"),
+                    ("pit_pointer_path", "pit_pointer_sha256"),
+                    ("pit_manifest_path", "pit_manifest_sha256"),
+                ):
+                    if (
+                        _stable_workspace_file_sha256(
+                            self.workspace_root,
+                            canonical_paths[path_key],
+                            label=f"Factor rollover {path_key}",
+                        )
+                        != bundle_payload[sha_key]
+                    ):
+                        _raise("Factor rollover canonical input changed before CAS")
+                history_path = FACTOR_POINTER_HISTORY_ROOT / f"{expected_sha}.json"
+                self.write_exact_once(history_path, previous_factor_pointer_raw)
+                self._storage._fault_hook("AFTER_ROLLOVER_POINTER_HISTORY")
+                replaced = self._replace_active_pointer_under_lock(
+                    target_factor_pointer_raw,
+                    expected_pointer_sha256=expected_sha,
+                )
+                if replaced.byte_sha256 != target_sha:
+                    _raise("Factor rollover active pointer SHA differs")
+                cas_performed = True
+            elif current.byte_sha256 == target_sha and current.data == target_factor_pointer_raw:
+                history = self.read(FACTOR_POINTER_HISTORY_ROOT / f"{expected_sha}.json")
+                if history.data != previous_factor_pointer_raw:
+                    _raise("Factor rollover predecessor history differs")
+                recovered_commit = (
+                    self.read_optional(FACTOR_ROLLOVER_COMMITS_ROOT / f"{target_sha}.json") is None
+                )
+            else:
+                _raise("Factor rollover active pointer is neither predecessor nor target")
+            stored_commit = self.write_exact_once(
+                FACTOR_ROLLOVER_COMMITS_ROOT / f"{target_sha}.json",
+                canonical_json_bytes(commit),
+            )
+            if stored_commit.data != rollover_commit_raw:
+                _raise("Factor rollover commit readback differs")
+        verification = self.verify_active()
+        return {
+            **verification,
+            "rollover": {
+                "cas_performed": cas_performed,
+                "marker_only_recovery": False,
+                "commit_recovered": (not cas_performed and recovered_commit),
+                "idempotent_replay": (not cas_performed and not recovered_commit),
+                "previous_pointer_sha256": expected_sha,
+                "target_pointer_sha256": target_sha,
+                "rollover_commit_ref": _artifact_ref(commit),
+            },
+        }
+
+    def recover_rollover_for_inputs(
+        self, *, expected_pointer_sha256: str, maintenance_sha256: str
+    ) -> dict[str, Any]:
+        """Resolve one exact prepared rollover by its immutable input index."""
+
+        input_key = _rollover_input_key(
+            previous_pointer_sha256=expected_pointer_sha256,
+            maintenance_sha256=maintenance_sha256,
+        )
+        stored_index = self.read(FACTOR_ROLLOVER_INPUT_INDEX_ROOT / f"{input_key}.json")
+        try:
+            index = parse_canonical_json_bytes(
+                stored_index.data, label="Factor rollover input index"
+            )
+        except ContractError as exc:
+            raise FactorGovernanceError("Factor rollover input index is invalid") from exc
+        if (
+            type(index) is not dict
+            or set(index)
+            != {
+                "schema_version",
+                "previous_pointer_sha256",
+                "maintenance_sha256",
+                "target_pointer_sha256",
+            }
+            or index["schema_version"] != "factor-production-rollover-input-index.v1"
+            or index["previous_pointer_sha256"] != expected_pointer_sha256
+            or index["maintenance_sha256"] != maintenance_sha256
+        ):
+            _raise("Factor rollover input index fields differ")
+        target_sha = _require_sha(
+            index["target_pointer_sha256"], label="rollover indexed target pointer"
+        )
+        preparation_root = FACTOR_PREPARATIONS_ROOT / target_sha
+        target_pointer = self.read(preparation_root / "pointer.json")
+        target_raw = _factor_pointer_raw(validate_factor_production_pointer(target_pointer.data))
+        if _sha256(target_raw) != target_sha:
+            _raise("Factor rollover indexed target bytes differ")
+        current = self.read(FACTOR_ACTIVE_POINTER_PATH)
+        if current.byte_sha256 == expected_pointer_sha256:
+            previous_raw = current.data
+        elif current.byte_sha256 == target_sha:
+            previous_raw = self.read(
+                FACTOR_POINTER_HISTORY_ROOT / f"{expected_pointer_sha256}.json"
+            ).data
+        else:
+            _raise("Factor rollover indexed recovery pointer conflicts")
+        try:
+            canonical_paths = parse_canonical_json_bytes(
+                self.read(preparation_root / "canonical-paths.json").data,
+                label="Factor rollover canonical paths",
+            )
+        except ContractError as exc:
+            raise FactorGovernanceError("Factor rollover canonical paths are invalid") from exc
+        if type(canonical_paths) is not dict:
+            _raise("Factor rollover canonical paths fields differ")
+        return self.activate_rollover_generation(
+            target_factor_pointer_raw=target_raw,
+            previous_factor_pointer_raw=previous_raw,
+            factor_generation_receipt_raw=self.read(preparation_root / "receipt.json").data,
+            rollover_bundle_raw=self.read(preparation_root / "rollover-bundle.json").data,
+            rollover_prepared_raw=self.read(preparation_root / "rollover-prepared.json").data,
+            rollover_commit_raw=self.read(preparation_root / "rollover-commit.json").data,
+            canonical_paths={str(key): str(value) for key, value in canonical_paths.items()},
+        )
+
     def verify_active(self) -> dict[str, Any]:
-        """Revalidate the permanent Factor marker closure without System access."""
+        """Revalidate the current Factor head and its immutable genesis lineage."""
 
         pointer_stored = self.read_optional(FACTOR_ACTIVE_POINTER_PATH)
         marker_stored = self.read_optional(FACTOR_PRODUCTION_MARKER_PATH)
@@ -2923,25 +3747,113 @@ class FactorProductionStore:
             }
         active_pointer = validate_factor_active_pointer(pointer_stored.data)
         marker = validate_factor_production_marker(marker_stored.data)
-        pointer = self._read_artifact_ref(
+        genesis_pointer = self._read_artifact_ref(
             marker["payload"]["factor_pointer_ref"], label="Factor marker sealed pointer record"
         )
-        pointer = validate_factor_production_pointer(pointer)
-        if _factor_pointer_raw(pointer) != pointer_stored.data:
-            _raise("Factor active pointer differs from marker sealed pointer record")
-        pointer_ref = _artifact_ref(pointer)
-        if marker["payload"]["factor_pointer_ref"] != pointer_ref:
+        genesis_pointer = validate_factor_production_pointer(genesis_pointer)
+        genesis_raw = _factor_pointer_raw(genesis_pointer)
+        genesis_sha = _sha256(genesis_raw)
+        if marker["payload"]["factor_pointer_ref"] != _artifact_ref(genesis_pointer):
             _raise("Factor marker pointer binding differs")
-        bundle = self._read_artifact_ref(
+        genesis_bundle = self._read_artifact_ref(
             marker["payload"]["activation_bundle_ref"], label="Factor marker activation bundle"
         )
-        prepared = self._read_artifact_ref(
+        genesis_prepared = self._read_artifact_ref(
             marker["payload"]["prepared_transaction_ref"],
             label="Factor marker prepared transaction",
         )
-        receipt = self._read_artifact_ref(
+        genesis_receipt = self._read_artifact_ref(
             marker["payload"]["factor_generation_receipt_ref"], label="Factor marker receipt"
         )
+        validate_factor_production_activation_bundle(
+            genesis_bundle, receipt=genesis_receipt, pointer=genesis_pointer
+        )
+        validate_factor_production_prepared(
+            genesis_prepared,
+            bundle=genesis_bundle,
+            receipt=genesis_receipt,
+            pointer=genesis_pointer,
+        )
+        validate_factor_production_marker(
+            marker,
+            receipt=genesis_receipt,
+            pointer=genesis_pointer,
+            bundle=genesis_bundle,
+            prepared=genesis_prepared,
+        )
+
+        chain_length = 0
+        seen: set[str] = set()
+        current_raw = pointer_stored.data
+        current_date: str | None = None
+        while _sha256(current_raw) != genesis_sha:
+            chain_length += 1
+            if chain_length > FACTOR_POINTER_CHAIN_MAX:
+                _raise("FACTOR_POINTER_CHAIN_LIMIT_REACHED")
+            current_sha = _sha256(current_raw)
+            if current_sha in seen:
+                _raise("Factor pointer lineage contains a cycle")
+            seen.add(current_sha)
+            current_pointer = validate_factor_active_pointer(current_raw)
+            previous_sha = current_pointer["previous_pointer_sha256"]
+            if previous_sha == FACTOR_EMPTY_POINTER_SHA256:
+                _raise("Factor pointer lineage is detached from genesis")
+            preparation_root = FACTOR_PREPARATIONS_ROOT / current_sha
+            pointer_record = validate_factor_production_pointer(
+                self.read(preparation_root / "pointer.json").data
+            )
+            receipt_record = validate_factor_production_generation_receipt(
+                self.read(preparation_root / "receipt.json").data
+            )
+            bundle_record = validate_factor_production_rollover_bundle(
+                self.read(preparation_root / "rollover-bundle.json").data
+            )
+            prepared_record = validate_factor_production_rollover_prepared(
+                self.read(preparation_root / "rollover-prepared.json").data,
+                bundle=bundle_record,
+            )
+            commit_record = validate_factor_production_rollover_commit(
+                self.read(FACTOR_ROLLOVER_COMMITS_ROOT / f"{current_sha}.json").data,
+                bundle=bundle_record,
+                prepared=prepared_record,
+            )
+            del commit_record
+            predecessor_raw = self.read(FACTOR_POINTER_HISTORY_ROOT / f"{previous_sha}.json").data
+            predecessor_record = _factor_pointer_record_from_raw(predecessor_raw)
+            validate_factor_production_rollover_bundle(
+                bundle_record,
+                predecessor_pointer=predecessor_record,
+                target_pointer=pointer_record,
+                receipt=receipt_record,
+            )
+            if _factor_pointer_raw(pointer_record) != current_raw:
+                _raise("Factor rollover pointer record differs from lineage head")
+            generation_record = self._read_factor_generation_ref(
+                receipt_record["payload"]["factor_generation_ref"],
+                label="Factor rollover generation",
+            )
+            generation_date = generation_record["payload"]["as_of"]
+            if current_date is not None and generation_date > current_date:
+                _raise("Factor pointer lineage dates regress")
+            current_date = generation_date
+            current_raw = predecessor_raw
+        if current_raw != genesis_raw:
+            _raise("Factor pointer lineage genesis bytes differ")
+
+        current_pointer_record = _factor_pointer_record_from_raw(pointer_stored.data)
+        if pointer_stored.byte_sha256 == genesis_sha:
+            receipt = genesis_receipt
+            pointer = genesis_pointer
+        else:
+            preparation_root = FACTOR_PREPARATIONS_ROOT / pointer_stored.byte_sha256
+            receipt = validate_factor_production_generation_receipt(
+                self.read(preparation_root / "receipt.json").data
+            )
+            pointer = validate_factor_production_pointer(
+                self.read(preparation_root / "pointer.json").data
+            )
+        if _artifact_ref(pointer) != _artifact_ref(current_pointer_record):
+            _raise("Factor current pointer artifact differs")
         generation = self._read_factor_generation_ref(
             receipt["payload"]["factor_generation_ref"], label="Factor production generation"
         )
@@ -2977,13 +3889,6 @@ class FactorProductionStore:
             validation_mode="HISTORICAL_RECOVERY",
             current_release_root=None,
         )
-        validate_factor_production_activation_bundle(bundle, receipt=receipt, pointer=pointer)
-        validate_factor_production_prepared(
-            prepared, bundle=bundle, receipt=receipt, pointer=pointer
-        )
-        validate_factor_production_marker(
-            marker, receipt=receipt, pointer=pointer, bundle=bundle, prepared=prepared
-        )
         return {
             "activation_scope": FACTOR_PRODUCTION_SCOPE,
             "factor_readiness": FACTOR_READINESS_READY,
@@ -2995,8 +3900,10 @@ class FactorProductionStore:
             "factor_pointer_semantic_sha256": pointer["semantic_sha256"],
             "marker_byte_sha256": marker_stored.byte_sha256,
             "marker_semantic_sha256": marker["semantic_sha256"],
-            "active_factors": marker["payload"]["active_factor_rows"],
-            "control_factors": marker["payload"]["control_rows"],
+            "active_factors": receipt["payload"]["active_factor_rows"],
+            "control_factors": receipt["payload"]["control_rows"],
+            "pointer_chain_length": chain_length,
+            "genesis_pointer_sha256": genesis_sha,
             "admission_route": ADMISSION_ROUTE,
             "producer_identity": PRODUCER_IDENTITY,
             "fundamental_dependency_state": FUNDAMENTAL_NOT_USED,
@@ -3030,10 +3937,17 @@ class FactorProductionStore:
         ):
             _raise("Factor production authority changed during signal read")
         marker = validate_factor_production_marker(marker_stored.data)
-        receipt = self._read_artifact_ref(
-            marker["payload"]["factor_generation_receipt_ref"],
-            label="Factor signal receipt",
-        )
+        if pointer_stored.byte_sha256 == verification["genesis_pointer_sha256"]:
+            receipt = self._read_artifact_ref(
+                marker["payload"]["factor_generation_receipt_ref"],
+                label="Factor signal receipt",
+            )
+        else:
+            receipt = validate_factor_production_generation_receipt(
+                self.read(
+                    FACTOR_PREPARATIONS_ROOT / pointer_stored.byte_sha256 / "receipt.json"
+                ).data
+            )
         generation = self._read_factor_generation_ref(
             receipt["payload"]["factor_generation_ref"],
             label="Factor signal generation",

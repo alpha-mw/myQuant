@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import stat
 from typing import Any, Callable, Mapping
 
@@ -104,10 +105,11 @@ def _default_provider_factory() -> Any:
 
 
 def _default_suspension_loader(provider: Any, target: str, root: Path) -> tuple[set[str], Path]:
-    from .download_cn import CNDataFetcher
+    from .download_cn import CNFullMarketDownloader
 
-    root.mkdir(parents=True, mode=0o700)
-    fetcher = CNDataFetcher.__new__(CNDataFetcher)
+    root.mkdir(parents=True, mode=0o700, exist_ok=True)
+    root.chmod(0o700)
+    fetcher = CNFullMarketDownloader.__new__(CNFullMarketDownloader)
     fetcher.data_dir = str(root)
     fetcher.pro = provider
     fetcher._latest_suspended_symbols_cache = {}
@@ -330,6 +332,15 @@ def _compact_date(value: Any) -> str:
     return digits[:8] if len(digits) >= 8 else ""
 
 
+def _shadow_candidate_data_root(context: MaintenanceContext) -> Path:
+    return (
+        context.workspace_root
+        / "results/private/cn_daily_shadow_candidates"
+        / context.attempt_root.name
+        / "data"
+    )
+
+
 def _open_session_window(
     *, close_receipt: Mapping[str, Any], parent_date: str, target_date: str
 ) -> list[str]:
@@ -342,8 +353,10 @@ def _open_session_window(
         or any(len(value) != 8 or not value.isdigit() for value in dates)
         or dates != sorted(set(dates))
         or target_date not in dates
-        or dates[-1] != target_date
     ):
+        raise RuntimeError("CLOSE_OPEN_SESSION_WINDOW_INVALID")
+    dates = [value for value in dates if value <= target_date]
+    if not dates or dates[-1] != target_date:
         raise RuntimeError("CLOSE_OPEN_SESSION_WINDOW_INVALID")
     if parent_date == target_date:
         return []
@@ -514,6 +527,7 @@ class _DefaultComponents:
             provider,
             capture_root=context.attempt_root / "pit_capture",
             source_run_id=f"daily-{context.target_date}-{context.attempt_slot}",
+            effective_date=context.target_date,
         )
         common = {
             "store": store,
@@ -538,7 +552,7 @@ class _DefaultComponents:
                 capture["capture_receipt_path"],
                 capture["capture_receipt_sha256"],
                 canonical=False,
-                shadow_root=(context.attempt_root / "market_candidate" / "data" / "parquet" / "cn"),
+                shadow_root=(_shadow_candidate_data_root(context) / "parquet" / "cn"),
                 **common,
             )
         try:
@@ -575,6 +589,14 @@ class _DefaultComponents:
                 "capture_receipt_path": capture["capture_receipt_path"],
                 "capture_receipt_sha256": capture["capture_receipt_sha256"],
                 "provider_call_count": capture.get("provider_call_count"),
+                "authority_scope": published.get("authority_scope"),
+                "authority_scope_complete": published.get("authority_scope_complete"),
+                "dynamic_whole_market_complete": published.get("dynamic_whole_market_complete"),
+                "provider_listed_count": published.get("provider_listed_count"),
+                "authority_scope_count": published.get("authority_scope_count"),
+                "scope_expansion_pending": published.get("scope_expansion_pending"),
+                "scope_expansion_pending_count": published.get("scope_expansion_pending_count"),
+                "scope_expansion_pending_sha256": published.get("scope_expansion_pending_sha256"),
             },
         }
 
@@ -676,7 +698,7 @@ class _DefaultComponents:
             )
             selected_data_root = production_data_root
         else:
-            selected_data_root = context.attempt_root / "market_candidate" / "data"
+            selected_data_root = _shadow_candidate_data_root(context)
             publication = self.apis.market_shadow(
                 shadow_data_root=selected_data_root,
                 production_data_root=production_data_root,
@@ -704,9 +726,14 @@ class _DefaultComponents:
 
     def history(self, context: MaintenanceContext) -> Mapping[str, Any]:
         market = _stage_evidence(context, "MARKET")
+        history_output_root = (
+            _shadow_candidate_data_root(context).parent / "history_audit"
+            if context.mode == "shadow"
+            else context.attempt_root / "history_audit"
+        )
         kwargs: dict[str, Any] = {
             "data_root": self.workspace / "data",
-            "output_root": context.attempt_root / "history_audit",
+            "output_root": history_output_root,
             "days": 100,
             "end_date": context.target_date,
             "allow_online": True,
@@ -717,7 +744,7 @@ class _DefaultComponents:
             symbols, _path = self.apis.suspension_loader(
                 provider,
                 trade_date,
-                context.attempt_root / "history_audit",
+                history_output_root,
             )
             return symbols
 
@@ -900,7 +927,8 @@ def build_default_components(
             try:
                 return callback(context)
             except Exception as exc:
-                text = str(exc).casefold()
+                raw_text = str(exc)
+                text = raw_text.casefold()
                 retryable = any(
                     marker in text
                     for marker in (
@@ -937,7 +965,14 @@ def build_default_components(
                     "blockers": [
                         f"{stage}_{'PROVIDER_NOT_READY' if retryable else 'CONTRACT_BLOCKED'}"
                     ],
-                    "evidence": {"error_type": type(exc).__name__},
+                    "evidence": {
+                        "error_type": type(exc).__name__,
+                        "error_code": (
+                            raw_text
+                            if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{2,127}", raw_text)
+                            else "UNAVAILABLE"
+                        ),
+                    },
                 }
 
         return run

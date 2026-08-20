@@ -1295,7 +1295,9 @@ def run_cn_history_audit(
             "active market coverage PIT SHA binding is inconsistent"
         )
     pit_records = dict(pit_binding.get("records", {}) or {})
-    audit_symbols = _normalize_symbols(pit_records)
+    # History readiness is scoped to the exact frozen Market authority, not
+    # every historical or scope-expansion-pending PIT evidence row.
+    audit_symbols = list(latest_component_symbols)
     if not audit_symbols:
         raise RuntimeError("PIT full-A membership scope is empty")
     pit_missing_current_components = _missing_pit_components(

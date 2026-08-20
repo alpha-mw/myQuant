@@ -88,6 +88,32 @@ or `SUSPENDED`; its exact public keys are `state`, `verified`,
 
 ## Factor health
 
+Use the isolated production readers before prospective governance status:
+
+```bash
+quant-investor factor production-status \
+  --workspace-root /Users/maxwell/mySpace/myQuant
+quant-investor factor production-verify \
+  --workspace-root /Users/maxwell/mySpace/myQuant
+```
+
+They resolve only the Factor pointer, immutable genesis marker, pointer
+lineage, generations, and sealed LOW/W80 signals. They do not evaluate or grant
+System, Mainline, portfolio, or trading authority.
+
+Daily rollover is allowed only through `factor production-rollover` with an
+exact execute-mode maintenance receipt and current-pointer SHA. The overall
+receipt may be `PARTIAL` when Macro is independently blocked, but
+`factor_input_readiness` must be `READY`, core blockers must be empty, and
+PIT/Market/100-session History must replay at one target date. Shadow readiness
+never authorizes rollover. The permanent marker is a genesis anchor and is
+never updated by rollover. Equal inputs produce governed no-action.
+
+Prospective evidence remains `NOT_CONFIGURED` unless the exact registered
+prospective lifecycle is present.
+
+## Prospective Factor health
+
 Use `quant-investor factor status` with exact explicit inputs. Verify strict CN
 Parquet/PIT coverage, the admitted factor-set identity, prospective evidence,
 runtime contracts, statistics, costs, maturity, factor/family identity, weights,

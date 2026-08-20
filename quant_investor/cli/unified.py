@@ -660,6 +660,191 @@ def factor_production_activate(  # noqa: C901 - one atomic public operator bound
     )
 
 
+def factor_production_rollover(  # noqa: C901 - one guarded successor boundary
+    *,
+    workspace_root: str,
+    market_data_root: str,
+    calendar_capture_root: str,
+    expected_calendar_success_sha256: str,
+    maintenance_receipt: str,
+    expected_maintenance_receipt_sha256: str,
+    expected_current_pointer_sha256: str,
+) -> dict[str, Any]:
+    """Prepare and commit one Factor-only successor after exact daily maintenance."""
+
+    from quant_investor.factors.governance.factor_production_prepare import (
+        prepare_factor_production,
+    )
+    from quant_investor.factors.production_authority import FactorProductionStore
+    from quant_investor.factors.production_rollover import (
+        canonical_input_closure,
+        validate_daily_maintenance_receipt,
+    )
+    from quant_investor.system import SystemStore
+
+    maintenance = validate_daily_maintenance_receipt(
+        workspace_root=workspace_root,
+        receipt_path=maintenance_receipt,
+        expected_receipt_sha256=expected_maintenance_receipt_sha256,
+    )
+    factor_store = FactorProductionStore(workspace_root)
+    current = factor_store.read("results/factors/_active.json")
+    if current.byte_sha256 != expected_current_pointer_sha256:
+        recovered = factor_store.recover_rollover_for_inputs(
+            expected_pointer_sha256=expected_current_pointer_sha256,
+            maintenance_sha256=expected_maintenance_receipt_sha256,
+        )
+        rollover = recovered["rollover"]
+        return {
+            **_factor_activation_projection(
+                {**recovered, "activation": rollover},
+                command_status=(
+                    "ROLLOVER_COMMIT_RECOVERED"
+                    if rollover["commit_recovered"]
+                    else "ROLLOVER_IDEMPOTENT"
+                ),
+                prepared_sources=None,
+            ),
+            "previous_pointer_sha256": rollover["previous_pointer_sha256"],
+            "rollover_commit_ref": rollover["rollover_commit_ref"],
+            "prospective_evidence_status": "NOT_CONFIGURED",
+            "prospective_write_performed": False,
+            "upstream_maintenance_status": maintenance["upstream_maintenance_status"],
+            "macro_status": maintenance["macro_status"],
+            "macro_blockers": maintenance["macro_blockers"],
+            "macro_used_by_factor": False,
+        }
+    current_generation = factor_store._read_generation_for_pointer(  # noqa: SLF001
+        current.data, label="Factor rollover current"
+    )
+    current_as_of = current_generation["payload"]["as_of"]
+    target_date = maintenance["target_date"]
+    if target_date < current_as_of:
+        raise CommandError("FACTOR_ROLLOVER_TARGET_PRECEDES_ACTIVE")
+    canonical_inputs = canonical_input_closure(
+        workspace_root=workspace_root, market_data_root=market_data_root
+    )
+    core_closure = maintenance["core_closure"]
+    for canonical_key, core_key in (
+        ("market_pointer_sha256", "market_pointer_sha256"),
+        ("market_manifest_sha256", "market_manifest_sha256"),
+        ("pit_pointer_sha256", "pit_pointer_sha256"),
+        ("pit_manifest_sha256", "pit_manifest_sha256"),
+    ):
+        if canonical_inputs[canonical_key] != core_closure[core_key]:
+            raise CommandError("FACTOR_ROLLOVER_MAINTENANCE_BINDING_MISMATCH")
+    active_market = factor_store._read_artifact_ref(  # noqa: SLF001
+        current_generation["payload"]["market_input_ref"],
+        label="Factor rollover active Market input",
+    )
+    active_market_payload = active_market["payload"]
+    same_input_binding = (
+        active_market_payload["market_pointer_sha256"] == canonical_inputs["market_pointer_sha256"]
+        and active_market_payload["market_snapshot_manifest_sha256"]
+        == canonical_inputs["market_manifest_sha256"]
+        and active_market_payload["pit_membership_sha256"] == core_closure["pit_membership_sha256"]
+    )
+    if target_date == current_as_of and same_input_binding:
+        verified = factor_store.verify_active()
+        if verified.get("factor_authority") != "ACTIVE" or verified.get("blockers"):
+            raise CommandError("FACTOR_PRODUCTION_FINAL_VERIFY_FAILED")
+        return {
+            "command_status": "FACTOR_PRODUCTION_NO_ACTION",
+            "authority_domain": "FACTOR_PRODUCTION_ONLY",
+            "factor_authority": "ACTIVE",
+            "factor_readiness": "READY",
+            "factor_generation_id": verified["factor_generation_id"],
+            "as_of": current_as_of,
+            "factor_pointer_byte_sha256": current.byte_sha256,
+            "cas_performed": False,
+            "prospective_evidence_status": "NOT_CONFIGURED",
+            "prospective_write_performed": False,
+            "grants_system_authority": False,
+            "grants_trading_authority": False,
+            "broker_order_trade_fund_writes": 0,
+            "upstream_maintenance_status": maintenance["upstream_maintenance_status"],
+            "macro_status": maintenance["macro_status"],
+            "macro_blockers": maintenance["macro_blockers"],
+            "macro_used_by_factor": False,
+        }
+    prepared_sources = prepare_factor_production(
+        workspace_root=workspace_root,
+        market_data_root=market_data_root,
+        calendar_capture_root=calendar_capture_root,
+        expected_calendar_success_sha256=expected_calendar_success_sha256,
+    )
+    if prepared_sources.get("as_of") != target_date:
+        raise CommandError("FACTOR_ROLLOVER_PREPARED_DATE_MISMATCH")
+    workspace = Path(workspace_root).resolve(strict=True)
+    current_release_root = Path(prepared_sources["release_repository_root"]).resolve(strict=True)
+    source_root = (workspace / prepared_sources["source_root"]).resolve(strict=True)
+    source_store = SystemStore(
+        workspace,
+        source_root=source_root,
+        source_root_id=prepared_sources["source_root_id"],
+    )
+    generation = source_store.get_object(prepared_sources["factor_production_generation_ref"])
+    source_closure = source_store.get_object(
+        prepared_sources["factor_production_source_closure_ref"]
+    )
+    recomputation = source_store.get_object(prepared_sources["factor_production_recomputation_ref"])
+    source_payload = source_closure["payload"]
+    legacy = source_store.get_object(source_payload["legacy_zero_call_ref"])
+    market_input = source_store.get_object(source_payload["market_input_ref"])
+    live_store = FactorProductionStore.from_system_source_custody(
+        workspace,
+        source_root=source_root,
+        source_root_id=prepared_sources["source_root_id"],
+        release_repository_root=current_release_root,
+    )
+    activated_at = datetime.now(timezone.utc).replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
+    prepared = live_store.prepare_rollover_activation(
+        factor_generation=generation,
+        source_closure=source_closure,
+        recomputation_evidence=recomputation,
+        legacy_zero_call_certificate=legacy,
+        market_input=market_input,
+        expected_pointer_sha256=expected_current_pointer_sha256,
+        maintenance=maintenance,
+        canonical_inputs=canonical_inputs,
+        prepared_at=activated_at,
+        activated_at=activated_at,
+    )
+    activated = live_store.activate_rollover_generation(
+        target_factor_pointer_raw=prepared["target_factor_pointer_raw"],
+        previous_factor_pointer_raw=prepared["previous_factor_pointer_raw"],
+        factor_generation_receipt_raw=prepared["factor_generation_receipt_raw"],
+        rollover_bundle_raw=prepared["rollover_bundle_raw"],
+        rollover_prepared_raw=prepared["rollover_prepared_raw"],
+        rollover_commit_raw=prepared["rollover_commit_raw"],
+        canonical_paths=prepared["canonical_paths"],
+    )
+    rollover = activated["rollover"]
+    return {
+        **_factor_activation_projection(
+            {**activated, "activation": rollover},
+            command_status=(
+                "ROLLOVER_ACTIVATED"
+                if rollover["cas_performed"]
+                else (
+                    "ROLLOVER_COMMIT_RECOVERED"
+                    if rollover["commit_recovered"]
+                    else "ROLLOVER_IDEMPOTENT"
+                )
+            ),
+            prepared_sources=prepared_sources,
+        ),
+        "previous_pointer_sha256": rollover["previous_pointer_sha256"],
+        "rollover_commit_ref": rollover["rollover_commit_ref"],
+        "prospective_evidence_status": "NOT_CONFIGURED",
+        "prospective_write_performed": False,
+        "upstream_maintenance_status": maintenance["upstream_maintenance_status"],
+        "macro_status": maintenance["macro_status"],
+        "macro_blockers": maintenance["macro_blockers"],
+        "macro_used_by_factor": False,
+    }
+
+
 def factor_mine(
     *, workspace_root: str, request_path: str, expected_request_sha256: str
 ) -> dict[str, Any]:
@@ -1027,6 +1212,7 @@ __all__ = [
     "factor_mine",
     "factor_observe",
     "factor_production_activate",
+    "factor_production_rollover",
     "factor_production_signal",
     "factor_production_status",
     "factor_production_verify",

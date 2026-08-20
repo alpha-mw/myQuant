@@ -254,7 +254,7 @@ def validate_automation_projection(
         "id": "myquant-2",
         "kind": "cron",
         "name": "myQuant 统一因子周度健康复核",
-        "rrule": "RRULE:FREQ=WEEKLY;BYDAY=FR;BYHOUR=18;BYMINUTE=30;BYSECOND=0",
+        "rrule": "RRULE:FREQ=WEEKLY;BYDAY=SA;BYHOUR=6;BYMINUTE=30;BYSECOND=0",
         "model": "gpt-5.6-sol",
         "reasoning_effort": "high",
         "execution_environment": "local",

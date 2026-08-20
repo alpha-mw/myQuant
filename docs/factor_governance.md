@@ -160,6 +160,10 @@ authority. The separate `results/factors/_active.json` pointer grants only
 `FACTOR_PRODUCTION_ONLY` authority and can be created only by
 `quant-investor factor production-activate --expected-empty`; it never grants
 System, Mainline, Investment, portfolio, Strategy Record, or trading authority.
+After that immutable genesis cutover, `quant-investor factor
+production-rollover` is the sole supported successor writer. It requires an
+exact current-pointer preimage and an execute-mode PIT/Market/History closure,
+preserves the permanent marker, and archives every predecessor pointer.
 
 Invalid stable factor input raises `FactorGovernanceError` with exit code 2,
 default public code `FACTOR_VALIDATION_FAILED`, and no path-bearing public

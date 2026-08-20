@@ -30,8 +30,10 @@ from quant_investor.macro.release_calendar import (
     load_release_calendar,
     publish_release_calendar,
 )
-from quant_investor.macro.store import pointer_sha256 as observation_pointer_sha256
-
+from quant_investor.macro.store import (
+    load_observations,
+    pointer_sha256 as observation_pointer_sha256,
+)
 
 NBS_COVERAGE_URL = "https://www.stats.gov.cn/sj/zxfbhjd/"
 PBC_COVERAGE_URL = "https://www.pbc.gov.cn/diaochatongjisi/116219/116225/index.html"
@@ -169,8 +171,16 @@ def run_cn_macro_maintenance(
     if len(target) != 8 or not target.isdigit():
         raise MacroMaintenanceError("macro_maintenance_target_date_invalid")
     for path, digest, blocker in (
-        (snapshot_manifest_path, expected_snapshot_manifest_sha256, "macro_snapshot_manifest_invalid"),
-        (coverage_manifest_path, expected_coverage_manifest_sha256, "macro_coverage_manifest_invalid"),
+        (
+            snapshot_manifest_path,
+            expected_snapshot_manifest_sha256,
+            "macro_snapshot_manifest_invalid",
+        ),
+        (
+            coverage_manifest_path,
+            expected_coverage_manifest_sha256,
+            "macro_coverage_manifest_invalid",
+        ),
         (scope_artifact_path, expected_scope_artifact_sha256, "macro_scope_artifact_invalid"),
     ):
         _file_bytes(path, digest, blocker)
@@ -203,21 +213,13 @@ def run_cn_macro_maintenance(
     ):
         body, completed_at = acquire(url, issuer)
         if not isinstance(body, bytes) or not 1 <= len(body) <= MAX_COVERAGE_RESPONSE_BYTES:
-            raise MacroMaintenanceError(
-                f"macro_coverage_response_size_invalid:{issuer}"
-            )
+            raise MacroMaintenanceError(f"macro_coverage_response_size_invalid:{issuer}")
         try:
-            completed = datetime.fromisoformat(
-                str(completed_at).strip().replace("Z", "+00:00")
-            )
+            completed = datetime.fromisoformat(str(completed_at).strip().replace("Z", "+00:00"))
         except ValueError as exc:
-            raise MacroMaintenanceError(
-                f"macro_coverage_completed_at_invalid:{issuer}"
-            ) from exc
+            raise MacroMaintenanceError(f"macro_coverage_completed_at_invalid:{issuer}") from exc
         if completed.tzinfo is None:
-            raise MacroMaintenanceError(
-                f"macro_coverage_completed_at_invalid:{issuer}"
-            )
+            raise MacroMaintenanceError(f"macro_coverage_completed_at_invalid:{issuer}")
         normalized_completed_at = completed.astimezone(timezone.utc).isoformat()
         captures.append(
             (
@@ -231,7 +233,7 @@ def run_cn_macro_maintenance(
 
     generation_root = Path(release.identity.generation_path)
     with tempfile.TemporaryDirectory(prefix="cn-macro-maintenance-") as temporary:
-        stage = Path(temporary)
+        stage = Path(temporary).resolve(strict=True)
         plan_path = stage / "plan.json"
         open_days_path = stage / "market_open_days.json"
         capture_path = stage / "capture_manifest.json"
@@ -255,34 +257,48 @@ def run_cn_macro_maintenance(
             receipt_path.parent.mkdir(parents=True, exist_ok=True)
             response_path.write_bytes(body)
             response_sha = _sha256_bytes(body)
-            receipt_raw = _json_bytes({
-                "schema_version": "macro-release-issuer-coverage.v2",
-                "issuer": issuer,
-                "through": cutoff_at,
-                "response_source_id": response_id,
-                "response_sha256": response_sha,
-                "response_size_bytes": len(body),
-            })
+            receipt_raw = _json_bytes(
+                {
+                    "schema_version": "macro-release-issuer-coverage.v2",
+                    "issuer": issuer,
+                    "through": cutoff_at,
+                    "response_source_id": response_id,
+                    "response_sha256": response_sha,
+                    "response_size_bytes": len(body),
+                }
+            )
             receipt_path.write_bytes(receipt_raw)
-            capture_payload["sources"].extend([
-                {
-                    "source_id": response_id, "issuer": issuer,
-                    "artifact_kind": "coverage_response", "source_url": url,
-                    "http_status": 200, "captured_at": cutoff_at,
-                    "raw_path": response_relative, "raw_sha256": response_sha,
-                    "size_bytes": len(body), "content_sha256": response_sha,
-                },
-                {
-                    "source_id": receipt_id, "issuer": issuer,
-                    "artifact_kind": "coverage_receipt", "source_url": url,
-                    "http_status": 200, "captured_at": cutoff_at,
-                    "raw_path": receipt_relative,
-                    "raw_sha256": _sha256_bytes(receipt_raw),
-                    "size_bytes": len(receipt_raw),
-                    "content_sha256": _sha256_bytes(receipt_raw),
-                },
-            ])
-            coverage = next(item for item in capture_payload["issuer_coverage"] if item["issuer"] == issuer)
+            capture_payload["sources"].extend(
+                [
+                    {
+                        "source_id": response_id,
+                        "issuer": issuer,
+                        "artifact_kind": "coverage_response",
+                        "source_url": url,
+                        "http_status": 200,
+                        "captured_at": cutoff_at,
+                        "raw_path": response_relative,
+                        "raw_sha256": response_sha,
+                        "size_bytes": len(body),
+                        "content_sha256": response_sha,
+                    },
+                    {
+                        "source_id": receipt_id,
+                        "issuer": issuer,
+                        "artifact_kind": "coverage_receipt",
+                        "source_url": url,
+                        "http_status": 200,
+                        "captured_at": cutoff_at,
+                        "raw_path": receipt_relative,
+                        "raw_sha256": _sha256_bytes(receipt_raw),
+                        "size_bytes": len(receipt_raw),
+                        "content_sha256": _sha256_bytes(receipt_raw),
+                    },
+                ]
+            )
+            coverage = next(
+                item for item in capture_payload["issuer_coverage"] if item["issuer"] == issuer
+            )
             coverage["through"] = cutoff_at
             coverage["source_ids"].append(receipt_id)
         capture_payload["captured_at"] = cutoff_at
@@ -310,23 +326,37 @@ def run_cn_macro_maintenance(
         pinned_open_dates = tuple(
             json.loads(release_open_days_path.read_text(encoding="utf-8"))["open_dates"]
         )
-        observation_result = publish_local_market_breadth_roll(
-            snapshot_manifest_path=snapshot_manifest_path,
-            expected_snapshot_manifest_sha256=expected_snapshot_manifest_sha256,
-            coverage_manifest_path=coverage_manifest_path,
-            expected_coverage_manifest_sha256=expected_coverage_manifest_sha256,
-            target_trade_date=target,
-            scope_artifact_path=scope_artifact_path,
-            expected_scope_artifact_sha256=expected_scope_artifact_sha256,
-            target_as_of=target,
-            decision_cutoff_at=cutoff_at,
-            pinned_open_dates=pinned_open_dates,
-            market_open_days_path=release_open_days_path,
-            expected_market_open_days_sha256=release_result.evidence.market_open_days_sha256,
-            canonical_observations_root=observations_root,
-            run_id=observations_run_id,
-            expected_pointer_sha256=expected_observations_pointer_sha256,
+        _existing_rows, existing_projection = load_observations(observations_root)
+        existing_manifest = dict(existing_projection.get("generation_manifest") or {})
+        existing_metadata = dict(
+            existing_manifest.get("metadata") or existing_projection.get("metadata") or {}
         )
+        parent_target = str(existing_metadata.get("local_target_trade_date") or "")
+        catch_up_targets = [value for value in pinned_open_dates if parent_target < value <= target]
+        if not catch_up_targets or len(catch_up_targets) > 5:
+            raise MacroMaintenanceError("macro_observation_catch_up_window_invalid")
+        observation_results: list[dict[str, Any]] = []
+        expected_observation_pointer = expected_observations_pointer_sha256
+        for catch_up_target in catch_up_targets:
+            observation_result = publish_local_market_breadth_roll(
+                snapshot_manifest_path=snapshot_manifest_path,
+                expected_snapshot_manifest_sha256=expected_snapshot_manifest_sha256,
+                coverage_manifest_path=coverage_manifest_path,
+                expected_coverage_manifest_sha256=expected_coverage_manifest_sha256,
+                target_trade_date=catch_up_target,
+                scope_artifact_path=scope_artifact_path,
+                expected_scope_artifact_sha256=expected_scope_artifact_sha256,
+                target_as_of=catch_up_target,
+                decision_cutoff_at=cutoff_at,
+                pinned_open_dates=pinned_open_dates,
+                market_open_days_path=release_open_days_path,
+                expected_market_open_days_sha256=(release_result.evidence.market_open_days_sha256),
+                canonical_observations_root=observations_root,
+                run_id=f"{observations_run_id}-{catch_up_target}",
+                expected_pointer_sha256=expected_observation_pointer,
+            )
+            observation_results.append(observation_result)
+            expected_observation_pointer = observation_pointer_sha256(observations_root)
     except Exception as exc:
         return {
             "schema_version": "cn-macro-maintenance-receipt.v1",
@@ -345,8 +375,15 @@ def run_cn_macro_maintenance(
         "cutoff_at": cutoff_at,
         "release": asdict(release_result.identity),
         "observations": observation_result,
+        "observation_catch_up_targets": catch_up_targets,
+        "observation_results": observation_results,
         "provider_calls": [
-            {"issuer": issuer, "url": url, "response_sha256": _sha256_bytes(body), "size_bytes": len(body)}
+            {
+                "issuer": issuer,
+                "url": url,
+                "response_sha256": _sha256_bytes(body),
+                "size_bytes": len(body),
+            }
             for issuer, url, body, _completed in captures
         ],
         "blockers": [],
@@ -398,10 +435,8 @@ def prepare_cn_macro_maintenance_transaction(
         or len(token) > 80
         or not token[0].isalnum()
         or any(
-            character not in (
-                "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
-                "0123456789_.-"
-            )
+            character
+            not in ("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ" "0123456789_.-")
             for character in token
         )
     ):
@@ -455,17 +490,23 @@ def prepare_cn_macro_maintenance_transaction(
                 "macro_transaction_candidate_preparation_incomplete:"
                 + ":".join(str(item) for item in legacy_result.get("blockers", ()))
             )
-        if _file_bytes(
-            market_pointer_path,
-            expected_market_pointer_sha256,
-            "macro_market_authority_pointer_invalid",
-        ) != market_authority_raw:
+        if (
+            _file_bytes(
+                market_pointer_path,
+                expected_market_pointer_sha256,
+                "macro_market_authority_pointer_invalid",
+            )
+            != market_authority_raw
+        ):
             raise MacroMaintenanceError("macro_market_authority_pointer_drift")
-        if _file_bytes(
-            pit_pointer_path,
-            expected_pit_pointer_sha256,
-            "macro_pit_authority_pointer_invalid",
-        ) != pit_authority_raw:
+        if (
+            _file_bytes(
+                pit_pointer_path,
+                expected_pit_pointer_sha256,
+                "macro_pit_authority_pointer_invalid",
+            )
+            != pit_authority_raw
+        ):
             raise MacroMaintenanceError("macro_pit_authority_pointer_drift")
         sealed = seal_prepared_macro_transaction(
             prepared_root=prepared_root,

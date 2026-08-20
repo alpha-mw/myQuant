@@ -2147,6 +2147,22 @@ def _factor_production_operator_fixture(  # noqa: C901
         "generation_id": generation_id,
         "canonical_path": str(pit_path),
         "canonical_sha256": pit_sha,
+        "source_bindings": {
+            "scope_expansion_pending": {
+                "schema_version": "cn_pit_scope_expansion_pending.v1",
+                "authority_scope": "FROZEN_FULL_A",
+                "admission_status": "NOT_CONFIGURED",
+                "count": 0,
+                "sha256": hashlib.sha256(
+                    (
+                        json.dumps({"items": []}, ensure_ascii=False, indent=2, sort_keys=True)
+                        + "\n"
+                    ).encode("utf-8")
+                ).hexdigest(),
+                "identities": [],
+                "rows": [],
+            }
+        },
     }
     pit_manifest_path.write_bytes(canonical_json_bytes(pit_manifest))
     pit_manifest_path.chmod(0o600)

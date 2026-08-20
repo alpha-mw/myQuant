@@ -91,3 +91,41 @@ An interruption after atomic publication reuses the exact verified winner. A
 concurrent conflicting winner is rejected. After a Factor pointer CAS but
 before marker publication, rerunning the same installed command performs only
 exact marker recovery; it never performs a second CAS.
+
+## Daily rollover
+
+The permanent marker remains the immutable genesis anchor. Later generations
+advance only `results/factors/_active.json`; every predecessor pointer is kept
+under `results/factors/pointer_history/<raw-sha256>.json` and the bounded chain
+must end at the marker-bound genesis pointer.
+
+Use only an exact execute-mode daily-maintenance receipt whose PIT, Market and
+100-session History lanes are target-aligned and independently replayable:
+
+```bash
+quant-investor factor production-rollover \
+  --workspace-root <workspace> \
+  --market-data-root <strict-market-root> \
+  --calendar-capture-root <published-calendar-capture-root> \
+  --expected-calendar-success-sha256 <sha256> \
+  --maintenance-receipt <exact-attempt.json> \
+  --expected-maintenance-receipt-sha256 <sha256> \
+  --expected-current-pointer-sha256 <active-pointer-raw-sha256>
+```
+
+Macro and Fundamental are not LOW/W80 computational inputs. An overall
+maintenance `PARTIAL` receipt may authorize Factor rollover only when it says
+`factor_input_readiness=READY`, has `core_blockers=[]`, and independently binds
+complete PIT/Market/History evidence. Macro remains reported as blocked and
+grants no System or Mainline authority. Shadow receipts never authorize
+rollover.
+
+Equal target/input binding returns `FACTOR_PRODUCTION_NO_ACTION` with zero
+pointer writes. A newer target is prepared entirely before the cooperative
+exact-preimage CAS. Canonical Market/PIT bytes are rehashed under the Factor
+lock immediately before replacement. The marker is never rewritten.
+
+Daily immutable generations accumulate source-bound LOW/W80 signal history.
+They are not prospective admission observations: until an exact registered
+prospective cycle exists, report `prospective_evidence_status=NOT_CONFIGURED`
+and do not invent IC, RankIC, horizon outcomes or maturity.

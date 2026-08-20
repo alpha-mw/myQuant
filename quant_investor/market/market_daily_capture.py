@@ -258,18 +258,31 @@ def _prepare_market_candidate_root(
         or {entry.name for entry in parquet_root.iterdir()} != {"cn"}
         or market_root.is_symlink()
         or not market_root.is_dir()
-        or {entry.name for entry in market_root.iterdir()} != {"reference"}
+        or not {entry.name for entry in market_root.iterdir()}.issubset({"reference", "raw"})
+        or "reference" not in {entry.name for entry in market_root.iterdir()}
         or reference_root.is_symlink()
         or not reference_root.is_dir()
     ):
         raise MarketDailyCaptureBlocked(["candidate_root_contains_unexpected_preexisting_files"])
     if provided_pit is None:
         raise MarketDailyCaptureBlocked(["candidate_private_pit_binding_required"])
+    raw_root = market_root / "raw"
+    if raw_root.exists() and (raw_root.is_symlink() or not raw_root.is_dir()):
+        raise MarketDailyCaptureBlocked(["candidate_private_pit_raw_root_invalid"])
     if not pit_is_candidate_local:
         raise MarketDailyCaptureBlocked(["candidate_private_pit_binding_not_local"])
     from quant_investor.market.pit_universe import PITUniverseStore
 
-    expected = provided_pit
+    expected = {
+        key: str(provided_pit.get(key) or "")
+        for key in (
+            "generation_id",
+            "generation_manifest_path",
+            "generation_manifest_sha256",
+            "canonical_path",
+            "canonical_sha256",
+        )
+    }
     try:
         observed = PITUniverseStore(root_dir=reference_root).load_generation_binding()
     except RuntimeError as exc:
@@ -492,9 +505,9 @@ def _authority_open_trade_dates(payload: Mapping[str, Any]) -> list[str]:
             if not trade_date:
                 raise MarketDailyCaptureBlocked(["target_authority_open_dates_invalid"])
             dates.append(trade_date)
-    if dates != sorted(set(dates)):
+    if len(dates) != len(set(dates)):
         raise MarketDailyCaptureBlocked(["target_authority_open_dates_invalid"])
-    return dates
+    return sorted(dates)
 
 
 def _authorized_target_window(
@@ -542,7 +555,7 @@ def _authorized_target_window(
     return requested, parent
 
 
-def _pit_reference(binding: Mapping[str, Any]) -> dict[str, str]:
+def _pit_reference(binding: Mapping[str, Any]) -> dict[str, Any]:
     manifest_path = str(binding.get("generation_manifest_path") or "").strip()
     manifest_sha = _valid_sha256(
         binding.get("generation_manifest_sha256"),
@@ -561,12 +574,37 @@ def _pit_reference(binding: Mapping[str, Any]) -> dict[str, str]:
         raise MarketDailyCaptureBlocked(["pit_generation_manifest_sha256_mismatch"])
     if _sha256(canonical_raw) != canonical_sha:
         raise MarketDailyCaptureBlocked(["pit_membership_sha256_mismatch"])
+    manifest = _json_object(manifest_raw, label="pit_generation_manifest")
+    pending = dict(dict(manifest.get("source_bindings") or {}).get("scope_expansion_pending") or {})
+    if not pending:
+        pending = {
+            "schema_version": "cn_pit_scope_expansion_pending.v1",
+            "authority_scope": "FROZEN_FULL_A",
+            "admission_status": "NOT_CONFIGURED",
+            "count": 0,
+            "sha256": _sha256(_canonical_json_bytes({"items": []})),
+            "identities": [],
+        }
+    identities = pending.get("identities")
+    if (
+        pending.get("schema_version") != "cn_pit_scope_expansion_pending.v1"
+        or pending.get("authority_scope") != "FROZEN_FULL_A"
+        or pending.get("admission_status") != "NOT_CONFIGURED"
+        or not isinstance(identities, list)
+        or identities != sorted(set(identities))
+        or pending.get("count") != len(identities)
+        or not _SHA256_RE.fullmatch(str(pending.get("sha256") or ""))
+    ):
+        raise MarketDailyCaptureBlocked(["pit_scope_expansion_pending_invalid"])
     return {
         "generation_id": str(binding.get("generation_id") or ""),
         "generation_manifest_path": str(Path(manifest_path).expanduser()),
         "generation_manifest_sha256": manifest_sha,
         "canonical_path": str(Path(canonical_path).expanduser()),
         "canonical_sha256": canonical_sha,
+        "scope_expansion_pending_count": len(identities),
+        "scope_expansion_pending_sha256": str(pending["sha256"]),
+        "scope_expansion_pending_identities": list(identities),
     }
 
 
@@ -788,9 +826,11 @@ def validate_market_endpoint_frames(
     }
     keysets = {name: set(payload["keys"]) for name, payload in payloads.items()}
     blockers: list[str] = []
+    classified_absent_symbols = set().union(*_reason_sets(reason_sets).values())
+    allowed_auxiliary_keys = {f"{symbol}@{target}" for symbol in classified_absent_symbols}
     for endpoint in ("daily_basic", "adj_factor"):
         missing = keysets["daily"] - keysets[endpoint]
-        extra = keysets[endpoint] - keysets["daily"]
+        extra = keysets[endpoint] - keysets["daily"] - allowed_auxiliary_keys
         if missing:
             blockers.append(f"{endpoint}_keyset_missing:{len(missing)}")
         if extra:
@@ -842,6 +882,135 @@ def _mapping_for_trade_date(
     return raw
 
 
+def _exclude_pending_endpoint_rows(
+    frames: Mapping[str, pd.DataFrame],
+    *,
+    scope: Sequence[str],
+    pending_identities: Sequence[str],
+    pending_sha256: str,
+    trade_date: str,
+    evidence_root: Path,
+) -> tuple[dict[str, pd.DataFrame], dict[str, dict[str, Any]]]:
+    scope_set = set(scope)
+    pending_set = set(pending_identities)
+    filtered: dict[str, pd.DataFrame] = {}
+    references: dict[str, dict[str, Any]] = {}
+    for endpoint in _ENDPOINTS:
+        frame = frames[endpoint]
+        if not isinstance(frame, pd.DataFrame):
+            raise MarketDailyCaptureBlocked([f"{endpoint}_provider_frame_invalid"])
+        if frame.empty:
+            outside_rows: list[dict[str, Any]] = []
+            filtered[endpoint] = frame.copy()
+        else:
+            if "ts_code" not in frame.columns:
+                raise MarketDailyCaptureBlocked([f"{endpoint}_ts_code_missing"])
+            outside_rows = []
+            keep: list[bool] = []
+            seen_outside: set[str] = set()
+            for ordinal, row in enumerate(frame.to_dict(orient="records")):
+                identity = row.get("ts_code")
+                if type(identity) is not str or _SYMBOL_RE.fullmatch(identity) is None:
+                    raise MarketDailyCaptureBlocked([f"{endpoint}_identity_invalid"])
+                if identity in scope_set:
+                    keep.append(True)
+                    continue
+                if identity not in pending_set:
+                    keep.append(True)
+                    continue
+                keep.append(False)
+                if identity in seen_outside:
+                    raise MarketDailyCaptureBlocked([f"{endpoint}_pending_duplicate"])
+                seen_outside.add(identity)
+                normalized_row = {str(key): _json_safe(value) for key, value in row.items()}
+                outside_rows.append(
+                    {
+                        "identity": identity,
+                        "provider_ordinal": ordinal,
+                        "row": normalized_row,
+                        "row_sha256": _sha256(_canonical_json_bytes(normalized_row)),
+                    }
+                )
+            filtered[endpoint] = frame.loc[keep].reset_index(drop=True)
+        payload = {
+            "schema_version": "cn-market-pending-exclusions.v1",
+            "trade_date": trade_date,
+            "endpoint": endpoint,
+            "classification": "PIT_SCOPE_EXPANSION_PENDING",
+            "pending_set_sha256": pending_sha256,
+            "excluded_count": len(outside_rows),
+            "items": outside_rows,
+        }
+        raw = _canonical_json_bytes(payload)
+        evidence_root.mkdir(parents=True, mode=0o700, exist_ok=True)
+        path = evidence_root / f"{endpoint}-pending-exclusions.json"
+        _write_new_file(path, raw)
+        references[endpoint] = {
+            "path": str(path),
+            "sha256": _sha256(raw),
+            "row_count": len(outside_rows),
+        }
+    return filtered, references
+
+
+def _replay_pending_exclusions(
+    value: Any,
+    *,
+    pit: Mapping[str, Any],
+    scope: Sequence[str],
+    trade_date: str,
+) -> dict[str, dict[str, Any]]:
+    if not isinstance(value, Mapping) or set(value) != set(_ENDPOINTS):
+        raise MarketDailyCaptureBlocked(["pending_exclusion_reference_set_invalid"])
+    pending = set(pit["scope_expansion_pending_identities"])
+    scope_set = set(scope)
+    result: dict[str, dict[str, Any]] = {}
+    for endpoint in _ENDPOINTS:
+        reference = dict(value[endpoint])
+        if set(reference) != {"path", "sha256", "row_count"}:
+            raise MarketDailyCaptureBlocked([f"{endpoint}_pending_exclusion_ref_invalid"])
+        raw = _stable_regular_bytes(reference["path"], label=f"{endpoint}_pending_exclusions")
+        if _sha256(raw) != reference["sha256"]:
+            raise MarketDailyCaptureBlocked([f"{endpoint}_pending_exclusion_sha_mismatch"])
+        payload = _json_object(raw, label=f"{endpoint}_pending_exclusions")
+        items = payload.get("items")
+        if (
+            payload.get("schema_version") != "cn-market-pending-exclusions.v1"
+            or payload.get("trade_date") != trade_date
+            or payload.get("endpoint") != endpoint
+            or payload.get("classification") != "PIT_SCOPE_EXPANSION_PENDING"
+            or payload.get("pending_set_sha256") != pit["scope_expansion_pending_sha256"]
+            or not isinstance(items, list)
+            or payload.get("excluded_count") != len(items)
+            or reference["row_count"] != len(items)
+        ):
+            raise MarketDailyCaptureBlocked([f"{endpoint}_pending_exclusion_payload_invalid"])
+        seen: set[str] = set()
+        for item in items:
+            if not isinstance(item, Mapping) or set(item) != {
+                "identity",
+                "provider_ordinal",
+                "row",
+                "row_sha256",
+            }:
+                raise MarketDailyCaptureBlocked([f"{endpoint}_pending_exclusion_item_invalid"])
+            identity = item["identity"]
+            row = item["row"]
+            if (
+                type(identity) is not str
+                or identity not in pending
+                or identity in scope_set
+                or identity in seen
+                or not isinstance(row, Mapping)
+                or row.get("ts_code") != identity
+                or _sha256(_canonical_json_bytes(dict(row))) != item["row_sha256"]
+            ):
+                raise MarketDailyCaptureBlocked([f"{endpoint}_pending_exclusion_item_invalid"])
+            seen.add(identity)
+        result[endpoint] = reference
+    return result
+
+
 def capture_market_daily(
     *,
     provider: Any,
@@ -881,9 +1050,18 @@ def capture_market_daily(
         )
         sessions: list[dict[str, Any]] = []
         for trade_date in ordered_targets:
-            frames = {
+            provider_frames = {
                 endpoint: _provider_frame(provider, endpoint, trade_date) for endpoint in _ENDPOINTS
             }
+            endpoint_root = root if len(ordered_targets) == 1 else root / trade_date
+            frames, pending_exclusion_refs = _exclude_pending_endpoint_rows(
+                provider_frames,
+                scope=scope,
+                pending_identities=pit["scope_expansion_pending_identities"],
+                pending_sha256=pit["scope_expansion_pending_sha256"],
+                trade_date=trade_date,
+                evidence_root=endpoint_root / "pending_exclusions",
+            )
             session_reasons = _mapping_for_trade_date(
                 reason_sets,
                 trade_date=trade_date,
@@ -917,7 +1095,6 @@ def capture_market_daily(
             ):
                 raise MarketDailyCaptureBlocked(["terminal_delisting_evidence_incomplete"])
             endpoint_refs: dict[str, dict[str, Any]] = {}
-            endpoint_root = root if len(ordered_targets) == 1 else root / trade_date
             for endpoint in _ENDPOINTS:
                 path = endpoint_root / f"{endpoint}.json"
                 raw = _canonical_json_bytes(validated["payloads"][endpoint])
@@ -937,6 +1114,7 @@ def capture_market_daily(
                     "endpoints": endpoint_refs,
                     "classification": validated["classification"],
                     "classification_evidence": evidence_refs,
+                    "pending_exclusions": pending_exclusion_refs,
                 }
             )
         latest_session = sessions[-1]
@@ -967,6 +1145,7 @@ def capture_market_daily(
             "endpoints": latest_session["endpoints"],
             "classification": latest_session["classification"],
             "classification_evidence": latest_session["classification_evidence"],
+            "pending_exclusions": latest_session["pending_exclusions"],
             "provider_accounting": {
                 "calls": len(_ENDPOINTS) * len(ordered_targets),
                 "failed": 0,
@@ -1072,6 +1251,7 @@ def replay_market_daily_capture(
                 "endpoints": manifest.get("endpoints") or {},
                 "classification": manifest.get("classification") or {},
                 "classification_evidence": manifest.get("classification_evidence") or {},
+                "pending_exclusions": manifest.get("pending_exclusions") or {},
             }
         ]
     if [
@@ -1086,6 +1266,12 @@ def replay_market_daily_capture(
         if not isinstance(session, Mapping):
             raise MarketDailyCaptureBlocked(["capture_session_schema_invalid"])
         session_date = _normalize_trade_date(session.get("trade_date"))
+        pending_exclusion_refs = _replay_pending_exclusions(
+            session.get("pending_exclusions"),
+            pit=pit,
+            scope=scope,
+            trade_date=session_date,
+        )
         session_frames: dict[str, pd.DataFrame] = {}
         for endpoint in _ENDPOINTS:
             reference = dict((session.get("endpoints") or {}).get(endpoint) or {})
@@ -1146,6 +1332,8 @@ def replay_market_daily_capture(
         ):
             raise MarketDailyCaptureBlocked(["non_trading_classification_evidence_required"])
         classifications.append(validated["classification"])
+        if pending_exclusion_refs != dict(session.get("pending_exclusions") or {}):
+            raise MarketDailyCaptureBlocked(["pending_exclusion_replay_mismatch"])
     frames = {
         endpoint: pd.concat(parts, ignore_index=True)
         for endpoint, parts in frames_by_endpoint.items()
@@ -1153,6 +1341,7 @@ def replay_market_daily_capture(
     if (
         manifest.get("endpoints") != raw_sessions[-1].get("endpoints")
         or manifest.get("classification") != classifications[-1]
+        or manifest.get("pending_exclusions") != raw_sessions[-1].get("pending_exclusions")
     ):
         raise MarketDailyCaptureBlocked(["capture_latest_session_projection_mismatch"])
     return {
@@ -1267,6 +1456,11 @@ def build_private_market_candidate(
     resource_path = root / "resource-preflight.json"
     resource_raw = _canonical_json_bytes(resource_receipt)
     _write_new_file(resource_path, resource_raw)
+    scope_source = production / "cn_universe" / "cn_index_components.json"
+    scope_raw = _stable_regular_bytes(scope_source, label="production_market_scope")
+    scope_target = root / "cn_universe" / "cn_index_components.json"
+    scope_target.parent.mkdir(parents=True, mode=0o700, exist_ok=False)
+    _write_new_file(scope_target, scope_raw)
 
     snapshot_id = source_snapshot.snapshot_id
     candidate_market_root = root / "parquet" / "cn"

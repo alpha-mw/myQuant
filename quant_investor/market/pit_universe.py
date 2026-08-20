@@ -29,9 +29,10 @@ PIT_UNIVERSE_MANIFEST_SCHEMA_VERSION = "cn_pit_universe_manifest.v1"
 PIT_UNIVERSE_DISCOVERY_SCHEMA_VERSION = "cn_pit_universe_latest.v1"
 PIT_UNIVERSE_REFRESH_SCHEMA_VERSION = "cn_pit_universe_refresh.v1"
 PIT_UNIVERSE_LINEAGE_SCHEMA_VERSION = "cn_pit_universe_lineage.v1"
-PIT_UNIVERSE_CAPTURE_SCHEMA_VERSION = "cn_pit_universe_capture.v1"
+PIT_UNIVERSE_CAPTURE_SCHEMA_VERSION = "cn_pit_universe_capture.v2"
 PIT_UNIVERSE_CAPTURE_PARTITION_SCHEMA_VERSION = "cn_pit_universe_capture_partition.v1"
 PIT_UNIVERSE_CAPTURE_VALIDATION_SCHEMA_VERSION = "cn_pit_universe_capture_validation.v1"
+PIT_UNIVERSE_EXTERNAL_EXCLUSION_SCHEMA_VERSION = "cn_pit_external_exclusions.v1"
 PIT_UNIVERSE_SHADOW_CANDIDATE_SCHEMA_VERSION = "cn_pit_universe_shadow_candidate.v1"
 PIT_UNIVERSE_EMPTY_PARENT_POINTER = "EMPTY"
 PIT_UNIVERSE_MAX_LINEAGE_DEPTH = 64
@@ -60,6 +61,9 @@ STOCK_BASIC_FIELDS = (
     "list_status",
 )
 _CANONICAL_A_SYMBOL = re.compile(r"^[0-9]{6}\.(?:BJ|SH|SZ)$")
+_PROVIDER_EXTERNAL_LEGACY_DELISTED = re.compile(r"^T[0-9]{6}\.SH$")
+MAX_EXTERNAL_LEGACY_DELISTED_EXCLUSIONS = 8
+PIT_EXTERNAL_EXCLUSION_FILENAME = "excluded_provider_observations.json"
 
 REASON_LISTED = "listed"
 REASON_PRE_LISTING = "pre_listing"
@@ -69,6 +73,7 @@ REASON_MISSING_PIT_RECORD = "missing_pit_record"
 REASON_CONFLICTING_STATUS_ROWS = "conflicting_status_rows"
 REASON_MISSING_LIST_DATE = "missing_list_date"
 REASON_MISSING_DELIST_DATE = "missing_delist_date"
+REASON_OUTSIDE_FROZEN_SCOPE_PENDING = "outside_frozen_scope_pending"
 
 
 def _utc_now_iso() -> str:
@@ -112,6 +117,60 @@ def _json_bytes(payload: Mapping[str, Any]) -> bytes:
         )
         + "\n"
     ).encode("utf-8")
+
+
+def _canonical_yyyymmdd(value: Any) -> str | None:
+    if type(value) is not str or len(value) != 8 or not value.isdigit():
+        return None
+    try:
+        parsed = datetime.strptime(value, "%Y%m%d").date()
+    except ValueError:
+        return None
+    return value if parsed.strftime("%Y%m%d") == value else None
+
+
+def _external_legacy_delisted_row(
+    row: Mapping[str, Any], *, partition_status: str, effective_date: str
+) -> bool:
+    raw_identity = row.get("ts_code")
+    if (
+        type(raw_identity) is not str
+        or _PROVIDER_EXTERNAL_LEGACY_DELISTED.fullmatch(raw_identity) is None
+    ):
+        return False
+    list_date = _canonical_yyyymmdd(row.get("list_date"))
+    delist_date = _canonical_yyyymmdd(row.get("delist_date"))
+    if (
+        partition_status != LIST_STATUS_DELISTED
+        or type(row.get("list_status")) is not str
+        or row.get("list_status") != LIST_STATUS_DELISTED
+        or list_date is None
+        or delist_date is None
+        or not (list_date <= delist_date <= effective_date)
+    ):
+        raise RuntimeError("pit_external_legacy_delisted_context_invalid")
+    for value in row.values():
+        if isinstance(value, (Mapping, list, tuple, set)):
+            raise RuntimeError("pit_external_legacy_delisted_row_invalid")
+        if isinstance(value, float) and not pd.notna(value):
+            raise RuntimeError("pit_external_legacy_delisted_row_invalid")
+    return True
+
+
+def _external_exclusion_entry(
+    *, row: Mapping[str, Any], partition_status: str, partition_sha256: str, ordinal: int
+) -> dict[str, Any]:
+    normalized = dict(row)
+    return {
+        "classification": "PROVIDER_EXTERNAL_LEGACY_DELISTED",
+        "identity": normalized["ts_code"],
+        "partition_status": partition_status,
+        "partition_sha256": partition_sha256,
+        "row_ordinal": ordinal,
+        "row": normalized,
+        "row_sha256": _sha256_bytes(_json_bytes(normalized)),
+        "exclusion_reason": "NONCANONICAL_PROVIDER_LEGACY_DELISTED_IDENTITY",
+    }
 
 
 def _sha256_bytes(payload: bytes) -> str:
@@ -342,6 +401,8 @@ class PITListingStatus:
     source_list_status: str = ""
     observed_at: str = ""
     membership_quality: str = ""
+    provider_listed: bool = False
+    authority_membership: bool = False
 
     def __post_init__(self) -> None:
         self.symbol = normalize_symbol(self.symbol)
@@ -352,6 +413,11 @@ class PITListingStatus:
         self.source_list_status = _clean_text(self.source_list_status).upper()
         self.observed_at = _clean_text(self.observed_at)
         self.membership_quality = _clean_text(self.membership_quality)
+        if self.source_list_status:
+            self.provider_listed = self.source_list_status == LIST_STATUS_LISTED
+            self.authority_membership = (
+                self.membership_quality != REASON_OUTSIDE_FROZEN_SCOPE_PENDING
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return dict(_json_safe(asdict(self)))
@@ -419,6 +485,10 @@ def _quality_for_group(records: Sequence[PITUniverseRecord]) -> str:
         and not delist_dates
     ):
         return REASON_MISSING_DELIST_DATE
+    if all(record.source_list_status == LIST_STATUS_LISTED for record in records) and any(
+        record.membership_quality == REASON_OUTSIDE_FROZEN_SCOPE_PENDING for record in records
+    ):
+        return REASON_OUTSIDE_FROZEN_SCOPE_PENDING
     return "ok"
 
 
@@ -515,11 +585,45 @@ def evaluate_listing_status(
             reason=REASON_MISSING_PIT_RECORD,
         )
 
+    allowed_qualities = {
+        "ok",
+        REASON_CONFLICTING_STATUS_ROWS,
+        REASON_MISSING_LIST_DATE,
+        REASON_MISSING_DELIST_DATE,
+        REASON_OUTSIDE_FROZEN_SCOPE_PENDING,
+    }
+    if record.membership_quality not in allowed_qualities:
+        return PITListingStatus(
+            symbol=record.symbol,
+            date=target_date,
+            reason=record.membership_quality or "unsupported_membership_quality",
+            list_date=record.list_date,
+            delist_date=record.delist_date,
+            source_list_status=record.source_list_status,
+            observed_at=record.observed_at,
+            membership_quality=record.membership_quality,
+        )
+
     if record.membership_quality == REASON_CONFLICTING_STATUS_ROWS:
         return PITListingStatus(
             symbol=record.symbol,
             date=target_date,
             reason=REASON_CONFLICTING_STATUS_ROWS,
+            list_date=record.list_date,
+            delist_date=record.delist_date,
+            source_list_status=record.source_list_status,
+            observed_at=record.observed_at,
+            membership_quality=record.membership_quality,
+        )
+
+    if record.membership_quality == REASON_OUTSIDE_FROZEN_SCOPE_PENDING:
+        return PITListingStatus(
+            symbol=record.symbol,
+            date=target_date,
+            in_universe=False,
+            research_eligible=False,
+            tradable=False,
+            reason=REASON_OUTSIDE_FROZEN_SCOPE_PENDING,
             list_date=record.list_date,
             delist_date=record.delist_date,
             source_list_status=record.source_list_status,
@@ -1442,6 +1546,7 @@ def acquire_pit_universe_capture(
     capture_root: str | Path,
     observed_at: str | None = None,
     source_run_id: str | None = None,
+    effective_date: str | None = None,
 ) -> dict[str, Any]:
     """Acquire the three registered ``stock_basic`` partitions exactly once.
 
@@ -1452,6 +1557,14 @@ def acquire_pit_universe_capture(
 
     resolved_observed_at = observed_at or _utc_now_iso()
     resolved_run_id = source_run_id or _source_run_id(resolved_observed_at)
+    resolved_effective_date = _canonical_yyyymmdd(effective_date)
+    if resolved_effective_date is None:
+        try:
+            resolved_effective_date = datetime.fromisoformat(
+                resolved_observed_at.replace("Z", "+00:00")
+            ).strftime("%Y%m%d")
+        except ValueError as exc:
+            raise RuntimeError("pit_capture_effective_date_invalid") from exc
     root = _require_absolute_private_root(
         capture_root,
         blocker="pit_capture_root_not_absolute_private",
@@ -1464,6 +1577,8 @@ def acquire_pit_universe_capture(
     total_rows = 0
     fields = list(STOCK_BASIC_FIELDS)
     captured_symbols: set[str] = set()
+    external_identities: set[str] = set()
+    pending_exclusions: list[tuple[str, int, dict[str, Any]]] = []
     malformed_count = 0
     for list_status in SUPPORTED_LIST_STATUSES:
         frame = frames.get(list_status)
@@ -1472,18 +1587,35 @@ def acquire_pit_universe_capture(
         if not frame.empty and list(frame.columns) != fields:
             raise RuntimeError(f"pit_capture_partition_schema_invalid:{list_status}")
         items: list[dict[str, Any]] = []
-        for source_row in frame.to_dict(orient="records"):
+        for ordinal, source_row in enumerate(frame.to_dict(orient="records")):
             if set(source_row) != set(fields):
                 raise RuntimeError(f"pit_capture_partition_schema_invalid:{list_status}")
             row = {field: _json_safe(source_row.get(field)) for field in fields}
-            symbol = normalize_symbol(row.get("ts_code"))
-            if (
-                not _CANONICAL_A_SYMBOL.fullmatch(symbol)
-                or _clean_text(row.get("list_status")).upper() != list_status
-                or symbol in captured_symbols
-            ):
+            raw_identity = row.get("ts_code")
+            try:
+                excluded = _external_legacy_delisted_row(
+                    row,
+                    partition_status=list_status,
+                    effective_date=resolved_effective_date,
+                )
+            except RuntimeError:
+                excluded = False
                 malformed_count += 1
-            captured_symbols.add(symbol)
+            if excluded:
+                assert isinstance(raw_identity, str)
+                if raw_identity in external_identities:
+                    malformed_count += 1
+                external_identities.add(raw_identity)
+                pending_exclusions.append((list_status, ordinal, row))
+            else:
+                symbol = normalize_symbol(raw_identity)
+                if (
+                    not _CANONICAL_A_SYMBOL.fullmatch(symbol)
+                    or _clean_text(row.get("list_status")).upper() != list_status
+                    or symbol in captured_symbols
+                ):
+                    malformed_count += 1
+                captured_symbols.add(symbol)
             items.append(row)
         partition_payload = {
             "schema_version": PIT_UNIVERSE_CAPTURE_PARTITION_SCHEMA_VERSION,
@@ -1511,16 +1643,45 @@ def acquire_pit_universe_capture(
         )
         total_rows += len(items)
 
+    partition_sha_by_status = {row["list_status"]: row["sha256"] for row in partition_receipts}
+    exclusions = [
+        _external_exclusion_entry(
+            row=row,
+            partition_status=status,
+            partition_sha256=partition_sha_by_status[status],
+            ordinal=ordinal,
+        )
+        for status, ordinal, row in pending_exclusions
+    ]
+    exclusion_payload = {
+        "schema_version": PIT_UNIVERSE_EXTERNAL_EXCLUSION_SCHEMA_VERSION,
+        "effective_date": resolved_effective_date,
+        "exclusion_count": len(exclusions),
+        "items": exclusions,
+    }
+    exclusion_bytes = _json_bytes(exclusion_payload)
+    exclusion_path = root / PIT_EXTERNAL_EXCLUSION_FILENAME
+    _write_bytes_exclusive(exclusion_path, exclusion_bytes)
+    os.chmod(exclusion_path, 0o400)
+    exclusion_ref = {
+        "path": str(exclusion_path),
+        "sha256": _sha256_bytes(exclusion_bytes),
+        "row_count": len(exclusions),
+    }
+
     receipt = {
         "schema_version": PIT_UNIVERSE_CAPTURE_SCHEMA_VERSION,
         "source": "tushare.stock_basic",
         "source_run_id": resolved_run_id,
+        "effective_date": resolved_effective_date,
         "observed_at": resolved_observed_at,
         "captured_at": _utc_now_iso(),
         "provider_call_count": len(SUPPORTED_LIST_STATUSES),
         "provider_accounting": {
             "failed": 0,
             "malformed": malformed_count,
+            "canonical_row_count": len(captured_symbols),
+            "excluded_provider_external": len(exclusions),
             "has_more": False,
             "partition_count": len(SUPPORTED_LIST_STATUSES),
             "provider_count": total_rows,
@@ -1528,6 +1689,7 @@ def acquire_pit_universe_capture(
         },
         "raw_row_count": total_rows,
         "partitions": partition_receipts,
+        "exclusion_inventory": exclusion_ref,
     }
     receipt_bytes = _json_bytes(receipt)
     receipt_path = root / "capture_receipt.json"
@@ -1577,6 +1739,7 @@ def _load_capture_receipt(
     )
     expected_files = {
         "capture_receipt.json",
+        PIT_EXTERNAL_EXCLUSION_FILENAME,
         *(f"stock_basic_{status}.json" for status in SUPPORTED_LIST_STATUSES),
     }
     if {path.name for path in capture_root.iterdir()} != expected_files:
@@ -1585,12 +1748,14 @@ def _load_capture_receipt(
         "schema_version",
         "source",
         "source_run_id",
+        "effective_date",
         "observed_at",
         "captured_at",
         "provider_call_count",
         "provider_accounting",
         "raw_row_count",
         "partitions",
+        "exclusion_inventory",
     }
     if (
         set(receipt) != required_keys
@@ -1598,19 +1763,42 @@ def _load_capture_receipt(
         or receipt.get("source") != "tushare.stock_basic"
         or not str(receipt.get("source_run_id") or "")
         or not str(receipt.get("observed_at") or "")
+        or _canonical_yyyymmdd(receipt.get("effective_date")) is None
         or receipt.get("provider_call_count") != len(SUPPORTED_LIST_STATUSES)
     ):
         raise RuntimeError("pit_capture_receipt_invalid")
     accounting = receipt.get("provider_accounting")
+    exclusion_ref = receipt.get("exclusion_inventory")
+    if not isinstance(exclusion_ref, Mapping) or set(exclusion_ref) != {
+        "path",
+        "sha256",
+        "row_count",
+    }:
+        raise RuntimeError("pit_capture_exclusion_inventory_ref_invalid")
+    excluded_count = exclusion_ref.get("row_count")
+    raw_count = receipt.get("raw_row_count")
+    canonical_count = (
+        raw_count - excluded_count
+        if isinstance(raw_count, int) and isinstance(excluded_count, int)
+        else None
+    )
     if not isinstance(accounting, Mapping) or dict(accounting) != {
         "failed": 0,
         "has_more": False,
         "item_count": receipt.get("raw_row_count"),
         "malformed": 0,
+        "canonical_row_count": canonical_count,
+        "excluded_provider_external": excluded_count,
         "partition_count": len(SUPPORTED_LIST_STATUSES),
         "provider_count": receipt.get("raw_row_count"),
     }:
         raise RuntimeError("pit_capture_provider_accounting_invalid")
+    if (
+        not isinstance(excluded_count, int)
+        or excluded_count < 0
+        or excluded_count > MAX_EXTERNAL_LEGACY_DELISTED_EXCLUSIONS
+    ):
+        raise RuntimeError("PIT_EXTERNAL_LEGACY_DELISTED_EXCLUSION_LIMIT_EXCEEDED")
     return receipt, capture_root
 
 
@@ -1677,12 +1865,47 @@ def _replay_and_validate_pit_capture(
         capture_receipt_path,
         expected_capture_sha256,
     )
+    scope_symbols, scope_path, scope_sha = _load_frozen_full_a_scope(
+        canonical_scope_path,
+        expected_scope_sha256,
+    )
+    exclusion_ref = receipt["exclusion_inventory"]
+    exclusion_path = _capture_member_path(
+        capture_root,
+        exclusion_ref["path"],
+        expected_name=PIT_EXTERNAL_EXCLUSION_FILENAME,
+        blocker="pit_capture_exclusion_inventory_path_invalid",
+    )
+    exclusion_bytes = _stable_read_bytes(
+        exclusion_path, blocker="pit_capture_exclusion_inventory_readback_invalid"
+    )
+    if _sha256_bytes(exclusion_bytes) != _validate_sha256(
+        exclusion_ref["sha256"], blocker="pit_capture_exclusion_inventory_sha256_invalid"
+    ):
+        raise RuntimeError("pit_capture_exclusion_inventory_sha256_mismatch")
+    exclusion_inventory = _load_json_mapping_bytes(
+        exclusion_bytes, blocker="pit_capture_exclusion_inventory_invalid"
+    )
+    if (
+        set(exclusion_inventory) != {"schema_version", "effective_date", "exclusion_count", "items"}
+        or exclusion_inventory.get("schema_version")
+        != PIT_UNIVERSE_EXTERNAL_EXCLUSION_SCHEMA_VERSION
+        or exclusion_inventory.get("effective_date") != receipt["effective_date"]
+        or not isinstance(exclusion_inventory.get("items"), list)
+        or exclusion_inventory.get("exclusion_count") != len(exclusion_inventory["items"])
+        or exclusion_inventory.get("exclusion_count") != exclusion_ref["row_count"]
+    ):
+        raise RuntimeError("pit_capture_exclusion_inventory_invalid")
+    expected_exclusions = list(exclusion_inventory["items"])
+    observed_exclusions: list[dict[str, Any]] = []
     descriptors = receipt.get("partitions")
     if not isinstance(descriptors, list) or len(descriptors) != len(SUPPORTED_LIST_STATUSES):
         raise RuntimeError("pit_capture_partitions_invalid")
     raw_records: list[PITUniverseRecord] = []
     status_counts: dict[str, int] = {}
     seen_partition_symbols: set[str] = set()
+    provider_listed_symbols: set[str] = set()
+    pending_scope_rows: list[dict[str, Any]] = []
     total_rows = 0
     fields = list(STOCK_BASIC_FIELDS)
     for expected_status, descriptor in zip(SUPPORTED_LIST_STATUSES, descriptors):
@@ -1739,10 +1962,29 @@ def _replay_and_validate_pit_capture(
         ):
             raise RuntimeError("pit_capture_partition_invalid")
         partition_symbols: set[str] = set()
-        for row in items:
+        for ordinal, row in enumerate(items):
             if not isinstance(row, Mapping) or set(row) != set(fields):
                 raise RuntimeError("pit_capture_partition_row_schema_invalid")
-            symbol = normalize_symbol(row.get("ts_code"))
+            if _external_legacy_delisted_row(
+                row,
+                partition_status=expected_status,
+                effective_date=receipt["effective_date"],
+            ):
+                entry = _external_exclusion_entry(
+                    row=row,
+                    partition_status=expected_status,
+                    partition_sha256=partition_sha,
+                    ordinal=ordinal,
+                )
+                if entry in observed_exclusions:
+                    raise RuntimeError("pit_capture_external_identity_duplicate")
+                observed_exclusions.append(entry)
+                total_rows += 1
+                continue
+            raw_identity = row.get("ts_code")
+            if type(raw_identity) is not str:
+                raise RuntimeError("pit_capture_partition_row_identity_invalid")
+            symbol = normalize_symbol(raw_identity)
             if (
                 not _CANONICAL_A_SYMBOL.fullmatch(symbol)
                 or _clean_text(row.get("list_status")).upper() != expected_status
@@ -1750,6 +1992,18 @@ def _replay_and_validate_pit_capture(
                 or symbol in seen_partition_symbols
             ):
                 raise RuntimeError("pit_capture_partition_row_identity_invalid")
+            if expected_status == LIST_STATUS_LISTED:
+                provider_listed_symbols.add(symbol)
+                if symbol not in scope_symbols:
+                    pending_scope_rows.append(
+                        {
+                            "identity": raw_identity,
+                            "partition_status": expected_status,
+                            "partition_sha256": partition_sha,
+                            "row_ordinal": ordinal,
+                            "row_sha256": _sha256_bytes(_json_bytes(dict(row))),
+                        }
+                    )
             record = record_from_stock_basic_row(
                 row,
                 list_status=expected_status,
@@ -1758,11 +2012,17 @@ def _replay_and_validate_pit_capture(
             )
             if record is None:
                 raise RuntimeError("pit_capture_partition_row_identity_invalid")
+            if expected_status == LIST_STATUS_LISTED and symbol not in scope_symbols:
+                record.membership_quality = REASON_OUTSIDE_FROZEN_SCOPE_PENDING
             partition_symbols.add(symbol)
             raw_records.append(record)
         seen_partition_symbols.update(partition_symbols)
-        status_counts[expected_status] = len(items)
-        total_rows += len(items)
+        status_counts[expected_status] = len(partition_symbols)
+        total_rows += len(partition_symbols)
+    if observed_exclusions != expected_exclusions:
+        raise RuntimeError("pit_capture_exclusion_inventory_replay_mismatch")
+    pending_scope_rows.sort(key=lambda row: row["identity"])
+    pending_scope_sha = _sha256_bytes(_json_bytes({"items": pending_scope_rows}))
     if total_rows != receipt.get("raw_row_count"):
         raise RuntimeError("pit_capture_row_count_mismatch")
     if status_counts.get(LIST_STATUS_LISTED, 0) == 0:
@@ -1771,7 +2031,7 @@ def _replay_and_validate_pit_capture(
     fresh_records = dedupe_latest_records(raw_records)
     for record in fresh_records:
         if (
-            record.membership_quality != "ok"
+            record.membership_quality not in {"ok", REASON_OUTSIDE_FROZEN_SCOPE_PENDING}
             or not record.list_date
             or record.effective_from != record.list_date
             or (
@@ -1782,26 +2042,24 @@ def _replay_and_validate_pit_capture(
         ):
             raise RuntimeError("pit_capture_effective_interval_invalid")
 
-    scope_symbols, scope_path, scope_sha = _load_frozen_full_a_scope(
-        canonical_scope_path,
-        expected_scope_sha256,
-    )
-    listed_symbols = {
-        record.symbol for record in fresh_records if record.source_list_status == LIST_STATUS_LISTED
+    if any(entry["identity"] in scope_symbols for entry in observed_exclusions):
+        raise RuntimeError("pit_capture_external_identity_scope_collision")
+    admitted_listed_symbols = {
+        record.symbol
+        for record in fresh_records
+        if record.source_list_status == LIST_STATUS_LISTED and record.membership_quality == "ok"
     }
-    newly_listed_outside_scope = sorted(listed_symbols - scope_symbols)
-    if newly_listed_outside_scope:
-        raise RuntimeError(
-            "FULL_A_SCOPE_STALE:"
-            f"count={len(newly_listed_outside_scope)},"
-            f"symbols={newly_listed_outside_scope[:20]}"
-        )
-    missing_scope = sorted(scope_symbols - listed_symbols)
+    observed_canonical_symbols = {record.symbol for record in raw_records}
+    missing_scope = sorted(scope_symbols - observed_canonical_symbols)
     if missing_scope:
         raise RuntimeError(
             "PIT_FULL_A_SCOPE_INCOMPLETE:"
             f"count={len(missing_scope)},symbols={missing_scope[:20]}"
         )
+    if admitted_listed_symbols != (scope_symbols & provider_listed_symbols) or len(
+        provider_listed_symbols
+    ) != len(admitted_listed_symbols) + len(pending_scope_rows):
+        raise RuntimeError("pit_scope_expansion_pending_accounting_invalid")
 
     try:
         parent_binding = store.load_generation_binding()
@@ -1809,6 +2067,122 @@ def _replay_and_validate_pit_capture(
         if str(exc) != "pit_latest_generation_binding_missing":
             raise
         parent_binding = _empty_parent_binding()
+    parent_scope = dict(
+        dict(parent_binding.get("manifest") or {}).get("source_bindings") or {}
+    ).get("full_a_scope")
+    if parent_binding.get("generation_id") and not isinstance(parent_scope, Mapping):
+        legacy_market_path = store.root_dir.parent / "_latest.json"
+        legacy_market_raw = _stable_read_bytes(
+            legacy_market_path, blocker="pit_legacy_scope_market_pointer_invalid"
+        )
+        legacy_market = _load_json_mapping_bytes(
+            legacy_market_raw, blocker="pit_legacy_scope_market_pointer_invalid"
+        )
+        legacy_coverage = legacy_market.get("coverage")
+        cursor_manifest = dict(parent_binding.get("manifest") or {})
+        cursor_manifest_sha = parent_binding.get("generation_manifest_sha256")
+        lineage_match = False
+        for _depth in range(PIT_UNIVERSE_MAX_LINEAGE_DEPTH):
+            if not isinstance(legacy_coverage, Mapping):
+                break
+            if (
+                cursor_manifest.get("generation_id") == legacy_coverage.get("pit_generation_id")
+                and cursor_manifest.get("canonical_sha256")
+                == legacy_coverage.get("pit_membership_sha256")
+                and cursor_manifest_sha == legacy_coverage.get("pit_generation_manifest_sha256")
+            ):
+                lineage_match = True
+                break
+            lineage = cursor_manifest.get("lineage")
+            if not isinstance(lineage, Mapping):
+                break
+            parent_manifest_path = lineage.get("parent_generation_manifest_path")
+            parent_manifest_sha = lineage.get("parent_generation_manifest_sha256")
+            if type(parent_manifest_path) is not str or type(parent_manifest_sha) is not str:
+                break
+            parent_manifest_raw = _stable_read_bytes(
+                Path(parent_manifest_path), blocker="pit_legacy_scope_lineage_invalid"
+            )
+            if _sha256_bytes(parent_manifest_raw) != parent_manifest_sha:
+                raise RuntimeError("pit_legacy_scope_lineage_invalid")
+            cursor_manifest = _load_json_mapping_bytes(
+                parent_manifest_raw, blocker="pit_legacy_scope_lineage_invalid"
+            )
+            cursor_manifest_sha = parent_manifest_sha
+        if (
+            not isinstance(legacy_coverage, Mapping)
+            or not lineage_match
+            or legacy_coverage.get("expected_scope_sha256")
+            != _sha256_bytes("\n".join(sorted(scope_symbols)).encode("utf-8"))
+            or legacy_coverage.get("expected_scope_count") != len(scope_symbols)
+        ):
+            raise RuntimeError("pit_frozen_scope_predecessor_binding_changed")
+        parent_scope = {"path": scope_path, "sha256": scope_sha}
+    if parent_binding.get("generation_id") and (
+        parent_scope.get("path") != scope_path or parent_scope.get("sha256") != scope_sha
+    ):
+        raise RuntimeError("pit_frozen_scope_predecessor_binding_changed")
+    parent_pending = dict(
+        dict(parent_binding.get("manifest") or {}).get("source_bindings") or {}
+    ).get("scope_expansion_pending")
+    if isinstance(parent_pending, Mapping):
+        prior_identities = set(parent_pending.get("identities") or [])
+        current_identities = {row["identity"] for row in pending_scope_rows}
+        transitioned = {
+            record.symbol
+            for record in raw_records
+            if record.source_list_status in {LIST_STATUS_DELISTED, LIST_STATUS_PENDING}
+        }
+        silently_removed = prior_identities - current_identities - transitioned
+        if silently_removed:
+            raise RuntimeError("pit_scope_expansion_pending_continuity_invalid")
+        if prior_identities & scope_symbols:
+            raise RuntimeError("pit_scope_expansion_admission_not_configured")
+    parent_records_by_symbol = records_by_symbol(parent_binding.get("records") or [])
+    fresh_records_by_symbol = records_by_symbol(fresh_records)
+    transition_rows: list[dict[str, Any]] = []
+    for identity in sorted(row["identity"] for row in pending_scope_rows):
+        current_record = fresh_records_by_symbol[identity]
+        predecessor_record = parent_records_by_symbol.get(identity)
+        if predecessor_record is None:
+            transition = "NEW_PENDING"
+            predecessor_ref = None
+        elif predecessor_record.membership_quality == "ok":
+            transition = "AUTHORITY_REPAIR_TO_PENDING"
+            predecessor_ref = {
+                "record_sha256": _sha256_bytes(_json_bytes(predecessor_record.to_dict())),
+                "source_list_status": predecessor_record.source_list_status,
+                "list_date": predecessor_record.list_date,
+            }
+        elif predecessor_record.membership_quality == REASON_OUTSIDE_FROZEN_SCOPE_PENDING:
+            transition = "PENDING_CONTINUITY"
+            predecessor_ref = {
+                "record_sha256": _sha256_bytes(_json_bytes(predecessor_record.to_dict())),
+                "source_list_status": predecessor_record.source_list_status,
+                "list_date": predecessor_record.list_date,
+            }
+        else:
+            raise RuntimeError("pit_scope_expansion_pending_transition_invalid")
+        if predecessor_record is not None and (
+            predecessor_record.symbol != current_record.symbol
+            or predecessor_record.source_list_status != current_record.source_list_status
+            or predecessor_record.list_date != current_record.list_date
+        ):
+            raise RuntimeError("pit_scope_expansion_pending_identity_drift")
+        transition_rows.append(
+            {
+                "identity": identity,
+                "transition": transition,
+                "predecessor": predecessor_ref,
+                "successor": {
+                    "record_sha256": _sha256_bytes(_json_bytes(current_record.to_dict())),
+                    "source_list_status": current_record.source_list_status,
+                    "list_date": current_record.list_date,
+                    "membership_quality": current_record.membership_quality,
+                },
+            }
+        )
+    transition_sha = _sha256_bytes(_json_bytes({"items": transition_rows}))
     requested_parent = (
         str(expected_parent_pointer_sha256 or "").strip() or PIT_UNIVERSE_EMPTY_PARENT_POINTER
     )
@@ -1850,10 +2224,26 @@ def _replay_and_validate_pit_capture(
         ),
         "source_run_id": str(receipt["source_run_id"]),
         "observed_at": str(receipt["observed_at"]),
+        "effective_date": str(receipt["effective_date"]),
         "provider_call_count": receipt["provider_call_count"],
         "provider_accounting": dict(receipt["provider_accounting"]),
+        "exclusion_inventory": dict(exclusion_ref),
+        "excluded_provider_external_count": len(observed_exclusions),
+        "authority_scope": "FROZEN_FULL_A",
+        "authority_scope_complete": True,
+        "dynamic_whole_market_complete": not pending_scope_rows,
+        "provider_listed_count": len(provider_listed_symbols),
+        "authority_scope_count": len(scope_symbols),
+        "scope_expansion_pending": bool(pending_scope_rows),
+        "scope_expansion_pending_count": len(pending_scope_rows),
+        "scope_expansion_pending_sha256": pending_scope_sha,
+        "scope_expansion_pending_rows": pending_scope_rows,
+        "scope_expansion_transition_count": len(transition_rows),
+        "scope_expansion_transition_sha256": transition_sha,
+        "scope_expansion_transition_rows": transition_rows,
         "status_counts": status_counts,
-        "raw_row_count": len(raw_records),
+        "raw_row_count": receipt["raw_row_count"],
+        "canonical_row_count": len(raw_records),
         "row_count": len(latest_records),
         "full_a_scope_path": scope_path,
         "full_a_scope_sha256": scope_sha,
@@ -1914,6 +2304,19 @@ def _write_shadow_pit_candidate(
             "schema_version": PIT_UNIVERSE_CAPTURE_SCHEMA_VERSION,
             "path": validation["capture_receipt_path"],
             "sha256": validation["capture_receipt_sha256"],
+        },
+        "external_exclusion_inventory": dict(validation["exclusion_inventory"]),
+        "scope_expansion_pending": {
+            "schema_version": "cn_pit_scope_expansion_pending.v1",
+            "authority_scope": "FROZEN_FULL_A",
+            "admission_status": "NOT_CONFIGURED",
+            "count": validation["scope_expansion_pending_count"],
+            "sha256": validation["scope_expansion_pending_sha256"],
+            "identities": [row["identity"] for row in validation["scope_expansion_pending_rows"]],
+            "rows": list(validation["scope_expansion_pending_rows"]),
+            "transition_count": validation["scope_expansion_transition_count"],
+            "transition_sha256": validation["scope_expansion_transition_sha256"],
+            "transitions": list(validation["scope_expansion_transition_rows"]),
         },
         "full_a_scope": {
             "path": validation["full_a_scope_path"],
@@ -2029,6 +2432,21 @@ def publish_pit_universe_capture(
                 "schema_version": PIT_UNIVERSE_CAPTURE_SCHEMA_VERSION,
                 "path": validation["capture_receipt_path"],
                 "sha256": validation["capture_receipt_sha256"],
+            },
+            "external_exclusion_inventory": dict(validation["exclusion_inventory"]),
+            "scope_expansion_pending": {
+                "schema_version": "cn_pit_scope_expansion_pending.v1",
+                "authority_scope": "FROZEN_FULL_A",
+                "admission_status": "NOT_CONFIGURED",
+                "count": validation["scope_expansion_pending_count"],
+                "sha256": validation["scope_expansion_pending_sha256"],
+                "identities": [
+                    row["identity"] for row in validation["scope_expansion_pending_rows"]
+                ],
+                "rows": list(validation["scope_expansion_pending_rows"]),
+                "transition_count": validation["scope_expansion_transition_count"],
+                "transition_sha256": validation["scope_expansion_transition_sha256"],
+                "transitions": list(validation["scope_expansion_transition_rows"]),
             },
             "full_a_scope": {
                 "path": validation["full_a_scope_path"],

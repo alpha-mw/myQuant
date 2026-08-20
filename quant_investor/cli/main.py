@@ -20,6 +20,7 @@ from quant_investor.cli.unified import (
     factor_mine,
     factor_observe,
     factor_production_activate,
+    factor_production_rollover,
     factor_production_signal,
     factor_production_status,
     factor_production_verify,
@@ -687,6 +688,23 @@ def _build_parser() -> argparse.ArgumentParser:
         "--expected-calendar-success-sha256", required=True, type=_sha256_argument
     )
     factor_activate_parser.add_argument("--expected-empty", action="store_true", required=True)
+    factor_rollover_parser = factor_subparsers.add_parser(
+        "production-rollover",
+        help="用 exact maintenance receipt 与当前 pointer 前像推进 Factor generation",
+    )
+    _add_workspace_argument(factor_rollover_parser)
+    factor_rollover_parser.add_argument("--market-data-root", required=True)
+    factor_rollover_parser.add_argument("--calendar-capture-root", required=True)
+    factor_rollover_parser.add_argument(
+        "--expected-calendar-success-sha256", required=True, type=_sha256_argument
+    )
+    factor_rollover_parser.add_argument("--maintenance-receipt", required=True)
+    factor_rollover_parser.add_argument(
+        "--expected-maintenance-receipt-sha256", required=True, type=_sha256_argument
+    )
+    factor_rollover_parser.add_argument(
+        "--expected-current-pointer-sha256", required=True, type=_sha256_argument
+    )
 
     research_parser = subparsers.add_parser("research", help="统一主线研究能力")
     research_subparsers = research_parser.add_subparsers(
@@ -811,6 +829,7 @@ def _build_parser() -> argparse.ArgumentParser:
     market_clear_veto.add_argument("--run-root", required=True, type=_canonical_absolute_path)
     market_clear_veto.add_argument("--expected-veto-sha256", required=True, type=_sha256_argument)
     market_clear_veto.add_argument("--reason", required=True)
+    market_clear_veto.add_argument("--lane", choices=["global", "macro"], default="global")
 
     market_download = market_subparsers.add_parser(
         "download",
@@ -1315,6 +1334,20 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
         )
         return
 
+    if args.command == "factor" and args.factor_command == "production-rollover":
+        _print_json(
+            factor_production_rollover(
+                workspace_root=args.workspace_root,
+                market_data_root=args.market_data_root,
+                calendar_capture_root=args.calendar_capture_root,
+                expected_calendar_success_sha256=args.expected_calendar_success_sha256,
+                maintenance_receipt=args.maintenance_receipt,
+                expected_maintenance_receipt_sha256=(args.expected_maintenance_receipt_sha256),
+                expected_current_pointer_sha256=args.expected_current_pointer_sha256,
+            )
+        )
+        return
+
     if args.command == "factor" and args.factor_command == "mine":
         _print_json(
             factor_mine(
@@ -1423,6 +1456,7 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
                 run_root=args.run_root,
                 expected_veto_sha256=args.expected_veto_sha256,
                 reason=args.reason,
+                lane=args.lane,
             )
         )
         return

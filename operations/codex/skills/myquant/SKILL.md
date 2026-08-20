@@ -86,6 +86,28 @@ the only normal `results/system/_active.json` writer and accepts only an exact
 validated immutable generation with filesystem write permission. A builder,
 fixture, clean checkout, or passing test does not prove operational activation.
 
+Factor production authority is independent from System and Mainline. Read it
+through `factor production-status`, `factor production-verify`, and
+`factor production-signal`; LOW/W80 may be active while System and Mainline are
+uninitialized. W75 is control-only. `production-activate --expected-empty`
+creates only the immutable genesis pointer; `production-rollover` alone may
+advance an existing Factor head from an exact execute-mode PIT/Market/History
+receipt and expected pointer SHA. Neither grants portfolio or trading
+authority.
+
+Daily immutable Factor generations are production signal history, not the
+registered prospective admission lifecycle. Unless an exact preregistration
+cycle exists, report prospective evidence as `NOT_CONFIGURED`; do not invent
+IC, RankIC, horizon outcomes, maturity, or graduation evidence. Macro and
+Fundamental blockers remain visible but do not block LOW/W80 when the sealed
+active Factor set does not consume them.
+
+PIT `stock_basic` has one separate endpoint-local evidence grammar for legacy
+delisted provider identities: exact `^T[0-9]{6}\.SH$` rows in the D partition
+may be retained only in the sealed exclusion inventory and never normalized,
+mapped, admitted, or passed to Market/Factor. This PIT-only rule does not alter
+Fundamental's provider-external identity grammar.
+
 If active state or a required input is unavailable, keep the conclusion
 `INSUFFICIENT_EVIDENCE` or a clearly labeled research diagnosis. Never recycle
 an old candidate list or scan for a nearby result.

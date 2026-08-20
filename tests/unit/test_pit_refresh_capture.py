@@ -16,15 +16,17 @@ from quant_investor.market.pit_universe import (
     PITUniverseRecord,
     PITUniverseStore,
     acquire_pit_universe_capture,
+    evaluate_listing_status,
     publish_pit_universe_capture,
     validate_pit_universe_capture,
 )
 
 
 class _CountingProvider:
-    def __init__(self, *, extra_listed: bool = False) -> None:
+    def __init__(self, *, extra_listed: bool = False, external_delisted: bool = False) -> None:
         self.calls: list[str] = []
         self.extra_listed = extra_listed
+        self.external_delisted = external_delisted
 
     def stock_basic(
         self,
@@ -76,6 +78,19 @@ class _CountingProvider:
                     "list_status": "L",
                 }
             )
+        if self.external_delisted and list_status == LIST_STATUS_DELISTED:
+            rows[list_status].append(
+                {
+                    "ts_code": "T600018.SH",
+                    "name": "Legacy Delisted",
+                    "area": "SH",
+                    "industry": "Transport",
+                    "market": None,
+                    "list_date": "20000719",
+                    "delist_date": "20061020",
+                    "list_status": "D",
+                }
+            )
         return pd.DataFrame(rows[list_status])
 
 
@@ -124,6 +139,8 @@ def test_capture_is_three_calls_and_publish_never_refetches(tmp_path: Path) -> N
         "has_more": False,
         "item_count": 2,
         "malformed": 0,
+        "canonical_row_count": 2,
+        "excluded_provider_external": 0,
         "partition_count": 3,
         "provider_count": 2,
     }
@@ -131,9 +148,22 @@ def test_capture_is_three_calls_and_publish_never_refetches(tmp_path: Path) -> N
     assert published["compatibility_export_status"] == "written"
     assert published["manifest"]["source_bindings"] == {
         "capture": {
-            "schema_version": "cn_pit_universe_capture.v1",
+            "schema_version": "cn_pit_universe_capture.v2",
             "path": capture["capture_receipt_path"],
             "sha256": capture["capture_receipt_sha256"],
+        },
+        "external_exclusion_inventory": capture["exclusion_inventory"],
+        "scope_expansion_pending": {
+            "schema_version": "cn_pit_scope_expansion_pending.v1",
+            "authority_scope": "FROZEN_FULL_A",
+            "admission_status": "NOT_CONFIGURED",
+            "count": 0,
+            "sha256": pit_module._sha256_bytes(pit_module._json_bytes({"items": []})),
+            "identities": [],
+            "rows": [],
+            "transition_count": 0,
+            "transition_sha256": pit_module._sha256_bytes(pit_module._json_bytes({"items": []})),
+            "transitions": [],
         },
         "full_a_scope": {
             "path": str(scope_path),
@@ -145,6 +175,41 @@ def test_capture_is_three_calls_and_publish_never_refetches(tmp_path: Path) -> N
         "000001.SZ",
         "000002.SZ",
     ]
+
+
+def test_external_legacy_delisted_identity_is_evidenced_but_never_canonical(
+    tmp_path: Path,
+) -> None:
+    provider = _CountingProvider(external_delisted=True)
+    capture = _acquire(tmp_path, provider)
+    scope_path, scope_sha = _scope(tmp_path, ["000001.SZ"])
+    store = PITUniverseStore(root_dir=tmp_path / "reference")
+
+    validation = validate_pit_universe_capture(
+        capture["capture_receipt_path"],
+        capture["capture_receipt_sha256"],
+        store=store,
+        canonical_scope_path=scope_path,
+        expected_scope_sha256=scope_sha,
+    )
+    published = publish_pit_universe_capture(
+        capture["capture_receipt_path"],
+        capture["capture_receipt_sha256"],
+        store=store,
+        canonical_scope_path=scope_path,
+        expected_scope_sha256=scope_sha,
+    )
+
+    assert validation["excluded_provider_external_count"] == 1
+    assert validation["provider_accounting"]["canonical_row_count"] == 2
+    assert validation["provider_accounting"]["provider_count"] == 3
+    inventory = json.loads(Path(capture["exclusion_inventory"]["path"]).read_text())
+    assert inventory["items"][0]["identity"] == "T600018.SH"
+    assert [record.symbol for record in store.load_latest_records()] == [
+        "000001.SZ",
+        "000002.SZ",
+    ]
+    assert "T600018.SH" not in json.dumps(published["manifest"], ensure_ascii=False)
 
 
 def test_capture_tamper_fails_before_publish(tmp_path: Path) -> None:
@@ -166,19 +231,41 @@ def test_capture_tamper_fails_before_publish(tmp_path: Path) -> None:
         )
 
 
-def test_new_listed_identity_outside_frozen_scope_is_stale(tmp_path: Path) -> None:
+def test_new_listed_identity_outside_frozen_scope_is_pending_evidence(tmp_path: Path) -> None:
     provider = _CountingProvider(extra_listed=True)
     capture = _acquire(tmp_path, provider)
     scope_path, scope_sha = _scope(tmp_path, ["000001.SZ"])
 
-    with pytest.raises(RuntimeError, match="FULL_A_SCOPE_STALE"):
-        validate_pit_universe_capture(
-            capture["capture_receipt_path"],
-            capture["capture_receipt_sha256"],
-            store=PITUniverseStore(root_dir=tmp_path / "reference"),
-            canonical_scope_path=scope_path,
-            expected_scope_sha256=scope_sha,
-        )
+    store = PITUniverseStore(root_dir=tmp_path / "reference")
+    validation = validate_pit_universe_capture(
+        capture["capture_receipt_path"],
+        capture["capture_receipt_sha256"],
+        store=store,
+        canonical_scope_path=scope_path,
+        expected_scope_sha256=scope_sha,
+    )
+    published = publish_pit_universe_capture(
+        capture["capture_receipt_path"],
+        capture["capture_receipt_sha256"],
+        store=store,
+        canonical_scope_path=scope_path,
+        expected_scope_sha256=scope_sha,
+    )
+    assert validation["scope_expansion_pending_count"] == 1
+    assert validation["dynamic_whole_market_complete"] is False
+    assert validation["scope_expansion_pending_rows"][0]["identity"] == "000003.SZ"
+    pending = store.records_by_symbol()["000003.SZ"]
+    assert pending.membership_quality == "outside_frozen_scope_pending"
+    status = evaluate_listing_status(pending, symbol="000003.SZ", as_of="20260819")
+    assert status.provider_listed is True
+    assert status.authority_membership is False
+    assert status.in_universe is False
+    assert status.research_eligible is False
+    assert status.tradable is False
+    assert (
+        published["manifest"]["source_bindings"]["scope_expansion_pending"]["admission_status"]
+        == "NOT_CONFIGURED"
+    )
     assert provider.calls == ["L", "D", "P"]
 
 
@@ -224,6 +311,7 @@ def test_expected_parent_is_reread_under_publish_lock(tmp_path: Path) -> None:
         ],
         observed_at="2026-08-18T00:00:00Z",
         source_run_id="parent-a",
+        source_bindings={"full_a_scope": {"path": str(scope_path), "sha256": scope_sha}},
     )
     expected_parent = first["discovery_pointer_sha256"]
     validate_pit_universe_capture(
@@ -248,6 +336,7 @@ def test_expected_parent_is_reread_under_publish_lock(tmp_path: Path) -> None:
         observed_at="2026-08-18T01:00:00Z",
         source_run_id="parent-b",
         expected_parent_pointer_sha256=expected_parent,
+        source_bindings={"full_a_scope": {"path": str(scope_path), "sha256": scope_sha}},
     )
 
     with pytest.raises(RuntimeError, match="pit_parent_pointer_cas_mismatch"):

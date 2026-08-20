@@ -88,6 +88,10 @@ veto with:
   --reason <bounded-operator-reason>
 ```
 
+Use `--lane macro` for `MACRO_WRITE_VETO.json`; the default `--lane global`
+retains legacy/global `WRITE_VETO.json` behavior. A Macro veto is never removed
+manually and does not authorize bypassing an unresolved Macro journal.
+
 Macro transaction modes are mutually exclusive:
 
 ```text
@@ -109,10 +113,13 @@ The attempt receipt reports `same_day_status`,
 or `UNCONFIRMED`. The coordinator never derives a new meaning for
 `usable_for_investment_research`.
 
-The hard same-day SLA is Market plus the exact PIT generation bound into its
-coverage and the target-aligned Macro/release pair. Fundamental age alone does
-not fail this SLA; missing, corrupt, future-dated, or binding-invalid
-Fundamental evidence does block overall integrity.
+The overall same-day SLA still includes the target-aligned Macro/release pair.
+Factor inputs are a separate dependency lane: exact PIT, Market and 100-session
+History may be ready while the overall run remains `PARTIAL` because Macro is
+blocked. Receipts expose `factor_input_readiness`,
+`factor_input_shadow_readiness`, `core_blockers`, `macro_status`, and
+`macro_blockers`. LOW/W80 never consume Macro or Fundamental merely because the
+coordinator reports those lanes.
 
 ## Shadow and cutover
 
@@ -122,9 +129,11 @@ receipts, leave every protected canonical byte and inventory unchanged, and
 produce at least one private candidate `SHADOW_COMPLETE`.
 
 Stage B changes only the automation mode to `execute`. It is prohibited until
-Stage A evidence has been independently reviewed. A final-slot blocker leaves
-the write veto active; later runs stop before canonical writes until an
-operator clears it.
+Stage A evidence has been independently reviewed. Core PIT/Market/History
+failures retain the global/core write veto. A disjoint Macro-only failure keeps
+the overall run partial and uses its own Macro veto/journal without
+retroactively invalidating an exact Factor-input closure. Existing legacy
+global vetoes keep their global meaning until explicitly cleared by exact SHA.
 
 No attempt or journal evidence is deleted automatically in v1. Every capture
 and promotion performs resource preflight and fails closed unless required
