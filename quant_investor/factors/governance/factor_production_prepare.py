@@ -588,7 +588,7 @@ def _factor_market_rows(  # noqa: C901
         symbols,
         start_date=sessions[0].strftime("%Y%m%d"),
         end_date=as_of,
-        columns=["trade_date", "symbol", "ts_code", "adj_close", "amount", "vol", "total_mv"],
+        columns=["trade_date", "ts_code", "adj_close", "amount", "vol", "total_mv"],
     )
     required_dates = set(sessions)
     market_rows: list[dict[str, Any]] = []

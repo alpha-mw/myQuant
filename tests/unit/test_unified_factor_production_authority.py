@@ -2154,7 +2154,6 @@ def _factor_production_operator_fixture(  # noqa: C901
                 [
                     {
                         "trade_date": session,
-                        "symbol": symbol,
                         "ts_code": symbol,
                         "adj_close": 10.0 + symbol_index + ordinal * 0.01,
                         "amount": 1000.0 + (symbol_index + 1) * (ordinal + 1),
@@ -2198,7 +2197,15 @@ def _factor_production_operator_fixture(  # noqa: C901
             assert universe_key == "full_a"
             return list(symbols)
 
-        def read_symbol_frames(self, requested: list[str], **_: object) -> dict[str, object]:
+        def read_symbol_frames(self, requested: list[str], **kwargs: object) -> dict[str, object]:
+            assert kwargs["columns"] == [
+                "trade_date",
+                "ts_code",
+                "adj_close",
+                "amount",
+                "vol",
+                "total_mv",
+            ]
             return {symbol: frames[symbol] for symbol in requested}
 
     monkeypatch.setattr(prepare_module, "MarketDataReader", FakeReader)
