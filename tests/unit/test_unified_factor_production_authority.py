@@ -2216,6 +2216,7 @@ def _factor_production_operator_fixture(  # noqa: C901
         )
         for symbol_index, symbol in enumerate(symbols)
     }
+    frames["600000.SH"].frame = frames["600000.SH"].frame.iloc[1:].reset_index(drop=True)
 
     class FakeReader:
         def __init__(self, **_: object) -> None:
@@ -2379,6 +2380,11 @@ def _factor_production_operator_fixture(  # noqa: C901
     second = prepare_factor_production(**arguments)
     assert first == second
     assert fundamental_pointer.read_bytes() == fundamental_before
+    factor_pit_rows = pq.read_table(
+        workspace / first["source_root"] / "factor/pit-universe.parquet"
+    ).to_pylist()
+    incomplete = next(row for row in factor_pit_rows if row["symbol"] == "600000.SH")
+    assert incomplete["tradable"] is False
     for governed_directory in (
         workspace / "results",
         workspace / "results/factors",

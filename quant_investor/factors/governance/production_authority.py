@@ -3005,13 +3005,11 @@ def _deep_replay_source_closure(  # noqa: C901
         [str(row["symbol"]) for row in pit.to_dict(orient="records") if row["tradable"] is True],
         key=lambda value: value.encode("utf-8"),
     )
-    expected_tradable = sorted(
+    cutoff_observed = sorted(
         set(scope_symbols) - set(absent), key=lambda value: value.encode("utf-8")
     )
-    if tradable_symbols != expected_tradable:
-        raise FactorGovernanceError(
-            "Factor PIT tradable cohort differs from Market observed cohort"
-        )
+    if not set(tradable_symbols) <= set(cutoff_observed):
+        raise FactorGovernanceError("Factor PIT tradable cohort is outside Market observed cohort")
     market = _read_table_raw(
         market_leaf["raw"],
         role="market_history",
@@ -3034,7 +3032,7 @@ def _deep_replay_source_closure(  # noqa: C901
         set(str(value) for value in market.loc[market["trade_date"].eq(cutoff), "symbol"]),
         key=lambda value: value.encode("utf-8"),
     )
-    if cutoff_symbols != expected_tradable:
+    if cutoff_symbols != tradable_symbols:
         raise FactorGovernanceError(
             "Factor Market cutoff cohort differs from Factor PIT tradable cohort"
         )
