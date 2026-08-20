@@ -2066,6 +2066,11 @@ def _factor_production_operator_fixture(  # noqa: C901
     symbols = ["000001.SZ", "000002.SZ", "600000.SH"]
     scope_sha = hashlib.sha256("\n".join(symbols).encode("utf-8")).hexdigest()
     market_root = tmp_path / "strict-market"
+    market_scope_path = market_root / "cn_universe/cn_index_components.json"
+    market_scope_path.parent.mkdir(parents=True, mode=0o700)
+    market_scope_raw = canonical_json_bytes({"full_a": symbols, "stats": {"full_a": len(symbols)}})
+    market_scope_path.write_bytes(market_scope_raw)
+    market_scope_path.chmod(0o644)
     reference_root = market_root / "parquet/cn/reference"
     generation_id = "pit-factor-prepare"
     generation_root = reference_root / "_generations" / generation_id
@@ -2268,15 +2273,19 @@ def _factor_production_operator_fixture(  # noqa: C901
     assert (
         not factor_pointer.exists() and not factor_marker.exists() and not system_pointer.exists()
     )
-    original_list_symbols = FakeReader.list_symbols
-    monkeypatch.setattr(
-        FakeReader,
-        "list_symbols",
-        lambda self, universe_key: [*symbols, "430001.BJ"],
+    market_scope_path.write_bytes(
+        canonical_json_bytes(
+            {
+                "full_a": sorted([*symbols, "430001.BJ"], key=lambda value: value.encode("utf-8")),
+                "stats": {"full_a": len(symbols) + 1},
+            }
+        )
     )
+    market_scope_path.chmod(0o644)
     with pytest.raises(FactorGovernanceError, match="scope SHA|outside Market-bound PIT"):
         prepare_factor_production(**arguments)
-    monkeypatch.setattr(FakeReader, "list_symbols", original_list_symbols)
+    market_scope_path.write_bytes(market_scope_raw)
+    market_scope_path.chmod(0o644)
     assert (
         not factor_pointer.exists() and not factor_marker.exists() and not system_pointer.exists()
     )

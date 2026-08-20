@@ -264,6 +264,37 @@ def _read_regular(  # noqa: C901
     return raw
 
 
+def _canonical_market_scope(data_root: Path) -> tuple[list[str], bytes]:
+    """Read the fixed full-A scope preimage instead of the serving-symbol subset."""
+
+    raw = _read_regular(
+        data_root / "cn_universe" / "cn_index_components.json",
+        label="canonical Market full-A scope",
+        maximum_bytes=16 * 1024 * 1024,
+        allow_public_read=True,
+    )
+    document = _strict_json(raw, label="canonical Market full-A scope")
+    values = document.get("full_a")
+    if type(values) is not list or not values:
+        raise FactorGovernanceError("canonical Market full-A scope is absent")
+    symbols = list(values)
+    if any(
+        type(symbol) is not str
+        or len(symbol) != 9
+        or not symbol[:6].isdigit()
+        or symbol[6:] not in {".SH", ".SZ", ".BJ"}
+        for symbol in symbols
+    ) or symbols != sorted(set(symbols), key=lambda value: value.encode("utf-8")):
+        raise FactorGovernanceError("canonical Market full-A scope is invalid")
+    stats = document.get("stats")
+    if type(stats) is not dict or stats.get("full_a") != len(symbols):
+        raise FactorGovernanceError("canonical Market full-A scope count differs")
+    for alias in ("full_market", "all_a", "all"):
+        if alias in document and document[alias] != symbols:
+            raise FactorGovernanceError("canonical Market full-A scope aliases differ")
+    return symbols, canonical_json_bytes({"full_a": symbols, "stats": {"full_a": len(symbols)}})
+
+
 def _write_source(path: Path, raw: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     if path.exists():
@@ -663,28 +694,18 @@ def prepare_factor_production(  # noqa: C901
     pit_manifest_path = Path(str(pit_binding["generation_manifest_path"])).resolve(strict=True)
     canonical_pit_raw = _read_regular(canonical_pit_path, label="Market-bound PIT membership")
     pit_manifest_raw = _read_regular(pit_manifest_path, label="Market-bound PIT manifest")
-    market_scope_symbols = sorted(
-        {
-            str(value).strip().upper()
-            for value in reader.list_symbols("full_a")
-            if str(value).strip()
-        },
-        key=lambda value: value.encode("utf-8"),
-    )
-    if not market_scope_symbols or any(
-        len(symbol) != 9 or not symbol[:6].isdigit() or symbol[6:] not in {".SH", ".SZ", ".BJ"}
-        for symbol in market_scope_symbols
-    ):
-        raise FactorGovernanceError("canonical Market full-A scope is invalid")
+    market_scope_symbols, market_scope_raw = _canonical_market_scope(market_root)
     expected_scope_sha256 = _sha256("\n".join(market_scope_symbols).encode("utf-8"))
     coverage = pointer_document.get("coverage")
-    if type(coverage) is not dict or coverage.get("expected_scope_sha256") != expected_scope_sha256:
+    if (
+        type(coverage) is not dict
+        or coverage.get("expected_scope_count") != len(market_scope_symbols)
+        or coverage.get("coverage_complete_count") != len(market_scope_symbols)
+        or coverage.get("expected_scope_sha256") != expected_scope_sha256
+    ):
         raise FactorGovernanceError("canonical Market full-A scope SHA differs")
     if not set(market_scope_symbols) <= set(pit_binding["records"]):
         raise FactorGovernanceError("canonical Market scope is outside Market-bound PIT")
-    market_scope_raw = canonical_json_bytes(
-        {"full_a": market_scope_symbols, "stats": {"full_a": len(market_scope_symbols)}}
-    )
     bound_pointer_path, bound_pointer_raw, bound_pointer_document = (
         _resolve_market_bound_pit_pointer(
             pit_manifest_path=pit_manifest_path,
