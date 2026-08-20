@@ -91,6 +91,7 @@ _GIT_OID_RE: Final = re.compile(r"^[0-9a-f]{40}$")
 _DATE_RE: Final = re.compile(r"^[0-9]{8}$")
 _TIMESTAMP_RE: Final = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 _SYMBOL_RE: Final = re.compile(r"^[0-9]{6}\.(?:SH|SZ|BJ)$")
+_PIT_AUDIT_SYMBOL_RE: Final = re.compile(r"^T[A-Z0-9]{4,6}\.(?:SH|SZ|BJ)$")
 _MAX_SOURCE_BYTES: Final = 512 * 1024 * 1024
 _MAX_SOURCE_ROWS: Final = 10_000_000
 _MAX_SOURCE_CELLS: Final = 100_000_000
@@ -1837,21 +1838,41 @@ def _leaf_for_terminal_role(
     return matches[0]
 
 
-def _canonical_pit_symbols(raw: bytes) -> list[str]:
-    """Read only canonical PIT symbols to bind the Factor projection cohort."""
+def _canonical_pit_symbols(  # noqa: C901 - bounded canonical/audit PIT scan
+    raw: bytes,
+) -> list[str]:
+    """Read canonical A-share symbols while retaining scope-external delisted audit rows."""
 
     if type(raw) is not bytes or not raw or len(raw) > _MAX_SOURCE_BYTES:
         raise FactorGovernanceError("canonical PIT membership bytes differ")
     try:
         parquet = pq.ParquetFile(pa.BufferReader(raw))
-        if "symbol" not in parquet.schema_arrow.names:
+        schema_names = set(parquet.schema_arrow.names)
+        if "symbol" not in schema_names:
             raise FactorGovernanceError("canonical PIT membership lacks symbols")
+        audit_fields = {"source_list_status", "delist_date"}
+        columns = ["symbol"]
+        if audit_fields <= schema_names:
+            columns.extend(sorted(audit_fields))
         symbols: list[str] = []
-        for batch in parquet.iter_batches(batch_size=_BATCH_ROWS, columns=["symbol"]):
-            for value in batch.column(0).to_pylist():
-                if type(value) is not str or _SYMBOL_RE.fullmatch(value) is None:
+        observed: set[str] = set()
+        for batch in parquet.iter_batches(batch_size=_BATCH_ROWS, columns=columns):
+            for row in batch.to_pylist():
+                value = row["symbol"]
+                if type(value) is not str or value in observed:
                     raise FactorGovernanceError("canonical PIT symbol is invalid")
-                symbols.append(value)
+                observed.add(value)
+                if _SYMBOL_RE.fullmatch(value) is not None:
+                    symbols.append(value)
+                    continue
+                if (
+                    not audit_fields <= schema_names
+                    or _PIT_AUDIT_SYMBOL_RE.fullmatch(value) is None
+                    or row["source_list_status"] != "D"
+                    or type(row["delist_date"]) is not str
+                    or _DATE_RE.fullmatch(row["delist_date"]) is None
+                ):
+                    raise FactorGovernanceError("canonical PIT symbol is invalid")
     except Exception as exc:
         if isinstance(exc, FactorGovernanceError):
             raise

@@ -594,6 +594,46 @@ def test_market_scope_must_be_inside_canonical_pit_and_equal_factor_projection()
         )
 
 
+def test_canonical_pit_scope_ignores_only_delisted_provider_audit_identities() -> None:
+    def parquet_raw(rows: list[dict[str, object]]) -> bytes:
+        sink = pa.BufferOutputStream()
+        pq.write_table(pa.Table.from_pylist(rows), sink)
+        return sink.getvalue().to_pybytes()
+
+    accepted = parquet_raw(
+        [
+            {"symbol": "000001.SZ", "source_list_status": "L", "delist_date": ""},
+            {
+                "symbol": "T600018.SH",
+                "source_list_status": "D",
+                "delist_date": "20061020",
+            },
+        ]
+    )
+    assert production_authority._canonical_pit_symbols(accepted) == ["000001.SZ"]
+    for invalid in (
+        {"symbol": "T600018.SH", "source_list_status": "L", "delist_date": ""},
+        {
+            "symbol": "X600018.SH",
+            "source_list_status": "D",
+            "delist_date": "20061020",
+        },
+    ):
+        with pytest.raises(FactorGovernanceError, match="canonical PIT symbol is invalid"):
+            production_authority._canonical_pit_symbols(
+                parquet_raw(
+                    [
+                        {
+                            "symbol": "000001.SZ",
+                            "source_list_status": "L",
+                            "delist_date": "",
+                        },
+                        invalid,
+                    ]
+                )
+            )
+
+
 def test_factor_production_artifacts_keep_fundamental_not_used_and_no_authority(
     tmp_path: Path,
 ) -> None:
@@ -2087,8 +2127,18 @@ def _factor_production_operator_fixture(  # noqa: C901
         )
         for symbol in symbols
     }
+    audit_record = PITUniverseRecord(
+        symbol="T600018.SH",
+        name="historical-delisted-audit",
+        source_list_status="D",
+        list_date="20000719",
+        delist_date="20061020",
+        observed_at="2026-08-07T00:00:00Z",
+        source_run_id="factor-prepare-pit-audit",
+    )
+    pit_records = {**records, audit_record.symbol: audit_record}
     pq.write_table(
-        pa.Table.from_pylist([record.to_dict() for record in records.values()]), pit_path
+        pa.Table.from_pylist([record.to_dict() for record in pit_records.values()]), pit_path
     )
     pit_path.chmod(0o600)
     pit_sha = hashlib.sha256(pit_path.read_bytes()).hexdigest()
@@ -2190,7 +2240,7 @@ def _factor_production_operator_fixture(  # noqa: C901
                 "generation_manifest_sha256": pit_manifest_sha,
                 "canonical_path": str(pit_path),
                 "canonical_sha256": pit_sha,
-                "records": records,
+                "records": pit_records,
             }
 
         def list_symbols(self, universe_key: str) -> list[str]:
