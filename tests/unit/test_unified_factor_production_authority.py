@@ -2063,7 +2063,7 @@ def _factor_production_operator_fixture(  # noqa: C901
     release_install = case["release_install_input"]["release_install_evidence"]
     sessions = [date.fromisoformat(value) for value in case["market_sessions"][-91:]]
     cutoff = sessions[-1].strftime("%Y%m%d")
-    symbols = ["000001.SZ", "000002.SZ", "600000.SH"]
+    symbols = ["000001.SZ", "000002.SZ", "430001.BJ", "600000.SH"]
     scope_sha = hashlib.sha256("\n".join(symbols).encode("utf-8")).hexdigest()
     market_root = tmp_path / "strict-market"
     market_scope_path = market_root / "cn_universe/cn_index_components.json"
@@ -2276,7 +2276,7 @@ def _factor_production_operator_fixture(  # noqa: C901
     market_scope_path.write_bytes(
         canonical_json_bytes(
             {
-                "full_a": sorted([*symbols, "430001.BJ"], key=lambda value: value.encode("utf-8")),
+                "full_a": sorted([*symbols, "600001.SH"], key=lambda value: value.encode("utf-8")),
                 "stats": {"full_a": len(symbols) + 1},
             }
         )

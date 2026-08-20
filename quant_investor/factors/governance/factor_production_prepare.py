@@ -33,6 +33,7 @@ from quant_investor.contracts import (
 from quant_investor.market.market_data_reader import MarketDataReader
 from quant_investor.market.pit_universe import evaluate_listing_status
 from quant_investor.market.tushare_calendar_authority import (
+    SOURCE_LIMITATIONS,
     _rename_no_replace,
     _capture_projection,
     build_trusted_provider_calendar_compilation,
@@ -1007,12 +1008,22 @@ def prepare_factor_production(  # noqa: C901
         )
         for exchange in actual_exchange_ids
     }
+    direct_exchange_ids = [
+        exchange for exchange in actual_exchange_ids if exchange in {"SSE", "SZSE"}
+    ]
+    if (
+        not direct_exchange_ids
+        or ("BSE" in actual_exchange_ids and exchange_projections["BSE"] != [])
+        or execution_payload.get("source_limitations") != list(SOURCE_LIMITATIONS)
+    ):
+        raise FactorGovernanceError("sealed degraded Calendar projection policy differs")
     projection_values = [
         sorted(
             [{"date": row["date"], "status": row["status"]} for row in rows],
             key=lambda row: row["date"],
         )
-        for rows in exchange_projections.values()
+        for exchange, rows in exchange_projections.items()
+        if exchange in direct_exchange_ids
     ]
     if not projection_values or any(rows != projection_values[0] for rows in projection_values[1:]):
         summary = {
@@ -1022,7 +1033,7 @@ def prepare_factor_production(  # noqa: C901
                 "first": rows[0] if rows else None,
                 "last": rows[-1] if rows else None,
             }
-            for exchange, rows in zip(actual_exchange_ids, projection_values, strict=True)
+            for exchange, rows in exchange_projections.items()
         }
         raise FactorGovernanceError(
             "sealed exchange Calendar projections differ: "
