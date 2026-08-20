@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from pathlib import Path
 import stat
 from typing import Any, Final, Mapping
-
-from quant_investor.contracts import ContractError, parse_canonical_json_bytes
 
 from .governance.errors import FactorGovernanceError
 
@@ -55,10 +54,24 @@ def _read_owner_file(path: Path, *, root: Path, label: str) -> tuple[bytes, str]
 
 
 def _mapping(raw: bytes, *, label: str) -> dict[str, Any]:
+    def unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate JSON key")
+            result[key] = value
+        return result
+
     try:
-        value = parse_canonical_json_bytes(raw, label=label)
-    except ContractError as exc:
-        raise FactorGovernanceError(f"{label} is not canonical JSON") from exc
+        value = json.loads(
+            raw.decode("utf-8", errors="strict"),
+            object_pairs_hook=unique,
+            parse_constant=lambda value: (_ for _ in ()).throw(
+                ValueError(f"non-finite JSON constant: {value}")
+            ),
+        )
+    except (UnicodeError, ValueError, json.JSONDecodeError) as exc:
+        raise FactorGovernanceError(f"{label} is not strict JSON") from exc
     if type(value) is not dict:
         raise FactorGovernanceError(f"{label} is not a JSON object")
     return value
