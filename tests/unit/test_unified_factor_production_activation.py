@@ -160,7 +160,7 @@ def _native_store_and_prepared(
 
     monkeypatch.setattr(
         source_fixture.production_authority,
-        "verify_release_install_input",
+        "verify_running_release_install_input",
         verify_current_release,
     )
     release_repository_root = Path(
@@ -364,33 +364,11 @@ def test_one_shot_public_operator_composes_prepare_current_gates_cas_and_verify(
             "byte_sha256": marker * 64,
         }
 
-    deployed_release_ref = ref("system.release", "release-a", "1")
-    policy_ref = ref("factor.bootstrap_exception_evidence", "policy-a", "2")
-    active_ref = ref("factor.bootstrap_set", "active-a", "3")
-    attestation_ref = ref("factor.validation_receipt", "attestation-a", "4")
-    implementation_refs = [
-        ref("system.installed_component_manifest", "implementation-low", "5"),
-        ref("system.installed_component_manifest", "implementation-w80", "6"),
-    ]
     generation_ref = ref("factor.production_generation", "generation-a", "7")
     source_ref = ref("factor.production_source_closure", "source-a", "8")
     recomputation_ref = ref("factor.production_recomputation_evidence", "recompute-a", "9")
     legacy_ref = ref("factor.production_legacy_zero_call_certificate", "legacy-a", "a")
     market_ref = ref("factor.production_market_input", "market-a", "b")
-    inputs = {
-        "as_of": "20260817",
-        "deployed_release_ref": deployed_release_ref,
-        "factor_active_set_ref": active_ref,
-        "factor_implementation_refs": implementation_refs,
-        "factor_policy_ref": policy_ref,
-        "factor_validation_attestation_ref": attestation_ref,
-        "final_commit": "c" * 40,
-        "final_tree": "d" * 40,
-    }
-    inputs_path = workspace / "factor-activation-inputs.json"
-    inputs_raw = canonical_json_bytes(inputs)
-    inputs_path.write_bytes(inputs_raw)
-    inputs_path.chmod(0o600)
     prepare_calls: list[dict[str, object]] = []
     store_calls: list[dict[str, object]] = []
     artifacts = {
@@ -481,9 +459,6 @@ def test_one_shot_public_operator_composes_prepare_current_gates_cas_and_verify(
         market_data_root=str(market_root),
         calendar_capture_root=str(capture_root),
         expected_calendar_success_sha256="6" * 64,
-        release_repository_root=str(release_root),
-        activation_inputs_path="factor-activation-inputs.json",
-        expected_activation_inputs_sha256=hashlib.sha256(inputs_raw).hexdigest(),
         expected_empty=True,
     )
     assert result["command_status"] == "ACTIVATED"
@@ -504,11 +479,6 @@ def test_cli_one_shot_operator_runs_real_temp_source_prepare_and_single_cas(
 ) -> None:
     fixture = source_fixture._factor_production_operator_fixture(tmp_path, monkeypatch)
     workspace = Path(fixture["workspace"])
-    activation_inputs = fixture["public_prepare_inputs"]
-    inputs_path = workspace / "factor-production-cli-inputs.json"
-    inputs_raw = canonical_json_bytes(activation_inputs)
-    inputs_path.write_bytes(inputs_raw)
-    inputs_path.chmod(0o600)
     pointer = workspace / str(FACTOR_ACTIVE_POINTER_PATH)
     marker = workspace / str(FACTOR_PRODUCTION_MARKER_PATH)
     system_pointer = workspace / "results/system/_active.json"
@@ -542,12 +512,6 @@ def test_cli_one_shot_operator_runs_real_temp_source_prepare_and_single_cas(
         str(fixture["capture_root"]),
         "--expected-calendar-success-sha256",
         str(fixture["calendar_success_sha256"]),
-        "--release-repository-root",
-        str(fixture["release_repository_root"]),
-        "--activation-inputs",
-        inputs_path.name,
-        "--expected-activation-inputs-sha256",
-        hashlib.sha256(inputs_raw).hexdigest(),
         "--expected-empty",
     ]
     main(command)
@@ -597,10 +561,6 @@ def test_cli_recovers_exact_marker_after_before_marker_rename_fault(
 
     fixture = source_fixture._factor_production_operator_fixture(tmp_path, monkeypatch)
     workspace = Path(fixture["workspace"])
-    inputs_path = workspace / "factor-production-recovery-inputs.json"
-    inputs_raw = canonical_json_bytes(fixture["public_prepare_inputs"])
-    inputs_path.write_bytes(inputs_raw)
-    inputs_path.chmod(0o600)
     command = [
         "factor",
         "production-activate",
@@ -612,12 +572,6 @@ def test_cli_recovers_exact_marker_after_before_marker_rename_fault(
         str(fixture["capture_root"]),
         "--expected-calendar-success-sha256",
         str(fixture["calendar_success_sha256"]),
-        "--release-repository-root",
-        str(fixture["release_repository_root"]),
-        "--activation-inputs",
-        inputs_path.name,
-        "--expected-activation-inputs-sha256",
-        hashlib.sha256(inputs_raw).hexdigest(),
         "--expected-empty",
     ]
     pointer = workspace / str(FACTOR_ACTIVE_POINTER_PATH)

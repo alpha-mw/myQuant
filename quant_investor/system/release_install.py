@@ -9,11 +9,15 @@ broker, order, portfolio, or Strategy Record authority.
 from __future__ import annotations
 
 from collections.abc import Mapping
+import ctypes
+from datetime import datetime, timezone
+import errno
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import secrets
 import shutil
 import stat
 import subprocess
@@ -47,6 +51,9 @@ _IGNORED_PARTS: Final = frozenset({"__pycache__"})
 _IGNORED_SUFFIXES: Final = frozenset({".pyc", ".pyo"})
 _MAX_ARTIFACT_BYTES: Final = 2 * 1024 * 1024 * 1024
 _MAX_PROBE_BYTES: Final = 1024 * 1024
+RELEASE_INSTALL_INPUT_FILENAME: Final = "release-install-input.json"
+_DARWIN_RENAME_EXCL: Final = 0x00000004
+_LINUX_RENAME_NOREPLACE: Final = 0x00000001
 
 
 def _sha256(raw: bytes) -> str:
@@ -318,7 +325,7 @@ def build_release_install_evidence(
     installed_code_manifest_sha256: str,
     contract_catalog_sha256_value: str,
     lockfile_sha256: str,
-    created_at: str,
+    created_at: str | None = None,
 ) -> dict[str, Any]:
     """Seal observations; deep validation independently re-reads every binding."""
 
@@ -535,7 +542,9 @@ def _owner_directory(path: Path, *, create: bool, label: str) -> Path:
     return path.resolve(strict=True)
 
 
-def _publish_exact(root: Path, raw: bytes, *, filename: str) -> Path:
+def _publish_exact(  # noqa: C901 - one descriptor-relative publication transaction
+    root: Path, raw: bytes, *, filename: str
+) -> Path:
     digest = _sha256(raw)
     if Path(filename).name != filename or not filename or filename in {".", ".."}:
         raise SystemContractError("release artifact filename is invalid")
@@ -543,18 +552,32 @@ def _publish_exact(root: Path, raw: bytes, *, filename: str) -> Path:
         root / digest, create=True, label="content-addressed release directory"
     )
     target = digest_root / filename
-    if target.exists():
+    try:
         observed, _metadata = _regular_file(target, label="published release artifact")
+    except SystemSecurityError:
+        if target.exists() or target.is_symlink():
+            raise
+    else:
         if observed != raw:
             raise SystemPreconditionError("published release artifact conflicts")
         return target
-    temporary = digest_root / f".{filename}.tmp-{os.getpid()}"
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        directory_fd = os.open(digest_root, directory_flags)
+    except OSError as exc:
+        raise SystemSecurityError("release artifact directory cannot be opened") from exc
+    temporary = f".{filename}.publish-{os.getpid()}-{secrets.token_hex(8)}"
     descriptor: int | None = None
     try:
         descriptor = os.open(
             temporary,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
             0o600,
+            dir_fd=directory_fd,
         )
         view = memoryview(raw)
         while view:
@@ -563,23 +586,188 @@ def _publish_exact(root: Path, raw: bytes, *, filename: str) -> Path:
                 raise SystemSecurityError("release artifact write made no progress")
             view = view[written:]
         os.fsync(descriptor)
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+            or metadata.st_nlink != 1
+            or metadata.st_size != len(raw)
+        ):
+            raise SystemSecurityError("prepared release artifact is not owner-controlled")
         os.close(descriptor)
         descriptor = None
-        os.link(temporary, target, follow_symlinks=False)
-    except FileExistsError as exc:
-        raise SystemPreconditionError("published release artifact conflicts") from exc
+        _release_input_fault_hook(f"BEFORE_RELEASE_ARTIFACT_PUBLICATION:{filename}")
+        try:
+            _atomic_no_replace_rename(
+                temporary,
+                filename,
+                source_directory_fd=directory_fd,
+                destination_directory_fd=directory_fd,
+            )
+        except FileExistsError:
+            observed, _metadata = _regular_file(target, label="published release artifact")
+            if observed != raw:
+                raise SystemPreconditionError("published release artifact conflicts")
+            return target
+        os.fsync(directory_fd)
+        _release_input_fault_hook(f"AFTER_RELEASE_ARTIFACT_PUBLICATION:{filename}")
     except OSError as exc:
         raise SystemSecurityError("release artifact publication failed") from exc
     finally:
         if descriptor is not None:
             os.close(descriptor)
         try:
-            temporary.unlink(missing_ok=True)
-        except OSError:
+            os.unlink(temporary, dir_fd=directory_fd)
+        except FileNotFoundError:
             pass
+        os.close(directory_fd)
     observed, _metadata = _regular_file(target, label="published release artifact")
     if observed != raw:
         raise SystemPreconditionError("published release artifact readback differs")
+    return target
+
+
+def _release_input_fault_hook(point: str) -> None:
+    """Test-only crash boundary; production intentionally does nothing."""
+
+
+def _atomic_no_replace_rename(
+    source: str,
+    destination: str,
+    *,
+    source_directory_fd: int,
+    destination_directory_fd: int,
+) -> None:
+    """Atomically rename without replacement or a weaker fallback."""
+
+    try:
+        source_raw = source.encode("ascii", errors="strict")
+        destination_raw = destination.encode("ascii", errors="strict")
+    except UnicodeEncodeError as exc:
+        raise SystemSecurityError("release input rename leaf is not ASCII") from exc
+    library = ctypes.CDLL(None, use_errno=True)
+    if sys.platform == "darwin":
+        operation = getattr(library, "renameatx_np", None)
+        flags = _DARWIN_RENAME_EXCL
+    elif sys.platform.startswith("linux"):
+        operation = getattr(library, "renameat2", None)
+        flags = _LINUX_RENAME_NOREPLACE
+    else:
+        operation = None
+        flags = 0
+    if operation is None:
+        raise SystemSecurityError("atomic no-replace release input publication is unavailable")
+    operation.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    operation.restype = ctypes.c_int
+    ctypes.set_errno(0)
+    result = operation(
+        source_directory_fd,
+        source_raw,
+        destination_directory_fd,
+        destination_raw,
+        flags,
+    )
+    if result == 0:
+        return
+    error_number = ctypes.get_errno()
+    if error_number in {errno.EEXIST, errno.ENOTEMPTY}:
+        raise FileExistsError(error_number, os.strerror(error_number), destination)
+    raise SystemSecurityError(
+        "atomic no-replace release input publication failed "
+        f"(platform={sys.platform}, errno={error_number})"
+    )
+
+
+def _publish_release_install_input_bytes(  # noqa: C901 - atomic publication boundary
+    custody_root: Path, raw: bytes
+) -> Path:
+    """Publish complete canonical input bytes with crash-safe no-replace semantics."""
+
+    digest = _sha256(raw)
+    digest_root = _owner_directory(
+        custody_root / digest, create=True, label="content-addressed release input directory"
+    )
+    target = digest_root / RELEASE_INSTALL_INPUT_FILENAME
+    try:
+        observed, _metadata = _regular_file(target, label="release install input")
+    except SystemSecurityError:
+        if target.exists() or target.is_symlink():
+            raise
+    else:
+        if observed != raw:
+            raise SystemPreconditionError("release install input conflicts")
+        return target
+
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        directory_fd = os.open(digest_root, directory_flags)
+    except OSError as exc:
+        raise SystemSecurityError("release input directory cannot be opened") from exc
+    temporary = f".{RELEASE_INSTALL_INPUT_FILENAME}.publish-{os.getpid()}-{secrets.token_hex(8)}"
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+            0o600,
+            dir_fd=directory_fd,
+        )
+        view = memoryview(raw)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                raise SystemSecurityError("release input write made no progress")
+            view = view[written:]
+        os.fchmod(descriptor, 0o600)
+        os.fsync(descriptor)
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+            or metadata.st_nlink != 1
+            or metadata.st_size != len(raw)
+        ):
+            raise SystemSecurityError("prepared release input file is not owner-controlled")
+        os.close(descriptor)
+        descriptor = None
+        _release_input_fault_hook("BEFORE_RELEASE_INPUT_PUBLICATION")
+        try:
+            _atomic_no_replace_rename(
+                temporary,
+                RELEASE_INSTALL_INPUT_FILENAME,
+                source_directory_fd=directory_fd,
+                destination_directory_fd=directory_fd,
+            )
+        except FileExistsError:
+            observed, _metadata = _regular_file(target, label="release install input")
+            if observed != raw:
+                raise SystemPreconditionError("release install input conflicts")
+            return target
+        os.fsync(directory_fd)
+        _release_input_fault_hook("AFTER_RELEASE_INPUT_PUBLICATION")
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        try:
+            os.unlink(temporary, dir_fd=directory_fd)
+        except FileNotFoundError:
+            pass
+        os.close(directory_fd)
+    observed, _metadata = _regular_file(target, label="release install input")
+    if observed != raw:
+        raise SystemPreconditionError("release install input readback differs")
     return target
 
 
@@ -603,13 +791,144 @@ def _run_release_tool(
         raise SystemPreconditionError("release build/install tool did not pass")
 
 
+def _verify_prepared_install(
+    install_root: Path,
+    *,
+    repository_root: Path,
+    expected_code_manifest_sha256: str,
+    expected_contract_catalog_sha256: str,
+) -> dict[str, Any]:
+    """Deeply verify a complete staged or published install directory."""
+
+    root = install_root.resolve(strict=True)
+    _verify_install_root(root, repository_root)
+    python = root / "bin/python"
+    try:
+        python_resolved = python.resolve(strict=True)
+        python_raw = python_resolved.read_bytes()
+    except OSError as exc:
+        raise SystemSecurityError("prepared release interpreter cannot be read") from exc
+    probe = _probe_install(python, root, repository_root)
+    if probe["installed_code_manifest_sha256"] != expected_code_manifest_sha256:
+        raise SystemPreconditionError("prepared installed code differs from frozen Git package")
+    if probe["contract_catalog_sha256"] != expected_contract_catalog_sha256:
+        raise SystemPreconditionError("prepared installed contract catalog differs")
+    origin = Path(probe["import_origin"]).resolve(strict=True)
+    if root not in origin.parents:
+        raise SystemPreconditionError("prepared installed origin escapes install root")
+    return {
+        "install_root": root,
+        "python": python,
+        "python_sha256": _sha256(python_raw),
+        "probe": probe,
+    }
+
+
+def _publish_install_directory(
+    *,
+    install_base: Path,
+    staging_root: Path,
+    final_root: Path,
+) -> bool:
+    """Atomically publish one complete staged install; return False for a race winner."""
+
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        parent_fd = os.open(install_base, directory_flags)
+    except OSError as exc:
+        raise SystemSecurityError("release install base cannot be opened") from exc
+    try:
+        _release_input_fault_hook("BEFORE_RELEASE_INSTALL_PUBLICATION")
+        try:
+            _atomic_no_replace_rename(
+                staging_root.name,
+                final_root.name,
+                source_directory_fd=parent_fd,
+                destination_directory_fd=parent_fd,
+            )
+        except FileExistsError:
+            return False
+        os.fsync(parent_fd)
+        _release_input_fault_hook("AFTER_RELEASE_INSTALL_PUBLICATION")
+        return True
+    finally:
+        os.close(parent_fd)
+
+
+def _validate_release_root_layout(  # noqa: C901 - one exact custody-layout audit
+    release_root: Path,
+    evidence: Mapping[str, Any],
+) -> None:
+    """Bind accepted release evidence to one exact caller-supplied custody root."""
+
+    release_base = _owner_directory(release_root, create=False, label="release root")
+    payload = evidence["payload"]
+    artifacts_root = release_base / "artifacts"
+    installs_root = release_base / "installs"
+    _owner_directory(artifacts_root, create=False, label="release artifact root")
+    _owner_directory(installs_root, create=False, label="release install base")
+    for field in ("source_archive", "wheel"):
+        row = payload[field]
+        supplied = Path(row["path"])
+        expected_parent = artifacts_root / row["byte_sha256"]
+        expected = expected_parent / supplied.name
+        if supplied != expected:
+            raise SystemSecurityError(f"{field} is outside the exact release artifact layout")
+        _owner_directory(expected_parent, create=False, label=f"{field} digest directory")
+        raw, metadata = _regular_file(expected, label=field)
+        if field == "source_archive":
+            try:
+                with tarfile.open(expected, mode="r:gz") as archive:
+                    roots = {Path(member.name).parts[0] for member in archive.getmembers()}
+            except (OSError, tarfile.TarError, IndexError) as exc:
+                raise SystemSecurityError("source archive filename cannot be derived") from exc
+            if len(roots) != 1 or supplied.name != f"{next(iter(roots))}.tar.gz":
+                raise SystemSecurityError("source archive filename is not exact")
+        else:
+            try:
+                with zipfile.ZipFile(expected) as archive:
+                    wheel_metadata = [
+                        name for name in archive.namelist() if name.endswith(".dist-info/WHEEL")
+                    ]
+                    if len(wheel_metadata) != 1:
+                        raise SystemSecurityError("wheel filename metadata is not exact")
+                    dist_info = Path(wheel_metadata[0]).parts[0]
+                    wheel_document = archive.read(wheel_metadata[0]).decode("utf-8")
+            except (OSError, UnicodeDecodeError, zipfile.BadZipFile, KeyError) as exc:
+                raise SystemSecurityError("wheel filename cannot be derived") from exc
+            tags = [line[5:] for line in wheel_document.splitlines() if line.startswith("Tag: ")]
+            if (
+                not dist_info.endswith(".dist-info")
+                or len(tags) != 1
+                or supplied.name != f"{dist_info[:-10]}-{tags[0]}.whl"
+            ):
+                raise SystemSecurityError("wheel filename is not exact")
+        if metadata.st_nlink != 1 or len(raw) != row["size"] or _sha256(raw) != row["byte_sha256"]:
+            raise SystemSecurityError(f"{field} custody identity differs")
+    expected_install = installs_root / (
+        f"{payload['final_commit']}-{payload['wheel']['byte_sha256']}"
+    )
+    supplied_install = Path(payload["install_root"])
+    if supplied_install != expected_install:
+        raise SystemSecurityError("install root is outside the exact release layout")
+    installed = _owner_directory(expected_install, create=False, label="release install root")
+    if Path(payload["python_executable"]) != expected_install / "bin/python":
+        raise SystemSecurityError("release interpreter path is outside the exact install layout")
+    try:
+        origin = Path(payload["import_origin"]).resolve(strict=True)
+    except OSError as exc:
+        raise SystemSecurityError("release import origin cannot be resolved") from exc
+    if installed not in origin.parents:
+        raise SystemSecurityError("release import origin is outside the exact install layout")
+
+
 def prepare_operational_release(  # noqa: C901
     *,
     repository_root: str | os.PathLike[str],
     release_root: str | os.PathLike[str],
     final_commit: str,
     final_tree: str,
-    created_at: str,
+    created_at: str | None,
 ) -> dict[str, Any]:
     """Build, install, and seal one frozen operational release without network access."""
 
@@ -633,6 +952,11 @@ def prepare_operational_release(  # noqa: C901
     source_epoch = _git(root, "show", "-s", "--format=%ct", commit).decode("ascii").strip()
     if not source_epoch.isdigit():
         raise SystemPreconditionError("release source epoch is invalid")
+    sealed_at = (
+        datetime.fromtimestamp(int(source_epoch), tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        if created_at is None
+        else created_at
+    )
     environment = {
         "HOME": os.environ.get("HOME", str(release_base)),
         "LANG": "C.UTF-8",
@@ -716,71 +1040,95 @@ def prepare_operational_release(  # noqa: C901
     wheel_sha = _sha256(wheel_raw)
     install_root = install_base / f"{commit}-{wheel_sha}"
     if install_root.exists():
-        _owner_directory(install_root, create=False, label="release install root")
+        install_identity = _verify_prepared_install(
+            install_root,
+            repository_root=root,
+            expected_code_manifest_sha256=git_manifest_sha,
+            expected_contract_catalog_sha256=contract_catalog_sha256(),
+        )
     else:
-        install_root.mkdir(mode=0o700)
-        install_root.chmod(0o700)
-        install_environment = {
-            **environment,
-            "UV_PROJECT_ENVIRONMENT": str(install_root),
-            "VIRTUAL_ENV": str(install_root),
-        }
-        _run_release_tool(
-            [
-                str(uv),
-                "venv",
-                "--offline",
-                "--no-project",
-                "--python",
-                sys.executable,
-                str(install_root),
-            ],
-            root=root,
-            environment=install_environment,
-            timeout=300,
+        staging_root = install_base / (
+            f".stage-{commit}-{wheel_sha}-{os.getpid()}-{secrets.token_hex(8)}"
         )
-        install_root.chmod(0o700)
-        _run_release_tool(
-            [
-                str(uv),
-                "sync",
-                "--offline",
-                "--locked",
-                "--no-install-project",
-                "--no-install-workspace",
-            ],
-            root=root,
-            environment=install_environment,
-            timeout=1800,
+        staging_root.mkdir(mode=0o700)
+        staging_root.chmod(0o700)
+        try:
+            install_environment = {
+                **environment,
+                "UV_PROJECT_ENVIRONMENT": str(staging_root),
+                "VIRTUAL_ENV": str(staging_root),
+            }
+            _run_release_tool(
+                [
+                    str(uv),
+                    "venv",
+                    "--offline",
+                    "--no-project",
+                    "--python",
+                    sys.executable,
+                    str(staging_root),
+                ],
+                root=root,
+                environment=install_environment,
+                timeout=300,
+            )
+            staging_root.chmod(0o700)
+            _run_release_tool(
+                [
+                    str(uv),
+                    "sync",
+                    "--offline",
+                    "--locked",
+                    "--no-install-project",
+                    "--no-install-workspace",
+                ],
+                root=root,
+                environment=install_environment,
+                timeout=1800,
+            )
+            staging_python = staging_root / "bin/python"
+            _run_release_tool(
+                [
+                    str(uv),
+                    "pip",
+                    "install",
+                    "--offline",
+                    "--no-index",
+                    "--no-deps",
+                    "--link-mode",
+                    "copy",
+                    "--python",
+                    str(staging_python),
+                    str(wheel_path),
+                ],
+                root=root,
+                environment=install_environment,
+                timeout=600,
+            )
+            _verify_prepared_install(
+                staging_root,
+                repository_root=root,
+                expected_code_manifest_sha256=git_manifest_sha,
+                expected_contract_catalog_sha256=contract_catalog_sha256(),
+            )
+            _publish_install_directory(
+                install_base=install_base,
+                staging_root=staging_root,
+                final_root=install_root,
+            )
+        finally:
+            if staging_root.exists():
+                shutil.rmtree(staging_root)
+        install_identity = _verify_prepared_install(
+            install_root,
+            repository_root=root,
+            expected_code_manifest_sha256=git_manifest_sha,
+            expected_contract_catalog_sha256=contract_catalog_sha256(),
         )
-        python = install_root / "bin/python"
-        _run_release_tool(
-            [
-                str(uv),
-                "pip",
-                "install",
-                "--offline",
-                "--no-index",
-                "--no-deps",
-                "--link-mode",
-                "copy",
-                "--python",
-                str(python),
-                str(wheel_path),
-            ],
-            root=root,
-            environment=install_environment,
-            timeout=600,
-        )
-    install_root = install_root.resolve(strict=True)
-    python = install_root / "bin/python"
-    python_resolved = python.resolve(strict=True)
-    python_sha = _sha256(python_resolved.read_bytes())
-    probe = _probe_install(python, install_root, root)
-    if probe["installed_code_manifest_sha256"] != git_manifest_sha:
-        raise SystemPreconditionError("prepared installed code differs from frozen Git package")
-    if probe["contract_catalog_sha256"] != contract_catalog_sha256():
-        raise SystemPreconditionError("prepared installed contract catalog differs")
+    install_root = install_identity["install_root"]
+    python = install_identity["python"]
+    python_sha = install_identity["python_sha256"]
+    probe = install_identity["probe"]
     release_body = {
         "state": "OPERATIONAL",
         "code_sha256": tree_sha,
@@ -791,7 +1139,7 @@ def prepare_operational_release(  # noqa: C901
     release = seal_artifact(
         RELEASE_KIND,
         {**release_body, "release_id": release_id},
-        created_at=created_at,
+        created_at=sealed_at,
     )
     release_ref = _object_ref(release)
     lock_raw, _metadata = _regular_file(root / "uv.lock", label="release lockfile")
@@ -814,7 +1162,7 @@ def prepare_operational_release(  # noqa: C901
         installed_code_manifest_sha256=probe["installed_code_manifest_sha256"],
         contract_catalog_sha256_value=probe["contract_catalog_sha256"],
         lockfile_sha256=_sha256(lock_raw),
-        created_at=created_at,
+        created_at=sealed_at,
     )
     exact_input = canonical_json_bytes(
         {"release_install_evidence": evidence, "deployed_release": release}
@@ -826,6 +1174,69 @@ def prepare_operational_release(  # noqa: C901
         "release": release,
         "release_install_evidence": evidence,
         "verification": verification,
+    }
+
+
+def publish_release_install_input(  # noqa: C901 - validates custody before publication
+    *,
+    workspace_root: str | os.PathLike[str],
+    release_root: str | os.PathLike[str],
+    release_install_evidence: Mapping[str, Any],
+    deployed_release: Mapping[str, Any],
+    repository_root: str | os.PathLike[str],
+) -> dict[str, Any]:
+    """Publish one exact two-document release input without runtime authority writes."""
+
+    release_base = _owner_directory(Path(release_root), create=False, label="release root")
+    workspace = Path(workspace_root).resolve(strict=True)
+    results_root = workspace / "results"
+    if results_root.exists():
+        try:
+            results_metadata = results_root.lstat()
+        except OSError as exc:
+            raise SystemSecurityError("release custody parent cannot be read") from exc
+        if (
+            not stat.S_ISDIR(results_metadata.st_mode)
+            or stat.S_ISLNK(results_metadata.st_mode)
+            or results_metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(results_metadata.st_mode) & 0o022
+        ):
+            raise SystemSecurityError("release custody parent is not owner-controlled")
+    else:
+        try:
+            results_root.mkdir(mode=0o700)
+        except OSError as exc:
+            raise SystemSecurityError("release custody parent cannot be created") from exc
+    custody_root = _owner_directory(
+        results_root / "releases", create=True, label="release input custody root"
+    )
+    evidence = validate_release_install_evidence(release_install_evidence)
+    _validate_release_root_layout(release_base, evidence)
+    try:
+        release = validate_artifact(dict(deployed_release), expected_kind=RELEASE_KIND)
+    except ContractError as exc:
+        raise SystemContractError("deployed release contract failed") from exc
+    raw = canonical_json_bytes({"release_install_evidence": evidence, "deployed_release": release})
+    verification = verify_release_install_input(raw, repository_root=repository_root)
+    target = _publish_release_install_input_bytes(custody_root, raw)
+    observed, metadata = _regular_file(target, label="release install input")
+    if observed != raw or stat.S_IMODE(metadata.st_mode) != 0o600:
+        raise SystemPreconditionError("release install input readback differs")
+    readback_verification = verify_release_install_input(observed, repository_root=repository_root)
+    if readback_verification != verification:
+        raise SystemPreconditionError("release install input verification readback differs")
+    return {
+        "status": "PREPARED",
+        "release_install_input_path": str(target),
+        "release_install_input_relative_path": target.relative_to(workspace).as_posix(),
+        "release_install_input_sha256": _sha256(raw),
+        "release_ref": verification["release_ref"],
+        "installed_python": evidence["payload"]["python_executable"],
+        "import_origin": verification["import_origin"],
+        "verification": verification,
+        "grants_system_authority": False,
+        "grants_factor_authority": False,
+        "grants_trading_authority": False,
     }
 
 
@@ -931,6 +1342,77 @@ def verify_release_install_input(  # noqa: C901
     }
 
 
+def verify_running_release_install_input(  # noqa: C901 - exact live process closure
+    raw: bytes,
+    *,
+    repository_root: str | os.PathLike[str],
+) -> dict[str, Any]:
+    """Require the current process to be the exact deeply verified installed release."""
+
+    verification = verify_release_install_input(raw, repository_root=repository_root)
+    try:
+        value = parse_canonical_json_bytes(raw)
+    except ContractError as exc:  # deep verification above normally reports this first
+        raise SystemContractError("release install gate input is not canonical") from exc
+    evidence = validate_release_install_evidence(value["release_install_evidence"])
+    payload = evidence["payload"]
+
+    import quant_investor
+
+    current_origin_value = getattr(quant_investor, "__file__", None)
+    if type(current_origin_value) is not str:
+        raise SystemPreconditionError("current process package origin is unavailable")
+    try:
+        current_origin = Path(current_origin_value).resolve(strict=True)
+        expected_origin = Path(payload["import_origin"]).resolve(strict=True)
+        current_executable_path = Path(sys.executable).absolute()
+        expected_executable_path = Path(payload["python_executable"]).absolute()
+        current_executable = current_executable_path.resolve(strict=True)
+        expected_executable = expected_executable_path.resolve(strict=True)
+        current_executable_raw = current_executable.read_bytes()
+    except OSError as exc:
+        raise SystemSecurityError("current installed release identity cannot be read") from exc
+    if (
+        current_origin != expected_origin
+        or current_executable_path != expected_executable_path
+        or current_executable != expected_executable
+        or _sha256(current_executable_raw) != payload["python_executable_sha256"]
+    ):
+        raise SystemPreconditionError("current process is not running the installed release")
+    package_root = current_origin.parent
+    package_paths = getattr(quant_investor, "__path__", None)
+    try:
+        resolved_package_paths = [Path(value).resolve(strict=True) for value in package_paths]
+    except (OSError, TypeError) as exc:
+        raise SystemPreconditionError("current installed package path is invalid") from exc
+    if resolved_package_paths != [package_root]:
+        raise SystemPreconditionError("current installed package path is not exact")
+    for module_name, module in sorted(sys.modules.items()):
+        if module_name != "quant_investor" and not module_name.startswith("quant_investor."):
+            continue
+        module_file = getattr(module, "__file__", None)
+        if module_file is None:
+            continue
+        if type(module_file) is not str:
+            raise SystemPreconditionError("loaded release module origin is invalid")
+        try:
+            module_origin = Path(module_file).resolve(strict=True)
+        except OSError as exc:
+            raise SystemPreconditionError("loaded release module origin cannot be read") from exc
+        if module_origin != package_root and package_root not in module_origin.parents:
+            raise SystemPreconditionError("loaded release modules have mixed origins")
+    current_manifest = git_code_manifest_sha256(repository_root, payload["final_commit"])
+    from quant_investor.system.release import installed_code_manifest_sha256
+
+    if (
+        installed_code_manifest_sha256() != payload["installed_code_manifest_sha256"]
+        or current_manifest != payload["installed_code_manifest_sha256"]
+        or contract_catalog_sha256() != payload["contract_catalog_sha256"]
+    ):
+        raise SystemPreconditionError("current installed release semantic identity differs")
+    return verification
+
+
 def _bounded_stdin() -> bytes:
     chunks: list[bytes] = []
     total = 0
@@ -980,13 +1462,16 @@ if __name__ == "__main__":  # pragma: no cover - exercised through the fixed run
 
 __all__ = [
     "DEPENDENCY_INSTALL_MODE",
+    "RELEASE_INSTALL_INPUT_FILENAME",
     "RELEASE_INSTALL_EVIDENCE_KIND",
     "build_release_install_evidence",
     "code_tree_sha256",
     "git_code_manifest_sha256",
     "prepare_operational_release",
+    "publish_release_install_input",
     "release_install_gate_main",
     "validate_release_install_evidence",
     "verify_detached_checkout",
     "verify_release_install_input",
+    "verify_running_release_install_input",
 ]

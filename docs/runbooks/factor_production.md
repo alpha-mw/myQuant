@@ -34,40 +34,60 @@ active production signal.
 
 ## First activation
 
-The only public first-activation command is:
+Prepare the frozen release first from a clean detached checkout. The command
+returns `installed_python`, the workspace-relative release-input path, and its
+exact SHA. Calendar capture and Factor activation must then run through that
+same installed interpreter, with an empty `PYTHONPATH` and a working directory
+outside the source checkout:
 
 ```bash
-quant-investor factor production-activate \
+quant-investor system release-prepare \
+  --workspace-root <workspace> \
+  --release-root <owner-only-release-root> \
+  --release-repository-root <clean-detached-checkout> \
+  --final-commit <commit> \
+  --final-tree <tree>
+
+PYTHONPATH= <installed-python> -I -m quant_investor system calendar-capture \
+  --workspace-root <workspace> \
+  --capture-parent <owner-only-capture-parent> \
+  --release-repository-root <clean-detached-checkout> \
+  --capture-root-name <unique-root-name> \
+  --cutoff-date <YYYYMMDD> \
+  --release-install-input <workspace-relative-input-path> \
+  --expected-release-install-input-sha256 <sha256>
+```
+
+The only public first-activation command is likewise executed by the installed
+interpreter:
+
+```bash
+PYTHONPATH= <installed-python> -I -m quant_investor factor production-activate \
   --workspace-root <workspace> \
   --market-data-root <strict-market-root> \
   --calendar-capture-root <published-calendar-capture-root> \
   --expected-calendar-success-sha256 <sha256> \
-  --release-repository-root <exact-release-repository-root> \
-  --activation-inputs factor-activation-inputs.json \
-  --expected-activation-inputs-sha256 <sha256> \
   --expected-empty
 ```
 
-`factor-activation-inputs.json` is canonical owner-controlled JSON with exactly:
-
-```text
-as_of
-deployed_release_ref
-factor_policy_ref
-factor_active_set_ref
-factor_validation_attestation_ref
-factor_implementation_refs
-final_commit
-final_tree
-```
-
 The command internally performs strict source preparation, immutable Factor
-generation construction, current release-install and legacy-zero-call replay,
+generation construction, installed implementation discovery, Bootstrap policy,
+active-set and validation-receipt construction, current release-install and
+legacy-zero-call replay,
 activation-byte preparation, the sole expected-EMPTY atomic no-replace CAS,
 permanent marker publication/readback, and final Factor verification. It does
-not accept caller-created receipts, bundles, pointers, markers, scanner
-callbacks, counts, or authority flags.
+not accept caller-created release, policy, active-set, implementation, receipt,
+bundle, pointer, marker, scanner, count, commit/tree, as-of, or authority inputs.
+Those identities are derived from the exact installed release, the published
+Calendar capture and the strict Market-bound PIT snapshot.
 
 Stop before activation if `_active.json` or `_production_complete.json` already
 exists, any source/release/hash/recomputation gate fails, or `--expected-empty`
 is absent. Never delete or overwrite an existing pointer to retry.
+
+An interruption before release install or release-input publication leaves no
+accepted deterministic target; rerun the same command and exact commit/tree.
+An interruption after atomic publication reuses the exact verified winner. A
+concurrent conflicting winner is rejected. After a Factor pointer CAS but
+before marker publication, rerunning the same installed command performs only
+exact marker recovery; it never performs a second CAS.

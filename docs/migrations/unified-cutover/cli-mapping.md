@@ -22,6 +22,7 @@ executable:
 quant-investor system verify --help
 quant-investor system status --help
 quant-investor system bootstrap-assemble --help
+quant-investor system release-prepare --help
 quant-investor system activate --help
 quant-investor market maintain --help
 quant-investor market storage-validate --help
@@ -47,6 +48,27 @@ not inferred from the old command name. Missing required paths, identities,
 hashes, cutoffs, or authorization stay blocked; the CLI does not search for a
 substitute.
 
+`system release-prepare` is the offline prerequisite for an installed Calendar
+capture. It accepts one exact clean detached checkout and an owner-only release
+custody root, builds and installs the frozen sdist/wheel, replays the installed
+origin, and publishes one canonical two-field `release-install-input.json`
+under workspace-relative `results/releases/<input-sha256>/`. The install is
+assembled and verified in a unique owner-only staging directory, then atomically
+published to its deterministic final directory without replacement. Repeating
+publication of the same exact bytes is idempotent; symlinks, hard links,
+mutable/shared files, replacement, cross-root custody, or conflicting bytes fail
+closed. The input contains the complete `system.release` and
+`system.release_install_evidence` documents. The command does not write the
+System object store, System or Factor pointers/markers, or trading-side state.
+Artifact timestamps are derived from the frozen commit epoch, so an exact retry
+of the same commit/tree produces the same input path, SHA, and bytes. Before
+publication a retry rebuilds from an inert unique staging root; after publication
+it verifies and reuses the exact winner.
+Evidence paths must equal `artifacts/<byte-sha256>/<archive-name>` for the
+single-link sdist/wheel and `installs/<commit>-<wheel-sha256>` for the installed
+interpreter and import origin. Outside, sibling, alias, symlink, hardlink, and
+alternate-release-root substitutions are rejected before input publication.
+
 `system calendar-capture` is the installed-release-only, read-only network
 entrypoint for the `TRUSTED_PROVIDER_DEGRADED` route. It atomically retains the
 official Tushare `trade_cal` documentation plus exact SSE, SZSE, and BSE probe
@@ -68,6 +90,11 @@ The BSE response must be exact-empty and confers no direct calendar authority.
 No provider write, broker, order, trade, funds, portfolio, Strategy
 Record, System pointer, generation, or activation write is reachable from this
 command.
+
+Both `system calendar-capture` and `factor production-activate` must be invoked
+as `PYTHONPATH= <installed-python> -I -m quant_investor ...` from outside the
+source checkout. A source-tree, editable, mixed-origin, wrong-interpreter, or
+wrong-installed-release process fails before preparation or CAS.
 
 `system bootstrap-assemble` is offline-only and requires a sealed request whose
 PIT pointer and complete Fundamental safe-successor v3 fileset are explicit

@@ -42,7 +42,7 @@ from quant_investor.market.tushare_calendar_authority import (
     validate_trusted_provider_calendar_compilation,
 )
 from quant_investor.system.release_install import validate_release_install_evidence
-from quant_investor.system.release_install import verify_release_install_input
+from quant_investor.system.release_install import verify_running_release_install_input
 from quant_investor.market.tushare_calendar_authority import validate_calendar_authority_policy
 from quant_investor.factors.governance.bootstrap_selection import (
     build_market_pit_selection,
@@ -61,11 +61,16 @@ from .bootstrap import (
     compute_bootstrap_signals,
     validate_bootstrap_factor_set,
 )
-from .bootstrap_evidence import validate_bootstrap_exception_evidence
+from .bootstrap_evidence import (
+    _DECISION_DOCUMENT,
+    _READER_CONTRACT,
+    build_bootstrap_exception_evidence,
+    validate_bootstrap_exception_evidence,
+)
 from .errors import FactorGovernanceError
-from .implementations import installed_semantic_row
+from .implementations import installed_implementation_rows, installed_semantic_row
 from .legacy_zero_call import scan_release_legacy_zero_call
-from .receipt import validate_factor_validation_receipt
+from .receipt import _build_factor_validation_receipt, validate_factor_validation_receipt
 from .source import role_schema
 
 FACTOR_PRODUCTION_SOURCE_CLOSURE_KIND: Final = "factor.production_source_closure"
@@ -133,6 +138,16 @@ _CALENDAR_COMPILATION_KINDS: Final = frozenset(
 _SOURCE_BUNDLE_KIND: Final = "system.source_bundle"
 _SOURCE_OBJECT_KIND: Final = "system.source_object"
 _RELEASE_KIND: Final = "system.release"
+_BOOTSTRAP_SOURCE_BUNDLE_ROLES: Final = {
+    "decision_source": "bootstrap_decision",
+    "exchange_calendar": "calendar",
+    "implementation": "implementation_tree_manifest",
+    "market": "market",
+    "pit_universe": "pit",
+    "recomputation": "recomputation",
+    "source_generation": "source_generation",
+}
+_BOOTSTRAP_POLICY_SOURCE_ROLES: Final = ("code", *_BOOTSTRAP_SOURCE_BUNDLE_ROLES)
 _MARKET_INPUT_FIELDS: Final = frozenset(
     {
         "factor_market_input_id",
@@ -2052,11 +2067,302 @@ def _resolved_source_leaf(
     }
 
 
+def _bootstrap_policy_source_refs(payload: Mapping[str, Any]) -> dict[str, dict[str, str]]:
+    """Normalize the one release plus seven Bootstrap source references."""
+
+    rows = payload.get("source_refs")
+    if type(rows) is not list or len(rows) != len(_BOOTSTRAP_POLICY_SOURCE_ROLES):
+        raise FactorGovernanceError("Bootstrap policy source refs are incomplete")
+    result: dict[str, dict[str, str]] = {}
+    observed_roles: list[str] = []
+    for index, row in enumerate(rows):
+        if type(row) is not dict or set(row) != {"role", "ref"} or type(row["role"]) is not str:
+            raise FactorGovernanceError("Bootstrap policy source ref row differs")
+        role = row["role"]
+        if role in result:
+            raise FactorGovernanceError("Bootstrap policy source roles are duplicated")
+        expected_kind = _RELEASE_KIND if role == "code" else _SOURCE_BUNDLE_KIND
+        if role not in _BOOTSTRAP_POLICY_SOURCE_ROLES:
+            raise FactorGovernanceError("Bootstrap policy source role differs")
+        reference = validate_object_ref(row["ref"], label=f"Bootstrap source_refs[{index}]")
+        if reference["kind"] != expected_kind:
+            raise FactorGovernanceError("Bootstrap policy source ref kind differs")
+        observed_roles.append(role)
+        result[role] = reference
+    if tuple(observed_roles) != _BOOTSTRAP_POLICY_SOURCE_ROLES:
+        raise FactorGovernanceError("Bootstrap policy source ref order differs")
+    if len({_ref_sort_key(reference) for reference in result.values()}) != len(result):
+        raise FactorGovernanceError("Bootstrap policy source refs are duplicated")
+    return result
+
+
+def _resolve_bootstrap_bundle_leaf(
+    reference: Mapping[str, Any],
+    *,
+    outer_role: str,
+    inner_role: str,
+    artifact_resolver: ArtifactResolver,
+    source_resolver: SourceResolver,
+) -> dict[str, Any]:
+    """Resolve one exact Bootstrap bundle and its sole source object."""
+
+    bundle = _resolve_exact_artifact(
+        reference,
+        artifact_resolver=artifact_resolver,
+        label=f"Bootstrap {outer_role} source bundle",
+        expected_kinds=frozenset({_SOURCE_BUNDLE_KIND}),
+    )
+    bundle_payload = bundle["payload"]
+    rows = bundle_payload.get("sources") if type(bundle_payload) is dict else None
+    if (
+        bundle_payload.get("state") != "IMMUTABLE"
+        or type(rows) is not list
+        or len(rows) != 1
+        or type(rows[0]) is not dict
+        or set(rows[0]) != {"role", "source_ref"}
+        or rows[0]["role"] != inner_role
+    ):
+        raise FactorGovernanceError(f"Bootstrap {outer_role} source bundle differs")
+    source_ref = validate_object_ref(
+        rows[0]["source_ref"], label=f"Bootstrap {outer_role} source object ref"
+    )
+    if source_ref["kind"] != _SOURCE_OBJECT_KIND:
+        raise FactorGovernanceError(f"Bootstrap {outer_role} source object kind differs")
+    return _resolved_source_leaf(
+        source_ref,
+        artifact_resolver=artifact_resolver,
+        source_resolver=source_resolver,
+        label=f"Bootstrap {outer_role} source object",
+    )
+
+
+def _require_shared_source_root(
+    leaves: Mapping[str, Mapping[str, Any]],
+) -> str:
+    """Reject any Bootstrap leaf that does not belong to one preparation root."""
+
+    roots: set[str] = set()
+    for label, leaf in leaves.items():
+        payload = leaf.get("payload")
+        root_id = payload.get("source_root_id") if type(payload) is dict else None
+        if type(root_id) is not str or not root_id:
+            raise FactorGovernanceError(f"{label} source root identity differs")
+        roots.add(root_id)
+    if len(roots) != 1:
+        raise FactorGovernanceError("Bootstrap source objects span multiple source roots")
+    return next(iter(roots))
+
+
+def _require_exact_generated_json(
+    leaf: Mapping[str, Any],
+    *,
+    expected: Mapping[str, Any],
+    expected_source_object_id: str,
+    expected_relative_path: str,
+    label: str,
+) -> None:
+    payload = leaf.get("payload")
+    raw = leaf.get("raw")
+    if (
+        type(payload) is not dict
+        or payload.get("source_object_id") != expected_source_object_id
+        or payload.get("relative_path") != expected_relative_path
+        or payload.get("source_format") != "JSON"
+        or payload.get("media_type") != "application/json"
+        or type(raw) is not bytes
+        or raw != canonical_json_bytes(dict(expected))
+    ):
+        raise FactorGovernanceError(f"Bootstrap {label} generated bytes differ")
+
+
+def _validate_deep_bootstrap_receipt_closure(  # noqa: C901
+    *,
+    payload: Mapping[str, Any],
+    policy: Mapping[str, Any],
+    active: Mapping[str, Any],
+    attestation: Mapping[str, Any],
+    implementation_component_refs: Mapping[str, Mapping[str, Any]],
+    artifact_resolver: ArtifactResolver,
+    source_resolver: SourceResolver,
+    primary_source_leaves: Mapping[str, Mapping[str, Any]],
+    recomputation: Mapping[str, Any],
+) -> None:
+    """Deeply replay the intrinsic receipt's eight Bootstrap evidence roots.
+
+    The Bootstrap policy and receipt have separate sealed envelopes. Both
+    must name the same release and the same seven one-object source bundles;
+    each source object is then read through the sole caller-provided custody
+    resolver before its generated content is accepted.
+    """
+
+    policy_refs = _bootstrap_policy_source_refs(policy["payload"])
+    _same_ref(
+        policy_refs["code"],
+        payload["deployed_release_ref"],
+        label="Bootstrap policy deployed release ref",
+    )
+    resolved_release = _resolve_exact_artifact(
+        policy_refs["code"],
+        artifact_resolver=artifact_resolver,
+        label="Bootstrap policy release",
+        expected_kinds=frozenset({_RELEASE_KIND}),
+    )
+    if _artifact_ref(resolved_release) != policy_refs["code"]:
+        raise FactorGovernanceError("Bootstrap policy release identity differs")
+
+    receipt_refs = attestation["payload"].get("evidence_refs")
+    if type(receipt_refs) is not list:
+        raise FactorGovernanceError("Bootstrap intrinsic receipt evidence refs are absent")
+    normalized_receipt_refs = [
+        validate_object_ref(value, label=f"Bootstrap intrinsic evidence_refs[{index}]")
+        for index, value in enumerate(receipt_refs)
+    ]
+    expected_receipt_refs = sorted(policy_refs.values(), key=_ref_sort_key)
+    if normalized_receipt_refs != expected_receipt_refs:
+        raise FactorGovernanceError("Bootstrap intrinsic receipt evidence refs differ")
+    resolved_evidence: list[dict[str, Any]] = []
+    for index, reference in enumerate(normalized_receipt_refs):
+        expected_kind = _RELEASE_KIND if reference == policy_refs["code"] else _SOURCE_BUNDLE_KIND
+        resolved_evidence.append(
+            _resolve_exact_artifact(
+                reference,
+                artifact_resolver=artifact_resolver,
+                label=f"Bootstrap intrinsic evidence_refs[{index}]",
+                expected_kinds=frozenset({expected_kind}),
+            )
+        )
+
+    bootstrap_leaves = {
+        role: _resolve_bootstrap_bundle_leaf(
+            policy_refs[role],
+            outer_role=role,
+            inner_role=inner_role,
+            artifact_resolver=artifact_resolver,
+            source_resolver=source_resolver,
+        )
+        for role, inner_role in _BOOTSTRAP_SOURCE_BUNDLE_ROLES.items()
+    }
+    source_root_inputs = {
+        **bootstrap_leaves,
+        **primary_source_leaves,
+    }
+    _require_shared_source_root(source_root_inputs)
+
+    for role, primary_role in (
+        ("exchange_calendar", "exchange_calendar"),
+        ("market", "market"),
+        ("pit_universe", "pit_universe"),
+    ):
+        _same_ref(
+            bootstrap_leaves[role]["ref"],
+            primary_source_leaves[primary_role]["ref"],
+            label=f"Bootstrap {role} source object ref",
+        )
+
+    decision_leaf = bootstrap_leaves["decision_source"]
+    _require_exact_generated_json(
+        decision_leaf,
+        expected=_DECISION_DOCUMENT,
+        expected_source_object_id="factor-bootstrap-decision",
+        expected_relative_path="operations/unified_cutover/bootstrap-decision.json",
+        label="decision",
+    )
+    if _sha256(decision_leaf["raw"]) != policy["payload"].get("decision_source_sha256"):
+        raise FactorGovernanceError("Bootstrap decision source SHA differs")
+
+    expected_implementation_rows = installed_implementation_rows(
+        implementation_component_refs=implementation_component_refs
+    )
+    _require_exact_generated_json(
+        bootstrap_leaves["implementation"],
+        expected={
+            "domain": "myquant-bootstrap-implementation-tree-manifest",
+            "implementation_rows": expected_implementation_rows,
+        },
+        expected_source_object_id="factor-bootstrap-implementation",
+        expected_relative_path="bootstrap/implementation-tree.json",
+        label="implementation tree",
+    )
+    resolved_evidence_by_ref = {
+        _ref_sort_key(_artifact_ref(document)): document for document in resolved_evidence
+    }
+    source_artifacts = {
+        role: resolved_evidence_by_ref[_ref_sort_key(reference)]
+        for role, reference in policy_refs.items()
+    }
+    rebuilt_policy = build_bootstrap_exception_evidence(
+        decision_source_bytes=decision_leaf["raw"],
+        source_artifacts=source_artifacts,
+        implementation_source_sha256=bootstrap_leaves["implementation"]["payload"]["byte_sha256"],
+        created_at=policy["created_at"],
+    )
+    if canonical_json_bytes(rebuilt_policy) != canonical_json_bytes(policy):
+        raise FactorGovernanceError("Bootstrap policy exact replay differs")
+    rebuilt_receipt = _build_factor_validation_receipt(
+        policy=policy,
+        active_set=active,
+        evidence_artifacts=resolved_evidence,
+        trusted_at=attestation["created_at"],
+    )
+    if canonical_json_bytes(rebuilt_receipt) != canonical_json_bytes(attestation):
+        raise FactorGovernanceError("Bootstrap intrinsic receipt exact replay differs")
+
+    expected_recomputation = {
+        "authority": "NON_AUTHORIZING",
+        "domain": "myquant-bootstrap-recomputation",
+        "result": "EXACT_MATCH",
+        "recomputation": dict(recomputation),
+        "source_sha256s": {
+            "exchange_calendar": primary_source_leaves["exchange_calendar"]["payload"][
+                "byte_sha256"
+            ],
+            "market_history": primary_source_leaves["market"]["payload"]["byte_sha256"],
+            "pit_universe": primary_source_leaves["pit_universe"]["payload"]["byte_sha256"],
+        },
+    }
+    _require_exact_generated_json(
+        bootstrap_leaves["recomputation"],
+        expected=expected_recomputation,
+        expected_source_object_id="factor-bootstrap-recomputation",
+        expected_relative_path="bootstrap/recomputation.json",
+        label="recomputation",
+    )
+
+    source_generation_rows = [
+        {
+            "role": role,
+            "source_ref": primary_source_leaves[role]["ref"],
+            "source_byte_sha256": primary_source_leaves[role]["payload"]["byte_sha256"],
+        }
+        for role in ("exchange_calendar", "market", "pit_universe")
+    ]
+    source_generation_rows.sort(key=lambda row: row["role"])
+    source_generation_body = {
+        "authority": "NON_AUTHORIZING",
+        "domain": "myquant-bootstrap-source-generation",
+        "reader_contract": dict(_READER_CONTRACT),
+        "source_rows": source_generation_rows,
+    }
+    _require_exact_generated_json(
+        bootstrap_leaves["source_generation"],
+        expected={
+            **source_generation_body,
+            "generation_sha256": _sha256(canonical_json_bytes(source_generation_body)),
+        },
+        expected_source_object_id="factor-bootstrap-source-generation",
+        expected_relative_path="bootstrap/source-generation.json",
+        label="source generation",
+    )
+
+
 def _validate_deep_factor_policy(
     payload: Mapping[str, Any],
     *,
     artifact_resolver: ArtifactResolver,
+    source_resolver: SourceResolver,
     expected_code_manifest_sha256: str,
+    primary_source_leaves: Mapping[str, Mapping[str, Any]],
+    recomputation: Mapping[str, Any],
 ) -> None:
     policy = _resolve_exact_artifact(
         payload["factor_policy_ref"],
@@ -2102,6 +2408,7 @@ def _validate_deep_factor_policy(
         for factor_id in (LOW_DOLLAR_VOLUME, BLEND_W80)
     }
     implementation_ids: set[str] = set()
+    implementation_component_refs: dict[str, dict[str, str]] = {}
     for index, ref in enumerate(payload["factor_implementation_refs"]):
         implementation = _resolve_exact_artifact(
             ref,
@@ -2122,9 +2429,32 @@ def _validate_deep_factor_policy(
             != expected_code_manifest_sha256
         ):
             raise FactorGovernanceError("Factor implementation release closure differs")
-        implementation_ids.add(str(implementation_payload.get("component_id")))
-    if implementation_ids != expected_implementation_ids:
+        implementation_id = str(implementation_payload.get("component_id"))
+        implementation_ids.add(implementation_id)
+        factor_ids = [
+            factor_id
+            for factor_id in (LOW_DOLLAR_VOLUME, BLEND_W80)
+            if installed_semantic_row(factor_id)["implementation_id"] == implementation_id
+        ]
+        if len(factor_ids) != 1 or factor_ids[0] in implementation_component_refs:
+            raise FactorGovernanceError("Factor implementation identities differ")
+        implementation_component_refs[factor_ids[0]] = _artifact_ref(implementation)
+    if implementation_ids != expected_implementation_ids or set(implementation_component_refs) != {
+        LOW_DOLLAR_VOLUME,
+        BLEND_W80,
+    }:
         raise FactorGovernanceError("Factor implementation identities differ")
+    _validate_deep_bootstrap_receipt_closure(
+        payload=payload,
+        policy=policy,
+        active=active_validated,
+        attestation=attestation_validated,
+        implementation_component_refs=implementation_component_refs,
+        artifact_resolver=artifact_resolver,
+        source_resolver=source_resolver,
+        primary_source_leaves=primary_source_leaves,
+        recomputation=recomputation,
+    )
 
 
 def _ref_sort_key(ref: Mapping[str, Any]) -> tuple[str, str, str, str, str]:
@@ -2544,7 +2874,7 @@ def _deep_replay_source_closure(  # noqa: C901
         if current_release_root is None:
             raise FactorGovernanceError("Factor current release root is absent")
         try:
-            fresh_verification = verify_release_install_input(
+            fresh_verification = verify_running_release_install_input(
                 release_input_leaf["raw"], repository_root=current_release_root
             )
         except Exception as exc:
@@ -2741,7 +3071,16 @@ def _deep_replay_source_closure(  # noqa: C901
     _validate_deep_factor_policy(
         payload,
         artifact_resolver=artifact_resolver,
+        source_resolver=source_resolver,
         expected_code_manifest_sha256=install_payload["installed_code_manifest_sha256"],
+        primary_source_leaves={
+            "release_install_input": release_input_leaf,
+            "market_scope": scope_leaf,
+            "exchange_calendar": calendar_leaf,
+            "market": market_leaf,
+            "pit_universe": pit_leaf,
+        },
+        recomputation=replay,
     )
     return replay
 

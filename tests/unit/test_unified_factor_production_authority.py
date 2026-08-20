@@ -41,7 +41,10 @@ from quant_investor.factors.governance.bootstrap_evidence import (
     build_bootstrap_exception_evidence,
 )
 from quant_investor.factors.governance.receipt import _build_factor_validation_receipt
-from quant_investor.factors.governance.implementations import installed_semantic_row
+from quant_investor.factors.governance.implementations import (
+    installed_implementation_rows,
+    installed_semantic_row,
+)
 from quant_investor.factors.governance.source import role_schema
 from quant_investor.factors.governance.production_authority import (
     FUNDAMENTAL_ADVISORY,
@@ -69,13 +72,11 @@ from quant_investor.system.release_install import build_release_install_evidence
 from quant_investor.system.store import SystemStore
 from quant_investor.factors.governance.production_authority import system_store_source_resolver
 from quant_investor.market.tushare_calendar_authority import build_calendar_authority_policy
-from tests.unit.test_tushare_calendar_authority import _case as _trusted_calendar_case
 from tests.unit.test_tushare_calendar_authority import (
     _captured_provider_production_case,
 )
 from tests.unit import test_tushare_calendar_authority as tushare_calendar_test_module
 from tests.unit.test_tushare_calendar_authority import _raw_resolver as _trusted_raw_resolver
-from test_unified_factor_bootstrap import _evidence_inputs
 
 SYMBOLS = ["000001.SZ", "000002.SZ", "430001.BJ", "600000.SH"]
 
@@ -860,7 +861,8 @@ def test_legacy_zero_call_certificate_replays_fixed_release_scanner(
         ),
         (
             "quant_investor/live_subprocess.py",
-            b'import subprocess\nsubprocess.run(["python", "quant_investor/v17_v4_runtime/x.py"])\n',
+            b"import subprocess\n"
+            b'subprocess.run(["python", "quant_investor/v17_v4_runtime/x.py"])\n',
             "active_legacy_path_hash_count",
         ),
         (
@@ -1339,6 +1341,7 @@ def test_deep_factor_replay_rebuilds_trusted_calendar_and_market_binding(  # noq
         raw: bytes,
         source_format: str,
         media_type: str,
+        source_object_id: str | None = None,
     ) -> dict[str, str]:
         path = source_root / relative_path
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -1349,7 +1352,8 @@ def test_deep_factor_replay_rebuilds_trusted_calendar_and_market_binding(  # noq
             seal_artifact(
                 "system.source_object",
                 {
-                    "source_object_id": "factor-source-"
+                    "source_object_id": source_object_id
+                    or "factor-source-"
                     + hashlib.sha256(relative_path.encode("utf-8")).hexdigest()[:24],
                     "source_root_id": "factor-native-calendar-test-root",
                     "relative_path": relative_path,
@@ -1660,11 +1664,165 @@ def test_deep_factor_replay_rebuilds_trusted_calendar_and_market_binding(  # noq
             created_at=created_at,
         )
     )
-    decision, source_artifacts, implementation_sha, _decision_sha = _evidence_inputs()
+    recomputation = recompute_factor_production_signals(
+        exchange_calendar_path=source_paths[case["parquet_ref"]["relative_path"]],
+        pit_universe_path=source_paths[factor_pit_path],
+        market_history_path=source_paths[market_path],
+        exchange_calendar_sha256=case["parquet_ref"]["byte_sha256"],
+        pit_universe_sha256=raw_sha(factor_pit_ref),
+        market_history_sha256=raw_sha(market_history_ref),
+        as_of=as_of,
+    )
+    implementation_refs = []
+    implementation_component_refs: dict[str, dict[str, str]] = {}
+    for factor_id in (LOW_DOLLAR_VOLUME, BLEND_W80):
+        implementation = installed_semantic_row(factor_id)
+        component_ref = stash(
+            seal_installed_component_manifest(
+                component_id=implementation["implementation_id"],
+                component_role="SOURCE_IMPLEMENTATION",
+                package_name="quant_investor.factors.governance",
+                module_names=[implementation["module_name"]],
+                entrypoint_specs=[
+                    (implementation["module_name"], implementation["qualified_name"])
+                ],
+                release_manifest_ref=release_ref,
+                allowed_source_formats=["PARQUET"],
+                fallback_allowed=False,
+                created_at=created_at,
+            )
+        )
+        implementation_refs.append(component_ref)
+        implementation_component_refs[factor_id] = component_ref
+    implementation_refs.sort(key=lambda row: row["artifact_id"])
+    implementation_rows = installed_implementation_rows(
+        implementation_component_refs=implementation_component_refs
+    )
+    implementation_raw = canonical_json_bytes(
+        {
+            "domain": "myquant-bootstrap-implementation-tree-manifest",
+            "implementation_rows": implementation_rows,
+        }
+    )
+    decision_raw = canonical_json_bytes(_DECISION_DOCUMENT)
+    decision_source_ref = source_object(
+        relative_path="operations/unified_cutover/bootstrap-decision.json",
+        raw=decision_raw,
+        source_format="JSON",
+        media_type="application/json",
+        source_object_id="factor-bootstrap-decision",
+    )
+    implementation_source_ref = source_object(
+        relative_path="bootstrap/implementation-tree.json",
+        raw=implementation_raw,
+        source_format="JSON",
+        media_type="application/json",
+        source_object_id="factor-bootstrap-implementation",
+    )
+    recomputation_source_ref = source_object(
+        relative_path="bootstrap/recomputation.json",
+        raw=canonical_json_bytes(
+            {
+                "authority": "NON_AUTHORIZING",
+                "domain": "myquant-bootstrap-recomputation",
+                "result": "EXACT_MATCH",
+                "recomputation": recomputation,
+                "source_sha256s": {
+                    "exchange_calendar": case["parquet_ref"]["byte_sha256"],
+                    "market_history": raw_sha(market_history_ref),
+                    "pit_universe": raw_sha(factor_pit_ref),
+                },
+            }
+        ),
+        source_format="JSON",
+        media_type="application/json",
+        source_object_id="factor-bootstrap-recomputation",
+    )
+    runtime_calendar_ref = next(
+        row["source_ref"]
+        for row in calendar_rows
+        if artifacts[row["source_ref"]["byte_sha256"]]["payload"]["relative_path"]
+        == case["parquet_ref"]["relative_path"]
+    )
+    source_generation_rows = sorted(
+        [
+            {
+                "role": role,
+                "source_ref": source_ref,
+                "source_byte_sha256": raw_sha(source_ref),
+            }
+            for role, source_ref in (
+                ("exchange_calendar", runtime_calendar_ref),
+                ("market", market_history_ref),
+                ("pit_universe", factor_pit_ref),
+            )
+        ],
+        key=lambda row: row["role"],
+    )
+    source_generation_body = {
+        "authority": "NON_AUTHORIZING",
+        "domain": "myquant-bootstrap-source-generation",
+        "reader_contract": {
+            "reader": "MarketDataReader",
+            "market": "CN",
+            "mode_policy": "strict",
+            "source_format": "PARQUET",
+            "fallback_allowed": False,
+        },
+        "source_rows": source_generation_rows,
+    }
+    source_generation_ref = source_object(
+        relative_path="bootstrap/source-generation.json",
+        raw=canonical_json_bytes(
+            {
+                **source_generation_body,
+                "generation_sha256": hashlib.sha256(
+                    canonical_json_bytes(source_generation_body)
+                ).hexdigest(),
+            }
+        ),
+        source_format="JSON",
+        media_type="application/json",
+        source_object_id="factor-bootstrap-source-generation",
+    )
+
+    def bootstrap_bundle(
+        role: str,
+        inner_role: str,
+        source_ref: dict[str, str],
+    ) -> dict[str, object]:
+        bundle = seal_artifact(
+            "system.source_bundle",
+            {
+                "source_bundle_id": f"factor-native-bootstrap-{role}",
+                "state": "IMMUTABLE",
+                "sources": [{"role": inner_role, "source_ref": source_ref}],
+            },
+            created_at=created_at,
+        )
+        stash(bundle)
+        return bundle
+
+    source_artifacts: dict[str, dict[str, object]] = {
+        "code": release,
+        "decision_source": bootstrap_bundle("decision", "bootstrap_decision", decision_source_ref),
+        "exchange_calendar": bootstrap_bundle("calendar", "calendar", runtime_calendar_ref),
+        "implementation": bootstrap_bundle(
+            "implementation", "implementation_tree_manifest", implementation_source_ref
+        ),
+        "market": bootstrap_bundle("market", "market", market_history_ref),
+        "pit_universe": bootstrap_bundle("pit", "pit", factor_pit_ref),
+        "recomputation": bootstrap_bundle(
+            "recomputation", "recomputation", recomputation_source_ref
+        ),
+        "source_generation": bootstrap_bundle(
+            "source-generation", "source_generation", source_generation_ref
+        ),
+    }
     policy = build_bootstrap_exception_evidence(
-        decision_source_bytes=decision,
+        decision_source_bytes=decision_raw,
         source_artifacts=source_artifacts,
-        implementation_source_sha256=implementation_sha,
+        implementation_source_sha256=raw_sha(implementation_source_ref),
         created_at=created_at,
     )
     policy_closure_ref = stash(policy)
@@ -1680,27 +1838,6 @@ def test_deep_factor_replay_rebuilds_trusted_calendar_and_market_binding(  # noq
         trusted_at=created_at,
     )
     attestation_ref = stash(attestation)
-    implementation_refs = []
-    for factor_id in (LOW_DOLLAR_VOLUME, BLEND_W80):
-        implementation = installed_semantic_row(factor_id)
-        implementation_refs.append(
-            stash(
-                seal_installed_component_manifest(
-                    component_id=implementation["implementation_id"],
-                    component_role="SOURCE_IMPLEMENTATION",
-                    package_name="quant_investor.factors.governance",
-                    module_names=[implementation["module_name"]],
-                    entrypoint_specs=[
-                        (implementation["module_name"], implementation["qualified_name"])
-                    ],
-                    release_manifest_ref=release_ref,
-                    allowed_source_formats=["PARQUET"],
-                    fallback_allowed=False,
-                    created_at=created_at,
-                )
-            )
-        )
-    implementation_refs.sort(key=lambda row: row["artifact_id"])
 
     repository_root = Path(
         case["capture"]["capture_execution"]["payload"]["release_repository_root"]
@@ -1708,6 +1845,11 @@ def test_deep_factor_replay_rebuilds_trusted_calendar_and_market_binding(  # noq
     legacy_runner = _fixed_git_runner(
         final_commit=release_install["payload"]["final_commit"],
         final_tree=release_install["payload"]["final_tree"],
+        extra_files={
+            "operations/unified_cutover/bootstrap-decision.json": canonical_json_bytes(
+                _DECISION_DOCUMENT
+            )
+        },
     )
     monkeypatch.setattr(legacy_scanner_module.subprocess, "run", legacy_runner)
     legacy = build_factor_legacy_zero_call_certificate_for_release(
@@ -1800,15 +1942,6 @@ def test_deep_factor_replay_rebuilds_trusted_calendar_and_market_binding(  # noq
             raw,
         )
 
-    recomputation = recompute_factor_production_signals(
-        exchange_calendar_path=source_paths[case["parquet_ref"]["relative_path"]],
-        pit_universe_path=source_paths[factor_pit_path],
-        market_history_path=source_paths[market_path],
-        exchange_calendar_sha256=case["parquet_ref"]["byte_sha256"],
-        pit_universe_sha256=raw_sha(factor_pit_ref),
-        market_history_sha256=raw_sha(market_history_ref),
-        as_of=as_of,
-    )
     evidence = build_factor_production_recomputation_evidence(
         source_closure=closure,
         deployed_release_ref=release_ref,
@@ -2064,57 +2197,17 @@ def _factor_production_operator_fixture(  # noqa: C901
             return {symbol: frames[symbol] for symbol in requested}
 
     monkeypatch.setattr(prepare_module, "MarketDataReader", FakeReader)
-    store = SystemStore(workspace)
-    store.put_object(release_install)
-    decision, source_artifacts, implementation_sha, _decision_sha = _evidence_inputs()
-    for artifact in source_artifacts.values():
-        store.put_object(artifact)
-    policy = build_bootstrap_exception_evidence(
-        decision_source_bytes=decision,
-        source_artifacts=source_artifacts,
-        implementation_source_sha256=implementation_sha,
-        created_at=case["created_at"],
-    )
-    policy_ref = store.put_object(policy)
-    active_set = build_bootstrap_factor_set(
-        bootstrap_exception_evidence=policy,
-        created_at=case["created_at"],
-    )
-    active_ref = store.put_object(active_set)
-    attestation = _build_factor_validation_receipt(
-        policy=policy,
-        active_set=active_set,
-        evidence_artifacts=[source_artifacts[role] for role in sorted(source_artifacts)],
-        trusted_at=case["created_at"],
-    )
-    attestation_ref = store.put_object(attestation)
-    implementation_refs = []
-    for factor_id in (LOW_DOLLAR_VOLUME, BLEND_W80):
-        implementation = installed_semantic_row(factor_id)
-        implementation_refs.append(
-            store.put_object(
-                seal_installed_component_manifest(
-                    component_id=implementation["implementation_id"],
-                    component_role="SOURCE_IMPLEMENTATION",
-                    package_name="quant_investor.factors.governance",
-                    module_names=[implementation["module_name"]],
-                    entrypoint_specs=[
-                        (implementation["module_name"], implementation["qualified_name"])
-                    ],
-                    release_manifest_ref=release_ref,
-                    allowed_source_formats=["PARQUET"],
-                    fallback_allowed=False,
-                    created_at=case["created_at"],
-                )
-            )
-        )
-    implementation_refs.sort(key=lambda row: row["artifact_id"])
     repository_root = Path(
         case["capture"]["capture_execution"]["payload"]["release_repository_root"]
     )
     legacy_runner = _fixed_git_runner(
         final_commit=release_install["payload"]["final_commit"],
         final_tree=release_install["payload"]["final_tree"],
+        extra_files={
+            "operations/unified_cutover/bootstrap-decision.json": canonical_json_bytes(
+                _DECISION_DOCUMENT
+            )
+        },
     )
     release_verification = {
         "state": "PASS",
@@ -2138,9 +2231,20 @@ def _factor_production_operator_fixture(  # noqa: C901
         verified_inputs.append(raw)
         return dict(release_verification)
 
-    monkeypatch.setattr(prepare_module, "verify_release_install_input", verify_release)
-    monkeypatch.setattr(production_authority, "verify_release_install_input", verify_release)
+    monkeypatch.setattr(prepare_module, "verify_running_release_install_input", verify_release)
+    monkeypatch.setattr(
+        production_authority,
+        "verify_running_release_install_input",
+        verify_release,
+    )
     monkeypatch.setattr(legacy_scanner_module.subprocess, "run", legacy_runner)
+    from quant_investor.system import store as system_store_module
+
+    monkeypatch.setattr(system_store_module, "_verify_installed_release", lambda _release: None)
+    decision_path = repository_root / "operations/unified_cutover/bootstrap-decision.json"
+    decision_path.parent.mkdir(parents=True, exist_ok=True)
+    decision_path.write_bytes(canonical_json_bytes(_DECISION_DOCUMENT))
+    decision_path.chmod(0o600)
 
     arguments = {
         "workspace_root": workspace,
@@ -2149,14 +2253,6 @@ def _factor_production_operator_fixture(  # noqa: C901
         "expected_calendar_success_sha256": hashlib.sha256(
             (case["capture_root"] / "capture-success.json").read_bytes()
         ).hexdigest(),
-        "deployed_release_ref": release_ref,
-        "factor_policy_ref": policy_ref,
-        "factor_active_set_ref": active_ref,
-        "factor_validation_attestation_ref": attestation_ref,
-        "factor_implementation_refs": implementation_refs,
-        "final_commit": release_install["payload"]["final_commit"],
-        "final_tree": release_install["payload"]["final_tree"],
-        "as_of": cutoff,
     }
     factor_pointer = workspace / "results/factors/_active.json"
     factor_marker = workspace / "results/factors/_production_complete.json"
@@ -2200,9 +2296,15 @@ def _factor_production_operator_fixture(  # noqa: C901
     )
     monkeypatch.setattr(prepare_module, "_rename_no_replace", original_rename)
 
+    fundamental_pointer = workspace / "data/fundamental/_latest.json"
+    fundamental_pointer.parent.mkdir(parents=True, mode=0o700)
+    fundamental_pointer.write_bytes(b"deliberately-invalid-and-stale")
+    fundamental_pointer.chmod(0o600)
+    fundamental_before = fundamental_pointer.read_bytes()
     first = prepare_factor_production(**arguments)
     second = prepare_factor_production(**arguments)
     assert first == second
+    assert fundamental_pointer.read_bytes() == fundamental_before
     for governed_directory in (
         workspace / "results",
         workspace / "results/factors",
@@ -2286,14 +2388,8 @@ def _factor_production_operator_fixture(  # noqa: C901
         "release_repository_root": repository_root,
         "prepare_result": first,
         "public_prepare_inputs": {
-            "as_of": cutoff,
-            "deployed_release_ref": release_ref,
-            "factor_policy_ref": policy_ref,
-            "factor_active_set_ref": active_ref,
-            "factor_validation_attestation_ref": attestation_ref,
-            "factor_implementation_refs": implementation_refs,
-            "final_commit": release_install["payload"]["final_commit"],
-            "final_tree": release_install["payload"]["final_tree"],
+            "calendar_capture_root": str(case["capture_root"]),
+            "expected_calendar_success_sha256": arguments["expected_calendar_success_sha256"],
         },
         "activation_inputs": {
             "workspace_root": str(workspace),
@@ -2315,3 +2411,500 @@ def test_prepare_factor_production_is_offline_retry_safe_and_deep_verifiable(
 ) -> None:
     fixture = _factor_production_operator_fixture(tmp_path, monkeypatch)
     assert fixture["prepare_result"]["status"] == "PREPARED"
+
+
+def test_deep_bootstrap_receipt_rejects_cross_root_source_bundle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A structurally valid receipt cannot mix an outside source root."""
+
+    fixture = _factor_production_operator_fixture(tmp_path, monkeypatch)
+    prepared = fixture["prepare_result"]
+    workspace = fixture["workspace"]
+    store = SystemStore(
+        workspace,
+        source_root=workspace / prepared["source_root"],
+        source_root_id=prepared["source_root_id"],
+    )
+    closure = store.get_object(prepared["factor_production_source_closure_ref"])
+    closure_payload = closure["payload"]
+    policy = store.get_object(closure_payload["factor_policy_ref"])
+    source_refs = {row["role"]: row["ref"] for row in policy["payload"]["source_refs"]}
+
+    foreign_root = tmp_path / "foreign-bootstrap-source-root"
+    foreign_root.mkdir(mode=0o700)
+    foreign_decision = foreign_root / "bootstrap" / "bootstrap-decision.json"
+    foreign_decision.parent.mkdir(mode=0o700)
+    foreign_decision.write_bytes(canonical_json_bytes(_DECISION_DOCUMENT))
+    foreign_decision.chmod(0o600)
+    foreign_store = SystemStore(
+        workspace,
+        source_root=foreign_root,
+        source_root_id="foreign-bootstrap-source-root",
+    )
+    foreign_decision_ref = foreign_store.put_source_file(
+        "bootstrap/bootstrap-decision.json",
+        source_object_id="foreign-bootstrap-decision",
+        source_format="JSON",
+        media_type="application/json",
+        created_at=policy["created_at"],
+    )
+    foreign_bundle = seal_artifact(
+        "system.source_bundle",
+        {
+            "source_bundle_id": "foreign-bootstrap-decision-bundle",
+            "state": "IMMUTABLE",
+            "sources": [{"role": "bootstrap_decision", "source_ref": foreign_decision_ref}],
+        },
+        created_at=policy["created_at"],
+    )
+    foreign_bundle_ref = store.put_object(foreign_bundle)
+
+    source_artifacts = {
+        role: store.get_object(reference) for role, reference in source_refs.items()
+    }
+    source_artifacts["decision_source"] = store.get_object(foreign_bundle_ref)
+    replacement_policy = build_bootstrap_exception_evidence(
+        decision_source_bytes=canonical_json_bytes(_DECISION_DOCUMENT),
+        source_artifacts=source_artifacts,
+        implementation_source_sha256=policy["payload"]["factor_rows"][0]["implementation_sha256"],
+        created_at=policy["created_at"],
+    )
+    replacement_policy_ref = store.put_object(replacement_policy)
+    replacement_active = build_bootstrap_factor_set(
+        bootstrap_exception_evidence=replacement_policy,
+        created_at=policy["created_at"],
+    )
+    replacement_active_ref = store.put_object(replacement_active)
+    replacement_receipt = _build_factor_validation_receipt(
+        policy=replacement_policy,
+        active_set=replacement_active,
+        evidence_artifacts=[source_artifacts[role] for role in sorted(source_artifacts)],
+        trusted_at=policy["created_at"],
+    )
+    replacement_receipt_ref = store.put_object(replacement_receipt)
+    replacement_closure = build_factor_production_source_closure(
+        deployed_release_ref=closure_payload["deployed_release_ref"],
+        release_install_evidence_ref=closure_payload["release_install_evidence_ref"],
+        release_install_input_source_ref=closure_payload["release_install_input_source_ref"],
+        release_install_verification=closure_payload["release_install_verification"],
+        market_pit_selection_ref=closure_payload["market_pit_selection_ref"],
+        market_scope_source_ref=closure_payload["market_scope_source_ref"],
+        calendar_authority_policy_ref=closure_payload["calendar_authority_policy_ref"],
+        calendar_compilation_ref=closure_payload["calendar_compilation_ref"],
+        calendar_capture_custody_attestation_ref=closure_payload[
+            "calendar_capture_custody_attestation_ref"
+        ],
+        factor_source_bundle_ref=closure_payload["factor_source_bundle_ref"],
+        factor_policy_ref=replacement_policy_ref,
+        factor_active_set_ref=replacement_active_ref,
+        factor_validation_attestation_ref=replacement_receipt_ref,
+        factor_implementation_refs=closure_payload["factor_implementation_refs"],
+        legacy_zero_call_ref=closure_payload["legacy_zero_call_ref"],
+        market_input_ref=closure_payload["market_input_ref"],
+        created_at=closure["created_at"],
+    )
+
+    primary_source_resolver = system_store_source_resolver(store)
+    foreign_source_resolver = system_store_source_resolver(foreign_store)
+
+    def source_resolver(reference: dict[str, str], maximum_bytes: int):
+        artifact = store.get_object(reference)
+        if artifact["payload"].get("source_root_id") == foreign_store.source_root_id:
+            return foreign_source_resolver(reference, maximum_bytes)
+        return primary_source_resolver(reference, maximum_bytes)
+
+    with pytest.raises(FactorGovernanceError, match="span multiple source roots"):
+        production_authority.validate_factor_production_source_closure(
+            replacement_closure,
+            artifact_resolver=store.get_object,
+            source_resolver=source_resolver,
+        )
+
+
+def test_deep_bootstrap_receipt_rejects_adversarial_1_plus_7_matrix(  # noqa: C901
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reject every alternate Bootstrap identity, not only a foreign root."""
+
+    fixture = _factor_production_operator_fixture(tmp_path, monkeypatch)
+    prepared = fixture["prepare_result"]
+    workspace = fixture["workspace"]
+    source_root = workspace / prepared["source_root"]
+    store = SystemStore(
+        workspace,
+        source_root=source_root,
+        source_root_id=prepared["source_root_id"],
+    )
+    closure = store.get_object(prepared["factor_production_source_closure_ref"])
+    closure_payload = closure["payload"]
+    policy = store.get_object(closure_payload["factor_policy_ref"])
+    receipt = store.get_object(closure_payload["factor_validation_attestation_ref"])
+    created_at = policy["created_at"]
+    source_refs = {row["role"]: row["ref"] for row in policy["payload"]["source_refs"]}
+
+    def bundle_source_ref(role: str) -> dict[str, str]:
+        bundle = store.get_object(source_refs[role])
+        return dict(bundle["payload"]["sources"][0]["source_ref"])
+
+    def source_bytes(reference: dict[str, str]) -> tuple[dict[str, object], bytes]:
+        return store.read_source_object_bytes(reference, maximum_bytes=8 * 1024 * 1024)
+
+    def stage_alternate(
+        name: str,
+        reference: dict[str, str],
+        *,
+        raw: bytes | None = None,
+    ) -> dict[str, str]:
+        payload, observed = source_bytes(reference)
+        relative = str(payload["relative_path"])
+        suffix = Path(relative).suffix
+        target = f"adversarial/{name}{suffix}"
+        path = source_root / target
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        path.write_bytes(observed if raw is None else raw)
+        path.chmod(0o600)
+        return store.put_source_file(
+            target,
+            source_object_id=f"adversarial-bootstrap-{name}",
+            source_format=str(payload["source_format"]),
+            media_type=str(payload["media_type"]),
+            created_at=created_at,
+        )
+
+    def bundle(
+        name: str,
+        *,
+        inner_role: str,
+        source_ref: dict[str, str],
+    ) -> dict[str, object]:
+        document = seal_artifact(
+            "system.source_bundle",
+            {
+                "source_bundle_id": f"adversarial-bootstrap-{name}",
+                "state": "IMMUTABLE",
+                "sources": [{"role": inner_role, "source_ref": source_ref}],
+            },
+            created_at=created_at,
+        )
+        store.put_object(document)
+        return document
+
+    def closure_for(
+        policy_ref: dict[str, str],
+        active_ref: dict[str, str],
+        receipt_ref: dict[str, str],
+    ) -> dict[str, object]:
+        return build_factor_production_source_closure(
+            deployed_release_ref=closure_payload["deployed_release_ref"],
+            release_install_evidence_ref=closure_payload["release_install_evidence_ref"],
+            release_install_input_source_ref=closure_payload["release_install_input_source_ref"],
+            release_install_verification=closure_payload["release_install_verification"],
+            market_pit_selection_ref=closure_payload["market_pit_selection_ref"],
+            market_scope_source_ref=closure_payload["market_scope_source_ref"],
+            calendar_authority_policy_ref=closure_payload["calendar_authority_policy_ref"],
+            calendar_compilation_ref=closure_payload["calendar_compilation_ref"],
+            calendar_capture_custody_attestation_ref=closure_payload[
+                "calendar_capture_custody_attestation_ref"
+            ],
+            factor_source_bundle_ref=closure_payload["factor_source_bundle_ref"],
+            factor_policy_ref=policy_ref,
+            factor_active_set_ref=active_ref,
+            factor_validation_attestation_ref=receipt_ref,
+            factor_implementation_refs=closure_payload["factor_implementation_refs"],
+            legacy_zero_call_ref=closure_payload["legacy_zero_call_ref"],
+            market_input_ref=closure_payload["market_input_ref"],
+            created_at=closure["created_at"],
+        )
+
+    def rebuilt_lane(
+        *,
+        source_overrides: dict[str, dict[str, object]] | None = None,
+    ) -> tuple[dict[str, str], dict[str, str], dict[str, str], dict[str, object]]:
+        source_artifacts = {
+            role: store.get_object(reference) for role, reference in source_refs.items()
+        }
+        source_artifacts.update(source_overrides or {})
+        implementation_bundle = source_artifacts["implementation"]
+        implementation_ref = implementation_bundle["payload"]["sources"][0]["source_ref"]
+        implementation_payload = store.get_object(implementation_ref)["payload"]
+        replacement_policy = build_bootstrap_exception_evidence(
+            decision_source_bytes=canonical_json_bytes(_DECISION_DOCUMENT),
+            source_artifacts=source_artifacts,
+            implementation_source_sha256=implementation_payload["byte_sha256"],
+            created_at=created_at,
+        )
+        replacement_policy_ref = store.put_object(replacement_policy)
+        replacement_active = build_bootstrap_factor_set(
+            bootstrap_exception_evidence=replacement_policy,
+            created_at=created_at,
+        )
+        replacement_active_ref = store.put_object(replacement_active)
+        replacement_receipt = _build_factor_validation_receipt(
+            policy=replacement_policy,
+            active_set=replacement_active,
+            evidence_artifacts=[source_artifacts[role] for role in sorted(source_artifacts)],
+            trusted_at=created_at,
+        )
+        replacement_receipt_ref = store.put_object(replacement_receipt)
+        return (
+            replacement_policy_ref,
+            replacement_active_ref,
+            replacement_receipt_ref,
+            closure_for(
+                replacement_policy_ref,
+                replacement_active_ref,
+                replacement_receipt_ref,
+            ),
+        )
+
+    def altered_json(reference: dict[str, str], mutate) -> bytes:
+        _payload, raw = source_bytes(reference)
+        value = parse_canonical_json_bytes(raw, label="adversarial Bootstrap JSON")
+        mutate(value)
+        return canonical_json_bytes(value)
+
+    def malformed_receipt(name: str, refs: list[dict[str, str]]) -> dict[str, object]:
+        payload = dict(receipt["payload"])
+        payload["evidence_refs"] = refs
+        document = seal_artifact(
+            "factor.validation_receipt",
+            payload,
+            created_at=receipt["created_at"],
+        )
+        return closure_for(
+            closure_payload["factor_policy_ref"],
+            closure_payload["factor_active_set_ref"],
+            store.put_object(document),
+        )
+
+    decision_ref = bundle_source_ref("decision_source")
+    implementation_ref = bundle_source_ref("implementation")
+    calendar_ref = bundle_source_ref("exchange_calendar")
+    market_ref = bundle_source_ref("market")
+    pit_ref = bundle_source_ref("pit_universe")
+    recomputation_ref = bundle_source_ref("recomputation")
+    source_generation_ref = bundle_source_ref("source_generation")
+
+    alternate_decision_bundle = bundle(
+        "same-root-decision",
+        inner_role="bootstrap_decision",
+        source_ref=stage_alternate("same-root-decision", decision_ref),
+    )
+    altered_implementation_bundle = bundle(
+        "implementation-rows",
+        inner_role="implementation_tree_manifest",
+        source_ref=stage_alternate(
+            "implementation-rows",
+            implementation_ref,
+            raw=altered_json(
+                implementation_ref,
+                lambda value: value.__setitem__("implementation_rows", []),
+            ),
+        ),
+    )
+    alternate_calendar_bundle = bundle(
+        "calendar-alias",
+        inner_role="calendar",
+        source_ref=stage_alternate("calendar-alias", calendar_ref),
+    )
+    alternate_market_bundle = bundle(
+        "market-alias",
+        inner_role="market",
+        source_ref=stage_alternate("market-alias", market_ref),
+    )
+    alternate_pit_bundle = bundle(
+        "pit-alias",
+        inner_role="pit",
+        source_ref=stage_alternate("pit-alias", pit_ref),
+    )
+    altered_recomputation_bundle = bundle(
+        "recomputation",
+        inner_role="recomputation",
+        source_ref=stage_alternate(
+            "recomputation",
+            recomputation_ref,
+            raw=altered_json(
+                recomputation_ref,
+                lambda value: value.__setitem__("result", "NOT_EXACT_MATCH"),
+            ),
+        ),
+    )
+    altered_source_generation_rows = bundle(
+        "source-generation-rows",
+        inner_role="source_generation",
+        source_ref=stage_alternate(
+            "source-generation-rows",
+            source_generation_ref,
+            raw=altered_json(
+                source_generation_ref,
+                lambda value: value.__setitem__("source_rows", []),
+            ),
+        ),
+    )
+    altered_source_generation_reader = bundle(
+        "source-generation-reader",
+        inner_role="source_generation",
+        source_ref=stage_alternate(
+            "source-generation-reader",
+            source_generation_ref,
+            raw=altered_json(
+                source_generation_ref,
+                lambda value: value["reader_contract"].__setitem__("reader", "other"),
+            ),
+        ),
+    )
+    altered_source_generation_hash = bundle(
+        "source-generation-hash",
+        inner_role="source_generation",
+        source_ref=stage_alternate(
+            "source-generation-hash",
+            source_generation_ref,
+            raw=altered_json(
+                source_generation_ref,
+                lambda value: value.__setitem__("generation_sha256", "0" * 64),
+            ),
+        ),
+    )
+    extra_bundle = bundle(
+        "receipt-extra",
+        inner_role="bootstrap_decision",
+        source_ref=stage_alternate("receipt-extra", decision_ref),
+    )
+    extra_bundle_ref = store.put_object(extra_bundle)
+    receipt_refs = [dict(value) for value in receipt["payload"]["evidence_refs"]]
+    extra_receipt_refs = sorted(
+        [*receipt_refs, extra_bundle_ref],
+        key=lambda value: (
+            value["kind"],
+            value["contract_sha256"],
+            value["artifact_id"],
+            value["semantic_sha256"],
+            value["byte_sha256"],
+        ),
+    )
+    substituted_receipt_refs = [
+        extra_bundle_ref if value == source_refs["decision_source"] else value
+        for value in receipt_refs
+    ]
+    substituted_receipt_refs.sort(
+        key=lambda value: (
+            value["kind"],
+            value["contract_sha256"],
+            value["artifact_id"],
+            value["semantic_sha256"],
+            value["byte_sha256"],
+        )
+    )
+    release_payload = dict(store.get_object(source_refs["code"])["payload"])
+    release_payload["release_id"] = "adversarial-bootstrap-release"
+    alternate_release = seal_artifact("system.release", release_payload, created_at=created_at)
+    store.put_object(alternate_release)
+    alternate_release_lane = rebuilt_lane(source_overrides={"code": alternate_release})
+    alternate_decision_lane = rebuilt_lane(
+        source_overrides={"decision_source": alternate_decision_bundle}
+    )
+
+    cases = [
+        (
+            "same-root alternate decision",
+            lambda: rebuilt_lane(source_overrides={"decision_source": alternate_decision_bundle})[
+                3
+            ],
+        ),
+        (
+            "altered implementation tree",
+            lambda: rebuilt_lane(
+                source_overrides={"implementation": altered_implementation_bundle}
+            )[3],
+        ),
+        (
+            "calendar bundle not primary alias",
+            lambda: rebuilt_lane(source_overrides={"exchange_calendar": alternate_calendar_bundle})[
+                3
+            ],
+        ),
+        (
+            "market bundle not primary alias",
+            lambda: rebuilt_lane(source_overrides={"market": alternate_market_bundle})[3],
+        ),
+        (
+            "pit bundle not primary alias",
+            lambda: rebuilt_lane(source_overrides={"pit_universe": alternate_pit_bundle})[3],
+        ),
+        (
+            "altered recomputation JSON",
+            lambda: rebuilt_lane(source_overrides={"recomputation": altered_recomputation_bundle})[
+                3
+            ],
+        ),
+        (
+            "altered source-generation rows",
+            lambda: rebuilt_lane(
+                source_overrides={"source_generation": altered_source_generation_rows}
+            )[3],
+        ),
+        (
+            "altered source-generation reader",
+            lambda: rebuilt_lane(
+                source_overrides={"source_generation": altered_source_generation_reader}
+            )[3],
+        ),
+        (
+            "altered source-generation hash",
+            lambda: rebuilt_lane(
+                source_overrides={"source_generation": altered_source_generation_hash}
+            )[3],
+        ),
+        ("receipt missing ref", lambda: malformed_receipt("missing", receipt_refs[:-1])),
+        (
+            "receipt duplicate ref",
+            lambda: malformed_receipt("duplicate", [receipt_refs[0], *receipt_refs]),
+        ),
+        (
+            "receipt reordered refs",
+            lambda: malformed_receipt("reordered", list(reversed(receipt_refs))),
+        ),
+        (
+            "receipt additional ref",
+            lambda: malformed_receipt("additional", extra_receipt_refs),
+        ),
+        (
+            "receipt substituted ref",
+            lambda: malformed_receipt("substituted", substituted_receipt_refs),
+        ),
+        (
+            "policy release cross binding",
+            lambda: closure_for(
+                alternate_release_lane[0], alternate_release_lane[1], alternate_release_lane[2]
+            ),
+        ),
+        (
+            "active cross binding",
+            lambda: closure_for(
+                closure_payload["factor_policy_ref"],
+                alternate_decision_lane[1],
+                alternate_decision_lane[2],
+            ),
+        ),
+        (
+            "receipt cross binding",
+            lambda: closure_for(
+                closure_payload["factor_policy_ref"],
+                closure_payload["factor_active_set_ref"],
+                alternate_decision_lane[2],
+            ),
+        ),
+    ]
+    for label, build_closure in cases:
+        try:
+            production_authority.validate_factor_production_source_closure(
+                build_closure(),
+                artifact_resolver=store.get_object,
+                source_resolver=system_store_source_resolver(store),
+            )
+        except FactorGovernanceError:
+            continue
+        raise AssertionError(f"adversarial Bootstrap case was accepted: {label}")

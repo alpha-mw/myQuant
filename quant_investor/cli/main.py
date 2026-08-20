@@ -34,6 +34,7 @@ from quant_investor.cli.unified import (
     system_bootstrap_assemble,
     system_bootstrap_admission_preflight,
     system_calendar_capture,
+    system_release_prepare,
     system_status,
     system_suspend,
     system_verify,
@@ -380,6 +381,13 @@ def _sha256_argument(value: str) -> str:
     return text
 
 
+def _git_oid_argument(value: str) -> str:
+    text = str(value)
+    if re.fullmatch(r"[0-9a-f]{40}(?:[0-9a-f]{24})?", text) is None:
+        raise argparse.ArgumentTypeError("expected a canonical lowercase Git object id")
+    return text
+
+
 def _pointer_sha_argument(value: str) -> str:
     text = str(value)
     if text == "EMPTY":
@@ -546,6 +554,30 @@ def _build_parser() -> argparse.ArgumentParser:
         type=_sha256_argument,
     )
 
+    system_release_prepare_parser = system_subparsers.add_parser(
+        "release-prepare",
+        help="从 exact detached checkout 构建并发布 installed release 输入",
+    )
+    _add_workspace_argument(system_release_prepare_parser)
+    system_release_prepare_parser.add_argument(
+        "--release-root",
+        required=True,
+        type=_canonical_absolute_path,
+        help="dedicated owner-only release custody root",
+    )
+    system_release_prepare_parser.add_argument(
+        "--release-repository-root",
+        required=True,
+        type=_canonical_absolute_path,
+        help="exact clean detached release checkout",
+    )
+    system_release_prepare_parser.add_argument(
+        "--final-commit", required=True, type=_git_oid_argument
+    )
+    system_release_prepare_parser.add_argument(
+        "--final-tree", required=True, type=_git_oid_argument
+    )
+
     system_activate_parser = system_subparsers.add_parser(
         "activate", help="以 CAS 激活已验证 generation"
     )
@@ -653,15 +685,6 @@ def _build_parser() -> argparse.ArgumentParser:
     factor_activate_parser.add_argument("--calendar-capture-root", required=True)
     factor_activate_parser.add_argument(
         "--expected-calendar-success-sha256", required=True, type=_sha256_argument
-    )
-    factor_activate_parser.add_argument("--release-repository-root", required=True)
-    factor_activate_parser.add_argument(
-        "--activation-inputs",
-        required=True,
-        type=_workspace_relative_canonical_path,
-    )
-    factor_activate_parser.add_argument(
-        "--expected-activation-inputs-sha256", required=True, type=_sha256_argument
     )
     factor_activate_parser.add_argument("--expected-empty", action="store_true", required=True)
 
@@ -1205,6 +1228,18 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
         )
         return
 
+    if args.command == "system" and args.system_command == "release-prepare":
+        _print_json(
+            system_release_prepare(
+                workspace_root=args.workspace_root,
+                release_root=args.release_root,
+                release_repository_root=args.release_repository_root,
+                final_commit=args.final_commit,
+                final_tree=args.final_tree,
+            )
+        )
+        return
+
     if args.command == "system" and args.system_command == "activate":
         _print_json(
             system_activate(
@@ -1275,9 +1310,6 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
                 market_data_root=args.market_data_root,
                 calendar_capture_root=args.calendar_capture_root,
                 expected_calendar_success_sha256=args.expected_calendar_success_sha256,
-                release_repository_root=args.release_repository_root,
-                activation_inputs_path=args.activation_inputs,
-                expected_activation_inputs_sha256=(args.expected_activation_inputs_sha256),
                 expected_empty=args.expected_empty,
             )
         )

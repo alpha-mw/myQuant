@@ -213,6 +213,72 @@ def test_factor_production_status_and_verify_are_read_only_when_uninitialized(
     assert not (tmp_path / "results/system/_active.json").exists()
 
 
+def test_system_release_prepare_is_one_thin_non_authority_command(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import quant_investor.system as system_module
+
+    calls: list[tuple[str, dict[str, object]]] = []
+    release = {"kind": "system.release"}
+    evidence = {"kind": "system.release_install_evidence"}
+
+    def prepare(**kwargs: object) -> dict[str, object]:
+        calls.append(("prepare", dict(kwargs)))
+        return {"release": release, "release_install_evidence": evidence}
+
+    def publish(**kwargs: object) -> dict[str, object]:
+        calls.append(("publish", dict(kwargs)))
+        return {
+            "status": "PREPARED",
+            "release_install_input_path": str(tmp_path / "input.json"),
+            "release_install_input_sha256": "3" * 64,
+            "grants_system_authority": False,
+            "grants_factor_authority": False,
+            "grants_trading_authority": False,
+        }
+
+    monkeypatch.setattr(system_module, "prepare_operational_release", prepare)
+    monkeypatch.setattr(system_module, "publish_release_install_input", publish)
+    release_root = tmp_path / "release"
+    repository_root = tmp_path / "detached"
+    main(
+        [
+            "system",
+            "release-prepare",
+            "--release-root",
+            str(release_root),
+            "--workspace-root",
+            str(tmp_path),
+            "--release-repository-root",
+            str(repository_root),
+            "--final-commit",
+            "1" * 40,
+            "--final-tree",
+            "2" * 40,
+        ]
+    )
+    result = _line(capsys)
+    assert result["status"] == "PREPARED"
+    assert result["grants_system_authority"] is False
+    assert result["grants_factor_authority"] is False
+    assert result["grants_trading_authority"] is False
+    assert [name for name, _kwargs in calls] == ["prepare", "publish"]
+    assert calls[0][1]["repository_root"] == str(repository_root)
+    assert calls[0][1]["release_root"] == str(release_root)
+    assert calls[0][1]["final_commit"] == "1" * 40
+    assert calls[0][1]["final_tree"] == "2" * 40
+    assert calls[0][1]["created_at"] is None
+    assert calls[1][1] == {
+        "workspace_root": str(tmp_path),
+        "release_root": str(release_root),
+        "release_install_evidence": evidence,
+        "deployed_release": release,
+        "repository_root": str(repository_root),
+    }
+
+
 def test_factor_production_activate_exposes_one_expected_empty_operator(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -245,12 +311,6 @@ def test_factor_production_activate_exposes_one_expected_empty_operator(
             str(tmp_path / "calendar"),
             "--expected-calendar-success-sha256",
             "1" * 64,
-            "--release-repository-root",
-            str(tmp_path / "release"),
-            "--activation-inputs",
-            "factor-activation-inputs.json",
-            "--expected-activation-inputs-sha256",
-            "2" * 64,
             "--expected-empty",
         ]
     )
@@ -264,12 +324,38 @@ def test_factor_production_activate_exposes_one_expected_empty_operator(
             "market_data_root": str(tmp_path / "market"),
             "calendar_capture_root": str(tmp_path / "calendar"),
             "expected_calendar_success_sha256": "1" * 64,
-            "release_repository_root": str(tmp_path / "release"),
-            "activation_inputs_path": "factor-activation-inputs.json",
-            "expected_activation_inputs_sha256": "2" * 64,
             "expected_empty": True,
         }
     ]
+
+
+def test_factor_production_activate_rejects_retired_injected_inputs(
+    tmp_path: Path,
+) -> None:
+    for retired in (
+        "--activation-inputs",
+        "--expected-activation-inputs-sha256",
+        "--release-repository-root",
+    ):
+        with pytest.raises(SystemExit) as caught:
+            main(
+                [
+                    "factor",
+                    "production-activate",
+                    "--workspace-root",
+                    str(tmp_path),
+                    "--market-data-root",
+                    str(tmp_path / "market"),
+                    "--calendar-capture-root",
+                    str(tmp_path / "calendar"),
+                    "--expected-calendar-success-sha256",
+                    "1" * 64,
+                    retired,
+                    "retired-value",
+                    "--expected-empty",
+                ]
+            )
+        assert caught.value.code == 2
 
 
 def test_system_bootstrap_assemble_uses_exact_request_and_explicit_input_root(

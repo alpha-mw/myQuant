@@ -280,6 +280,37 @@ def system_calendar_capture(
     )
 
 
+def system_release_prepare(
+    *,
+    workspace_root: str,
+    release_root: str,
+    release_repository_root: str,
+    final_commit: str,
+    final_tree: str,
+) -> dict[str, Any]:
+    """Build and publish installed-release evidence without runtime authority."""
+
+    from quant_investor.system import (
+        prepare_operational_release,
+        publish_release_install_input,
+    )
+
+    prepared = prepare_operational_release(
+        repository_root=release_repository_root,
+        release_root=release_root,
+        final_commit=final_commit,
+        final_tree=final_tree,
+        created_at=None,
+    )
+    return publish_release_install_input(
+        workspace_root=workspace_root,
+        release_root=release_root,
+        release_install_evidence=prepared["release_install_evidence"],
+        deployed_release=prepared["release"],
+        repository_root=release_repository_root,
+    )
+
+
 def system_activate(
     *,
     workspace_root: str,
@@ -539,9 +570,6 @@ def factor_production_activate(  # noqa: C901 - one atomic public operator bound
     market_data_root: str,
     calendar_capture_root: str,
     expected_calendar_success_sha256: str,
-    release_repository_root: str,
-    activation_inputs_path: str,
-    expected_activation_inputs_sha256: str,
     expected_empty: bool,
 ) -> dict[str, Any]:
     """Prepare and perform the sole expected-EMPTY Factor production cutover."""
@@ -554,7 +582,7 @@ def factor_production_activate(  # noqa: C901 - one atomic public operator bound
         FactorProductionStore,
         verify_factor_production,
     )
-    from quant_investor.system import SystemStore, validate_object_ref
+    from quant_investor.system import SystemStore
 
     if expected_empty is not True:
         raise CommandError("FACTOR_EXPECTED_EMPTY_REQUIRED")
@@ -576,58 +604,14 @@ def factor_production_activate(  # noqa: C901 - one atomic public operator bound
         "FACTOR_ACTIVE_POINTER_ABSENT"
     ]:
         raise CommandError("FACTOR_EXPECTED_EMPTY_FAILED")
-    _, inputs_document = _request(
-        workspace_root=workspace_root,
-        request_path=activation_inputs_path,
-        expected_request_sha256=expected_activation_inputs_sha256,
-    )
-    inputs = _exact_fields(
-        inputs_document,
-        {
-            "as_of",
-            "deployed_release_ref",
-            "factor_active_set_ref",
-            "factor_implementation_refs",
-            "factor_policy_ref",
-            "factor_validation_attestation_ref",
-            "final_commit",
-            "final_tree",
-        },
-        code="FACTOR_PRODUCTION_ACTIVATION_INPUTS_INVALID",
-    )
-    for field in (
-        "deployed_release_ref",
-        "factor_active_set_ref",
-        "factor_policy_ref",
-        "factor_validation_attestation_ref",
-    ):
-        inputs[field] = validate_object_ref(inputs[field], label=field)
-    implementation_values = inputs["factor_implementation_refs"]
-    if type(implementation_values) is not list or len(implementation_values) != 2:
-        raise CommandError("FACTOR_PRODUCTION_IMPLEMENTATIONS_INVALID")
-    implementations = [
-        validate_object_ref(value, label=f"factor_implementation_refs[{index}]")
-        for index, value in enumerate(implementation_values)
-    ]
     prepared_sources = prepare_factor_production(
         workspace_root=workspace_root,
         market_data_root=market_data_root,
         calendar_capture_root=calendar_capture_root,
         expected_calendar_success_sha256=expected_calendar_success_sha256,
-        deployed_release_ref=inputs["deployed_release_ref"],
-        factor_policy_ref=inputs["factor_policy_ref"],
-        factor_active_set_ref=inputs["factor_active_set_ref"],
-        factor_validation_attestation_ref=inputs["factor_validation_attestation_ref"],
-        factor_implementation_refs=implementations,
-        final_commit=inputs["final_commit"],
-        final_tree=inputs["final_tree"],
-        as_of=inputs["as_of"],
     )
     workspace = Path(workspace_root).resolve(strict=True)
-    current_release_root = Path(release_repository_root).resolve(strict=True)
-    prepared_release_root = Path(prepared_sources["release_repository_root"]).resolve(strict=True)
-    if current_release_root != prepared_release_root:
-        raise CommandError("FACTOR_RELEASE_ROOT_MISMATCH")
+    current_release_root = Path(prepared_sources["release_repository_root"]).resolve(strict=True)
     source_root = (workspace / prepared_sources["source_root"]).resolve(strict=True)
     if workspace not in source_root.parents:
         raise CommandError("FACTOR_PREPARED_SOURCE_ROOT_INVALID")

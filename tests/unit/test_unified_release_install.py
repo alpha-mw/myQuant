@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import base64
+import copy
 from datetime import date
 import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import textwrap
 
 import pytest
 
+import quant_investor.system.release_install as release_install_module
 from quant_investor.contracts import canonical_json_bytes
 from quant_investor.factors.governance.production import assemble_production_bootstrap
 from quant_investor.market.exchange_calendar_closure import (
@@ -20,10 +23,13 @@ from quant_investor.market.exchange_calendar_closure import (
 from quant_investor.migration import run_cutover_gate, validate_cutover_gate_evidence
 from quant_investor.system import (
     SystemPreconditionError,
+    SystemSecurityError,
     object_ref_for_artifact,
     prepare_operational_release,
+    publish_release_install_input,
     validate_release_install_evidence,
     verify_release_install_input,
+    verify_running_release_install_input,
 )
 from quant_investor.market.tushare_calendar_authority import (
     SOURCE_LIMITATIONS,
@@ -42,6 +48,136 @@ from tests.unit.test_unified_production_bootstrap_operator import (
 from unified_activation_helpers import prepare_initial_activation
 
 BASE = "2026-08-16T00:00:00Z"
+
+
+def test_release_input_native_no_replace_crash_boundaries_and_conflict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    custody_root = tmp_path / "custody"
+    custody_root.mkdir(mode=0o700)
+    raw = b'{"accepted":true}'
+    digest = hashlib.sha256(raw).hexdigest()
+    target = custody_root / digest / "release-install-input.json"
+
+    def before(point: str) -> None:
+        if point == "BEFORE_RELEASE_INPUT_PUBLICATION":
+            raise RuntimeError("before publication")
+
+    monkeypatch.setattr(release_install_module, "_release_input_fault_hook", before)
+    with pytest.raises(RuntimeError, match="before publication"):
+        release_install_module._publish_release_install_input_bytes(custody_root, raw)
+    assert not target.exists()
+    assert list((custody_root / digest).iterdir()) == []
+
+    def after(point: str) -> None:
+        if point == "AFTER_RELEASE_INPUT_PUBLICATION":
+            raise RuntimeError("after publication")
+
+    monkeypatch.setattr(release_install_module, "_release_input_fault_hook", after)
+    with pytest.raises(RuntimeError, match="after publication"):
+        release_install_module._publish_release_install_input_bytes(custody_root, raw)
+    assert target.read_bytes() == raw
+    assert target.stat().st_nlink == 1
+    monkeypatch.setattr(release_install_module, "_release_input_fault_hook", lambda _point: None)
+    assert release_install_module._publish_release_install_input_bytes(custody_root, raw) == target
+
+    target.write_bytes(b'{"accepted":false}')
+    target.chmod(0o600)
+    with pytest.raises(SystemPreconditionError, match="conflicts"):
+        release_install_module._publish_release_install_input_bytes(custody_root, raw)
+
+    target.unlink()
+    target.symlink_to(custody_root / "missing-input")
+    with pytest.raises(SystemSecurityError, match="owner-controlled regular file"):
+        release_install_module._publish_release_install_input_bytes(custody_root, raw)
+
+
+def test_release_artifact_native_no_replace_crash_boundaries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir(mode=0o700)
+    raw = b"immutable-wheel-bytes"
+    digest = hashlib.sha256(raw).hexdigest()
+    target = artifact_root / digest / "release.whl"
+
+    def before(point: str) -> None:
+        if point == "BEFORE_RELEASE_ARTIFACT_PUBLICATION:release.whl":
+            raise RuntimeError("before artifact publication")
+
+    monkeypatch.setattr(release_install_module, "_release_input_fault_hook", before)
+    with pytest.raises(RuntimeError, match="before artifact publication"):
+        release_install_module._publish_exact(artifact_root, raw, filename="release.whl")
+    assert not target.exists()
+
+    def after(point: str) -> None:
+        if point == "AFTER_RELEASE_ARTIFACT_PUBLICATION:release.whl":
+            raise RuntimeError("after artifact publication")
+
+    monkeypatch.setattr(release_install_module, "_release_input_fault_hook", after)
+    with pytest.raises(RuntimeError, match="after artifact publication"):
+        release_install_module._publish_exact(artifact_root, raw, filename="release.whl")
+    assert target.read_bytes() == raw
+    assert target.stat().st_nlink == 1
+    monkeypatch.setattr(release_install_module, "_release_input_fault_hook", lambda _point: None)
+    assert (
+        release_install_module._publish_exact(artifact_root, raw, filename="release.whl") == target
+    )
+
+
+def test_release_install_directory_native_publication_boundaries_and_race_winner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    install_base = tmp_path / "installs"
+    install_base.mkdir(mode=0o700)
+    final_root = install_base / "final-install"
+
+    staging_before = install_base / ".stage-before"
+    staging_before.mkdir(mode=0o700)
+    (staging_before / "complete").write_bytes(b"complete")
+
+    def before(point: str) -> None:
+        if point == "BEFORE_RELEASE_INSTALL_PUBLICATION":
+            raise RuntimeError("before install publication")
+
+    monkeypatch.setattr(release_install_module, "_release_input_fault_hook", before)
+    with pytest.raises(RuntimeError, match="before install publication"):
+        release_install_module._publish_install_directory(
+            install_base=install_base,
+            staging_root=staging_before,
+            final_root=final_root,
+        )
+    assert staging_before.is_dir()
+    assert not final_root.exists()
+
+    def after(point: str) -> None:
+        if point == "AFTER_RELEASE_INSTALL_PUBLICATION":
+            raise RuntimeError("after install publication")
+
+    monkeypatch.setattr(release_install_module, "_release_input_fault_hook", after)
+    with pytest.raises(RuntimeError, match="after install publication"):
+        release_install_module._publish_install_directory(
+            install_base=install_base,
+            staging_root=staging_before,
+            final_root=final_root,
+        )
+    assert not staging_before.exists()
+    assert (final_root / "complete").read_bytes() == b"complete"
+
+    monkeypatch.setattr(release_install_module, "_release_input_fault_hook", lambda _point: None)
+    concurrent_staging = install_base / ".stage-concurrent"
+    concurrent_staging.mkdir(mode=0o700)
+    (concurrent_staging / "complete").write_bytes(b"complete")
+    assert (
+        release_install_module._publish_install_directory(
+            install_base=install_base,
+            staging_root=concurrent_staging,
+            final_root=final_root,
+        )
+        is False
+    )
+    assert concurrent_staging.is_dir()
+    assert (final_root / "complete").read_bytes() == b"complete"
 
 
 def _git(root: Path, *arguments: str) -> str:
@@ -84,15 +220,145 @@ def test_frozen_release_build_install_and_exact_origin_replay(
         release_root=release_root,
         final_commit=commit,
         final_tree=tree,
-        created_at=BASE,
+        created_at=None,
     )
+    repeated_preparation = prepare_operational_release(
+        repository_root=repository,
+        release_root=release_root,
+        final_commit=commit,
+        final_tree=tree,
+        created_at=None,
+    )
+    assert canonical_json_bytes(repeated_preparation) == canonical_json_bytes(prepared)
     release = prepared["release"]
     evidence = validate_release_install_evidence(prepared["release_install_evidence"])
+    release_install_module._validate_release_root_layout(release_root, evidence)
+    another_root = tmp_path / "another-release"
+    another_root.mkdir(mode=0o700)
+    (another_root / "artifacts").mkdir(mode=0o700)
+    (another_root / "installs").mkdir(mode=0o700)
+    with pytest.raises(SystemSecurityError, match="exact release artifact layout"):
+        release_install_module._validate_release_root_layout(another_root, evidence)
+    outside = copy.deepcopy(evidence)
+    outside["payload"]["source_archive"]["path"] = str(tmp_path / "outside.tar.gz")
+    with pytest.raises(SystemSecurityError, match="outside the exact release artifact layout"):
+        release_install_module._validate_release_root_layout(release_root, outside)
+    sibling = copy.deepcopy(evidence)
+    source_path = Path(evidence["payload"]["source_archive"]["path"])
+    sibling_path = source_path.with_name("sibling.tar.gz")
+    shutil.copyfile(source_path, sibling_path)
+    sibling["payload"]["source_archive"]["path"] = str(sibling_path)
+    with pytest.raises(SystemSecurityError, match="filename is not exact"):
+        release_install_module._validate_release_root_layout(release_root, sibling)
+    sibling_path.unlink()
+    original_backup = source_path.with_name(f".{source_path.name}.backup")
+    source_path.rename(original_backup)
+    source_path.symlink_to(original_backup)
+    with pytest.raises(SystemSecurityError, match="owner-controlled regular file"):
+        release_install_module._validate_release_root_layout(release_root, evidence)
+    source_path.unlink()
+    original_backup.rename(source_path)
+    source_path.rename(original_backup)
+    os.link(original_backup, source_path)
+    with pytest.raises(SystemSecurityError, match="owner-controlled regular file"):
+        release_install_module._validate_release_root_layout(release_root, evidence)
+    source_path.unlink()
+    original_backup.rename(source_path)
     assert evidence["payload"]["release_ref"] == object_ref_for_artifact(release)
     exact_input = canonical_json_bytes(
         {"release_install_evidence": evidence, "deployed_release": release}
     )
     assert verify_release_install_input(exact_input, repository_root=repository)["state"] == "PASS"
+    with pytest.raises(SystemPreconditionError, match="not running the installed release"):
+        verify_running_release_install_input(exact_input, repository_root=repository)
+    published = publish_release_install_input(
+        workspace_root=tmp_path,
+        release_root=release_root,
+        release_install_evidence=evidence,
+        deployed_release=release,
+        repository_root=repository,
+    )
+    repeated = publish_release_install_input(
+        workspace_root=tmp_path,
+        release_root=release_root,
+        release_install_evidence=evidence,
+        deployed_release=release,
+        repository_root=repository,
+    )
+    assert repeated == published
+    published_path = Path(published["release_install_input_path"])
+    assert published_path.read_bytes() == exact_input
+    assert published_path.stat().st_mode & 0o777 == 0o600
+    assert (
+        published_path.relative_to(tmp_path).as_posix()
+        == published["release_install_input_relative_path"]
+    )
+    assert published["release_install_input_sha256"] == hashlib.sha256(exact_input).hexdigest()
+    assert published["grants_system_authority"] is False
+    assert published["grants_factor_authority"] is False
+    assert published["grants_trading_authority"] is False
+    assert not (tmp_path / "results/system").exists()
+    assert not (tmp_path / "results/factors").exists()
+    running_probe = textwrap.dedent("""
+        import json
+        from pathlib import Path
+        import sys
+        import types
+        import quant_investor
+        from quant_investor.system import verify_running_release_install_input
+
+        raw = Path(sys.argv[1]).read_bytes()
+        result = verify_running_release_install_input(raw, repository_root=sys.argv[2])
+        original_path = quant_investor.__path__
+        quant_investor.__path__ = [*original_path, str(Path(sys.argv[2]) / "quant_investor")]
+        try:
+            verify_running_release_install_input(raw, repository_root=sys.argv[2])
+        except Exception as exc:
+            extra_path_rejected = "package path is not exact" in str(exc)
+        else:
+            extra_path_rejected = False
+        finally:
+            quant_investor.__path__ = original_path
+        mixed = types.ModuleType("quant_investor._mixed_release_probe")
+        mixed.__file__ = str(Path(sys.argv[2]) / "quant_investor" / "__init__.py")
+        sys.modules[mixed.__name__] = mixed
+        try:
+            verify_running_release_install_input(raw, repository_root=sys.argv[2])
+        except Exception as exc:
+            mixed_origin_rejected = "mixed origins" in str(exc)
+        else:
+            mixed_origin_rejected = False
+        finally:
+            del sys.modules[mixed.__name__]
+        print(json.dumps({
+            "result": result,
+            "extra_path_rejected": extra_path_rejected,
+            "mixed_origin_rejected": mixed_origin_rejected,
+        }, sort_keys=True, separators=(",", ":")))
+        """)
+    installed_environment = dict(os.environ)
+    installed_environment.pop("PYTHONPATH", None)
+    running = subprocess.run(
+        [
+            evidence["payload"]["python_executable"],
+            "-I",
+            "-c",
+            running_probe,
+            str(published_path),
+            str(repository),
+        ],
+        check=True,
+        cwd=evidence["payload"]["install_root"],
+        env=installed_environment,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=300,
+    )
+    running_result = json.loads(running.stdout)
+    assert running_result["result"] == published["verification"]
+    assert running_result["extra_path_rejected"] is True
+    assert running_result["mixed_origin_rejected"] is True
     assert Path(evidence["payload"]["import_origin"]).is_relative_to(
         Path(evidence["payload"]["install_root"])
     )
@@ -147,11 +413,17 @@ def test_frozen_release_build_install_and_exact_origin_replay(
         <h2>\xe4\xba\xa4\xe6\x98\x93\xe6\x97\xa5\xe5\x8e\x86</h2><p>\xe6\x8e\xa5\xe5\x8f\xa3\xef\xbc\x9atrade_cal</p>
         <h3>\xe8\xbe\x93\xe5\x85\xa5\xe5\x8f\x82\xe6\x95\xb0</h3><table>
         <tr><th>\xe5\x90\x8d\xe7\xa7\xb0</th><th>\xe6\x8f\x8f\xe8\xbf\xb0</th></tr>
-        <tr><td>exchange</td><td>SSE\xe4\xb8\x8a\xe4\xba\xa4\xe6\x89\x80,SZSE\xe6\xb7\xb1\xe4\xba\xa4\xe6\x89\x80,CFFEX \xe4\xb8\xad\xe9\x87\x91\xe6\x89\x80,SHFE \xe4\xb8\x8a\xe6\x9c\x9f\xe6\x89\x80,CZCE \xe9\x83\x91\xe5\x95\x86\xe6\x89\x80,DCE \xe5\xa4\xa7\xe5\x95\x86\xe6\x89\x80,INE \xe4\xb8\x8a\xe8\x83\xbd\xe6\xba\x90</td></tr>
+        <tr><td>exchange</td><td>
+        SSE\xe4\xb8\x8a\xe4\xba\xa4\xe6\x89\x80,SZSE\xe6\xb7\xb1\xe4\xba\xa4\xe6\x89\x80,
+        CFFEX \xe4\xb8\xad\xe9\x87\x91\xe6\x89\x80,SHFE \xe4\xb8\x8a\xe6\x9c\x9f\xe6\x89\x80,
+        CZCE \xe9\x83\x91\xe5\x95\x86\xe6\x89\x80,DCE \xe5\xa4\xa7\xe5\x95\x86\xe6\x89\x80,
+        INE \xe4\xb8\x8a\xe8\x83\xbd\xe6\xba\x90</td></tr>
         </table>
         <h3>\xe8\xbe\x93\xe5\x87\xba\xe5\x8f\x82\xe6\x95\xb0</h3><table>
         <tr><th>\xe5\x90\x8d\xe7\xa7\xb0</th><th>\xe6\x8f\x8f\xe8\xbf\xb0</th></tr>
-        <tr><td>exchange</td><td>SSE\xe4\xb8\x8a\xe4\xba\xa4\xe6\x89\x80 SZSE\xe6\xb7\xb1\xe4\xba\xa4\xe6\x89\x80</td></tr>
+        <tr><td>exchange</td><td>
+        SSE\xe4\xb8\x8a\xe4\xba\xa4\xe6\x89\x80 SZSE\xe6\xb7\xb1\xe4\xba\xa4\xe6\x89\x80
+        </td></tr>
         <tr><td>cal_date</td><td>\xe6\x97\xa5\xe5\x8e\x86\xe6\x97\xa5\xe6\x9c\x9f</td></tr>
         <tr><td>is_open</td><td>\xe6\x98\xaf\xe5\x90\xa6\xe4\xba\xa4\xe6\x98\x93</td></tr>
         <tr><td>pretrade_date</td><td>\xe4\xb8\x8a\xe4\xb8\x80\xe4\xb8\xaa\xe4\xba\xa4\xe6\x98\x93\xe6\x97\xa5</td></tr>

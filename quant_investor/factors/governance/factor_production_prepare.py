@@ -8,7 +8,7 @@ broker, order, portfolio, System activation, or Factor activation API.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from datetime import date
 import hashlib
 import json
@@ -16,6 +16,7 @@ import math
 import os
 from pathlib import Path, PurePosixPath
 import stat
+import subprocess
 from typing import Any, Final
 import uuid
 
@@ -27,6 +28,7 @@ from quant_investor.contracts import (
     artifact_byte_sha256,
     canonical_json_bytes,
     parse_canonical_json_bytes,
+    seal_artifact,
 )
 from quant_investor.market.market_data_reader import MarketDataReader
 from quant_investor.market.pit_universe import evaluate_listing_status
@@ -42,9 +44,13 @@ from quant_investor.market.exchange_calendar_closure import (
 )
 from quant_investor.factors.governance.bootstrap_selection import build_market_pit_selection
 from quant_investor.system.store import SystemStore, validate_object_ref
-from quant_investor.system.release_install import verify_release_install_input
+from quant_investor.system.release_install import (
+    verify_running_release_install_input,
+)
 
+from .bootstrap import BLEND_W80, LOW_DOLLAR_VOLUME
 from .errors import FactorGovernanceError
+from .implementations import installed_semantic_row
 from .production_authority import (
     build_factor_calendar_capture_custody_attestation,
     build_factor_legacy_zero_call_certificate_for_release,
@@ -57,6 +63,7 @@ from .production_authority import (
     system_store_source_resolver,
 )
 from .source import role_schema
+from .store import FactorValidationStore
 
 _SHA256_RE: Final = frozenset("0123456789abcdef")
 _SOURCE_ROOT_LABEL: Final = "factor-production-prepare"
@@ -162,6 +169,29 @@ def _strict_json(raw: bytes, *, label: str) -> dict[str, Any]:
     if type(value) is not dict:
         raise FactorGovernanceError(f"{label} is not a JSON object")
     return dict(value)
+
+
+def _git_blob(root: Path, *, commit: str, relative_path: str) -> bytes:
+    """Read one tracked blob from the exact verified release commit."""
+
+    try:
+        result = subprocess.run(
+            ["git", "show", f"{commit}:{relative_path}"],
+            cwd=str(root),
+            capture_output=True,
+            check=False,
+            timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise FactorGovernanceError("frozen release source cannot be read") from exc
+    if (
+        result.returncode != 0
+        or type(result.stdout) is not bytes
+        or type(result.stderr) is not bytes
+        or not result.stdout
+    ):
+        raise FactorGovernanceError("frozen release source differs")
+    return result.stdout
 
 
 def _read_regular(  # noqa: C901
@@ -595,14 +625,6 @@ def prepare_factor_production(  # noqa: C901
     market_data_root: str | os.PathLike[str],
     calendar_capture_root: str | os.PathLike[str],
     expected_calendar_success_sha256: str,
-    deployed_release_ref: Mapping[str, Any],
-    factor_policy_ref: Mapping[str, Any],
-    factor_active_set_ref: Mapping[str, Any],
-    factor_validation_attestation_ref: Mapping[str, Any],
-    factor_implementation_refs: Sequence[Mapping[str, Any]],
-    final_commit: str,
-    final_tree: str,
-    as_of: str | None = None,
 ) -> dict[str, Any]:
     """Prepare sealed Factor-only sources and evidence; never activate authority."""
 
@@ -614,35 +636,9 @@ def prepare_factor_production(  # noqa: C901
     if gate.get("healthy") is not True or gate.get("status") != "ok":
         raise FactorGovernanceError("strict canonical Market snapshot is not clean")
     cutoff = _as_of(gate.get("latest_complete_trade_date"))
-    if as_of is not None and _as_of(as_of) != cutoff:
-        raise FactorGovernanceError("requested Factor prepare as_of differs from Market cutoff")
     pit_binding = reader.coverage_bound_pit(refresh=True)
     if pit_binding.get("status") != "passed" or not pit_binding.get("records"):
         raise FactorGovernanceError("Market-bound PIT generation is unavailable")
-    release_ref = validate_object_ref(deployed_release_ref, label="deployed_release_ref")
-    policy_ref = validate_object_ref(factor_policy_ref, label="factor_policy_ref")
-    active_ref = validate_object_ref(factor_active_set_ref, label="factor_active_set_ref")
-    attestation_ref = validate_object_ref(
-        factor_validation_attestation_ref, label="factor_validation_attestation_ref"
-    )
-    implementation_refs = sorted(
-        [
-            validate_object_ref(value, label=f"factor_implementation_refs[{index}]")
-            for index, value in enumerate(factor_implementation_refs)
-        ],
-        key=lambda row: (
-            row["kind"],
-            row["contract_sha256"],
-            row["artifact_id"],
-            row["semantic_sha256"],
-            row["byte_sha256"],
-        ),
-    )
-    if (
-        len(implementation_refs) != 2
-        or len({row["byte_sha256"] for row in implementation_refs}) != 2
-    ):
-        raise FactorGovernanceError("Factor preparation requires exactly two implementations")
     pointer_path = Path(str(gate["latest_pointer_path"])).resolve(strict=True)
     manifest_path = Path(str(gate["manifest_path"])).resolve(strict=True)
     pointer_raw = _read_regular(pointer_path, label="Market pointer")
@@ -692,6 +688,17 @@ def prepare_factor_production(  # noqa: C901
     prepared_at = execution_payload.get("observed_completed_at")
     if type(prepared_at) is not str:
         raise FactorGovernanceError("calendar capture completion time is invalid")
+    release_install_raw = capture_leaves["release-install-input.json"]
+    release_install_document = _strict_json(
+        release_install_raw, label="calendar release-install input"
+    )
+    if set(release_install_document) != {"release_install_evidence", "deployed_release"}:
+        raise FactorGovernanceError("calendar release-install input fields differ")
+    release_document = release_install_document["deployed_release"]
+    release_install_evidence = release_install_document["release_install_evidence"]
+    if type(release_document) is not dict or type(release_install_evidence) is not dict:
+        raise FactorGovernanceError("calendar release-install artifacts differ")
+    release_ref = _artifact_ref(release_document)
     if execution_payload.get("deployed_release_ref") != release_ref:
         raise FactorGovernanceError("calendar capture release differs from deployed release")
     release_install_evidence_ref = validate_object_ref(
@@ -700,10 +707,17 @@ def prepare_factor_production(  # noqa: C901
     )
     if release_install_evidence_ref["kind"] != "system.release_install_evidence":
         raise FactorGovernanceError("calendar release-install evidence kind differs")
-    release_install_verification = verify_release_install_input(
-        capture_leaves["release-install-input.json"],
+    release_install_verification = verify_running_release_install_input(
+        release_install_raw,
         repository_root=execution_payload["release_repository_root"],
     )
+    evidence_payload = release_install_evidence.get("payload")
+    if type(evidence_payload) is not dict:
+        raise FactorGovernanceError("release-install evidence payload differs")
+    final_commit = evidence_payload.get("final_commit")
+    final_tree = evidence_payload.get("final_tree")
+    if type(final_commit) is not str or type(final_tree) is not str:
+        raise FactorGovernanceError("release Git identity is absent")
     legacy = build_factor_legacy_zero_call_certificate_for_release(
         repository_root=execution_payload["release_repository_root"],
         final_commit=final_commit,
@@ -720,6 +734,18 @@ def prepare_factor_production(  # noqa: C901
         deployed_release_ref=release_ref,
         verified_at=prepared_at,
     )
+    release_repository_root = Path(str(execution_payload["release_repository_root"])).resolve(
+        strict=True
+    )
+    decision_raw = _git_blob(
+        release_repository_root,
+        commit=final_commit,
+        relative_path="operations/unified_cutover/bootstrap-decision.json",
+    )
+    _strict_json(decision_raw, label="frozen bootstrap decision")
+    implementation_semantics = [
+        installed_semantic_row(factor_id) for factor_id in (LOW_DOLLAR_VOLUME, BLEND_W80)
+    ]
     operation_inputs = {
         "as_of": cutoff,
         "market_pointer_sha256": _sha256(pointer_raw),
@@ -734,10 +760,8 @@ def prepare_factor_production(  # noqa: C901
         "release_ref": release_ref,
         "release_install_evidence_ref": release_install_evidence_ref,
         "release_install_verification": release_install_verification,
-        "factor_policy_ref": policy_ref,
-        "factor_active_set_ref": active_ref,
-        "factor_validation_attestation_ref": attestation_ref,
-        "factor_implementation_refs": implementation_refs,
+        "bootstrap_decision_sha256": _sha256(decision_raw),
+        "factor_implementation_semantics": implementation_semantics,
         "final_commit": final_commit,
         "final_tree": final_tree,
         "legacy_certificate_sha256": artifact_byte_sha256(legacy),
@@ -772,15 +796,10 @@ def prepare_factor_production(  # noqa: C901
     }
     _write_source(staging_root / "operation-inputs.json", operation_inputs_raw)
     store = SystemStore(workspace, source_root=source_root, source_root_id=source_root_id)
-    for ref, label in (
-        (release_ref, "deployed release"),
-        (release_install_evidence_ref, "release-install evidence"),
-        (policy_ref, "factor policy"),
-        (active_ref, "factor active set"),
-        (attestation_ref, "factor validation attestation"),
-        *[(ref, "factor implementation") for ref in implementation_refs],
-    ):
-        store.get_object(ref)
+    stored_release_ref = store.put_object(release_document)
+    stored_install_ref = store.put_object(release_install_evidence)
+    if stored_release_ref != release_ref or stored_install_ref != release_install_evidence_ref:
+        raise FactorGovernanceError("release-install object storage identity differs")
 
     def stage(
         relative: str,
@@ -1094,6 +1113,8 @@ def prepare_factor_production(  # noqa: C901
         )
         return sink.getvalue().to_pybytes()
 
+    market_rows.sort(key=lambda row: (row["trade_date"], row["symbol"].encode("utf-8")))
+    pit_rows.sort(key=lambda row: (row["signal_session"], row["symbol"].encode("utf-8")))
     factor_market_raw = parquet_bytes(market_rows, "market_history")
     factor_pit_raw = parquet_bytes(pit_rows, "pit_universe")
     factor_market_ref = stage(
@@ -1168,6 +1189,167 @@ def prepare_factor_production(  # noqa: C901
     )
     market_input_ref = store.put_object(market_input)
     legacy_ref = store.put_object(legacy)
+    recomputation = recompute_factor_production_signals(
+        exchange_calendar_path=source_root / runtime_parquet_ref["relative_path"],
+        pit_universe_path=source_root / "factor/pit-universe.parquet",
+        market_history_path=source_root / "factor/market-history.parquet",
+        exchange_calendar_sha256=runtime_parquet_ref["byte_sha256"],
+        pit_universe_sha256=_sha256(factor_pit_raw),
+        market_history_sha256=_sha256(factor_market_raw),
+        as_of=cutoff,
+    )
+
+    implementation_component_refs: dict[str, dict[str, str]] = {}
+    implementation_rows: list[dict[str, Any]] = []
+    for factor_id in (LOW_DOLLAR_VOLUME, BLEND_W80):
+        row = installed_semantic_row(factor_id)
+        component_ref = store.build_installed_component(
+            component_id=row["implementation_id"],
+            component_role="SOURCE_IMPLEMENTATION",
+            package_name="quant_investor.factors.governance",
+            module_names=[row["module_name"]],
+            entrypoint_specs=[(row["module_name"], row["qualified_name"])],
+            release_manifest_ref=release_ref,
+            created_at=prepared_at,
+        )
+        implementation_component_refs[factor_id] = component_ref
+        implementation_rows.append({**row, "implementation_component_ref": component_ref})
+    implementation_rows.sort(key=lambda row: row["factor_id"].encode("utf-8"))
+    implementation_refs = sorted(
+        implementation_component_refs.values(),
+        key=lambda ref: (
+            ref["kind"],
+            ref["contract_sha256"],
+            ref["artifact_id"],
+            ref["semantic_sha256"],
+            ref["byte_sha256"],
+        ),
+    )
+
+    def one_source_bundle(role: str, inner_role: str, ref: Mapping[str, Any]) -> dict[str, str]:
+        return store.put_object(
+            seal_artifact(
+                "system.source_bundle",
+                {
+                    "source_bundle_id": f"{operation_id}-bootstrap-{role}",
+                    "state": "IMMUTABLE",
+                    "sources": [{"role": inner_role, "source_ref": validate_object_ref(ref)}],
+                },
+                created_at=prepared_at,
+            )
+        )
+
+    bootstrap_market_bundle_ref = one_source_bundle("market", "market", factor_market_ref)
+
+    implementation_raw = canonical_json_bytes(
+        {
+            "domain": "myquant-bootstrap-implementation-tree-manifest",
+            "implementation_rows": implementation_rows,
+        }
+    )
+    recomputation_raw = canonical_json_bytes(
+        {
+            "authority": "NON_AUTHORIZING",
+            "domain": "myquant-bootstrap-recomputation",
+            "result": "EXACT_MATCH",
+            "recomputation": recomputation,
+            "source_sha256s": {
+                "exchange_calendar": store.get_object(runtime_parquet_source_ref)["payload"][
+                    "byte_sha256"
+                ],
+                "market_history": store.get_object(factor_market_ref)["payload"]["byte_sha256"],
+                "pit_universe": store.get_object(factor_pit_ref)["payload"]["byte_sha256"],
+            },
+        }
+    )
+    source_generation_body = {
+        "authority": "NON_AUTHORIZING",
+        "domain": "myquant-bootstrap-source-generation",
+        "reader_contract": {
+            "reader": "MarketDataReader",
+            "market": "CN",
+            "mode_policy": "strict",
+            "source_format": "PARQUET",
+            "fallback_allowed": False,
+        },
+        "source_rows": sorted(
+            [
+                {
+                    "role": role,
+                    "source_ref": ref,
+                    "source_byte_sha256": store.get_object(ref)["payload"]["byte_sha256"],
+                }
+                for role, ref in (
+                    ("exchange_calendar", runtime_parquet_source_ref),
+                    ("market", factor_market_ref),
+                    ("pit_universe", factor_pit_ref),
+                )
+            ],
+            key=lambda row: row["role"].encode("utf-8"),
+        ),
+    }
+    source_generation_raw = canonical_json_bytes(
+        {
+            **source_generation_body,
+            "generation_sha256": _sha256(canonical_json_bytes(source_generation_body)),
+        }
+    )
+    decision_source_ref = stage(
+        "operations/unified_cutover/bootstrap-decision.json",
+        decision_raw,
+        source_object_id="factor-bootstrap-decision",
+        source_format="JSON",
+        media_type="application/json",
+    )
+    implementation_source_ref = stage(
+        "bootstrap/implementation-tree.json",
+        implementation_raw,
+        source_object_id="factor-bootstrap-implementation",
+        source_format="JSON",
+        media_type="application/json",
+    )
+    bootstrap_recomputation_ref = stage(
+        "bootstrap/recomputation.json",
+        recomputation_raw,
+        source_object_id="factor-bootstrap-recomputation",
+        source_format="JSON",
+        media_type="application/json",
+    )
+    source_generation_ref = stage(
+        "bootstrap/source-generation.json",
+        source_generation_raw,
+        source_object_id="factor-bootstrap-source-generation",
+        source_format="JSON",
+        media_type="application/json",
+    )
+
+    factor_store = FactorValidationStore.for_sealed_operation(
+        system_store=store,
+        trusted_at=prepared_at,
+    )
+    bootstrap = factor_store.initialize_bootstrap(
+        release_ref=release_ref,
+        decision_source_bundle_ref=one_source_bundle(
+            "decision", "bootstrap_decision", decision_source_ref
+        ),
+        exchange_calendar_bundle_ref=one_source_bundle(
+            "calendar", "calendar", runtime_parquet_source_ref
+        ),
+        implementation_bundle_ref=one_source_bundle(
+            "implementation", "implementation_tree_manifest", implementation_source_ref
+        ),
+        market_bundle_ref=bootstrap_market_bundle_ref,
+        pit_universe_bundle_ref=one_source_bundle("pit", "pit", factor_pit_ref),
+        recomputation_bundle_ref=one_source_bundle(
+            "recomputation", "recomputation", bootstrap_recomputation_ref
+        ),
+        source_generation_bundle_ref=one_source_bundle(
+            "source-generation", "source_generation", source_generation_ref
+        ),
+    )
+    policy_ref = bootstrap.policy_ref
+    active_ref = bootstrap.active_set_ref
+    attestation_ref = bootstrap.intrinsic_receipt_ref
     source_closure = build_factor_production_source_closure(
         deployed_release_ref=release_ref,
         release_install_evidence_ref=release_install_evidence_ref,
@@ -1188,15 +1370,6 @@ def prepare_factor_production(  # noqa: C901
         created_at=prepared_at,
     )
     source_closure_ref = store.put_object(source_closure)
-    recomputation = recompute_factor_production_signals(
-        exchange_calendar_path=source_root / runtime_parquet_ref["relative_path"],
-        pit_universe_path=source_root / "factor/pit-universe.parquet",
-        market_history_path=source_root / "factor/market-history.parquet",
-        exchange_calendar_sha256=runtime_parquet_ref["byte_sha256"],
-        pit_universe_sha256=_sha256(factor_pit_raw),
-        market_history_sha256=_sha256(factor_market_raw),
-        as_of=cutoff,
-    )
     evidence = build_factor_production_recomputation_evidence(
         source_closure=source_closure,
         deployed_release_ref=release_ref,
