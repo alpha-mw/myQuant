@@ -195,19 +195,25 @@ def _git_blob(root: Path, *, commit: str, relative_path: str) -> bytes:
 
 
 def _read_regular(  # noqa: C901
-    path: Path, *, label: str, maximum_bytes: int = 512 * 1024 * 1024
+    path: Path,
+    *,
+    label: str,
+    maximum_bytes: int = 512 * 1024 * 1024,
+    allow_public_read: bool = False,
 ) -> bytes:
     try:
         metadata = path.lstat()
     except OSError as exc:
         raise FactorGovernanceError(f"{label} is unavailable") from exc
+    mode = stat.S_IMODE(metadata.st_mode)
+    rejected_mode_bits = 0o133 if allow_public_read else 0o177
     if (
         not stat.S_ISREG(metadata.st_mode)
         or stat.S_ISLNK(metadata.st_mode)
         or metadata.st_uid != os.geteuid()
         or metadata.st_nlink != 1
-        or stat.S_IMODE(metadata.st_mode) & 0o177
-        or not stat.S_IMODE(metadata.st_mode) & 0o400
+        or mode & rejected_mode_bits
+        or not mode & 0o400
         or metadata.st_size <= 0
         or metadata.st_size > maximum_bytes
     ):
@@ -641,8 +647,16 @@ def prepare_factor_production(  # noqa: C901
         raise FactorGovernanceError("Market-bound PIT generation is unavailable")
     pointer_path = Path(str(gate["latest_pointer_path"])).resolve(strict=True)
     manifest_path = Path(str(gate["manifest_path"])).resolve(strict=True)
-    pointer_raw = _read_regular(pointer_path, label="Market pointer")
-    manifest_raw = _read_regular(manifest_path, label="Market snapshot manifest")
+    pointer_raw = _read_regular(
+        pointer_path,
+        label="Market pointer",
+        allow_public_read=True,
+    )
+    manifest_raw = _read_regular(
+        manifest_path,
+        label="Market snapshot manifest",
+        allow_public_read=True,
+    )
     pointer_document = _strict_json(pointer_raw, label="Market pointer")
     manifest_document = _strict_json(manifest_raw, label="Market snapshot manifest")
     canonical_pit_path = Path(str(pit_binding["canonical_path"])).resolve(strict=True)

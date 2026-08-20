@@ -2142,7 +2142,7 @@ def _factor_production_operator_fixture(  # noqa: C901
     market_manifest_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     for path in (market_pointer_path, market_manifest_path):
         path.write_bytes(canonical_json_bytes(market_document))
-        path.chmod(0o600)
+        path.chmod(0o644)
     frames = {
         symbol: SimpleNamespace(
             frame=pd.DataFrame(
@@ -2295,6 +2295,14 @@ def _factor_production_operator_fixture(  # noqa: C901
         not factor_pointer.exists() and not factor_marker.exists() and not system_pointer.exists()
     )
     monkeypatch.setattr(prepare_module, "_rename_no_replace", original_rename)
+
+    market_pointer_path.chmod(0o664)
+    with pytest.raises(FactorGovernanceError, match="bounded regular file"):
+        prepare_factor_production(**arguments)
+    market_pointer_path.chmod(0o644)
+    assert (
+        not factor_pointer.exists() and not factor_marker.exists() and not system_pointer.exists()
+    )
 
     fundamental_pointer = workspace / "data/fundamental/_latest.json"
     fundamental_pointer.parent.mkdir(parents=True, mode=0o700)
