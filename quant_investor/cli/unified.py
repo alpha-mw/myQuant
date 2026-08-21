@@ -527,6 +527,16 @@ def factor_production_signal(*, workspace_root: str, factor_id: str) -> dict[str
     }
 
 
+def factor_production_observe(*, workspace_root: str) -> dict[str, Any]:
+    """Register immutable LOW/W80 observations for the verified active head."""
+
+    from quant_investor.factors.production_observation import (
+        register_factor_production_observations,
+    )
+
+    return register_factor_production_observations(workspace_root)
+
+
 def _factor_activation_projection(
     activated: dict[str, Any],
     *,
@@ -1213,6 +1223,7 @@ __all__ = [
     "factor_observe",
     "factor_production_activate",
     "factor_production_rollover",
+    "factor_production_observe",
     "factor_production_signal",
     "factor_production_status",
     "factor_production_verify",

@@ -20,6 +20,7 @@ from quant_investor.cli.unified import (
     factor_mine,
     factor_observe,
     factor_production_activate,
+    factor_production_observe,
     factor_production_rollover,
     factor_production_signal,
     factor_production_status,
@@ -677,6 +678,11 @@ def _build_parser() -> argparse.ArgumentParser:
             "pv_blend_volstab19x2_mom90_amihud5_w80",
         ),
     )
+    factor_observe_parser = factor_subparsers.add_parser(
+        "production-observe",
+        help="为当前活动 LOW/W80 generation 登记不可变非授权前瞻观察",
+    )
+    _add_workspace_argument(factor_observe_parser)
     factor_activate_parser = factor_subparsers.add_parser(
         "production-activate",
         help="从严格 source closure 执行唯一 expected-EMPTY Factor 首次激活",
@@ -1320,6 +1326,10 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
                 factor_id=args.factor_id,
             )
         )
+        return
+
+    if args.command == "factor" and args.factor_command == "production-observe":
+        _print_json(factor_production_observe(workspace_root=args.workspace_root))
         return
 
     if args.command == "factor" and args.factor_command == "production-activate":

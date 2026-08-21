@@ -126,6 +126,23 @@ exact-preimage CAS. Canonical Market/PIT bytes are rehashed under the Factor
 lock immediately before replacement. The marker is never rewritten.
 
 Daily immutable generations accumulate source-bound LOW/W80 signal history.
-They are not prospective admission observations: until an exact registered
-prospective cycle exists, report `prospective_evidence_status=NOT_CONFIGURED`
-and do not invent IC, RankIC, horizon outcomes or maturity.
+After a successful rollover or governed no-action, register the active head:
+
+```bash
+quant-investor factor production-observe --workspace-root <workspace>
+```
+
+This command deep-verifies the active Factor closure once, takes the same
+Factor lock used by rollover, and writes exact-once LOW/W80 observations under
+`results/factors/observations/YYYY/MM/DD/`. Each `OPEN` observation binds the
+generation and pointer, signal and symbol-set SHA, Market/PIT pointer and
+manifest SHA, PIT membership, Calendar compilation and Calendar custody. A
+same-input rerun is `NO_ACTION`; a same-date conflict fails closed.
+
+`factor.production_observation` is non-authorizing production signal evidence.
+It is deliberately distinct from `factor.prospective_observation`, the mature
+390-session admission lifecycle artifact. An `OPEN` production observation
+proves only that the signal was sealed before its future outcomes. Until target
+sessions arrive, report `outcome_state=WAITING_FOR_FUTURE_SESSIONS`; do not
+invent IC, RankIC, horizon outcomes or maturity. Production observation never
+changes Factor, System, Mainline, portfolio, broker, order, or trade authority.

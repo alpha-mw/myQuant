@@ -85,6 +85,7 @@ FACTOR_ROLLOVER_BUNDLES_ROOT: Final = FACTOR_ROOT / "rollover_bundles"
 FACTOR_ROLLOVER_TRANSACTIONS_ROOT: Final = FACTOR_ROOT / "rollover_transactions"
 FACTOR_ROLLOVER_COMMITS_ROOT: Final = FACTOR_ROOT / "rollover_commits"
 FACTOR_ROLLOVER_INPUT_INDEX_ROOT: Final = FACTOR_ROOT / "rollover_input_index"
+FACTOR_PRODUCTION_OBSERVATIONS_ROOT: Final = FACTOR_ROOT / "observations"
 FACTOR_POINTER_CHAIN_MAX: Final = 4096
 
 FACTOR_READINESS_READY: Final = "READY"
@@ -3991,6 +3992,82 @@ class FactorProductionStore:
             "trade_authority": "NONE",
         }
 
+    def read_active_observation_inputs(self) -> dict[str, Any]:
+        """Read one verified active head for non-authorizing daily observation.
+
+        The caller must hold ``_active_lock`` across this read and publication.
+        This returns both active signals after one deep replay, avoiding two
+        independent verification windows for the same observation batch.
+        """
+
+        verification = self.verify_active()
+        if verification.get("factor_authority") != FACTOR_AUTHORITY_ACTIVE:
+            _raise("Factor production observation requires complete active authority")
+        pointer_stored = self.read(FACTOR_ACTIVE_POINTER_PATH)
+        marker_stored = self.read(FACTOR_PRODUCTION_MARKER_PATH)
+        if (
+            pointer_stored.byte_sha256 != verification["factor_pointer_byte_sha256"]
+            or marker_stored.byte_sha256 != verification["marker_byte_sha256"]
+        ):
+            _raise("Factor production authority changed during observation read")
+        generation = self._read_generation_for_pointer(
+            pointer_stored.data, label="Factor production observation"
+        )
+        payload = generation["payload"]
+        if payload["as_of"] != verification["as_of"]:
+            _raise("Factor production observation date differs from verified head")
+        if pointer_stored.byte_sha256 == verification["genesis_pointer_sha256"]:
+            _raise("Factor production genesis observation lacks exact PIT pointer binding")
+        else:
+            bundle = validate_factor_production_rollover_bundle(
+                self.read(
+                    FACTOR_PREPARATIONS_ROOT / pointer_stored.byte_sha256 / "rollover-bundle.json"
+                ).data
+            )["payload"]
+            if (
+                bundle["target_pointer_sha256"] != pointer_stored.byte_sha256
+                or bundle["target_date"] != payload["as_of"]
+            ):
+                _raise("Factor observation rollover binding differs")
+            market_pointer_sha256 = bundle["market_pointer_sha256"]
+            market_manifest_sha256 = bundle["market_manifest_sha256"]
+            pit_pointer_sha256 = bundle["pit_pointer_sha256"]
+            pit_manifest_sha256 = bundle["pit_manifest_sha256"]
+        statistics = {row["factor_id"]: row for row in payload["signal_statistics"]}
+        factor_rows = []
+        for factor_id, alias, signal_field in (
+            (LOW_DOLLAR_VOLUME, "LOW", "low_signal_sha256"),
+            (BLEND_W80, "W80", "w80_signal_sha256"),
+        ):
+            statistic = statistics[factor_id]
+            factor_rows.append(
+                {
+                    "factor_id": factor_id,
+                    "factor_alias": alias,
+                    "signal_sha256": payload[signal_field],
+                    "signal_symbol_set_sha256": statistic["signal_symbol_set_sha256"],
+                    "symbol_count": len(payload["signal_values"][factor_id]),
+                }
+            )
+        return {
+            "signal_date": payload["as_of"],
+            "factor_generation_id": payload["factor_production_generation_id"],
+            "factor_generation_sha256": verification["factor_generation_sha256"],
+            "factor_pointer_sha256": pointer_stored.byte_sha256,
+            "market_pointer_sha256": market_pointer_sha256,
+            "market_manifest_sha256": market_manifest_sha256,
+            "pit_pointer_sha256": pit_pointer_sha256,
+            "pit_manifest_sha256": pit_manifest_sha256,
+            "pit_membership_sha256": self._read_artifact_ref(
+                payload["market_input_ref"], label="Factor observation PIT input"
+            )["payload"]["pit_membership_sha256"],
+            "calendar_compilation_ref": payload["calendar_compilation_ref"],
+            "calendar_capture_custody_attestation_ref": payload[
+                "calendar_capture_custody_attestation_ref"
+            ],
+            "factor_rows": factor_rows,
+        }
+
 
 def verify_factor_production(
     workspace_root: str | os.PathLike[str],
@@ -4014,6 +4091,7 @@ __all__ = [
     "FACTOR_AUTHORITY_ACTIVE",
     "FACTOR_EMPTY_POINTER_SHA256",
     "FACTOR_PRODUCTION_MARKER_PATH",
+    "FACTOR_PRODUCTION_OBSERVATIONS_ROOT",
     "FACTOR_PRODUCTION_GENERATION_KIND",
     "FACTOR_PRODUCTION_MARKET_INPUT_KIND",
     "FACTOR_PRODUCTION_SCOPE",

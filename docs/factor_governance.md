@@ -33,6 +33,15 @@ Factor generation, and sealed signals. They report
 and grant neither System nor trading authority. The sole first-activation
 operator is documented in `docs/runbooks/factor_production.md`.
 
+After daily rollover, `factor production-observe` may append exact-once OPEN
+`factor.production_observation` records for the sealed LOW/W80 head. These
+records bind the Factor generation/pointer, signal/symbol set, Market/PIT and
+Calendar closure and are non-authorizing. They are deliberately distinct from
+the mature `factor.prospective_observation` used by the 390-session admission
+lifecycle. OPEN production observations prove preregistration only; future
+outcomes, IC, RankIC, maturity and admission remain unavailable until their
+separate exact gates close.
+
 ## Lifecycle
 
 ```text

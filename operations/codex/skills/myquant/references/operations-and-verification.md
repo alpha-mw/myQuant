@@ -109,8 +109,14 @@ PIT/Market/100-session History must replay at one target date. Shadow readiness
 never authorizes rollover. The permanent marker is a genesis anchor and is
 never updated by rollover. Equal inputs produce governed no-action.
 
-Prospective evidence remains `NOT_CONFIGURED` unless the exact registered
-prospective lifecycle is present.
+After rollover/no-action, `factor production-observe --workspace-root <root>`
+may write exact-once OPEN LOW/W80 observations under the Factor root. It binds
+the active generation/pointer, signal/symbol-set, Market/PIT, and Calendar
+closure and grants no authority. Same-input replay is no-action and a same-date
+conflict fails closed. OPEN production observations are not mature outcomes or
+the separate admission lifecycle: keep outcomes waiting for their future
+sessions and keep prospective admission `NOT_CONFIGURED` unless its exact
+registered lifecycle is present.
 
 ## Prospective Factor health
 

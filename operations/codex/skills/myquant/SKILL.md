@@ -96,11 +96,16 @@ receipt and expected pointer SHA. Neither grants portfolio or trading
 authority.
 
 Daily immutable Factor generations are production signal history, not the
-registered prospective admission lifecycle. Unless an exact preregistration
-cycle exists, report prospective evidence as `NOT_CONFIGURED`; do not invent
-IC, RankIC, horizon outcomes, maturity, or graduation evidence. Macro and
-Fundamental blockers remain visible but do not block LOW/W80 when the sealed
-active Factor set does not consume them.
+registered prospective admission lifecycle. `factor production-observe` may
+append exact-once OPEN LOW/W80 production observations after a verified daily
+head. These are non-authorizing preregistration evidence, not the mature
+`factor.prospective_observation` used for admission. Report their exact state
+and SHA when present, but keep outcome evidence `WAITING_FOR_FUTURE_SESSIONS`
+until target sessions arrive and keep prospective admission `NOT_CONFIGURED`
+unless its separate exact lifecycle exists. Do not invent IC, RankIC, horizon
+outcomes, maturity, or graduation evidence. Macro and Fundamental blockers
+remain visible but do not block LOW/W80 when the sealed active Factor set does
+not consume them.
 
 PIT `stock_basic` has one separate endpoint-local evidence grammar for legacy
 delisted provider identities: exact `^T[0-9]{6}\.SH$` rows in the D partition
