@@ -40,22 +40,36 @@ weights, unrealized P&L, absolute cumulative return, continuity interval return,
 and portfolio drawdown. Benchmark-relative metrics keep their own verified
 date; they are never forward-filled to the later portfolio mark.
 
-## Fail-closed selector
+## Last-good selector and attempt receipts
 
 The private page accepts v2 only when the Dashboard selector is `UPDATED`, its
 attempt ID and content SHA match v2, the nested v1 equals the separately loaded
-v1, and the view has not expired at Shanghai midnight.
+v1, and the view has not expired at Shanghai midnight. Refresh work is staged
+and checked before the selector changes. A failed attempt preserves the last
+good selector and bundle bytes and writes an immutable receipt under
+`portfolio_dashboard/private/generated/attempts/`.
 
 ```text
-refresh starts     -> selector REFRESHING
-all checks pass    -> selector UPDATED (published last)
-any failure        -> selector BLOCKED
-process interruption -> selector remains REFRESHING
+refresh starts       -> last-good selector unchanged
+all checks pass      -> selector UPDATED (published last)
+any failure          -> last-good selector unchanged + BLOCKED attempt receipt
+process interruption -> last-good selector unchanged
 ```
 
-This prevents an earlier same-day successful bundle from continuing to look
-current after a later refresh fails. The selector and v2 are Dashboard-only;
-they have no Store, market, broker, order, Paper, or trade authority.
+Freshness expiry still prevents an old successful bundle from presenting as
+current after Shanghai midnight. The selector and v2 are Dashboard-only; they
+have no Store, market, broker, order, Paper, or trade authority.
+
+## Benchmark tail separation
+
+The canonical portfolio series may extend beyond one or more benchmark inputs.
+Only a trailing benchmark gap is allowed. Portfolio NAV and absolute return
+remain exact through the canonical performance date, while missing benchmark
+NAV, relative return and excess fields are `null`, coverage is `unavailable`,
+and each benchmark reports its last exact `end_date` plus exact
+`missing_dates`. A middle-of-history benchmark gap remains blocking. V2 may
+therefore report current holdings/absolute performance separately from
+`benchmark_relative=AS_OF_PRIOR_DATE`.
 
 ## Daily commands
 

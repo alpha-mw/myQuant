@@ -63,6 +63,69 @@ _OUTPUT_FILENAMES = (
 )
 
 
+def _publish_attempt_receipt(
+    *,
+    project_root: Path,
+    attempt_id: str,
+    status: str,
+    updated_at: str,
+    reason: str,
+    selector_sha256: str | None,
+) -> Path:
+    """Append one immutable refresh receipt without changing the serving selector."""
+
+    if status not in {"SUCCESS", "BLOCKED"}:
+        raise DashboardInputError("dashboard_attempt_status_invalid")
+    if not attempt_id or any(
+        character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-"
+        for character in attempt_id
+    ):
+        raise DashboardInputError("dashboard_attempt_id_invalid")
+    output_root = expected_private_dashboard_output_path(
+        project_root, "cn_aggressive_dashboard.v1.json"
+    ).parent
+    attempts_root = output_root / "attempts"
+    if attempts_root.is_symlink():
+        raise DashboardInputError("dashboard_attempt_root_symlink_forbidden")
+    attempts_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(attempts_root, 0o700)
+    target = attempts_root / f"{attempt_id}.json"
+    if target.is_symlink():
+        raise DashboardInputError("dashboard_attempt_path_symlink_forbidden")
+    body = {
+        "schema_version": "cn_aggressive_dashboard_refresh_attempt.v1",
+        "attempt_id": attempt_id,
+        "status": status,
+        "updated_at": updated_at,
+        "reason": reason[:512],
+        "serving_selector_sha256": selector_sha256,
+    }
+    body["content_sha256"] = hashlib.sha256(
+        json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    raw = _render_json(body)
+    if target.exists():
+        if target.read_bytes() != raw:
+            raise DashboardInputError("dashboard_attempt_receipt_conflict")
+        return target
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=attempts_root)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            os.fchmod(handle.fileno(), 0o600)
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.link(temporary, target)
+        os.chmod(target, 0o600)
+        if target.read_bytes() != raw:
+            raise DashboardInputError("dashboard_attempt_receipt_readback_mismatch")
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+    return target
+
+
 def _expected_output_paths(
     project_root: Path,
 ) -> tuple[Path, Path, Path, Path, Path, Path]:
@@ -354,6 +417,7 @@ def main() -> int:
     generated_at = args.generated_at or datetime.now().astimezone().isoformat(timespec="seconds")
     today = date.fromisoformat(args.today) if args.today else date.today()
     selector_paths: tuple[Path, Path] | None = None
+    previous_selector_sha256: str | None = None
     attempt_id = args.attempt_id or (
         "dashboard-v2-"
         + hashlib.sha256((generated_at + "|" + uuid.uuid4().hex).encode("utf-8")).hexdigest()[:24]
@@ -368,18 +432,8 @@ def main() -> int:
             selector_js_path,
         ) = _resolve_output_paths(args, project_root)
         selector_paths = (selector_json_path, selector_js_path)
-        publish_selector(
-            build_selector(
-                attempt_id=attempt_id,
-                status="REFRESHING",
-                updated_at=generated_at,
-                reason="refresh_started",
-            ),
-            json_path=selector_json_path,
-            js_path=selector_js_path,
-            project_root=project_root,
-            js_first=True,
-        )
+        if selector_json_path.exists():
+            previous_selector_sha256 = hashlib.sha256(selector_json_path.read_bytes()).hexdigest()
         record_root = args.record_root.resolve()
         history_integrity_path = _catalog_history_integrity_path(
             project_root=project_root,
@@ -394,6 +448,7 @@ def main() -> int:
             generated_at=generated_at,
             today=today,
             history_integrity_path=history_integrity_path,
+            benchmark_gap_policy="allow_trailing",
         )
         if bundle["status"] == "BLOCKED":
             raise DashboardInputError("export_blocked")
@@ -429,20 +484,24 @@ def main() -> int:
             project_root=project_root,
             js_first=False,
         )
+        _publish_attempt_receipt(
+            project_root=project_root,
+            attempt_id=attempt_id,
+            status="SUCCESS",
+            updated_at=generated_at,
+            reason="refresh_completed",
+            selector_sha256=hashlib.sha256(selector_json_path.read_bytes()).hexdigest(),
+        )
     except (DashboardInputError, DashboardV2Error, OSError, ValueError) as exc:
         if selector_paths is not None:
             try:
-                publish_selector(
-                    build_selector(
-                        attempt_id=attempt_id,
-                        status="BLOCKED",
-                        updated_at=generated_at,
-                        reason="refresh_failed:" + str(exc)[:512],
-                    ),
-                    json_path=selector_paths[0],
-                    js_path=selector_paths[1],
+                _publish_attempt_receipt(
                     project_root=project_root,
-                    js_first=False,
+                    attempt_id=attempt_id,
+                    status="BLOCKED",
+                    updated_at=generated_at,
+                    reason="refresh_failed:" + str(exc),
+                    selector_sha256=previous_selector_sha256,
                 )
             except (OSError, ValueError):
                 pass

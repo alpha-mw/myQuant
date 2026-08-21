@@ -374,6 +374,30 @@ const missingBenchmark = structuredClone(sample);
 missingBenchmark.benchmarks = [];
 assert.strictEqual(Contract.deriveSnapshot(missingBenchmark).status, "BLOCKED");
 
+const trailingBenchmarkGap = structuredClone(sample);
+trailingBenchmarkGap.status = "PARTIAL";
+const trailingPoint = trailingBenchmarkGap.portfolio.performance_points[trailingBenchmarkGap.portfolio.performance_points.length - 1];
+trailingPoint.csi300_nav = null;
+trailingPoint.csi300_cumulative_return = null;
+trailingPoint.cumulative_excess_return = null;
+trailingPoint.benchmark_coverage = "unavailable";
+trailingPoint.benchmark_value_date = null;
+["star50_", "chinext_"].forEach((prefix) => {
+  trailingPoint[prefix + "nav"] = null;
+  trailingPoint[prefix + "cumulative_return"] = null;
+  trailingPoint[prefix + "benchmark_coverage"] = "unavailable";
+  trailingPoint[prefix + "benchmark_value_date"] = null;
+});
+trailingBenchmarkGap.benchmarks.forEach((row) => {
+  row.end_date = trailingBenchmarkGap.portfolio.performance_points[trailingBenchmarkGap.portfolio.performance_points.length - 2].date;
+  row.missing_dates = [trailingPoint.date];
+  row.coverage[row.coverage.length - 1] = "unavailable";
+});
+assert.strictEqual(Contract.deriveSnapshot(trailingBenchmarkGap).status, "PARTIAL");
+const trailingAnalysis = Analysis.buildAnalysis(trailingBenchmarkGap);
+assert.strictEqual(trailingAnalysis.points.length, trailingBenchmarkGap.portfolio.performance_points.length);
+assert.strictEqual(trailingAnalysis.benchmark_drawdown.length, trailingAnalysis.points.length - 1);
+
 const fakeI1 = structuredClone(sample);
 fakeI1.i1_display_status = "INFERRED_FROM_FREE_TEXT";
 assert.strictEqual(Contract.deriveSnapshot(fakeI1).status, "BLOCKED");

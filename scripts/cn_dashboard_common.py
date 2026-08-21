@@ -17,7 +17,7 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from quant_investor.strategy_records.store import (
     StrategyRecordStoreError,
@@ -2739,7 +2739,10 @@ def build_bundle(
     generated_at: str,
     today: date,
     history_integrity_path: Path | None = None,
+    benchmark_gap_policy: str = "strict",
 ) -> dict[str, Any]:
+    if benchmark_gap_policy not in {"strict", "allow_trailing"}:
+        raise DashboardInputError("benchmark_gap_policy_invalid")
     registered_projection = _registered_dashboard_projection(
         record_root=record_root, project_root=project_root
     )
@@ -2897,11 +2900,22 @@ def build_bundle(
     for spec in BENCHMARK_SPECS:
         rows = _read_benchmark_rows(benchmark_artifact, spec["ts_code"])
         missing_dates = [value for value in required_dates if value not in rows]
-        if missing_dates:
+        if missing_dates and benchmark_gap_policy == "strict":
             raise DashboardInputError(
                 spec["id"].lower() + "_benchmark_missing_dates:" + ",".join(missing_dates)
             )
-        selected = [rows[value] for value in required_dates]
+        if missing_dates:
+            first_missing = required_dates.index(missing_dates[0])
+            if any(value in rows for value in required_dates[first_missing + 1 :]):
+                raise DashboardInputError(
+                    spec["id"].lower() + "_benchmark_non_trailing_gap:" + ",".join(missing_dates)
+                )
+            selected_dates = required_dates[:first_missing]
+        else:
+            selected_dates = required_dates
+        if len(selected_dates) < 2:
+            raise DashboardInputError(spec["id"].lower() + "_benchmark_prefix_too_short")
+        selected = [rows[value] for value in selected_dates]
         first_close = selected[0]["close"]
         if first_close <= 0:
             raise DashboardInputError(spec["id"].lower() + "_initial_close_not_positive")
@@ -2909,6 +2923,8 @@ def build_bundle(
         benchmark_series[spec["id"]] = {
             "spec": spec,
             "rows": selected,
+            "selected_dates": selected_dates,
+            "missing_dates": missing_dates,
             "nav": nav,
             "return": nav[-1] / nav[0] - 1.0,
             "max_drawdown": _max_drawdown(nav),
@@ -3018,11 +3034,41 @@ def build_bundle(
         status_gaps.append(legacy_warning)
     if historical_rejected:
         warnings.append("historical_performance_records_rejected:" f"{len(historical_rejected)}")
+    benchmark_tail_warnings = []
+    for factor_id, series in sorted(benchmark_series.items()):
+        if series["missing_dates"]:
+            warning = (
+                "benchmark_relative_as_of_prior_date:"
+                + factor_id
+                + ":"
+                + series["selected_dates"][-1]
+                + ":missing="
+                + ",".join(series["missing_dates"])
+            )
+            warnings.append(warning)
+            status_gaps.append(warning)
+            benchmark_tail_warnings.append(warning)
     status = "PARTIAL" if status_gaps else "FRESH"
 
     performance_points: list[dict[str, Any]] = []
     for index, row in enumerate(unitized):
-        csi300 = benchmark_series["CSI300"]
+
+        def benchmark_point(series: Mapping[str, Any], prefix: str) -> dict[str, Any]:
+            if index >= len(series["nav"]):
+                return {
+                    prefix + "nav": None,
+                    prefix + "cumulative_return": None,
+                    prefix + "benchmark_coverage": "unavailable",
+                    prefix + "benchmark_value_date": None,
+                }
+            return {
+                prefix + "nav": series["nav"][index],
+                prefix + "cumulative_return": series["nav"][index] / series["nav"][0] - 1.0,
+                prefix + "benchmark_coverage": series["rows"][index]["coverage"],
+                prefix + "benchmark_value_date": series["rows"][index]["value_date"],
+            }
+
+        csi300_values = benchmark_point(benchmark_series["CSI300"], "csi300_")
         point = {
             "date": row["date"],
             "record": row["record"],
@@ -3031,23 +3077,23 @@ def build_bundle(
             "adjusted_total_value": row["adjusted_total_value"],
             "portfolio_unit_nav": row["unit_nav"],
             "portfolio_cumulative_return": row["unit_nav"] - 1.0,
-            "csi300_nav": csi300["nav"][index],
-            "csi300_cumulative_return": csi300["nav"][index] / csi300["nav"][0] - 1.0,
-            "cumulative_excess_return": (row["unit_nav"] - csi300["nav"][index]),
-            "benchmark_coverage": csi300["rows"][index]["coverage"],
-            "benchmark_value_date": csi300["rows"][index]["value_date"],
+            "csi300_nav": csi300_values["csi300_nav"],
+            "csi300_cumulative_return": csi300_values["csi300_cumulative_return"],
+            "cumulative_excess_return": (
+                None
+                if csi300_values["csi300_nav"] is None
+                else row["unit_nav"] - csi300_values["csi300_nav"]
+            ),
+            "benchmark_coverage": csi300_values["csi300_benchmark_coverage"],
+            "benchmark_value_date": csi300_values["csi300_benchmark_value_date"],
             "evidence_status": row["evidence_status"],
             "risk_free_annual_yield": aligned_risk_free[index]["annual_yield"],
             "risk_free_coverage": aligned_risk_free[index]["coverage"],
             "risk_free_value_date": aligned_risk_free[index]["value_date"],
         }
         for spec in BENCHMARK_SPECS[1:]:
-            series = benchmark_series[spec["id"]]
-            prefix = spec["point_prefix"]
-            point[prefix + "_nav"] = series["nav"][index]
-            point[prefix + "_cumulative_return"] = series["nav"][index] / series["nav"][0] - 1.0
-            point[prefix + "_benchmark_coverage"] = series["rows"][index]["coverage"]
-            point[prefix + "_benchmark_value_date"] = series["rows"][index]["value_date"]
+            prefix = spec["point_prefix"] + "_"
+            point.update(benchmark_point(benchmark_series[spec["id"]], prefix))
         performance_points.append(point)
 
     benchmark_payload = [
@@ -3058,12 +3104,19 @@ def build_bundle(
             "source_path": benchmark_artifact.relative_path,
             "source_sha256": benchmark_artifact.sha256,
             "start_date": required_dates[0],
-            "end_date": required_dates[-1],
+            "end_date": benchmark_series[spec["id"]]["selected_dates"][-1],
             "return": benchmark_series[spec["id"]]["return"],
-            "excess_return": (cumulative_return - benchmark_series[spec["id"]]["return"]),
+            "excess_return": (
+                portfolio_nav[len(benchmark_series[spec["id"]]["nav"]) - 1] / portfolio_nav[0]
+                - 1.0
+                - benchmark_series[spec["id"]]["return"]
+            ),
             "max_drawdown": benchmark_series[spec["id"]]["max_drawdown"],
-            "missing_dates": [],
-            "coverage": [row["coverage"] for row in benchmark_series[spec["id"]]["rows"]],
+            "missing_dates": benchmark_series[spec["id"]]["missing_dates"],
+            "coverage": [
+                *[row["coverage"] for row in benchmark_series[spec["id"]]["rows"]],
+                *["unavailable"] * len(benchmark_series[spec["id"]]["missing_dates"]),
+            ],
         }
         for spec in BENCHMARK_SPECS
     ]
@@ -3454,8 +3507,11 @@ def validate_bundle_shape(bundle: Any) -> list[str]:
         }
         if actual_benchmarks != expected_benchmarks:
             errors.append("usable_bundle_benchmark_set_invalid")
-        elif any(row.get("missing_dates") for row in benchmarks):
-            errors.append("usable_bundle_benchmark_has_gaps")
+        elif (
+            any(row.get("missing_dates") for row in benchmarks)
+            and bundle.get("status") != "PARTIAL"
+        ):
+            errors.append("benchmark_gaps_require_partial_status")
         risk_free = bundle.get("risk_free")
         if (
             not isinstance(risk_free, dict)
@@ -3514,15 +3570,79 @@ def validate_bundle_shape(bundle: Any) -> list[str]:
                         "excluded_external_flow",
                         "adjusted_total_value",
                         "portfolio_unit_nav",
-                        "csi300_nav",
-                        "star50_nav",
-                        "chinext_nav",
                         "risk_free_annual_yield",
                     )
                 )
                 for point in points
             ):
-                errors.append("performance_benchmark_values_invalid")
+                errors.append("performance_values_invalid")
+            elif any(
+                not (
+                    (
+                        all(
+                            _finite_number(point.get(key))
+                            for key in (
+                                "csi300_nav",
+                                "csi300_cumulative_return",
+                                "cumulative_excess_return",
+                            )
+                        )
+                        and point.get("benchmark_coverage")
+                        in {"exact_close", "previous_trading_day_ffill"}
+                        and isinstance(point.get("benchmark_value_date"), str)
+                    )
+                    or (
+                        all(
+                            point.get(key) is None
+                            for key in (
+                                "csi300_nav",
+                                "csi300_cumulative_return",
+                                "cumulative_excess_return",
+                            )
+                        )
+                        and point.get("benchmark_coverage") == "unavailable"
+                        and point.get("benchmark_value_date") is None
+                    )
+                )
+                for point in points
+            ):
+                errors.append("performance_csi300_availability_invalid")
+            elif any(
+                not (
+                    (
+                        all(
+                            _finite_number(point.get(prefix + key))
+                            for key in ("nav", "cumulative_return")
+                        )
+                        and point.get(prefix + "benchmark_coverage")
+                        in {"exact_close", "previous_trading_day_ffill"}
+                        and isinstance(point.get(prefix + "benchmark_value_date"), str)
+                    )
+                    or (
+                        all(point.get(prefix + key) is None for key in ("nav", "cumulative_return"))
+                        and point.get(prefix + "benchmark_coverage") == "unavailable"
+                        and point.get(prefix + "benchmark_value_date") is None
+                    )
+                )
+                for point in points
+                for prefix in ("star50_", "chinext_")
+            ):
+                errors.append("performance_aux_benchmark_availability_invalid")
+            elif any(
+                (
+                    not isinstance(row, dict)
+                    or not isinstance(row.get("missing_dates"), list)
+                    or not isinstance(row.get("coverage"), list)
+                    or len(row["coverage"]) != len(points)
+                    or row["coverage"].count("unavailable") != len(row["missing_dates"])
+                    or row["missing_dates"]
+                    != [point["date"] for point in points[-len(row["missing_dates"]) :]]
+                    if row.get("missing_dates")
+                    else False
+                )
+                for row in benchmarks
+            ):
+                errors.append("benchmark_trailing_gap_contract_invalid")
             elif portfolio.get("performance_start_date") != history.get(
                 "archive_start_date"
             ) or points[0].get("record") != history.get("archive_start_record"):

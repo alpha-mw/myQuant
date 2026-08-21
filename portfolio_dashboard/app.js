@@ -21,14 +21,17 @@
     if (node) node.textContent = value === null || value === undefined || value === "" ? "—" : String(value);
   }
   function money(value) {
+    if (value === null || value === undefined) return "UNKNOWN";
     var parsed = Number(value);
     return Number.isFinite(parsed) ? "¥" + parsed.toLocaleString("zh-CN", { maximumFractionDigits: 2 }) : "UNKNOWN";
   }
   function number(value) {
+    if (value === null || value === undefined) return "UNKNOWN";
     var parsed = Number(value);
     return Number.isFinite(parsed) ? parsed.toLocaleString("zh-CN", { maximumFractionDigits: 4 }) : "UNKNOWN";
   }
   function percent(value, signed) {
+    if (value === null || value === undefined) return "UNKNOWN";
     var parsed = Number(value);
     if (!Number.isFinite(parsed)) return "UNKNOWN";
     var result = (parsed * 100).toFixed(2) + "%";
@@ -238,8 +241,13 @@
         line.setAttribute("x2", x);
         line.removeAttribute("hidden");
         options.series.forEach(function (series, seriesIndex) {
+          var value = series.value(point, bounded);
+          if (!Number.isFinite(value)) {
+            dots[seriesIndex].setAttribute("hidden", "hidden");
+            return;
+          }
           dots[seriesIndex].setAttribute("cx", x);
-          dots[seriesIndex].setAttribute("cy", options.yScale(series.value(point, bounded)));
+          dots[seriesIndex].setAttribute("cy", options.yScale(value));
           dots[seriesIndex].removeAttribute("hidden");
         });
         var rows = options.tooltipRows(point, bounded);
@@ -317,13 +325,13 @@
     var end = parseDate(points[points.length - 1].date);
     var series = [
       { key: "portfolio", label: "组合", values: points.map(function (point) { return { date: point.date, value: point.portfolio_unit_nav * 100 }; }) },
-      { key: "benchmark", label: "沪深300", values: points.map(function (point) { return { date: point.date, value: point.csi300_nav * 100 }; }) },
-      { key: "star50", label: "科创50", values: points.map(function (point) { return { date: point.date, value: point.star50_nav * 100 }; }) },
-      { key: "chinext", label: "创业板指", values: points.map(function (point) { return { date: point.date, value: point.chinext_nav * 100 }; }) },
-      { key: "excess", label: "累计超额", values: points.map(function (point) { return { date: point.date, value: 100 + point.cumulative_excess_return * 100 }; }) }
+      { key: "benchmark", label: "沪深300", values: points.filter(function (point) { return Number.isFinite(point.csi300_nav); }).map(function (point) { return { date: point.date, value: point.csi300_nav * 100 }; }) },
+      { key: "star50", label: "科创50", values: points.filter(function (point) { return Number.isFinite(point.star50_nav); }).map(function (point) { return { date: point.date, value: point.star50_nav * 100 }; }) },
+      { key: "chinext", label: "创业板指", values: points.filter(function (point) { return Number.isFinite(point.chinext_nav); }).map(function (point) { return { date: point.date, value: point.chinext_nav * 100 }; }) },
+      { key: "excess", label: "累计超额", values: points.filter(function (point) { return Number.isFinite(point.cumulative_excess_return); }).map(function (point) { return { date: point.date, value: 100 + point.cumulative_excess_return * 100 }; }) }
     ];
     var allValues = [];
-    series.forEach(function (item) { item.values.forEach(function (point) { allValues.push(point.value); }); });
+    series.forEach(function (item) { item.values.forEach(function (point) { if (Number.isFinite(point.value)) allValues.push(point.value); }); });
     var minimum = Math.min.apply(null, allValues.concat([100]));
     var maximum = Math.max.apply(null, allValues.concat([100]));
     var padding = Math.max(3, (maximum - minimum) * 0.09);
@@ -351,8 +359,9 @@
 
     var labels = series.map(function (item) {
       var last = item.values[item.values.length - 1];
+      if (!last) return null;
       return { key: item.key, label: item.label, value: last.value, x: xScale(parseDate(last.date)), y: yScale(last.value) };
-    });
+    }).filter(Boolean);
     spreadLabels(labels, dimensions.top + 8, height - dimensions.bottom - 8, 17).forEach(function (label) {
       svg.appendChild(svgNode("circle", { cx: label.x, cy: label.y, r: 4, class: "chart-end-dot " + label.key }));
       if (width < 560) return;
@@ -374,17 +383,17 @@
       ariaLabel: "按日期查看组合、沪深300、科创50、创业板指与累计超额净值",
       series: [
         { key: "portfolio", value: function (point) { return point.portfolio_unit_nav * 100; } },
-        { key: "benchmark", value: function (point) { return point.csi300_nav * 100; } },
-        { key: "star50", value: function (point) { return point.star50_nav * 100; } },
-        { key: "chinext", value: function (point) { return point.chinext_nav * 100; } },
-        { key: "excess", value: function (point) { return 100 + point.cumulative_excess_return * 100; } }
+        { key: "benchmark", value: function (point) { return Number.isFinite(point.csi300_nav) ? point.csi300_nav * 100 : NaN; } },
+        { key: "star50", value: function (point) { return Number.isFinite(point.star50_nav) ? point.star50_nav * 100 : NaN; } },
+        { key: "chinext", value: function (point) { return Number.isFinite(point.chinext_nav) ? point.chinext_nav * 100 : NaN; } },
+        { key: "excess", value: function (point) { return Number.isFinite(point.cumulative_excess_return) ? 100 + point.cumulative_excess_return * 100 : NaN; } }
       ],
       tooltipRows: function (point) {
         return [
           { key: "portfolio", label: "组合净值", value: point.portfolio_unit_nav.toFixed(4) + "  (" + percent(point.portfolio_cumulative_return, true) + ")" },
-          { key: "benchmark", label: "沪深300", value: point.csi300_nav.toFixed(4) + "  (" + percent(point.csi300_cumulative_return, true) + ")" },
-          { key: "star50", label: "科创50", value: point.star50_nav.toFixed(4) + "  (" + percent(point.star50_cumulative_return, true) + ")" },
-          { key: "chinext", label: "创业板指", value: point.chinext_nav.toFixed(4) + "  (" + percent(point.chinext_cumulative_return, true) + ")" },
+          { key: "benchmark", label: "沪深300", value: Number.isFinite(point.csi300_nav) ? point.csi300_nav.toFixed(4) + "  (" + percent(point.csi300_cumulative_return, true) + ")" : "暂不可用" },
+          { key: "star50", label: "科创50", value: Number.isFinite(point.star50_nav) ? point.star50_nav.toFixed(4) + "  (" + percent(point.star50_cumulative_return, true) + ")" : "暂不可用" },
+          { key: "chinext", label: "创业板指", value: Number.isFinite(point.chinext_nav) ? point.chinext_nav.toFixed(4) + "  (" + percent(point.chinext_cumulative_return, true) + ")" : "暂不可用" },
           { key: "excess", label: "累计超额", value: percent(point.cumulative_excess_return, true) }
         ];
       }

@@ -99,8 +99,11 @@ ts_code = 000300.SH
 
 必须报告文件 SHA、source system、共同区间、coverage、value date，以及
 `exact_close` / `previous_trading_day_ffill` 语义。网页指数报价、sample、mock、strategy
-snapshot 和零值补齐都不能成为正式基准。若共同区间缺失，组合 canonical return 仍可
-单独存在，但 benchmark、excess 与 benchmark drawdown 必须 BLOCKED/PARTIAL。
+snapshot 和零值补齐都不能成为正式基准。若 benchmark 只缺 canonical performance 的
+末尾日期，组合 canonical return 仍可单独存在，v1 保持 `PARTIAL`，v2 的持仓和绝对
+业绩可独立表态；缺失尾部的 benchmark NAV、return、excess 与 drawdown 字段固定为
+`null/unavailable`，同时披露最后 exact benchmark date 与 `missing_dates`。历史中段
+缺口仍然 BLOCKED，禁止前值、零值或网页报价补成正式相对业绩。
 
 记录中的 `current_price` 只是该 record 的闭合价格，页面必须同时显示 `price_date`；它
 不是实时行情。费用毛净口径、累计已实现 P&L、单股已实现 P&L、行业或主题暴露缺少
@@ -121,7 +124,7 @@ bytes 中删除内部持仓、变化、绝对资产、资金流金额、路径�
 
 - `FRESH`：Store v3、current/previous、canonical performance、基准共同区间与 bundle
   checker 均闭合；仍保留 as-of、record ID 和证据边界。
-- `PARTIAL`：可验证数据仍可展示，但存在时效、benchmark、非核心口径或 QA warning；
+- `PARTIAL`：可验证数据仍可展示，但存在时效、benchmark尾部、非核心口径或 QA warning；
   页面不得称为实时或正式 V17 组合。
 - `BLOCKED`：Store/pointer/catalog/performance closure、active-row reconciliation 或
   bundle checker 失败。exporter 返回非零，不能把磁盘旧 bundle 当成本轮结果。
@@ -137,9 +140,11 @@ portfolio_dashboard/private/generated/cn_aggressive_dashboard_selector.v2.json
 portfolio_dashboard/private/generated/cn_aggressive_dashboard_selector.v2.js
 ```
 
-Exporter 不接受任意 output path：六个 artifact 必须使用这些固定文件名，并且在
-`portfolio_dashboard/private/generated/` 内。它会在首次 `REFRESHING` selector
-写入前拒绝 public、System、Store、Market/Data 和 symlink escape 路径。
+Exporter 不接受任意 output path：六个 serving artifact 必须使用这些固定文件名，
+并且在 `portfolio_dashboard/private/generated/` 内。它会在任何写入前拒绝 public、
+System、Store、Market/Data 和 symlink escape 路径。刷新失败不再改写 serving selector，
+而是在 `private/generated/attempts/` 追加 immutable failure receipt；只有 v1/v2/checker
+全部通过后才最后更新 selector。
 
 ## 离线导出与检查
 

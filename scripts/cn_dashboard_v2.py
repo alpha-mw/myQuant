@@ -751,13 +751,19 @@ def build_v2_bundle(
         "snapshot_id": snapshot.get("snapshot_id"),
         "latest_complete_trade_date": mark_compact,
         "latest_trade_date": snapshot.get("latest_trade_date"),
-        "manifest_path": market_manifest.relative_path,
         "coverage": coverage,
     }
     if any(
         market_pointer_document.get(key) != value for key, value in expected_market_binding.items()
     ):
         raise DashboardV2Error("market_pointer_snapshot_binding_mismatch")
+    pointer_manifest_path = _source_path(
+        market_pointer_document.get("manifest_path"),
+        root,
+        label="market_pointer_manifest_path",
+    )
+    if pointer_manifest_path != market_manifest_path:
+        raise DashboardV2Error("market_pointer_manifest_path_mismatch")
     if (
         market_manifest_document.get("snapshot_id") != snapshot.get("snapshot_id")
         or market_manifest_document.get("latest_complete_trade_date") != mark_compact

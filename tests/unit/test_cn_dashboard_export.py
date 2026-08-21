@@ -1098,6 +1098,60 @@ def test_missing_primary_benchmark_date_blocks_export(tmp_path: Path) -> None:
         )
 
 
+def test_trailing_benchmark_gap_preserves_absolute_performance_as_partial(
+    tmp_path: Path,
+) -> None:
+    project_root, record_root, benchmark = _fixture(tmp_path)
+    rows = list(csv.DictReader(benchmark.read_text(encoding="utf-8-sig").splitlines()))
+    _write_csv(
+        benchmark,
+        ["date", "ts_code", "close", "source_system", "value_date", "coverage"],
+        [row for row in rows if row["date"] != "2099-01-03"],
+    )
+    bundle = build_bundle(
+        project_root=project_root,
+        record_root=record_root,
+        benchmark_path=benchmark,
+        generated_at="2099-01-03T12:00:00+08:00",
+        today=date(2099, 1, 3),
+        benchmark_gap_policy="allow_trailing",
+    )
+    assert bundle["status"] == "PARTIAL"
+    assert bundle["portfolio"]["performance_end_date"] == "2099-01-03"
+    assert bundle["portfolio"]["cumulative_return"] == pytest.approx(0.31)
+    assert all(row["end_date"] == "2099-01-02" for row in bundle["benchmarks"])
+    assert all(row["missing_dates"] == ["2099-01-03"] for row in bundle["benchmarks"])
+    point = bundle["portfolio"]["performance_points"][-1]
+    assert point["portfolio_unit_nav"] == pytest.approx(1.31)
+    assert point["csi300_nav"] is None
+    assert point["cumulative_excess_return"] is None
+    assert point["benchmark_coverage"] == "unavailable"
+    assert point["benchmark_value_date"] is None
+    assert point["star50_nav"] is None
+    assert point["chinext_nav"] is None
+    assert validate_bundle_shape(bundle) == []
+    assert verify_source_refs(bundle, project_root) == []
+
+
+def test_non_trailing_benchmark_gap_stays_blocked_in_partial_mode(tmp_path: Path) -> None:
+    project_root, record_root, benchmark = _fixture(tmp_path)
+    rows = list(csv.DictReader(benchmark.read_text(encoding="utf-8-sig").splitlines()))
+    _write_csv(
+        benchmark,
+        ["date", "ts_code", "close", "source_system", "value_date", "coverage"],
+        [row for row in rows if row["date"] != "2099-01-02"],
+    )
+    with pytest.raises(DashboardInputError, match="benchmark_non_trailing_gap"):
+        build_bundle(
+            project_root=project_root,
+            record_root=record_root,
+            benchmark_path=benchmark,
+            generated_at="2099-01-03T12:00:00+08:00",
+            today=date(2099, 1, 3),
+            benchmark_gap_policy="allow_trailing",
+        )
+
+
 def test_missing_risk_free_prior_date_blocks_export(tmp_path: Path) -> None:
     project_root, record_root, benchmark = _fixture(tmp_path)
     _write_risk_free(project_root, ["2099-01-03"])

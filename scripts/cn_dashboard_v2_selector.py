@@ -1,8 +1,9 @@
-"""Fail-closed serving selector for the private CN aggressive Dashboard v2.
+"""Last-good serving selector for the private CN aggressive Dashboard v2.
 
-The selector is deliberately separate from Strategy Record Store state.  Its
-only job is to stop an earlier successful Dashboard refresh from continuing to
-look current after a later same-day refresh starts or fails.
+The selector is deliberately separate from Strategy Record Store state. New
+bundles are staged and checked first; only a complete success replaces the
+selector. Failed attempts are recorded separately and the old view expires by
+its own Shanghai freshness boundary.
 """
 
 from __future__ import annotations

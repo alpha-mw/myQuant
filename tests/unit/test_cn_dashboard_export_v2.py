@@ -265,3 +265,34 @@ def test_checker_reopens_exact_js_wrapper_payload(tmp_path: Path) -> None:
     path.write_text('window.OtherDashboard = {"value":1};\n', encoding="utf-8")
     with pytest.raises(ValueError, match="js_wrapper_invalid"):
         checker._read_js_wrapper(path, "TestDashboard")
+
+
+def test_attempt_receipt_is_immutable_and_does_not_touch_selector(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    selector = exporter._expected_output_paths(project_root)[4]
+    selector.parent.mkdir(parents=True)
+    selector.write_bytes(b"last-good-selector")
+    path = exporter._publish_attempt_receipt(
+        project_root=project_root,
+        attempt_id="attempt-1",
+        status="BLOCKED",
+        updated_at="2026-08-21T20:20:00+08:00",
+        reason="benchmark tail unavailable",
+        selector_sha256=exporter.hashlib.sha256(selector.read_bytes()).hexdigest(),
+    )
+    first = path.read_bytes()
+    assert selector.read_bytes() == b"last-good-selector"
+    assert json.loads(first)["status"] == "BLOCKED"
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert (
+        exporter._publish_attempt_receipt(
+            project_root=project_root,
+            attempt_id="attempt-1",
+            status="BLOCKED",
+            updated_at="2026-08-21T20:20:00+08:00",
+            reason="benchmark tail unavailable",
+            selector_sha256=exporter.hashlib.sha256(selector.read_bytes()).hexdigest(),
+        ).read_bytes()
+        == first
+    )
