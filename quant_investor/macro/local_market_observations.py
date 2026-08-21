@@ -822,10 +822,56 @@ def compile_local_market_breadth_observation(
         manifest_path=manifest_path,
         blocker="local_breadth_table_root_invalid",
     )
-    expected_table_root = _absolute_path(
-        manifest_path.parent / snapshot_id / "table" / "bars",
-        blocker="local_breadth_v4_table_root_invalid",
-    )
+    reconstruction = manifest.get("retrospective_reconstruction")
+    if reconstruction is None:
+        expected_table_root = _absolute_path(
+            manifest_path.parent / snapshot_id / "table" / "bars",
+            blocker="local_breadth_v4_table_root_invalid",
+        )
+    else:
+        if (
+            not isinstance(reconstruction, Mapping)
+            or set(reconstruction)
+            != {
+                "classification",
+                "reconstructed_at",
+                "source_snapshot_manifest_path",
+                "source_snapshot_manifest_sha256",
+            }
+            or reconstruction.get("classification")
+            != "RETROSPECTIVE_RECONSTRUCTION"
+            or reconstruction.get("reconstructed_at")
+            != snapshot_at.isoformat()
+        ):
+            raise LocalMarketObservationError(
+                "local_breadth_retrospective_reconstruction_invalid"
+            )
+        source_path = _absolute_path(
+            reconstruction.get("source_snapshot_manifest_path"),
+            blocker="local_breadth_reconstruction_source_path_invalid",
+        )
+        source_raw, _source_signature = _stable_file_bytes(
+            source_path,
+            blocker="local_breadth_reconstruction_source_unsafe",
+            changed_blocker="local_breadth_reconstruction_source_changed",
+            max_bytes=_MAX_MANIFEST_BYTES,
+        )
+        if hashlib.sha256(source_raw).hexdigest() != _required_sha256(
+            reconstruction.get("source_snapshot_manifest_sha256"),
+            blocker="local_breadth_reconstruction_source_sha_invalid",
+        ):
+            raise LocalMarketObservationError(
+                "local_breadth_reconstruction_source_sha_mismatch"
+            )
+        source_manifest = _json_object(
+            source_raw,
+            blocker="local_breadth_reconstruction_source_json_invalid",
+        )
+        expected_table_root = _resolve_manifest_path(
+            source_manifest.get("table_root"),
+            manifest_path=source_path,
+            blocker="local_breadth_reconstruction_table_root_invalid",
+        )
     if table_root != expected_table_root:
         raise LocalMarketObservationError(
             "local_breadth_v4_immutable_table_root_required"
