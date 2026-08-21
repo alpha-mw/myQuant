@@ -370,7 +370,10 @@ def test_same_target_market_rebind_recaptures_under_exact_cas(tmp_path):
     assert current["coverage"]["pit_generation_id"] == "new-pit"
 
 
-def test_macro_no_action_requires_semantic_market_manifest_binding(tmp_path):
+@pytest.mark.parametrize("release_open_date", ["20260819", "2026-08-19"])
+def test_macro_no_action_requires_semantic_market_manifest_binding(
+    tmp_path, release_open_date
+):
     _json(
         tmp_path / "data/parquet/cn/macro_release_calendar/_latest.json",
         {"generation_id": "opaque-release-id"},
@@ -383,6 +386,14 @@ def test_macro_no_action_requires_semantic_market_manifest_binding(tmp_path):
     scope_sha = "a" * 64
     apis = _apis(
         macro_prepare=lambda **_kwargs: pytest.fail("no-action must not prepare"),
+        macro_load_release=lambda **_kwargs: SimpleNamespace(
+            open_dates=(release_open_date,),
+            captured_at="2026-08-19T16:30:00+08:00",
+            identity=SimpleNamespace(
+                manifest_sha256="a" * 64,
+                semantic_sha256="b" * 64,
+            ),
+        ),
         macro_load_observations=lambda _root: (
             [],
             {

@@ -809,7 +809,8 @@ class _DefaultComponents:
         )
         if (
             metadata.get("local_target_trade_date") == context.target_date
-            and context.target_date in release_evidence.open_dates
+            and context.target_date
+            in {_compact_date(value) for value in release_evidence.open_dates}
             and _compact_date(release_evidence.captured_at) >= context.target_date
             and exact_market_binding
         ):
