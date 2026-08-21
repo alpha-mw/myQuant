@@ -165,22 +165,16 @@ _PBC_MONEY_STOCK_CONTRACT = {
 }
 _PBC_MONEY_STOCK_V2_CONTRACT = {
     **_PBC_MONEY_STOCK_CONTRACT,
-    "period_source": (
-        "formal ArticleTitle year and month, quarter, or 上半年 mapped to June"
-    ),
+    "period_source": ("formal ArticleTitle year and month, quarter, or 上半年 mapped to June"),
     "version": PBC_MONEY_STOCK_PARSER_V2,
 }
 
 NBS_NATIONAL_ECONOMY_PARSER_CONTRACT_SHA256 = _contract_hash(_NBS_NATIONAL_ECONOMY_CONTRACT)
 NBS_QUARTERLY_GDP_PARSER_CONTRACT_SHA256 = _contract_hash(_NBS_QUARTERLY_GDP_CONTRACT)
-NBS_QUARTERLY_GDP_PARSER_V2_CONTRACT_SHA256 = _contract_hash(
-    _NBS_QUARTERLY_GDP_V2_CONTRACT
-)
+NBS_QUARTERLY_GDP_PARSER_V2_CONTRACT_SHA256 = _contract_hash(_NBS_QUARTERLY_GDP_V2_CONTRACT)
 NBS_OFFICIAL_PMI_PARSER_CONTRACT_SHA256 = _contract_hash(_NBS_OFFICIAL_PMI_CONTRACT)
 PBC_MONEY_STOCK_PARSER_CONTRACT_SHA256 = _contract_hash(_PBC_MONEY_STOCK_CONTRACT)
-PBC_MONEY_STOCK_PARSER_V2_CONTRACT_SHA256 = _contract_hash(
-    _PBC_MONEY_STOCK_V2_CONTRACT
-)
+PBC_MONEY_STOCK_PARSER_V2_CONTRACT_SHA256 = _contract_hash(_PBC_MONEY_STOCK_V2_CONTRACT)
 
 PARSER_CONTRACT_SHA256: Mapping[str, str] = {
     NBS_NATIONAL_ECONOMY_PARSER: NBS_NATIONAL_ECONOMY_PARSER_CONTRACT_SHA256,
@@ -200,9 +194,7 @@ _PARSER_SOURCE_SYSTEM: Mapping[str, str] = {
     PBC_MONEY_STOCK_PARSER_V2: "pbc_official",
 }
 
-_PBC_MONEY_STOCK_PARSERS = frozenset(
-    {PBC_MONEY_STOCK_PARSER, PBC_MONEY_STOCK_PARSER_V2}
-)
+_PBC_MONEY_STOCK_PARSERS = frozenset({PBC_MONEY_STOCK_PARSER, PBC_MONEY_STOCK_PARSER_V2})
 
 _NATIONAL_ECONOMY_IDS = frozenset(
     {
@@ -543,7 +535,10 @@ def _source_record_id(source_url: str, source_system: str) -> tuple[str, date | 
         raise OfficialWebCompilerError("official_web_pbc_record_id_invalid")
     if not _PBC_RECORD_RE.fullmatch(record_id):
         raise OfficialWebCompilerError("official_web_pbc_record_id_invalid")
-    encoded_dates = tuple(dict.fromkeys(re.findall(r"20\d{6}", record_id)))
+    if record_id.isdigit() and len(record_id) >= 14 and record_id.startswith("20"):
+        encoded_dates = (record_id[:8],)
+    else:
+        encoded_dates = tuple(dict.fromkeys(re.findall(r"20\d{6}", record_id)))
     if len(encoded_dates) > 1:
         raise OfficialWebCompilerError("official_web_pbc_record_date_ambiguous")
     if encoded_dates:
@@ -940,8 +935,7 @@ def _parse_nbs_quarterly_gdp(body_bytes: bytes, *, source_url: str) -> _ParsedDo
 
 
 _NBS_HALF_YEAR_GDP_TITLE_RE = re.compile(
-    r"^(?P<year>20\d{2})年二季度和上半年国内生产总值(?:（GDP）|\(GDP\))?"
-    r"初步核算结果$"
+    r"^(?P<year>20\d{2})年二季度和上半年国内生产总值(?:（GDP）|\(GDP\))?" r"初步核算结果$"
 )
 
 
@@ -961,11 +955,35 @@ def _parse_nbs_quarterly_gdp_v2(
         raise OfficialWebCompilerError("official_web_gdp_article_title_invalid")
     year = int(title_match.group("year"))
     texts = tuple(_normalize_text(item) for item in parser.blocks if item.strip())
-    table_markers = [
-        index
-        for index, text in enumerate(texts)
-        if text == "表2GDP同比增长速度"
-    ]
+    table_markers = [index for index, text in enumerate(texts) if text == "表2GDP同比增长速度"]
+    if not table_markers:
+        combined = sorted(
+            {text for text in texts if "表2GDP同比增长速度" in text and "注：同比增长速度" in text}
+        )
+        if len(combined) != 1:
+            raise OfficialWebCompilerError("official_web_gdp_table_missing_or_ambiguous")
+        table_text = combined[0].split("表2GDP同比增长速度", 1)[1].split("注：同比增长速度", 1)[0]
+        match = re.search(
+            rf"{year}(?P<q1>{_NUMBER_RE})(?P<q2>{_NUMBER_RE})$",
+            table_text,
+        )
+        if match is None:
+            match = re.search(
+                rf"{year}(?P<q1>-?\d+\.\d)(?P<q2>-?\d+\.\d)",
+                table_text,
+            )
+        if match is None:
+            raise OfficialWebCompilerError("official_web_gdp_year_row_invalid")
+        value = _decimal(match.group("q2"))
+        period = f"{year:04d}Q2"
+        _period_not_after_release(period, release_at)
+        return _ParsedDocument(
+            period,
+            release_at,
+            record_id,
+            title,
+            (_Value("cn.gdp_yoy", value, period),),
+        )
     if len(table_markers) != 1:
         raise OfficialWebCompilerError("official_web_gdp_table_missing_or_ambiguous")
     start = table_markers[0]
@@ -979,11 +997,7 @@ def _parse_nbs_quarterly_gdp_v2(
     )
     if end < 0:
         raise OfficialWebCompilerError("official_web_gdp_table_note_missing")
-    year_positions = [
-        index
-        for index in range(start + 1, end)
-        if texts[index] == str(year)
-    ]
+    year_positions = [index for index in range(start + 1, end) if texts[index] == str(year)]
     if len(year_positions) != 1:
         raise OfficialWebCompilerError("official_web_gdp_year_row_missing_or_ambiguous")
     row = texts[year_positions[0] + 1 : end]
@@ -1042,9 +1056,7 @@ def _parse_pbc_money_stock(
     texts = tuple(_normalize_text(item) for item in parser.blocks if item.strip())
     if title_match.group("half"):
         if not allow_half_year:
-            raise OfficialWebCompilerError(
-                "official_web_money_article_title_invalid"
-            )
+            raise OfficialWebCompilerError("official_web_money_article_title_invalid")
         month = 6
     elif title_match.group("month"):
         month = int(title_match.group("month"))
@@ -1288,7 +1300,7 @@ def _safe_raw_path(value: Any) -> str:
 
 def _validate_plan_pages(plan: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
     rows = _required_list(plan.get("pages"), "official_web_plan_pages_not_list")
-    if len(rows) != 12:
+    if len(rows) not in {12, 13}:
         raise OfficialWebCompilerError("official_web_plan_page_count_invalid")
     pages: dict[str, Mapping[str, Any]] = {}
     parser_counts: dict[str, int] = {}
@@ -1351,13 +1363,11 @@ def _validate_plan_pages(plan: Mapping[str, Any]) -> dict[str, Mapping[str, Any]
         NBS_QUARTERLY_GDP_PARSER_V2,
     }
     gdp_periods = [
-        period
-        for parser_id in gdp_parsers
-        for period in periods_by_parser.get(parser_id, [])
+        period for parser_id in gdp_parsers for period in periods_by_parser.get(parser_id, [])
     ]
     if (
         len(money_parsers) != 1
-        or sum(parser_counts.get(parser_id, 0) for parser_id in gdp_parsers) != 2
+        or sum(parser_counts.get(parser_id, 0) for parser_id in gdp_parsers) not in {2, 3}
         or parser_counts.get(next(iter(money_parsers)), 0) != 4
         or {
             key: value
@@ -1403,9 +1413,7 @@ def _validate_plan(
     money_parsers = set(page_periods) & _PBC_MONEY_STOCK_PARSERS
     if len(money_parsers) != 1:  # pragma: no cover - guarded above
         raise OfficialWebCompilerError("official_web_plan_parser_counts_invalid")
-    pbc_periods = sorted(
-        page_periods[next(iter(money_parsers))], key=_month_index
-    )
+    pbc_periods = sorted(page_periods[next(iter(money_parsers))], key=_month_index)
     latest_three = set(pbc_periods[-3:])
     if any(scope_periods[item] != latest_three for item in _MONEY_IDS):
         raise OfficialWebCompilerError("official_web_money_plan_scope_mismatch")
