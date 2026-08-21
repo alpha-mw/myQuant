@@ -158,6 +158,7 @@ def run_cn_macro_maintenance(
     allow_live: bool = False,
     commit: bool = False,
     fetcher: Callable[[str, str], tuple[bytes, str]] | None = None,
+    retrospective_coverage_by_target: Mapping[str, Mapping[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Extend issuer coverage, then roll the exact local breadth observation.
 
@@ -338,11 +339,25 @@ def run_cn_macro_maintenance(
         observation_results: list[dict[str, Any]] = []
         expected_observation_pointer = expected_observations_pointer_sha256
         for catch_up_target in catch_up_targets:
+            target_coverage_path: str | Path
+            retrospective = (
+                retrospective_coverage_by_target.get(catch_up_target)
+                if retrospective_coverage_by_target is not None
+                else None
+            )
+            if retrospective is not None:
+                if set(retrospective) != {"path", "sha256"}:
+                    raise MacroMaintenanceError("macro_retrospective_coverage_binding_invalid")
+                target_coverage_path = retrospective["path"]
+                target_coverage_sha256 = retrospective["sha256"]
+            else:
+                target_coverage_path = coverage_manifest_path
+                target_coverage_sha256 = expected_coverage_manifest_sha256
             observation_result = publish_local_market_breadth_roll(
                 snapshot_manifest_path=snapshot_manifest_path,
                 expected_snapshot_manifest_sha256=expected_snapshot_manifest_sha256,
-                coverage_manifest_path=coverage_manifest_path,
-                expected_coverage_manifest_sha256=expected_coverage_manifest_sha256,
+                coverage_manifest_path=target_coverage_path,
+                expected_coverage_manifest_sha256=target_coverage_sha256,
                 target_trade_date=catch_up_target,
                 scope_artifact_path=scope_artifact_path,
                 expected_scope_artifact_sha256=expected_scope_artifact_sha256,
@@ -415,6 +430,8 @@ def prepare_cn_macro_maintenance_transaction(
     transaction_run_id: str,
     allow_live: bool = False,
     fetcher: Callable[[str, str], tuple[bytes, str]] | None = None,
+    retrospective_recovery_contract_path: str | Path | None = None,
+    expected_retrospective_recovery_contract_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Prepare both component-owned candidates without canonical pointer writes.
 
@@ -453,6 +470,111 @@ def prepare_cn_macro_maintenance_transaction(
     observations_candidate = run_root / "observations_candidate"
     prepared_root = run_root / "prepared"
     try:
+        retrospective_contract: dict[str, Any] | None = None
+        retrospective_coverage_by_target: dict[str, dict[str, str]] | None = None
+        retrospective_input_bindings: dict[str, dict[str, str]] = {}
+        if retrospective_recovery_contract_path is not None:
+            if expected_retrospective_recovery_contract_sha256 is None:
+                raise MacroMaintenanceError("macro_retrospective_contract_sha_required")
+            contract_raw = _file_bytes(
+                retrospective_recovery_contract_path,
+                expected_retrospective_recovery_contract_sha256,
+                "macro_retrospective_contract_invalid",
+            )
+            try:
+                retrospective_contract = json.loads(contract_raw)
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise MacroMaintenanceError("macro_retrospective_contract_invalid") from exc
+            if (
+                not isinstance(retrospective_contract, dict)
+                or set(retrospective_contract)
+                != {
+                    "schema_version",
+                    "status",
+                    "classification",
+                    "target_date",
+                    "attempt_receipt",
+                    "candidate_manifest",
+                    "source_market_manifest",
+                    "canonical_market_pointer_sha256",
+                    "canonical_pit_pointer_sha256",
+                    "expected_macro_observations_pointer_sha256",
+                    "expected_macro_release_pointer_sha256",
+                    "macro_veto",
+                    "retrospective_coverage_manifests",
+                    "canonical_final_coverage_manifest",
+                    "content_sha256",
+                }
+                or retrospective_contract.get("schema_version")
+                != "macro-retrospective-canonical-transaction.v1"
+                or retrospective_contract.get("classification")
+                != "MIXED_RETROSPECTIVE_AND_CANONICAL"
+                or retrospective_contract.get("target_date") != str(target_date).replace("-", "")
+                or retrospective_contract.get("status") != "PREPARED"
+            ):
+                raise MacroMaintenanceError("macro_retrospective_contract_invalid")
+            contract_body = dict(retrospective_contract)
+            contract_content_sha = contract_body.pop("content_sha256")
+            if contract_content_sha != _sha256_bytes(
+                json.dumps(
+                    contract_body,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ):
+                raise MacroMaintenanceError("macro_retrospective_contract_hash_invalid")
+            if (
+                retrospective_contract["canonical_market_pointer_sha256"]
+                != expected_market_pointer_sha256
+                or retrospective_contract["canonical_pit_pointer_sha256"]
+                != expected_pit_pointer_sha256
+                or retrospective_contract["expected_macro_observations_pointer_sha256"]
+                != expected_observations_pointer_sha256
+                or retrospective_contract["expected_macro_release_pointer_sha256"]
+                != expected_release_pointer_sha256
+            ):
+                raise MacroMaintenanceError("macro_retrospective_contract_preimage_mismatch")
+            rows = retrospective_contract.get("retrospective_coverage_manifests")
+            expected_historical_targets = (
+                ["20260818", "20260819", "20260820"]
+                if str(target_date).replace("-", "") == "20260821"
+                else ["20260818", "20260819"]
+            )
+            if (
+                not isinstance(rows, list)
+                or [row.get("target_trade_date") for row in rows] != expected_historical_targets
+            ):
+                raise MacroMaintenanceError("macro_retrospective_contract_targets_invalid")
+            retrospective_coverage_by_target = {
+                row["target_trade_date"]: {"path": row["path"], "sha256": row["sha256"]}
+                for row in rows
+            }
+            for name in (
+                "attempt_receipt",
+                "candidate_manifest",
+                "source_market_manifest",
+                "macro_veto",
+                "canonical_final_coverage_manifest",
+            ):
+                ref = retrospective_contract[name]
+                if not isinstance(ref, dict) or set(ref) != {"path", "sha256"}:
+                    raise MacroMaintenanceError("macro_retrospective_contract_ref_invalid")
+                _file_bytes(ref["path"], ref["sha256"], "macro_retrospective_contract_ref_invalid")
+                retrospective_input_bindings[name] = dict(ref)
+            if retrospective_contract["source_market_manifest"] != {
+                "path": str(Path(snapshot_manifest_path).expanduser().resolve()),
+                "sha256": expected_snapshot_manifest_sha256,
+            } or retrospective_contract["canonical_final_coverage_manifest"] != {
+                "path": str(Path(coverage_manifest_path).expanduser().resolve()),
+                "sha256": expected_coverage_manifest_sha256,
+            }:
+                raise MacroMaintenanceError("macro_retrospective_contract_market_binding_mismatch")
+            for row in rows:
+                _file_bytes(row["path"], row["sha256"], "macro_retrospective_coverage_invalid")
+                retrospective_input_bindings[
+                    "retrospective_coverage_" + row["target_trade_date"]
+                ] = {"path": row["path"], "sha256": row["sha256"]}
         market_authority_raw = _file_bytes(
             market_pointer_path,
             expected_market_pointer_sha256,
@@ -484,6 +606,7 @@ def prepare_cn_macro_maintenance_transaction(
             allow_live=True,
             commit=True,
             fetcher=fetcher,
+            retrospective_coverage_by_target=retrospective_coverage_by_target,
         )
         if legacy_result.get("status") != "OK":
             raise MacroMaintenanceError(
@@ -535,6 +658,19 @@ def prepare_cn_macro_maintenance_transaction(
                     "path": str(Path(scope_artifact_path).expanduser().resolve()),
                     "sha256": expected_scope_artifact_sha256,
                 },
+                **(
+                    {
+                        "retrospective_recovery_contract": {
+                            "path": str(
+                                Path(retrospective_recovery_contract_path).expanduser().resolve()
+                            ),
+                            "sha256": expected_retrospective_recovery_contract_sha256,
+                        }
+                    }
+                    if retrospective_contract is not None
+                    else {}
+                ),
+                **retrospective_input_bindings,
             },
         )
     except Exception:
