@@ -360,7 +360,7 @@ benchmarkDateDrift.completeness.benchmark_as_of = "2099-01-04";
 benchmarkDateDrift.completeness.benchmark_relative = "COMPLETE";
 benchmarkDateDrift.research_mark.current_absolute_performance.anchor_date = "2099-01-04";
 assert.strictEqual(Contract.validateBundle(benchmarkDateDrift).valid, false);
-assert.match(Contract.validateBundle(benchmarkDateDrift).errors.join("; "), /benchmark_as_of must remain canonical/);
+assert.match(Contract.validateBundle(benchmarkDateDrift).errors.join("; "), /benchmark_as_of must match the canonical benchmark closure/);
 
 const authorityEscalation = structuredClone(bundle);
 authorityEscalation.research_mark.trade_effect = "ORDER_ALLOWED";
@@ -396,6 +396,7 @@ publishedCanonical.portfolio.performance_end_date = "2099-01-04";
 publishedCanonical.portfolio.performance_points[1].date = "2099-01-04";
 publishedCanonical.portfolio.performance_points[1].record = "20990104_1200";
 publishedCanonical.history.latest_performance_date = "2099-01-04";
+publishedCanonical.benchmarks.forEach((row) => { row.end_date = "2099-01-04"; });
 const financialPublication = makeV2(publishedCanonical);
 financialPublication.continuity_authority.status = "FINANCIAL_STATE_PUBLICATION";
 financialPublication.continuity_authority.anchor_record_id = "20990104_1200";

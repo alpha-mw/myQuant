@@ -248,8 +248,12 @@
     if (value.current_holdings !== expectedCurrent || value.current_absolute_performance !== expectedCurrent) {
       errors.push("current completeness is inconsistent with freshness");
     }
-    var canonicalEnd = canonical && canonical.portfolio && canonical.portfolio.performance_end_date;
-    if (value.benchmark_as_of !== canonicalEnd) errors.push("benchmark_as_of must remain canonical");
+    var canonicalBenchmarkDates = new Set((canonical && canonical.benchmarks || []).map(function (row) {
+      return row && row.end_date;
+    }));
+    if (canonicalBenchmarkDates.size !== 1 || !canonicalBenchmarkDates.has(value.benchmark_as_of)) {
+      errors.push("benchmark_as_of must match the canonical benchmark closure");
+    }
     if (validDate(value.benchmark_as_of) && validDate(freshness.mark_as_of)) {
       if (value.benchmark_as_of > freshness.mark_as_of) errors.push("benchmark_as_of cannot follow the holdings mark");
       var expectedBenchmark = value.benchmark_as_of < freshness.mark_as_of
@@ -416,8 +420,7 @@
       errors.push("view-only continuity requires the fixed initial-capital path");
     }
     if (performance.point_date !== value.mark_date ||
-        performance.anchor_date !== lastPoint.date ||
-        performance.anchor_date !== completeness.benchmark_as_of) {
+        performance.anchor_date !== lastPoint.date) {
       errors.push("current absolute performance dates are inconsistent");
     }
     if (!approximately(performance.marked_nav, portfolio.nav, 0.01)) errors.push("current absolute performance NAV is inconsistent");
