@@ -107,6 +107,19 @@ outcomes, maturity, or graduation evidence. Macro and Fundamental blockers
 remain visible but do not block LOW/W80 when the sealed active Factor set does
 not consume them.
 
+CN aggressive Dashboard reads only Store-v3 and pointer-selected
+`ledger_after_manual_switch.parquet`. A trailing benchmark gap may leave v1
+`PARTIAL` while v2 marks current holdings/absolute performance independently;
+missing relative fields stay `null/unavailable`. A failed refresh preserves the
+last-good selector and appends an attempt receipt. Missing owner-controlled
+same-day continuity keeps holdings `STALE`; no new Store record is not proof of
+no manual trade.
+
+Macro retrospective reconstruction is prepare-only unless an exact typed
+transaction binds the execute receipt, capture inventory, per-date PIT evidence,
+Market/PIT/Macro/Release pointer preimages, journal and veto. A deterministic
+recovery candidate never authorizes pointer mutation or veto clearing.
+
 PIT `stock_basic` has one separate endpoint-local evidence grammar for legacy
 delisted provider identities: exact `^T[0-9]{6}\.SH$` rows in the D partition
 may be retained only in the sealed exclusion inventory and never normalized,

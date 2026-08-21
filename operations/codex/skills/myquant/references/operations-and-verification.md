@@ -118,6 +118,18 @@ the separate admission lifecycle: keep outcomes waiting for their future
 sessions and keep prospective admission `NOT_CONFIGURED` unless its exact
 registered lifecycle is present.
 
+For CN aggressive Dashboard, verify Store-v3 first and keep `ledger.csv`
+retired. Trailing benchmark gaps are a relative-performance limitation, not a
+reason to fabricate or suppress exact absolute NAV; require `null/unavailable`,
+explicit `missing_dates`, selector `UPDATED`, checker success and last-good
+selector preservation. Without an exact continuity receipt or official
+financial-state publication, current holdings remain `STALE/PARTIAL`.
+
+Treat `RETROSPECTIVE_RECONSTRUCTION` Macro candidates as non-authorizing.
+Never use them to write Macro/Release pointers or clear a veto until a fresh
+typed prepared transaction and journal bind all current pointer preimages and
+the final actual canonical Market/PIT closure.
+
 ## Prospective Factor health
 
 Use `quant-investor factor status` with exact explicit inputs. Verify strict CN
