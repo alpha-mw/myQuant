@@ -54,6 +54,13 @@
       });
     }
     if (!SHA256_RE.test(value.content_sha256 || "")) errors.push("content_sha256 is invalid");
+    if (value.public_redacted && (
+      !Array.isArray(value.positions) || value.positions.length !== 0 ||
+      !Array.isArray(value.changes) || value.changes.length !== 0 ||
+      !Array.isArray(value.source_refs) || value.source_refs.length !== 0
+    )) {
+      errors.push("public redaction arrays must be empty");
+    }
     if (value.status !== "BLOCKED") {
       if (!RECORD_RE.test(value.latest_valid_record || "")) errors.push("latest_valid_record is invalid");
       if (!RECORD_RE.test(value.previous_valid_record || "")) errors.push("previous_valid_record is invalid");
@@ -98,13 +105,28 @@
             "previous_shares",
             "current_shares",
             "share_delta",
-            "previous_market_value",
-            "current_market_value",
-            "market_value_delta",
             "nav_weight_delta",
             "equity_weight_delta"
           ];
+          var marketValueKeys = [
+            "previous_market_value",
+            "current_market_value",
+            "market_value_delta"
+          ];
+          var marketValuePresent = marketValueKeys.map(function (key) {
+            return Object.prototype.hasOwnProperty.call(change, key);
+          });
+          if (marketValuePresent.some(Boolean) && !marketValuePresent.every(Boolean)) {
+            errors.push("changes[" + index + "] market value group is incomplete");
+            return;
+          }
           if (numberKeys.some(function (key) { return !finite(change[key]); })) {
+            errors.push("changes[" + index + "] values are invalid");
+            return;
+          }
+          if (marketValuePresent.every(Boolean) && marketValueKeys.some(function (key) {
+            return !finite(change[key]);
+          })) {
             errors.push("changes[" + index + "] values are invalid");
             return;
           }
@@ -126,7 +148,7 @@
           if (change.change_type !== expectedChangeType) {
             errors.push("changes[" + index + "] change type is inconsistent");
           }
-          if (Math.abs(change.market_value_delta - (
+          if (marketValuePresent.every(Boolean) && Math.abs(change.market_value_delta - (
             change.current_market_value - change.previous_market_value
           )) > 0.01) {
             errors.push("changes[" + index + "] market value delta is inconsistent");
@@ -179,8 +201,22 @@
           errors.push("historical performance start is inconsistent");
         }
         value.portfolio.performance_points.forEach(function (point, index) {
-          ["total_value", "excluded_external_flow", "adjusted_total_value", "portfolio_unit_nav", "portfolio_cumulative_return", "csi300_nav", "csi300_cumulative_return", "star50_nav", "star50_cumulative_return", "chinext_nav", "chinext_cumulative_return", "cumulative_excess_return", "risk_free_annual_yield"].forEach(function (key) {
+          ["total_value", "excluded_external_flow", "adjusted_total_value", "portfolio_unit_nav", "portfolio_cumulative_return", "risk_free_annual_yield"].forEach(function (key) {
             if (!finite(point[key])) errors.push("performance_points[" + index + "]." + key + " is invalid");
+          });
+          var csiAvailable = ["csi300_nav", "csi300_cumulative_return", "cumulative_excess_return"].every(function (key) { return finite(point[key]); });
+          var csiUnavailable = ["csi300_nav", "csi300_cumulative_return", "cumulative_excess_return"].every(function (key) { return point[key] === null; });
+          if (!((csiAvailable && ["exact_close", "previous_trading_day_ffill"].indexOf(point.benchmark_coverage) >= 0 && /^\d{4}-\d{2}-\d{2}$/.test(point.benchmark_value_date || "")) ||
+                (csiUnavailable && point.benchmark_coverage === "unavailable" && point.benchmark_value_date === null))) {
+            errors.push("performance_points[" + index + "] CSI300 availability is invalid");
+          }
+          ["star50_", "chinext_"].forEach(function (prefix) {
+            var available = finite(point[prefix + "nav"]) && finite(point[prefix + "cumulative_return"]);
+            var unavailable = point[prefix + "nav"] === null && point[prefix + "cumulative_return"] === null;
+            if (!((available && ["exact_close", "previous_trading_day_ffill"].indexOf(point[prefix + "benchmark_coverage"]) >= 0 && /^\d{4}-\d{2}-\d{2}$/.test(point[prefix + "benchmark_value_date"] || "")) ||
+                  (unavailable && point[prefix + "benchmark_coverage"] === "unavailable" && point[prefix + "benchmark_value_date"] === null))) {
+              errors.push("performance_points[" + index + "] " + prefix + "availability is invalid");
+            }
           });
           var expectedAdjusted = canonicalReturn
             ? point.portfolio_unit_nav * value.portfolio.performance_initial_capital
@@ -237,7 +273,9 @@
       } else {
         var actualBenchmarks = {};
         value.benchmarks.forEach(function (row) {
-          if (!isObject(row) || !Array.isArray(row.missing_dates) || row.missing_dates.length !== 0) return;
+          if (!isObject(row) || !Array.isArray(row.missing_dates) || !Array.isArray(row.coverage)) return;
+          var unavailableCount = row.coverage.filter(function (item) { return item === "unavailable"; }).length;
+          if (unavailableCount !== row.missing_dates.length) return;
           actualBenchmarks[row.id] = row.name + "|" + row.ts_code;
         });
         var benchmarkSetValid = Object.keys(expectedBenchmarks).every(function (id) {

@@ -43,8 +43,7 @@
     if (!Array.isArray(points)) return [];
     return points.slice().filter(function (point) {
       return point && /^\d{4}-\d{2}-\d{2}$/.test(point.date || "") &&
-        finite(point.portfolio_unit_nav) && finite(point.csi300_nav) &&
-        finite(point.star50_nav) && finite(point.chinext_nav);
+        finite(point.portfolio_unit_nav) && finite(point.risk_free_annual_yield);
     }).sort(function (left, right) {
       return left.date.localeCompare(right.date) || String(left.record).localeCompare(String(right.record));
     });
@@ -52,7 +51,7 @@
 
   function drawdownSeries(points, key) {
     var peak = null;
-    return points.map(function (point) {
+    return points.filter(function (point) { return finite(point[key]); }).map(function (point) {
       var value = point[key];
       peak = peak === null ? value : Math.max(peak, value);
       return {
@@ -67,6 +66,7 @@
     var peak = initialValue;
     var deepest = 0;
     points.forEach(function (point) {
+      if (!finite(point[key])) return;
       peak = Math.max(peak, point[key]);
       if (peak > 0) deepest = Math.min(deepest, point[key] / peak - 1);
     });
@@ -90,9 +90,9 @@
       var last = group.points[group.points.length - 1];
       var base = index === 0 ? first : groups[index - 1].points[groups[index - 1].points.length - 1];
       var portfolioReturn = last.portfolio_unit_nav / base.portfolio_unit_nav - 1;
-      var benchmarkReturn = last.csi300_nav / base.csi300_nav - 1;
-      var star50Return = last.star50_nav / base.star50_nav - 1;
-      var chinextReturn = last.chinext_nav / base.chinext_nav - 1;
+      var benchmarkReturn = finite(last.csi300_nav) && finite(base.csi300_nav) ? last.csi300_nav / base.csi300_nav - 1 : null;
+      var star50Return = finite(last.star50_nav) && finite(base.star50_nav) ? last.star50_nav / base.star50_nav - 1 : null;
+      var chinextReturn = finite(last.chinext_nav) && finite(base.chinext_nav) ? last.chinext_nav / base.chinext_nav - 1 : null;
       return {
         period: group.period,
         base_date: base.date,
@@ -102,11 +102,11 @@
         benchmark_return: benchmarkReturn,
         star50_return: star50Return,
         chinext_return: chinextReturn,
-        excess_return: portfolioReturn - benchmarkReturn,
+        excess_return: finite(benchmarkReturn) ? portfolioReturn - benchmarkReturn : null,
         portfolio_max_drawdown: maximumDrawdown(group.points, "portfolio_unit_nav", base.portfolio_unit_nav),
-        benchmark_max_drawdown: maximumDrawdown(group.points, "csi300_nav", base.csi300_nav),
-        star50_max_drawdown: maximumDrawdown(group.points, "star50_nav", base.star50_nav),
-        chinext_max_drawdown: maximumDrawdown(group.points, "chinext_nav", base.chinext_nav),
+        benchmark_max_drawdown: finite(base.csi300_nav) ? maximumDrawdown(group.points, "csi300_nav", base.csi300_nav) : null,
+        star50_max_drawdown: finite(base.star50_nav) ? maximumDrawdown(group.points, "star50_nav", base.star50_nav) : null,
+        chinext_max_drawdown: finite(base.chinext_nav) ? maximumDrawdown(group.points, "chinext_nav", base.chinext_nav) : null,
         ending_total_value: last.adjusted_total_value,
         point_count: group.points.length,
         evidence_status: group.points.some(function (point) {
@@ -216,6 +216,9 @@
 
   function buildAnalysis(bundle) {
     var points = orderedPoints(bundle && bundle.portfolio && bundle.portfolio.performance_points);
+    var relativePoints = points.filter(function (point) {
+      return finite(point.csi300_nav) && finite(point.star50_nav) && finite(point.chinext_nav);
+    });
     var monthly = monthlyPerformance(points);
     var portfolioDrawdown = drawdownSeries(points, "portfolio_unit_nav");
     var benchmarkDrawdown = drawdownSeries(points, "csi300_nav");
@@ -236,7 +239,7 @@
       deepest_benchmark_drawdown: extreme(benchmarkDrawdown, "value", "min"),
       deepest_star50_drawdown: extreme(star50Drawdown, "value", "min"),
       deepest_chinext_drawdown: extreme(chinextDrawdown, "value", "min"),
-      quantitative_metrics: quantitativeMetrics(points, deepestPortfolioDrawdown ? deepestPortfolioDrawdown.value : null)
+      quantitative_metrics: quantitativeMetrics(relativePoints, deepestPortfolioDrawdown ? deepestPortfolioDrawdown.value : null)
     };
   }
 
