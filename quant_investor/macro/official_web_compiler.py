@@ -1331,7 +1331,10 @@ def _validate_plan_pages(plan: Mapping[str, Any]) -> dict[str, Mapping[str, Any]
             raise OfficialWebCompilerError("official_web_source_url_duplicate")
         urls.add(source_url)
         expected_period = str(row.get("expected_period") or "")
-        if parser_id == NBS_QUARTERLY_GDP_PARSER:
+        if parser_id in {
+            NBS_QUARTERLY_GDP_PARSER,
+            NBS_QUARTERLY_GDP_PARSER_V2,
+        }:
             _quarter_index(expected_period)
         else:
             _month_index(expected_period)
@@ -1341,23 +1344,32 @@ def _validate_plan_pages(plan: Mapping[str, Any]) -> dict[str, Mapping[str, Any]
     expected_counts = {
         NBS_NATIONAL_ECONOMY_PARSER: 3,
         NBS_OFFICIAL_PMI_PARSER: 3,
-        NBS_QUARTERLY_GDP_PARSER: 2,
     }
     money_parsers = set(parser_counts) & _PBC_MONEY_STOCK_PARSERS
+    gdp_parsers = {
+        NBS_QUARTERLY_GDP_PARSER,
+        NBS_QUARTERLY_GDP_PARSER_V2,
+    }
+    gdp_periods = [
+        period
+        for parser_id in gdp_parsers
+        for period in periods_by_parser.get(parser_id, [])
+    ]
     if (
         len(money_parsers) != 1
+        or sum(parser_counts.get(parser_id, 0) for parser_id in gdp_parsers) != 2
         or parser_counts.get(next(iter(money_parsers)), 0) != 4
         or {
             key: value
             for key, value in parser_counts.items()
-            if key not in _PBC_MONEY_STOCK_PARSERS
+            if key not in _PBC_MONEY_STOCK_PARSERS and key not in gdp_parsers
         }
         != expected_counts
     ):
         raise OfficialWebCompilerError("official_web_plan_parser_counts_invalid")
     _require_consecutive(periods_by_parser[NBS_NATIONAL_ECONOMY_PARSER], quarterly=False)
     _require_consecutive(periods_by_parser[NBS_OFFICIAL_PMI_PARSER], quarterly=False)
-    _require_consecutive(periods_by_parser[NBS_QUARTERLY_GDP_PARSER], quarterly=True)
+    _require_consecutive(gdp_periods, quarterly=True)
     money_parser = next(iter(money_parsers))
     _require_consecutive(periods_by_parser[money_parser], quarterly=False)
     return pages

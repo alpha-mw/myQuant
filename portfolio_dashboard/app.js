@@ -160,6 +160,13 @@
   function formatIndex(value) { return value.toFixed(0); }
   function formatDrawdown(value) { return value.toFixed(0) + "%"; }
 
+  function chartValueAtDate(values, date) {
+    for (var index = 0; index < values.length; index += 1) {
+      if (values[index].date === date) return values[index].value;
+    }
+    return NaN;
+  }
+
   function chartTooltip(host) {
     var tooltip = document.createElement("div");
     tooltip.className = "chart-tooltip";
@@ -473,17 +480,17 @@
       yScale: yScale,
       ariaLabel: "按日期查看组合与沪深300、科创50、创业板指回撤",
       series: [
-        { key: "portfolio", value: function (point, index) { return portfolioValues[index].value; } },
-        { key: "benchmark", value: function (point, index) { return benchmarkValues[index].value; } },
-        { key: "star50", value: function (point, index) { return star50Values[index].value; } },
-        { key: "chinext", value: function (point, index) { return chinextValues[index].value; } }
+        { key: "portfolio", value: function (point) { return chartValueAtDate(portfolioValues, point.date); } },
+        { key: "benchmark", value: function (point) { return chartValueAtDate(benchmarkValues, point.date); } },
+        { key: "star50", value: function (point) { return chartValueAtDate(star50Values, point.date); } },
+        { key: "chinext", value: function (point) { return chartValueAtDate(chinextValues, point.date); } }
       ],
-      tooltipRows: function (point, index) {
+      tooltipRows: function (point) {
         return [
-          { key: "portfolio", label: "组合回撤", value: percent(portfolio[index].value) },
-          { key: "benchmark", label: "沪深300回撤", value: percent(benchmark[index].value) },
-          { key: "star50", label: "科创50回撤", value: percent(star50[index].value) },
-          { key: "chinext", label: "创业板指回撤", value: percent(chinext[index].value) }
+          { key: "portfolio", label: "组合回撤", value: percent(chartValueAtDate(portfolio, point.date)) },
+          { key: "benchmark", label: "沪深300回撤", value: percent(chartValueAtDate(benchmark, point.date)) },
+          { key: "star50", label: "科创50回撤", value: percent(chartValueAtDate(star50, point.date)) },
+          { key: "chinext", label: "创业板指回撤", value: percent(chartValueAtDate(chinext, point.date)) }
         ];
       }
     });

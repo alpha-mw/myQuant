@@ -44,10 +44,10 @@ assert.match(html, /cn_aggressive_dashboard\.v1\.js\?cache=/);
 assert.match(publicHtml, /cn_aggressive_dashboard\.v1\.js\?cache=/);
 assert.match(html, /js\/cn_aggressive_dashboard_analysis_v1\.js\?v=dashboard-v2/);
 assert.match(html, /js\/cn_aggressive_dashboard_contract_v1\.js\?v=dashboard-v2/);
-assert.match(html, /app\.js\?v=dashboard-v5/);
-assert.match(publicHtml, /app\.js\?v=dashboard-v5/);
-assert.doesNotMatch(html, /app\.js\?v=dashboard-v4/);
-assert.doesNotMatch(publicHtml, /app\.js\?v=dashboard-v4/);
+assert.match(html, /app\.js\?v=dashboard-v6/);
+assert.match(publicHtml, /app\.js\?v=dashboard-v6/);
+assert.doesNotMatch(html, /app\.js\?v=dashboard-v5/);
+assert.doesNotMatch(publicHtml, /app\.js\?v=dashboard-v5/);
 assert.match(html, /styles\.css\?v=dashboard-v5/);
 assert.match(publicHtml, /styles\.css\?v=dashboard-v5/);
 assert.match(html, /js\/cn_aggressive_public_mode\.js\?mode=internal-v1/);
@@ -85,6 +85,9 @@ assert.doesNotMatch(
   "interactive chart SVGs must not hide their focusable slider descendants"
 );
 assert.match(app, /tooltip\.classList\.remove\("align-right", "align-center"\)/);
+assert.match(app, /function chartValueAtDate\(values, date\)/);
+assert.match(app, /chartValueAtDate\(benchmarkValues, point\.date\)/);
+assert.doesNotMatch(app, /benchmarkValues\[index\]\.value/);
 assert.match(styles, /\.chart-tooltip\.align-center \{ transform: translateX\(-50%\); \}/);
 assert.match(styles, /html \{ overflow-x: clip; scroll-behavior: smooth; \}/);
 assert.match(styles, /body \{\n  margin: 0;\n  overflow-x: clip;/);
