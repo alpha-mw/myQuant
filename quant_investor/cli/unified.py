@@ -1375,6 +1375,91 @@ def research_compile_daily(
     return result
 
 
+def research_publish_policy(*, workspace_root: str) -> dict[str, Any]:
+    """Publish the exact owner-approved immutable Phase A policy."""
+
+    from quant_investor.intelligence import publish_phase_a_policy
+
+    return publish_phase_a_policy(workspace_root)
+
+
+def research_publish_pool(
+    *, workspace_root: str, request_path: str, expected_request_sha256: str
+) -> dict[str, Any]:
+    """Derive and atomically publish one immutable Top100 Factor pool."""
+
+    from quant_investor.factors.production_authority import (
+        assert_factor_production_pointer,
+        read_factor_production_research_inputs,
+    )
+    from quant_investor.intelligence import (
+        approved_phase_a_policy,
+        build_factor_research_rank,
+    )
+    from quant_investor.intelligence.storage import (
+        DailyResearchPoolStore,
+        PHASE_A_POLICY_RELATIVE_PATH,
+    )
+
+    _, document = _request(
+        workspace_root=workspace_root,
+        request_path=request_path,
+        expected_request_sha256=expected_request_sha256,
+    )
+    values = _exact_fields(
+        document,
+        {
+            "expected_factor_pointer_sha256",
+            "expected_policy_sha256",
+            "low_observation_path",
+            "low_observation_sha256",
+            "policy_path",
+            "w80_observation_path",
+            "w80_observation_sha256",
+        },
+        code="RESEARCH_POOL_PUBLISH_REQUEST_INVALID",
+    )
+    if values["policy_path"] != PHASE_A_POLICY_RELATIVE_PATH:
+        raise CommandError("RESEARCH_POOL_POLICY_PATH_INVALID")
+    _, policy = _request(
+        workspace_root=workspace_root,
+        request_path=values["policy_path"],
+        expected_request_sha256=values["expected_policy_sha256"],
+    )
+    if policy != approved_phase_a_policy():
+        raise CommandError("RESEARCH_POOL_POLICY_BYTES_INVALID")
+    _, low = _request(
+        workspace_root=workspace_root,
+        request_path=values["low_observation_path"],
+        expected_request_sha256=values["low_observation_sha256"],
+    )
+    _, w80 = _request(
+        workspace_root=workspace_root,
+        request_path=values["w80_observation_path"],
+        expected_request_sha256=values["w80_observation_sha256"],
+    )
+    expected_pointer = values["expected_factor_pointer_sha256"]
+    snapshot = read_factor_production_research_inputs(
+        workspace_root,
+        expected_pointer_sha256=expected_pointer,
+    )
+    rank = build_factor_research_rank(
+        snapshot=snapshot,
+        observations=[low, w80],
+        policy=policy,
+        as_of=snapshot["factor_generation"]["created_at"],
+    )
+    store = DailyResearchPoolStore(workspace_root)
+    return store.publish(
+        rank=rank,
+        expected_policy_sha256=values["expected_policy_sha256"],
+        before_publish=lambda: assert_factor_production_pointer(
+            workspace_root,
+            expected_pointer_sha256=expected_pointer,
+        ),
+    )
+
+
 def research_readiness(
     *, workspace_root: str, request_path: str, expected_request_sha256: str
 ) -> dict[str, Any]:
@@ -1431,6 +1516,8 @@ __all__ = [
     "factor_status",
     "research_compile_evidence",
     "research_compile_daily",
+    "research_publish_policy",
+    "research_publish_pool",
     "research_evaluate",
     "research_forward",
     "research_inspect",

@@ -40,6 +40,7 @@ from .runtime import (
     inspect,
     validate_readiness,
 )
+from .storage import approved_phase_a_policy, publish_phase_a_policy
 from .theme import assess_theme, validate_theme_assessment
 
 __all__ = [
@@ -51,6 +52,7 @@ __all__ = [
     "assess_industry",
     "assess_readiness",
     "assess_theme",
+    "approved_phase_a_policy",
     "build_decision_context",
     "build_daily_research_policy",
     "build_factor_research_rank",
@@ -64,6 +66,7 @@ __all__ = [
     "observe_paper_portfolio",
     "project_tushare_industry_source",
     "project_tushare_theme_source",
+    "publish_phase_a_policy",
     "rank_factor_signals",
     "replay_advisory",
     "review_advisory",

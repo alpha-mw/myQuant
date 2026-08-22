@@ -55,6 +55,27 @@ There are no implicit policy defaults. `daily_research_policy` must seal:
 - `RESEARCH_APPROVED` and `PAPER_CANDIDATE` thresholds;
 - Fundamental freshness policy `ADVISORY_NO_FIXED_MAXIMUM`.
 
+The owner-approved prospective Phase A policy is code-owned and published only
+through `research policy-publish`. It uses:
+
+```text
+strategy_id = aggressive_tech_manufacturing
+created_at = 2026-08-21T16:00:00Z
+effective_signal_date = 20260822
+pool_size = 100
+minimum_cohort = 3000
+LOW/W80 = 0.5 / 0.5
+RESEARCH_APPROVED = 0.80
+PAPER_CANDIDATE = 0.90
+technology_policy_state = UNCONFIGURED
+technology_theme_ids = []
+```
+
+`UNCONFIGURED` is not equivalent to an allowlist that rejects every company.
+It may be used only to publish the Factor Top100 research pool. Theme projection
+and `compile-daily` reject it. A later ACTIVE allowlist must be a distinct,
+later-effective immutable policy revision; v1 is never rewritten.
+
 The compiler does not infer the System strategy identity from a historical
 Strategy Record directory. A test or implementation-smoke policy is not an
 owner policy and cannot be used for an investment conclusion.
@@ -96,7 +117,43 @@ quant-investor research compile-daily \
   --expected-request-sha256 <exact-sha256>
 ```
 
-Provider capture, persistent research storage, scheduled routing, System
-assembly/activation, Mainline candidate publication, I6 portfolio construction,
-and Paper execution are separate later phases and are not authorized by this
-command.
+Publish the code-owned immutable Phase A policy:
+
+```bash
+quant-investor research policy-publish \
+  --workspace-root /Users/maxwell/mySpace/myQuant
+```
+
+Publish one eligible immutable Factor Top100 pool:
+
+```bash
+quant-investor research pool-publish \
+  --workspace-root /Users/maxwell/mySpace/myQuant \
+  --request <workspace-relative-canonical-request.json> \
+  --expected-request-sha256 <exact-sha256>
+```
+
+`pool-publish` derives the rank itself from the expected Factor pointer, exact
+LOW/W80 observation path/SHAs and the exact v1 policy path/SHA. It does not
+accept a rank, selected symbols, output path, manifest or receipt. A signal
+before `20260822` fails before any pool-store directory is created.
+
+The immutable pool root is strategy-scoped:
+
+```text
+results/intelligence/research_pool/aggressive_tech_manufacturing/YYYY-MM-DD/
+  factor_research_rank.json
+  manifest.json
+  publish_receipt.json
+  selected_symbols.json
+```
+
+Publication uses an owner-only same-filesystem sibling staging directory and a
+native atomic no-replace directory rename. There is no active/current/latest
+pointer or mtime resolver. Exact replay returns `NO_ACTION`; any different or
+unsafe existing closure blocks without replacement.
+
+Provider capture, scheduled routing, System assembly/activation, Mainline
+candidate publication, I6 portfolio construction, and Paper execution remain
+separate later phases. The policy and pool writers own only their exact
+research-only roots.

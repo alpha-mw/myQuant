@@ -25,6 +25,7 @@ def policy() -> dict:
     return build_daily_research_policy(
         strategy_id=STRATEGY,
         effective_from="2026-08-21T00:00:00Z",
+        effective_signal_date="20260821",
         effective_to=None,
         factor_rows=[
             {
@@ -54,6 +55,7 @@ def policy() -> dict:
             "research_approved": "0.7",
         },
         technology_theme_ids=[TECH],
+        technology_policy_state="ACTIVE",
         theme_provider_precedence=["TUSHARE_DC", "TUSHARE_TDX"],
         fundamental_freshness={"policy": "ADVISORY_NO_FIXED_MAXIMUM"},
         created_at=NOW,
@@ -252,11 +254,13 @@ def test_policy_mutations_fail_closed() -> None:
         build_daily_research_policy(
             strategy_id=STRATEGY,
             effective_from="2026-08-21T00:00:00Z",
+            effective_signal_date="20260821",
             effective_to=None,
             factor_rows=policy()["payload"]["factor_rows"],
             pool_policy=policy()["payload"]["pool_policy"],
             decision_thresholds=policy()["payload"]["decision_thresholds"],
             technology_theme_ids=["UNQUALIFIED"],
+            technology_policy_state="ACTIVE",
             theme_provider_precedence=["TUSHARE_DC", "TUSHARE_TDX"],
             fundamental_freshness=policy()["payload"]["fundamental_freshness"],
             created_at=NOW,
@@ -269,11 +273,13 @@ def test_policy_mutations_fail_closed() -> None:
         build_daily_research_policy(
             strategy_id=STRATEGY,
             effective_from="2026-08-21T00:00:00Z",
+            effective_signal_date="20260821",
             effective_to=None,
             factor_rows=changed_rows,
             pool_policy=policy()["payload"]["pool_policy"],
             decision_thresholds=policy()["payload"]["decision_thresholds"],
             technology_theme_ids=[TECH],
+            technology_policy_state="ACTIVE",
             theme_provider_precedence=["TUSHARE_DC", "TUSHARE_TDX"],
             fundamental_freshness=policy()["payload"]["fundamental_freshness"],
             created_at=NOW,

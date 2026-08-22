@@ -31,6 +31,8 @@ from quant_investor.cli.unified import (
     research_evaluate,
     research_forward,
     research_inspect,
+    research_publish_policy,
+    research_publish_pool,
     research_readiness,
     system_activate,
     system_assemble,
@@ -725,11 +727,16 @@ def _build_parser() -> argparse.ArgumentParser:
         ("evaluate", "evaluate precomputed research stages"),
         ("compile-evidence", "compile exact inactive evidence closure"),
         ("compile-daily", "compile exact inactive daily Investment Intelligence"),
+        ("pool-publish", "publish exact immutable daily Factor research pool"),
         ("readiness", "assess generation-compatible readiness"),
         ("inspect", "inspect one stable artifact without mutation"),
     ):
         research_candidate = research_subparsers.add_parser(name, help=help_text)
         _add_exact_request_arguments(research_candidate)
+    research_policy_publish = research_subparsers.add_parser(
+        "policy-publish", help="publish exact immutable Phase A research policy"
+    )
+    _add_workspace_argument(research_policy_publish)
 
     market_parser = subparsers.add_parser("market", help="全市场工作流")
     market_subparsers = market_parser.add_subparsers(
@@ -1408,6 +1415,7 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
         "evaluate": research_evaluate,
         "compile-evidence": research_compile_evidence,
         "compile-daily": research_compile_daily,
+        "pool-publish": research_publish_pool,
         "readiness": research_readiness,
         "inspect": research_inspect,
     }
@@ -1419,6 +1427,10 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
                 expected_request_sha256=args.expected_request_sha256,
             )
         )
+        return
+
+    if args.command == "research" and args.research_command == "policy-publish":
+        _print_json(research_publish_policy(workspace_root=args.workspace_root))
         return
 
     if args.command == "market" and args.market_command == "maintain":

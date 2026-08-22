@@ -126,15 +126,16 @@ def build_daily_research_policy(
     *,
     strategy_id: str,
     effective_from: str,
+    effective_signal_date: str,
     effective_to: str | None,
     factor_rows: Sequence[Mapping[str, Any]],
     pool_policy: Mapping[str, Any],
     decision_thresholds: Mapping[str, Any],
     technology_theme_ids: Sequence[str],
+    technology_policy_state: str,
     theme_provider_precedence: Sequence[str],
     fundamental_freshness: Mapping[str, Any],
     created_at: str,
-    policy_id: str | None = None,
 ) -> dict[str, Any]:
     """Seal one explicit, effective-dated, non-authorizing research policy."""
 
@@ -227,7 +228,24 @@ def build_daily_research_policy(
     )
     if paper < research:
         raise IntelligenceError("paper threshold cannot be below research threshold")
-    technologies = _identifiers(technology_theme_ids, label="technology_theme_ids")
+    if (
+        type(effective_signal_date) is not str
+        or re.fullmatch(r"[0-9]{8}", effective_signal_date) is None
+    ):
+        raise IntelligenceError("effective_signal_date must be YYYYMMDD")
+    try:
+        datetime.strptime(effective_signal_date, "%Y%m%d")
+    except ValueError as exc:
+        raise IntelligenceError("effective_signal_date is invalid") from exc
+    if technology_policy_state not in {"ACTIVE", "UNCONFIGURED"}:
+        raise IntelligenceError("technology policy state is invalid")
+    technologies = _identifiers(
+        technology_theme_ids,
+        label="technology_theme_ids",
+        allow_empty=technology_policy_state == "UNCONFIGURED",
+    )
+    if (technology_policy_state == "UNCONFIGURED") != (not technologies):
+        raise IntelligenceError("technology policy state and IDs are inconsistent")
     providers = _identifiers(theme_provider_precedence, label="theme_provider_precedence")
     if providers != ["TUSHARE_DC", "TUSHARE_TDX"]:
         raise IntelligenceError("Theme provider precedence must be exact DC then TDX")
@@ -251,20 +269,26 @@ def build_daily_research_policy(
             "research_approved": decimal_text(research),
         },
         "effective_from": start,
+        "effective_signal_date": effective_signal_date,
         "effective_to": end,
         "factor_rows": normalized_factors,
         "fundamental_freshness": {"policy": "ADVISORY_NO_FIXED_MAXIMUM"},
         "pool_policy": normalized_pool,
         "strategy_id": strategy,
         "technology_theme_ids": technologies,
+        "technology_policy_state": technology_policy_state,
         "theme_provider_precedence": providers,
     }
     return build_artifact(
         kind=POLICY_KIND,
         identity_field="policy_id",
-        identity=policy_id
-        or business_identity(
-            kind=POLICY_KIND, identity_inputs={"effective_from": start, "strategy_id": strategy}
+        identity=business_identity(
+            kind=POLICY_KIND,
+            identity_inputs={
+                "effective_signal_date": effective_signal_date,
+                "strategy_id": strategy,
+                "technology_policy_state": technology_policy_state,
+            },
         ),
         fields=fields,
         created_at=instant,
@@ -276,15 +300,16 @@ def validate_daily_research_policy(artifact: Mapping[str, Any] | bytes) -> dict[
     rebuilt = build_daily_research_policy(
         strategy_id=payload["strategy_id"],
         effective_from=payload["effective_from"],
+        effective_signal_date=payload["effective_signal_date"],
         effective_to=payload["effective_to"],
         factor_rows=payload["factor_rows"],
         pool_policy=payload["pool_policy"],
         decision_thresholds=payload["decision_thresholds"],
         technology_theme_ids=payload["technology_theme_ids"],
+        technology_policy_state=payload["technology_policy_state"],
         theme_provider_precedence=payload["theme_provider_precedence"],
         fundamental_freshness=payload["fundamental_freshness"],
         created_at=normalized["created_at"],
-        policy_id=normalized["artifact_id"],
     )
     if rebuilt != normalized:
         raise IntelligenceError("daily research policy does not replay")
@@ -405,6 +430,15 @@ def _validate_active_factor_policy(
             raise IntelligenceError("daily rank policy differs from active Factor generation")
 
 
+def _require_policy_signal_date(
+    policy_payload: Mapping[str, Any],
+    *,
+    signal_date: str,
+) -> None:
+    if signal_date < policy_payload["effective_signal_date"]:
+        raise IntelligenceError("Factor signal date predates daily research policy")
+
+
 def build_factor_research_rank(
     *,
     snapshot: Mapping[str, Any],
@@ -436,6 +470,7 @@ def build_factor_research_rank(
     signal_date = snapshot["signal_date"]
     if cutoff[:10].replace("-", "") != signal_date:
         raise IntelligenceError("Factor research cutoff differs from signal date")
+    _require_policy_signal_date(policy_payload, signal_date=signal_date)
     generation_ref = validate_artifact_ref(
         snapshot["factor_generation_ref"], label="factor_generation_ref"
     )
@@ -722,6 +757,8 @@ def project_tushare_theme_source(
 ) -> dict[str, Any]:
     cutoff = timestamp(as_of, label="as_of")
     policy_artifact = validate_daily_research_policy(policy)
+    if policy_artifact["payload"]["technology_policy_state"] != "ACTIVE":
+        raise IntelligenceError("technology policy is not configured")
     dc_valid_plan = validate_theme_provider_execution_plan(dc_plan)
     daily_date = cutoff[:10].replace("-", "")
     if dc_valid_plan["provider"] != "TUSHARE_DC" or dc_valid_plan["trade_date"] != daily_date:
@@ -846,6 +883,8 @@ def compile_daily_intelligence(  # noqa: C901 - explicit cross-domain research c
     cutoff = timestamp(as_of, label="as_of")
     strategy = identifier(strategy_id, label="strategy_id")
     policy_artifact = validate_daily_research_policy(policy)
+    if policy_artifact["payload"]["technology_policy_state"] != "ACTIVE":
+        raise IntelligenceError("technology policy is not configured")
     if policy_artifact["payload"]["strategy_id"] != strategy:
         raise IntelligenceError("daily compiler strategy differs from policy")
     rank_artifact = validate_factor_research_rank(rank, policy=policy_artifact)
