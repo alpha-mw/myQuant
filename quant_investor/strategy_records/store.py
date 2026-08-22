@@ -8,6 +8,7 @@ directories are deliberately invisible until a catalog is bootstrapped.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from datetime import date, datetime
 import fcntl
 import hashlib
 import json
@@ -17,6 +18,7 @@ import re
 import secrets
 import stat
 from typing import Any, Final
+from zoneinfo import ZoneInfo
 
 POINTER_SCHEMA: Final = "myquant.strategy_record_store_current.v1"
 CATALOG_SCHEMA_V1: Final = "myquant.strategy_record_catalog.v1"
@@ -25,9 +27,7 @@ CATALOG_SCHEMA_V3: Final = "myquant.strategy_record_catalog.v3"
 # Backward-compatible public name. New archive-aware publications use v2.
 CATALOG_SCHEMA: Final = CATALOG_SCHEMA_V1
 ARCHIVE_MANIFEST_SCHEMA: Final = "myquant.strategy_record_archive_manifest.v1"
-ARCHIVE_RESTORE_RECEIPT_SCHEMA: Final = (
-    "myquant.strategy_record_archive_restore_receipt.v1"
-)
+ARCHIVE_RESTORE_RECEIPT_SCHEMA: Final = "myquant.strategy_record_archive_restore_receipt.v1"
 ARCHIVE_LOCATOR_SCHEMA: Final = "myquant.strategy_record_archive_locator.v1"
 STORE_DIRECTORY: Final = "_record_store"
 POINTER_RELATIVE_PATH: Final = "_record_store/current.v1.json"
@@ -39,9 +39,14 @@ NEW_RECORD_MAX_FILE_BYTES: Final = 8 * 1024 * 1024
 NEW_RECORD_MAX_TOTAL_BYTES: Final = 16 * 1024 * 1024
 NEW_RECORD_MAX_FILES: Final = 128
 EMPTY_POINTER_SHA256: Final = hashlib.sha256(b"").hexdigest()
+PUBLICATION_DELAY_SCHEMA: Final = "myquant.strategy_record_publication_delay.v1"
+LATE_OFFICIAL_VALUATION_PUBLICATION: Final = "LATE_OFFICIAL_VALUATION_PUBLICATION"
+LATE_PUBLICATION_REASON: Final = "SHARED_CHECKOUT_SAFETY_GATE_DELAY"
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _GENERATION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_RECORD_ID = re.compile(r"^[0-9]{8}_[0-9]{4}$")
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
 class StrategyRecordStoreError(RuntimeError):
@@ -153,8 +158,10 @@ def _canonical_relative_path(value: Any, *, label: str) -> str:
     if not isinstance(value, str) or not value or "\\" in value:
         raise StrategyRecordStoreError(f"{label} is not a canonical relative path")
     path = PurePosixPath(value)
-    if path.is_absolute() or str(path) != value or any(
-        part in {"", ".", ".."} for part in path.parts
+    if (
+        path.is_absolute()
+        or str(path) != value
+        or any(part in {"", ".", ".."} for part in path.parts)
     ):
         raise StrategyRecordStoreError(f"{label} is not a canonical relative path")
     return value
@@ -309,6 +316,100 @@ def _validate_archive_locator_shape(locator: Any) -> None:
         raise StrategyRecordStoreError("archive locator archive_bytes is invalid")
 
 
+def _publication_timestamp(value: Any, *, label: str) -> datetime:
+    if not isinstance(value, str) or not value:
+        raise StrategyRecordStoreError(f"{label} is invalid")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise StrategyRecordStoreError(f"{label} is invalid") from exc
+    if parsed.tzinfo is None:
+        raise StrategyRecordStoreError(f"{label} timezone is missing")
+    return parsed
+
+
+def _validate_publication_delay(record: Mapping[str, Any]) -> None:
+    delay = record.get("publication_delay")
+    if delay is None:
+        return
+    required = {
+        "schema_id",
+        "publication_class",
+        "expected_valuation_date",
+        "expected_publication_date",
+        "publication_delay_reason",
+        "actual_sealed_at",
+        "actual_published_at",
+        "actual_publication_local_date",
+        "candidate_recorded_at",
+        "continuity_receipt_id",
+        "continuity_receipt_sha256",
+        "continuity_receipt_created_at",
+        "continuity_checkpoint_digest",
+        "source_record",
+        "evidence_date",
+        "delay_days",
+        "historical_holdings_storage_authority",
+        "v17_mainline_authority",
+        "broker_order_trade_authority",
+    }
+    if not isinstance(delay, dict) or set(delay) != required:
+        raise StrategyRecordStoreError("publication_delay shape is invalid")
+    if (
+        delay.get("schema_id") != PUBLICATION_DELAY_SCHEMA
+        or delay.get("publication_class") != LATE_OFFICIAL_VALUATION_PUBLICATION
+        or delay.get("publication_delay_reason") != LATE_PUBLICATION_REASON
+        or delay.get("delay_days") != 1
+        or delay.get("historical_holdings_storage_authority") is not True
+        or delay.get("v17_mainline_authority") is not False
+        or delay.get("broker_order_trade_authority") is not False
+    ):
+        raise StrategyRecordStoreError("publication_delay contract is invalid")
+    try:
+        valuation_date = date.fromisoformat(str(delay.get("expected_valuation_date")))
+        publication_date = date.fromisoformat(str(delay.get("expected_publication_date")))
+        actual_local_date = date.fromisoformat(str(delay.get("actual_publication_local_date")))
+    except ValueError as exc:
+        raise StrategyRecordStoreError("publication_delay date is invalid") from exc
+    if (publication_date - valuation_date).days != 1 or actual_local_date != publication_date:
+        raise StrategyRecordStoreError("publication_delay day interval is invalid")
+    sealed = _publication_timestamp(delay.get("actual_sealed_at"), label="delay sealed_at")
+    published = _publication_timestamp(delay.get("actual_published_at"), label="delay published_at")
+    recorded = _publication_timestamp(
+        delay.get("candidate_recorded_at"), label="delay candidate_recorded_at"
+    )
+    receipt = _publication_timestamp(
+        delay.get("continuity_receipt_created_at"),
+        label="delay continuity_receipt_created_at",
+    )
+    if sealed != published or str(record.get("sealed_at")) != delay.get("actual_sealed_at"):
+        raise StrategyRecordStoreError("publication_delay sealed/published timestamp mismatch")
+    if not receipt <= recorded <= sealed:
+        raise StrategyRecordStoreError("publication_delay timestamp ordering is invalid")
+    if sealed.astimezone(_SHANGHAI).date() != publication_date:
+        raise StrategyRecordStoreError("publication_delay sealed local date mismatch")
+    record_id = record.get("record_id")
+    if not isinstance(record_id, str) or _RECORD_ID.fullmatch(record_id) is None:
+        raise StrategyRecordStoreError("publication_delay record id is invalid")
+    if recorded.astimezone(_SHANGHAI).strftime("%Y%m%d_%H%M") != record_id:
+        raise StrategyRecordStoreError("publication_delay record minute mismatch")
+    if recorded.astimezone(_SHANGHAI).date() != publication_date:
+        raise StrategyRecordStoreError("publication_delay recorded local date mismatch")
+    receipt_sha = delay.get("continuity_receipt_sha256")
+    if not isinstance(receipt_sha, str) or _SHA256.fullmatch(receipt_sha) is None:
+        raise StrategyRecordStoreError("publication_delay receipt SHA is invalid")
+    receipt_id = delay.get("continuity_receipt_id")
+    if not isinstance(receipt_id, str) or not receipt_id:
+        raise StrategyRecordStoreError("publication_delay receipt id is invalid")
+    checkpoint_digest = delay.get("continuity_checkpoint_digest")
+    if not isinstance(checkpoint_digest, str) or _SHA256.fullmatch(checkpoint_digest) is None:
+        raise StrategyRecordStoreError("publication_delay checkpoint digest is invalid")
+    if delay.get("evidence_date") != delay.get("expected_valuation_date"):
+        raise StrategyRecordStoreError("publication_delay evidence date mismatch")
+    if not isinstance(delay.get("source_record"), str) or not delay.get("source_record"):
+        raise StrategyRecordStoreError("publication_delay source record is invalid")
+
+
 def _validate_catalog(catalog: Mapping[str, Any], *, generation_id: str) -> None:
     schema = catalog.get("schema_id")
     if schema not in {CATALOG_SCHEMA_V1, CATALOG_SCHEMA_V2, CATALOG_SCHEMA_V3}:
@@ -336,8 +437,7 @@ def _validate_catalog(catalog: Mapping[str, Any], *, generation_id: str) -> None
             raise StrategyRecordStoreError("catalog record path is invalid or duplicated")
         state = record.get("state", record.get("storage_state"))
         if schema in {CATALOG_SCHEMA_V2, CATALOG_SCHEMA_V3} and (
-            record.get("state") != record.get("storage_state")
-            or state is None
+            record.get("state") != record.get("storage_state") or state is None
         ):
             raise StrategyRecordStoreError("catalog v2 state/storage_state mismatch")
         if state not in {
@@ -349,6 +449,12 @@ def _validate_catalog(catalog: Mapping[str, Any], *, generation_id: str) -> None
             raise StrategyRecordStoreError("catalog record state is invalid")
         if schema in {CATALOG_SCHEMA_V2, CATALOG_SCHEMA_V3}:
             _validate_inventory_fields(record, label=f"record {record_id}")
+            if "publication_delay" in record:
+                if schema != CATALOG_SCHEMA_V3 or state not in {"ONLINE", "ARCHIVED"}:
+                    raise StrategyRecordStoreError(
+                        "publication_delay requires a governed catalog v3 record"
+                    )
+                _validate_publication_delay(record)
             if state == "ARCHIVED":
                 _validate_archive_locator_shape(record.get("archive_locator"))
             elif "archive_locator" in record:
@@ -367,9 +473,7 @@ def _validate_catalog(catalog: Mapping[str, Any], *, generation_id: str) -> None
             if row is None or row.get("state") != "ONLINE":
                 raise StrategyRecordStoreError(f"catalog {label} record is not ONLINE")
             if schema == CATALOG_SCHEMA_V3:
-                expected_ledger = (
-                    f"{row.get('relative_path')}/ledger_after_manual_switch.parquet"
-                )
+                expected_ledger = f"{row.get('relative_path')}/ledger_after_manual_switch.parquet"
                 if row.get("ledger_path") != expected_ledger:
                     raise StrategyRecordStoreError(
                         f"catalog v3 {label} record does not bind the Parquet ledger"
@@ -391,9 +495,7 @@ def _validate_catalog(catalog: Mapping[str, Any], *, generation_id: str) -> None
         if registry_ref is not None:
             if not isinstance(registry_ref, dict):
                 raise StrategyRecordStoreError("history registry ref is invalid")
-            _canonical_relative_path(
-                registry_ref.get("path"), label="history registry ref path"
-            )
+            _canonical_relative_path(registry_ref.get("path"), label="history registry ref path")
             digest = registry_ref.get("sha256")
             if not isinstance(digest, str) or _SHA256.fullmatch(digest) is None:
                 raise StrategyRecordStoreError("history registry ref SHA-256 is invalid")
@@ -422,7 +524,7 @@ def project_root_for_record_root(record_root: str | os.PathLike[str]) -> Path:
     root = Path(record_root).resolve(strict=True)
     parts = root.parts
     marker = ("results", "strategy_records", "CN", "aggressive_tech_manufacturing")
-    if len(parts) < len(marker) or tuple(parts[-len(marker):]) != marker:
+    if len(parts) < len(marker) or tuple(parts[-len(marker) :]) != marker:
         raise StrategyRecordStoreError("record root is not the governed CN strategy root")
     return Path(*parts[: -len(marker)])
 
@@ -538,8 +640,7 @@ def load_archive_binding(
     matches = [
         row
         for row in manifest_records
-        if isinstance(row, dict)
-        and row.get("record_id") == record.get("record_id")
+        if isinstance(row, dict) and row.get("record_id") == record.get("record_id")
     ]
     if len(matches) != 1:
         raise StrategyRecordStoreError("archive manifest record closure is missing")
@@ -561,13 +662,15 @@ def load_archive_binding(
         raise StrategyRecordStoreError("archive restore receipt schema is unsupported")
     if receipt.get("archive_id") != locator["archive_id"]:
         raise StrategyRecordStoreError("archive restore receipt identity mismatch")
-    if receipt.get("manifest_path") != locator["manifest_path"] or receipt.get(
-        "manifest_sha256"
-    ) != locator["manifest_sha256"]:
+    if (
+        receipt.get("manifest_path") != locator["manifest_path"]
+        or receipt.get("manifest_sha256") != locator["manifest_sha256"]
+    ):
         raise StrategyRecordStoreError("archive restore receipt manifest binding mismatch")
-    if receipt.get("archive_path") != locator["archive_path"] or receipt.get(
-        "archive_sha256"
-    ) != archive_sha:
+    if (
+        receipt.get("archive_path") != locator["archive_path"]
+        or receipt.get("archive_sha256") != archive_sha
+    ):
         raise StrategyRecordStoreError("archive restore receipt payload binding mismatch")
     record_ids = [row.get("record_id") for row in manifest_records]
     if (
@@ -611,6 +714,223 @@ def _validate_pointer_catalog_closure(
     expected_closure = _active_closure(catalog["records"], active)
     if pointer.get("active_closure") != expected_closure:
         raise StrategyRecordStoreError("pointer active_closure mismatch")
+    active_record = by_id.get(active)
+    active_delay = (
+        active_record.get("publication_delay") if isinstance(active_record, Mapping) else None
+    )
+    if isinstance(active_delay, Mapping) and pointer.get("published_at") != active_delay.get(
+        "actual_published_at"
+    ):
+        raise StrategyRecordStoreError("pointer late publication timestamp mismatch")
+
+
+def _late_document_declaration(document: Mapping[str, Any], *, label: str) -> dict[str, Any]:
+    nested = document.get("publication_delay")
+    snapshot = document.get("data_snapshot")
+    sources = [value for value in (nested, document, snapshot) if isinstance(value, Mapping)]
+
+    def selected(*names: str) -> Any:
+        for source in sources:
+            for name in names:
+                if source.get(name) is not None:
+                    return source.get(name)
+        return None
+
+    result = {
+        "publication_class": selected("publication_class"),
+        "expected_valuation_date": selected(
+            "expected_valuation_date", "valuation_date", "valuation_trade_date"
+        ),
+        "expected_publication_date": selected("expected_publication_date", "publication_date"),
+        "publication_delay_reason": selected("publication_delay_reason", "reason"),
+    }
+    for key in ("expected_valuation_date", "expected_publication_date"):
+        text = str(result[key] or "")
+        if len(text) == 8 and text.isdigit():
+            text = f"{text[:4]}-{text[4:6]}-{text[6:]}"
+        try:
+            result[key] = date.fromisoformat(text).isoformat()
+        except ValueError as exc:
+            raise StrategyRecordStoreError(f"{label} {key} is invalid") from exc
+    for source in sources:
+        if (
+            source.get("publication_class") is not None
+            and source.get("publication_class") != result["publication_class"]
+        ):
+            raise StrategyRecordStoreError(f"{label} publication class declarations conflict")
+        for canonical, names in (
+            (
+                "expected_valuation_date",
+                ("expected_valuation_date", "valuation_date", "valuation_trade_date"),
+            ),
+            (
+                "expected_publication_date",
+                ("expected_publication_date", "publication_date"),
+            ),
+        ):
+            for name in names:
+                if source.get(name) is None:
+                    continue
+                text = str(source.get(name))
+                if len(text) == 8 and text.isdigit():
+                    text = f"{text[:4]}-{text[4:6]}-{text[6:]}"
+                try:
+                    normalized_date = date.fromisoformat(text).isoformat()
+                except ValueError as exc:
+                    raise StrategyRecordStoreError(f"{label} {name} is invalid") from exc
+                if normalized_date != result[canonical]:
+                    raise StrategyRecordStoreError(f"{label} {canonical} declarations conflict")
+        for name in ("publication_delay_reason", "reason"):
+            if (
+                source.get(name) is not None
+                and source.get(name) != result["publication_delay_reason"]
+            ):
+                raise StrategyRecordStoreError(
+                    f"{label} publication delay reason declarations conflict"
+                )
+    return result
+
+
+def _record_json(root: Path, *, path_value: Any, expected_sha: Any, label: str) -> dict[str, Any]:
+    relative = _canonical_relative_path(path_value, label=f"{label} path")
+    if not isinstance(expected_sha, str) or _SHA256.fullmatch(expected_sha) is None:
+        raise StrategyRecordStoreError(f"{label} SHA is invalid")
+    raw, _ = _read_regular(
+        root / relative,
+        max_bytes=NEW_RECORD_MAX_FILE_BYTES,
+        label=label,
+    )
+    if _sha256(raw) != expected_sha:
+        raise StrategyRecordStoreError(f"{label} SHA mismatch")
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise StrategyRecordStoreError(f"{label} is invalid JSON") from exc
+    if not isinstance(value, dict):
+        raise StrategyRecordStoreError(f"{label} is not an object")
+    return value
+
+
+def _validate_late_external_binding(
+    *,
+    root: Path,
+    catalog: Mapping[str, Any],
+    record: Mapping[str, Any],
+    lineage: Mapping[str, Any],
+    performance_row: Mapping[str, Any],
+) -> None:
+    delay = record.get("publication_delay")
+    if not isinstance(delay, dict):
+        raise StrategyRecordStoreError("late publication metadata is absent")
+    if record.get("state", record.get("storage_state")) != "ONLINE":
+        raise StrategyRecordStoreError(
+            "late publication external binding requires ONLINE source artifacts"
+        )
+    if catalog.get("active_record_id") == record.get("record_id") and catalog.get(
+        "published_at"
+    ) != delay.get("actual_published_at"):
+        raise StrategyRecordStoreError("late publication catalog timestamp mismatch")
+    manifest = _record_json(
+        root,
+        path_value=record.get("manifest_path"),
+        expected_sha=record.get("manifest_sha256"),
+        label="late publication manifest",
+    )
+    manual = _record_json(
+        root,
+        path_value=record.get("manual_manifest_path"),
+        expected_sha=record.get("manual_manifest_sha256"),
+        label="late publication manual manifest",
+    )
+    expected_declaration = {
+        key: delay[key]
+        for key in (
+            "publication_class",
+            "expected_valuation_date",
+            "expected_publication_date",
+            "publication_delay_reason",
+        )
+    }
+    if (
+        _late_document_declaration(manifest, label="late manifest") != expected_declaration
+        or _late_document_declaration(manual, label="late manual") != expected_declaration
+    ):
+        raise StrategyRecordStoreError("late publication declaration mismatch")
+    manifest_delay = manifest.get("publication_delay")
+    manual_delay = manual.get("publication_delay")
+    if not isinstance(manifest_delay, dict) or manifest_delay != manual_delay:
+        raise StrategyRecordStoreError("late publication document delay mismatch")
+    if (
+        manifest_delay.get("schema_id") != PUBLICATION_DELAY_SCHEMA
+        or manifest_delay.get("publication_class") != LATE_OFFICIAL_VALUATION_PUBLICATION
+        or manifest_delay.get("delay_days") != 1
+    ):
+        raise StrategyRecordStoreError("late publication document delay contract mismatch")
+    for key in (
+        "source_record",
+        "evidence_date",
+        "continuity_receipt_id",
+        "continuity_receipt_sha256",
+        "continuity_receipt_created_at",
+        "continuity_checkpoint_digest",
+        "recorded_at_iso",
+        "historical_holdings_storage_authority",
+        "v17_mainline_authority",
+        "broker_order_trade_authority",
+    ):
+        metadata_key = "candidate_recorded_at" if key == "recorded_at_iso" else key
+        if manifest_delay.get(key) != delay.get(metadata_key):
+            raise StrategyRecordStoreError(f"late publication document {key} binding mismatch")
+    if (
+        manifest.get("recorded_at_iso") != delay.get("candidate_recorded_at")
+        or manual.get("recorded_at_iso") != delay.get("candidate_recorded_at")
+        or manifest.get("source_record") != delay.get("source_record")
+        or manual.get("source_record") != delay.get("source_record")
+        or manifest.get("v17_mainline_authority") is not False
+        or manifest.get("broker_order_trade_authority") is not False
+        or manual.get("v17_mainline_authority") is not False
+        or manual.get("broker_order_trade_authority") is not False
+    ):
+        raise StrategyRecordStoreError("late publication document authority mismatch")
+    if (
+        lineage.get("publication_class") != LATE_OFFICIAL_VALUATION_PUBLICATION
+        or lineage.get("valuation_date") != delay.get("expected_valuation_date")
+        or lineage.get("record_id") != record.get("record_id")
+    ):
+        raise StrategyRecordStoreError("late publication lineage mismatch")
+    if (
+        performance_row.get("record_id") != record.get("record_id")
+        or performance_row.get("valuation_date") != delay.get("expected_valuation_date")
+        or performance_row.get("evidence_kind") != "REGISTERED_OFFICIAL_FINANCIAL_STATE"
+        or performance_row.get("manual_manifest_sha256") != record.get("manual_manifest_sha256")
+        or performance_row.get("ledger_parquet_sha256") != record.get("ledger_sha256")
+        or performance_row.get("financial_state_sha256") != record.get("financial_state_sha256")
+    ):
+        raise StrategyRecordStoreError("late publication performance mismatch")
+    matching_receipts = [
+        row
+        for row in catalog.get("receipts", [])
+        if isinstance(row, Mapping) and row.get("receipt_id") == delay.get("continuity_receipt_id")
+    ]
+    if len(matching_receipts) != 1:
+        raise StrategyRecordStoreError("late publication receipt is not unique")
+    receipt = matching_receipts[0]
+    source_closure = _active_closure(catalog["records"], str(delay.get("source_record") or ""))
+    if (
+        receipt.get("schema_id") != "myquant.strategy_record_no_action_receipt.v1"
+        or receipt.get("content_sha256") != delay.get("continuity_receipt_sha256")
+        or receipt.get("content_sha256") != content_sha256(receipt)
+        or receipt.get("created_at") != delay.get("continuity_receipt_created_at")
+        or receipt.get("v17_mainline_authority") is not False
+        or receipt.get("broker_order_trade_authority") is not False
+        or receipt.get("status") != "NO_ACTION"
+        or receipt.get("payload_copied") is not False
+        or receipt.get("active_record_id") != delay.get("source_record")
+        or receipt.get("active_checkpoint") != source_closure
+        or content_sha256(receipt.get("active_checkpoint") or {})
+        != delay.get("continuity_checkpoint_digest")
+    ):
+        raise StrategyRecordStoreError("late publication receipt binding mismatch")
 
 
 def _validate_external_catalog_bindings(root: Path, catalog: Mapping[str, Any]) -> None:
@@ -657,9 +977,7 @@ def _validate_external_catalog_bindings(root: Path, catalog: Mapping[str, Any]) 
                 "logical_source_refs",
             ):
                 if manifest_record.get(key) != record.get(key):
-                    raise StrategyRecordStoreError(
-                        f"archive manifest record {key} mismatch"
-                    )
+                    raise StrategyRecordStoreError(f"archive manifest record {key} mismatch")
             if manifest_record.get("member_prefix") != locator["member_prefix"]:
                 raise StrategyRecordStoreError("archive member prefix mismatch")
     if schema == CATALOG_SCHEMA_V3:
@@ -713,8 +1031,7 @@ def _validate_external_catalog_bindings(root: Path, catalog: Mapping[str, Any]) 
                 },
             }
             if any(
-                selected_lineage.get(key) != expected
-                for key, expected in expected_refs.items()
+                selected_lineage.get(key) != expected for key, expected in expected_refs.items()
             ) or (
                 selected_lineage.get("financial_state_sha256")
                 != selected_record.get("financial_state_sha256")
@@ -734,6 +1051,29 @@ def _validate_external_catalog_bindings(root: Path, catalog: Mapping[str, Any]) 
                 raise StrategyRecordStoreError(
                     f"active performance {series_key} does not reconcile"
                 )
+        all_lineage = {
+            row.get("record_id"): row
+            for row in catalog["lineage_index"]
+            if isinstance(row, Mapping)
+        }
+        performance_by_id = {row.get("record_id"): row for row in rows if isinstance(row, Mapping)}
+        for record in catalog["records"]:
+            if not isinstance(record, Mapping) or "publication_delay" not in record:
+                continue
+            record_id = record.get("record_id")
+            lineage = all_lineage.get(record_id)
+            performance_row = performance_by_id.get(record_id)
+            if not isinstance(lineage, Mapping) or not isinstance(performance_row, Mapping):
+                raise StrategyRecordStoreError(
+                    "late publication lineage/performance binding is absent"
+                )
+            _validate_late_external_binding(
+                root=root,
+                catalog=catalog,
+                record=record,
+                lineage=lineage,
+                performance_row=performance_row,
+            )
         return
     registry_ref = catalog.get("history_registry_ref")
     if registry_ref is None:
@@ -1074,13 +1414,9 @@ def reselect_catalog(
     current_pointer, _ = loaded
     observed_pointer_sha = _sha256(canonical_json_bytes(current_pointer))
     if observed_pointer_sha != expected_current_pointer_sha256:
-        raise StrategyRecordCASMismatch(
-            expected_current_pointer_sha256, observed_pointer_sha
-        )
+        raise StrategyRecordCASMismatch(expected_current_pointer_sha256, observed_pointer_sha)
     generation = _generation_id(target_generation_id)
-    catalog_relative = _canonical_relative_path(
-        target_catalog_path, label="target catalog path"
-    )
+    catalog_relative = _canonical_relative_path(target_catalog_path, label="target catalog path")
     expected_paths = {
         f"_record_store/catalogs/{generation}/catalog.v2.json",
         f"_record_store/catalogs/{generation}/catalog.v3.json",
@@ -1089,9 +1425,10 @@ def reselect_catalog(
         raise StrategyRecordStoreError(
             "target catalog path is not an exact v2/v3 generation binding"
         )
-    if not isinstance(target_catalog_sha256, str) or _SHA256.fullmatch(
-        target_catalog_sha256
-    ) is None:
+    if (
+        not isinstance(target_catalog_sha256, str)
+        or _SHA256.fullmatch(target_catalog_sha256) is None
+    ):
         raise StrategyRecordStoreError("target catalog SHA-256 is invalid")
     catalog_raw, _ = _read_regular(
         root / catalog_relative,
@@ -1116,9 +1453,7 @@ def reselect_catalog(
             "catalog_sha256": target_catalog_sha256,
             "active_record_id": active_record_id,
             "previous_record_id": previous_record_id,
-            "active_closure": _active_closure(
-                catalog["records"], active_record_id
-            ),
+            "active_closure": _active_closure(catalog["records"], active_record_id),
             "previous_pointer_sha256": expected_current_pointer_sha256,
             "published_at": _published_at(published_at),
             "v17_mainline_authority": False,
@@ -1167,11 +1502,7 @@ def publish_catalog(
 ) -> dict[str, Any]:
     root = Path(record_root)
     _lstat_directory(root, label="record root")
-    loaded = (
-        load_registered_catalog(root)
-        if (root / POINTER_RELATIVE_PATH).exists()
-        else None
-    )
+    loaded = load_registered_catalog(root) if (root / POINTER_RELATIVE_PATH).exists() else None
     if loaded is None:
         old_pointer: dict[str, Any] | None = None
         old_catalog: dict[str, Any] = {"records": [], "receipts": []}
@@ -1223,9 +1554,7 @@ def publish_catalog(
             else dict(old_catalog.get("performance_history_ref", {}))
         )
         catalog_body["lineage_index"] = selected_lineage
-        catalog_body["lineage_index_sha256"] = _sha256(
-            canonical_json_bytes(selected_lineage)
-        )
+        catalog_body["lineage_index_sha256"] = _sha256(canonical_json_bytes(selected_lineage))
         catalog_body["performance_history_ref"] = selected_performance_ref
         catalog_body["performance_contract_ready"] = True
     else:
@@ -1272,9 +1601,7 @@ def publish_catalog(
     pointer_raw = canonical_json_bytes(pointer)
     if len(pointer_raw) > POINTER_MAX_BYTES:
         raise StrategyRecordStoreError("pointer exceeds byte budget")
-    pointer_sha = _cas_pointer(
-        root, pointer_raw, expected_pointer_sha256=expected_pointer_sha256
-    )
+    pointer_sha = _cas_pointer(root, pointer_raw, expected_pointer_sha256=expected_pointer_sha256)
     readback = load_registered_catalog(root)
     if readback is None or readback != (pointer, catalog):
         raise StrategyRecordStoreError("published catalog readback mismatch")

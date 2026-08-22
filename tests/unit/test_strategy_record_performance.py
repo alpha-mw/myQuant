@@ -39,7 +39,6 @@ from quant_investor.strategy_records.store import (
     publish_catalog,
 )
 
-
 SHA_A = "a" * 64
 SHA_B = "b" * 64
 SHA_C = "c" * 64
@@ -98,10 +97,7 @@ def _projection_catalog() -> dict:
     ]
     return {
         "dashboard_projection": {"historical_records": rows},
-        "records": [
-            {"record_id": row["record"]}
-            for row in rows[:-1]
-        ]
+        "records": [{"record_id": row["record"]} for row in rows[:-1]]
         + [
             {
                 "record_id": rows[-1]["record"],
@@ -150,9 +146,7 @@ def test_migration_adapter_is_pure_and_never_consults_logical_sources(
 
     catalog = _projection_catalog()
     for row in catalog["dashboard_projection"]["historical_records"]:
-        row["source_refs"] = [
-            {"path": "forbidden/ledger.csv", "sha256": "0" * 64}
-        ]
+        row["source_refs"] = [{"path": "forbidden/ledger.csv", "sha256": "0" * 64}]
     normalized, _, _ = normalize_registered_projection(catalog)
 
     assert len(normalized) == 3
@@ -204,9 +198,10 @@ def _lineage() -> list[dict]:
 
 def test_lineage_rejects_cycle_and_fork() -> None:
     lineage = _lineage()
-    assert validate_lineage_index(
-        lineage, active_record_id="20260102_1000"
-    ) == ("20260101_1000", "20260102_1000")
+    assert validate_lineage_index(lineage, active_record_id="20260102_1000") == (
+        "20260101_1000",
+        "20260102_1000",
+    )
 
     cycle = [dict(row) for row in lineage]
     cycle[0]["source_record_id"] = "20260102_1000"
@@ -223,6 +218,15 @@ def test_lineage_rejects_cycle_and_fork() -> None:
     )
     with pytest.raises(StrategyRecordStoreError, match="fork"):
         validate_lineage_index(fork, active_record_id="20260103_1000")
+
+
+def test_lineage_accepts_typed_late_official_valuation_publication() -> None:
+    lineage = _lineage()
+    lineage[-1]["publication_class"] = "LATE_OFFICIAL_VALUATION_PUBLICATION"
+    assert validate_lineage_index(lineage, active_record_id="20260102_1000") == (
+        "20260101_1000",
+        "20260102_1000",
+    )
 
 
 def test_flow_neutral_unitization_and_cash_flow_proof() -> None:
@@ -486,9 +490,7 @@ def test_catalog_v3_binds_and_reads_performance_closure(tmp_path: Path) -> None:
         series_path=f"_record_store/performance/{generation}/series.parquet",
         series_sha256=series_sha,
         series_bytes=series_bytes,
-        owner_path=(
-            f"_record_store/performance/{generation}/owner_declaration.v1.json"
-        ),
+        owner_path=(f"_record_store/performance/{generation}/owner_declaration.v1.json"),
         owner_sha256=owner_sha,
         owner_bytes=len(owner_raw),
         rows=rows,
@@ -518,9 +520,7 @@ def test_catalog_v3_binds_and_reads_performance_closure(tmp_path: Path) -> None:
             "path": record["ledger_path"],
             "sha256": record["ledger_sha256"],
         }
-        lineage[index]["financial_state_sha256"] = record[
-            "financial_state_sha256"
-        ]
+        lineage[index]["financial_state_sha256"] = record["financial_state_sha256"]
         lineage[index]["ledger_parquet_sha256"] = record["ledger_sha256"]
     result = publish_catalog(
         root,
@@ -540,10 +540,11 @@ def test_catalog_v3_binds_and_reads_performance_closure(tmp_path: Path) -> None:
     assert result["pointer"] == pointer
     assert catalog["performance_contract_ready"] is True
     assert "dashboard_projection" not in catalog
-    assert load_performance_history(root, ref)["rows"][-1]["record_id"] == (
-        "20260102_1000"
+    assert load_performance_history(root, ref)["rows"][-1]["record_id"] == ("20260102_1000")
+    assert (
+        decimal_text(
+            load_performance_history(root, ref)["rows"][-1]["cumulative_return"],
+            quantum=UNIT_QUANTUM,
+        )
+        == "0.010000000000"
     )
-    assert decimal_text(
-        load_performance_history(root, ref)["rows"][-1]["cumulative_return"],
-        quantum=UNIT_QUANTUM,
-    ) == "0.010000000000"

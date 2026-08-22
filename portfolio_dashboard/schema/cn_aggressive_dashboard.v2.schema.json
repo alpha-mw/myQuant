@@ -13,6 +13,7 @@
     "canonical_v1_ref",
     "integrity",
     "continuity_authority",
+    "publication_delay",
     "freshness",
     "completeness",
     "research_mark",
@@ -39,6 +40,13 @@
       "properties": {"status": {"const": "VERIFIED"}}
     },
     "continuity_authority": {"$ref": "#/$defs/continuityAuthority"},
+    "publication_delay": {
+      "anyOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/publicationDelayProducer"},
+        {"$ref": "#/$defs/publicationDelayCatalog"}
+      ]
+    },
     "freshness": {"$ref": "#/$defs/freshness"},
     "completeness": {"$ref": "#/$defs/completeness"},
     "research_mark": {"$ref": "#/$defs/researchMark"},
@@ -123,6 +131,92 @@
         }
       ]
     },
+    "publicationDelayProducer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_id",
+        "publication_class",
+        "expected_valuation_date",
+        "evidence_date",
+        "expected_publication_date",
+        "source_record",
+        "continuity_receipt_id",
+        "continuity_receipt_sha256",
+        "continuity_receipt_created_at",
+        "continuity_checkpoint_digest",
+        "recorded_at_iso",
+        "publication_delay_reason",
+        "historical_holdings_storage_authority",
+        "v17_mainline_authority",
+        "broker_order_trade_authority",
+        "delay_days"
+      ],
+      "properties": {
+        "schema_id": {"const": "publication_delay.v1"},
+        "publication_class": {"const": "LATE_OFFICIAL_VALUATION_PUBLICATION"},
+        "expected_valuation_date": {"const": "2026-08-21"},
+        "evidence_date": {"const": "2026-08-21"},
+        "expected_publication_date": {"const": "2026-08-22"},
+        "source_record": {"const": "20260820_1321"},
+        "continuity_receipt_id": {"type": "string", "minLength": 1},
+        "continuity_receipt_sha256": {"$ref": "#/$defs/sha256"},
+        "continuity_receipt_created_at": {"type": "string"},
+        "continuity_checkpoint_digest": {"$ref": "#/$defs/sha256"},
+        "recorded_at_iso": {"type": "string"},
+        "publication_delay_reason": {"const": "SHARED_CHECKOUT_SAFETY_GATE_DELAY"},
+        "historical_holdings_storage_authority": {"const": true},
+        "v17_mainline_authority": {"const": false},
+        "broker_order_trade_authority": {"const": false},
+        "delay_days": {"const": 1}
+      }
+    },
+    "publicationDelayCatalog": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_id",
+        "publication_class",
+        "expected_valuation_date",
+        "evidence_date",
+        "expected_publication_date",
+        "publication_delay_reason",
+        "source_record",
+        "actual_sealed_at",
+        "actual_published_at",
+        "actual_publication_local_date",
+        "candidate_recorded_at",
+        "continuity_receipt_id",
+        "continuity_receipt_sha256",
+        "continuity_receipt_created_at",
+        "continuity_checkpoint_digest",
+        "delay_days",
+        "historical_holdings_storage_authority",
+        "v17_mainline_authority",
+        "broker_order_trade_authority"
+      ],
+      "properties": {
+        "schema_id": {"const": "myquant.strategy_record_publication_delay.v1"},
+        "publication_class": {"const": "LATE_OFFICIAL_VALUATION_PUBLICATION"},
+        "expected_valuation_date": {"const": "2026-08-21"},
+        "evidence_date": {"const": "2026-08-21"},
+        "expected_publication_date": {"const": "2026-08-22"},
+        "publication_delay_reason": {"const": "SHARED_CHECKOUT_SAFETY_GATE_DELAY"},
+        "source_record": {"const": "20260820_1321"},
+        "actual_sealed_at": {"type": "string"},
+        "actual_published_at": {"type": "string"},
+        "actual_publication_local_date": {"const": "2026-08-22"},
+        "candidate_recorded_at": {"type": "string"},
+        "continuity_receipt_id": {"type": "string", "minLength": 1},
+        "continuity_receipt_sha256": {"$ref": "#/$defs/sha256"},
+        "continuity_receipt_created_at": {"type": "string"},
+        "continuity_checkpoint_digest": {"$ref": "#/$defs/sha256"},
+        "delay_days": {"const": 1},
+        "historical_holdings_storage_authority": {"const": true},
+        "v17_mainline_authority": {"const": false},
+        "broker_order_trade_authority": {"const": false}
+      }
+    },
     "freshness": {
       "type": "object",
       "additionalProperties": false,
@@ -140,10 +234,11 @@
           "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T23:59:59\\+08:00$"
         },
         "source_kind": {"const": "STRICT_CN_EOD_CLOSE"},
-        "reason": {
+          "reason": {
           "enum": [
             "CURRENT_DAILY_RECEIPT_AND_LATEST_LOCAL_CLOSE",
             "CURRENT_FINANCIAL_PUBLICATION_AND_LATEST_LOCAL_CLOSE",
+            "LATE_OFFICIAL_FINANCIAL_PUBLICATION_FOR_LATEST_LOCAL_CLOSE",
             "DAILY_CONTINUITY_RECEIPT_MISSING"
           ]
         }

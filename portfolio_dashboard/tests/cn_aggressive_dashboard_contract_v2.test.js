@@ -129,6 +129,7 @@ function makeV2(canonicalV1 = makeCanonicalV1()) {
       receipt_id: "automation-20990104-daily-review-v1",
       receipt_content_sha256: SHA.receipt,
     },
+    publication_delay: null,
     freshness: {
       status: "UPDATED",
       scope: "DAILY_SYNC_LATEST_VERIFIED_LOCAL_CLOSE",

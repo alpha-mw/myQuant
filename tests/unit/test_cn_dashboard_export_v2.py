@@ -267,6 +267,32 @@ def test_checker_reopens_exact_js_wrapper_payload(tmp_path: Path) -> None:
         checker._read_js_wrapper(path, "TestDashboard")
 
 
+def test_checker_reports_typed_official_valuation_requirement() -> None:
+    v1 = {
+        "portfolio": {"performance_end_date": "2026-08-19"},
+        "current_evidence": {"official_valuation": False},
+    }
+    v2 = {
+        "freshness": {"status": "UPDATED", "mark_as_of": "2026-08-21"},
+        "continuity_authority": {"status": "NO_ACTION_BOUND"},
+    }
+    assert checker.official_valuation_publication_requirement(v1, v2) == (
+        checker.OFFICIAL_VALUATION_PUBLICATION_REQUIRED
+    )
+
+
+def test_checker_omits_requirement_when_canonical_date_is_current() -> None:
+    v1 = {
+        "portfolio": {"performance_end_date": "2026-08-21"},
+        "current_evidence": {"official_valuation": True},
+    }
+    v2 = {
+        "freshness": {"status": "UPDATED", "mark_as_of": "2026-08-21"},
+        "continuity_authority": {"status": "FINANCIAL_STATE_PUBLICATION"},
+    }
+    assert checker.official_valuation_publication_requirement(v1, v2) is None
+
+
 def test_attempt_receipt_is_immutable_and_does_not_touch_selector(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir()

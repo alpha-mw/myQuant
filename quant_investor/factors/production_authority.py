@@ -4068,6 +4068,57 @@ class FactorProductionStore:
             "factor_rows": factor_rows,
         }
 
+    def read_active_research_inputs(self, *, expected_pointer_sha256: str) -> dict[str, Any]:
+        """Copy one exact LOW/W80 head for offline research compilation.
+
+        The method owns the Factor lock, deep-verifies the active authority once,
+        checks the caller's exact pointer preimage, and copies both immutable
+        signal maps before releasing the lock.  It grants no System, Mainline,
+        portfolio, Paper, order, or trading authority.
+        """
+
+        expected = _require_sha(
+            expected_pointer_sha256,
+            label="expected Factor research pointer",
+        )
+        with self._active_lock():
+            inputs = self.read_active_observation_inputs()
+            if inputs["factor_pointer_sha256"] != expected:
+                _raise("Factor research pointer differs from expected preimage")
+            pointer = self.read(FACTOR_ACTIVE_POINTER_PATH)
+            if pointer.byte_sha256 != expected:
+                _raise("Factor research pointer changed during atomic read")
+            generation = self._read_generation_for_pointer(
+                pointer.data,
+                label="Factor production research input",
+            )
+            payload = generation["payload"]
+            signal_values = {
+                factor_id: dict(payload["signal_values"][factor_id])
+                for factor_id in (LOW_DOLLAR_VOLUME, BLEND_W80)
+            }
+            if set(signal_values[LOW_DOLLAR_VOLUME]) != set(signal_values[BLEND_W80]):
+                _raise("Factor research LOW/W80 common symbol closure differs")
+            return {
+                **inputs,
+                "active_factor_rows": [dict(row) for row in payload["active_factor_rows"]],
+                "factor_generation": generation,
+                "factor_generation_ref": _artifact_ref(generation),
+                "signal_values": signal_values,
+            }
+
+    def assert_active_pointer(self, *, expected_pointer_sha256: str) -> None:
+        """Recheck one caller-frozen Factor pointer under the active lock."""
+
+        expected = _require_sha(
+            expected_pointer_sha256,
+            label="expected Factor pointer",
+        )
+        with self._active_lock():
+            pointer = self.read(FACTOR_ACTIVE_POINTER_PATH)
+            if pointer.byte_sha256 != expected:
+                _raise("Factor production head changed during research compilation")
+
 
 def verify_factor_production(
     workspace_root: str | os.PathLike[str],
@@ -4083,6 +4134,30 @@ def read_factor_production_signal(
     """Read one signal from the exact verified active Factor generation."""
 
     return FactorProductionStore(workspace_root).read_active_signal(factor_id)
+
+
+def read_factor_production_research_inputs(
+    workspace_root: str | os.PathLike[str],
+    *,
+    expected_pointer_sha256: str,
+) -> dict[str, Any]:
+    """Read one exact dual-signal production head for inactive research."""
+
+    return FactorProductionStore(workspace_root).read_active_research_inputs(
+        expected_pointer_sha256=expected_pointer_sha256
+    )
+
+
+def assert_factor_production_pointer(
+    workspace_root: str | os.PathLike[str],
+    *,
+    expected_pointer_sha256: str,
+) -> None:
+    """Fail if the active Factor pointer moved after a research read."""
+
+    FactorProductionStore(workspace_root).assert_active_pointer(
+        expected_pointer_sha256=expected_pointer_sha256
+    )
 
 
 __all__ = [

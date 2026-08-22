@@ -24,6 +24,7 @@ DEFAULT_V2_BUNDLE = DEFAULT_BUNDLE.with_name("cn_aggressive_dashboard.v2.json")
 DEFAULT_V2_JS_BUNDLE = DEFAULT_V2_BUNDLE.with_suffix(".js")
 DEFAULT_SELECTOR = DEFAULT_BUNDLE.with_name("cn_aggressive_dashboard_selector.v2.json")
 DEFAULT_SELECTOR_JS = DEFAULT_SELECTOR.with_suffix(".js")
+OFFICIAL_VALUATION_PUBLICATION_REQUIRED = "OFFICIAL_VALUATION_PUBLICATION_REQUIRED"
 
 
 def _read_js_wrapper(path: Path, variable: str) -> dict:
@@ -39,6 +40,27 @@ def _read_js_wrapper(path: Path, variable: str) -> dict:
     if not isinstance(value, dict):
         raise ValueError(f"{variable}_js_payload_not_object")
     return value
+
+
+def official_valuation_publication_requirement(bundle: dict, v2_bundle: dict | None) -> str | None:
+    """Return the typed upstream-writer requirement without granting write authority."""
+
+    if not isinstance(v2_bundle, dict):
+        return None
+    performance_end = bundle.get("portfolio", {}).get("performance_end_date")
+    mark_as_of = v2_bundle.get("freshness", {}).get("mark_as_of")
+    continuity = v2_bundle.get("continuity_authority", {})
+    current = bundle.get("current_evidence", {})
+    if (
+        isinstance(performance_end, str)
+        and isinstance(mark_as_of, str)
+        and mark_as_of > performance_end
+        and v2_bundle.get("freshness", {}).get("status") == "UPDATED"
+        and continuity.get("status") == "NO_ACTION_BOUND"
+        and current.get("official_valuation") is not True
+    ):
+        return OFFICIAL_VALUATION_PUBLICATION_REQUIRED
+    return None
 
 
 def parse_args() -> argparse.Namespace:
@@ -197,6 +219,9 @@ def main() -> int:
                     v2_bundle.get("freshness", {}).get("mark_as_of")
                     if isinstance(v2_bundle, dict)
                     else None
+                ),
+                "publication_requirement": (
+                    official_valuation_publication_requirement(bundle, v2_bundle)
                 ),
             },
             ensure_ascii=False,

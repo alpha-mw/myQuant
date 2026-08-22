@@ -1140,6 +1140,67 @@ _INTELLIGENCE_SPECS: Final = {
             "theme_assessment_ref",
         },
     ),
+    "daily_research_policy": (
+        "policy_id",
+        _RESEARCH_COMMON_FIELDS
+        | {
+            "decision_thresholds",
+            "effective_from",
+            "effective_to",
+            "factor_rows",
+            "fundamental_freshness",
+            "pool_policy",
+            "strategy_id",
+            "technology_theme_ids",
+            "theme_provider_precedence",
+        },
+    ),
+    "factor_research_rank": (
+        "rank_id",
+        _RESEARCH_COMMON_FIELDS
+        | {
+            "as_of",
+            "blocker_codes",
+            "common_symbol_count",
+            "common_symbol_set_sha256",
+            "factor_generation_ref",
+            "factor_pointer_sha256",
+            "observation_refs",
+            "policy_ref",
+            "pool_rows",
+            "signal_date",
+            "status",
+            "strategy_id",
+        },
+    ),
+    "industry_source_projection": (
+        "projection_id",
+        _RESEARCH_COMMON_FIELDS
+        | {
+            "as_of",
+            "blocker_codes",
+            "company_rows",
+            "company_set_sha256",
+            "provider",
+            "source_refs",
+            "status",
+        },
+    ),
+    "theme_membership_projection": (
+        "projection_id",
+        _RESEARCH_COMMON_FIELDS
+        | {
+            "as_of",
+            "blocker_codes",
+            "company_rows",
+            "company_set_sha256",
+            "fallback_company_keyset",
+            "policy_ref",
+            "source_refs",
+            "status",
+            "trade_date",
+        },
+    ),
     "advisory_review": (
         "review_id",
         _RESEARCH_COMMON_FIELDS

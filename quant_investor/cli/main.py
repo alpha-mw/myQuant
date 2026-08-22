@@ -27,6 +27,7 @@ from quant_investor.cli.unified import (
     factor_production_verify,
     factor_status,
     research_compile_evidence,
+    research_compile_daily,
     research_evaluate,
     research_forward,
     research_inspect,
@@ -723,6 +724,7 @@ def _build_parser() -> argparse.ArgumentParser:
         ("forward", "seal inactive forward-research request"),
         ("evaluate", "evaluate precomputed research stages"),
         ("compile-evidence", "compile exact inactive evidence closure"),
+        ("compile-daily", "compile exact inactive daily Investment Intelligence"),
         ("readiness", "assess generation-compatible readiness"),
         ("inspect", "inspect one stable artifact without mutation"),
     ):
@@ -1405,6 +1407,7 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
         "forward": research_forward,
         "evaluate": research_evaluate,
         "compile-evidence": research_compile_evidence,
+        "compile-daily": research_compile_daily,
         "readiness": research_readiness,
         "inspect": research_inspect,
     }

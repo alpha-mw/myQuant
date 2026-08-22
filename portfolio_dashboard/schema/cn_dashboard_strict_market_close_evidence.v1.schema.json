@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cn_dashboard_strict_market_close_evidence.v1",
+  "title": "CN Dashboard strict local market close evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "market",
+    "trade_date",
+    "market_pointer_path",
+    "market_pointer_sha256",
+    "snapshot_manifest_path",
+    "snapshot_manifest_sha256",
+    "snapshot_id",
+    "latest_complete_trade_date",
+    "benchmark_input_path",
+    "benchmark_input_sha256",
+    "stocks",
+    "indices"
+  ],
+  "properties": {
+    "schema_version": {"const": "cn_dashboard_strict_market_close_evidence.v1"},
+    "market": {"const": "CN"},
+    "trade_date": {"$ref": "#/$defs/compactDate"},
+    "market_pointer_path": {"$ref": "#/$defs/projectPath"},
+    "market_pointer_sha256": {"$ref": "#/$defs/sha256"},
+    "snapshot_manifest_path": {"$ref": "#/$defs/projectPath"},
+    "snapshot_manifest_sha256": {"$ref": "#/$defs/sha256"},
+    "snapshot_id": {"type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9._:-]+$"},
+    "latest_complete_trade_date": {"$ref": "#/$defs/compactDate"},
+    "benchmark_input_path": {"$ref": "#/$defs/projectPath"},
+    "benchmark_input_sha256": {"$ref": "#/$defs/sha256"},
+    "stocks": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "items": {"$ref": "#/$defs/stockRow"}
+    },
+    "indices": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {"$ref": "#/$defs/indexRow"}
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "compactDate": {"type": "string", "pattern": "^[0-9]{8}$"},
+    "projectPath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*\\\\)(?!.*(^|/)\\.\\.(/|$)).+$"
+    },
+    "symbol": {"type": "string", "pattern": "^[0-9]{6}\\.(?:SH|SZ|BJ)$"},
+    "close": {"type": "number", "exclusiveMinimum": 0},
+    "stockRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "symbol",
+        "trade_date",
+        "close",
+        "serving_parquet_path",
+        "serving_parquet_sha256"
+      ],
+      "properties": {
+        "symbol": {"$ref": "#/$defs/symbol"},
+        "trade_date": {"$ref": "#/$defs/compactDate"},
+        "close": {"$ref": "#/$defs/close"},
+        "serving_parquet_path": {"$ref": "#/$defs/projectPath"},
+        "serving_parquet_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "indexRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ts_code",
+        "trade_date",
+        "close",
+        "benchmark_input_path",
+        "benchmark_input_sha256"
+      ],
+      "properties": {
+        "ts_code": {"$ref": "#/$defs/symbol"},
+        "trade_date": {"$ref": "#/$defs/compactDate"},
+        "close": {"$ref": "#/$defs/close"},
+        "benchmark_input_path": {"$ref": "#/$defs/projectPath"},
+        "benchmark_input_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  }
+}

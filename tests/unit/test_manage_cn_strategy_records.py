@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+from datetime import datetime, timezone
 from decimal import Decimal
 import hashlib
 import io
@@ -71,9 +72,7 @@ def _bootstrap(root: Path) -> dict[str, object]:
 
 
 def _pointer_sha(root: Path) -> str:
-    return hashlib.sha256(
-        (root / "_record_store" / "current.v1.json").read_bytes()
-    ).hexdigest()
+    return hashlib.sha256((root / "_record_store" / "current.v1.json").read_bytes()).hexdigest()
 
 
 def test_inventory_reports_unregistered_legacy_and_registered_orphans(
@@ -97,9 +96,7 @@ def test_reselect_catalog_command_requires_explicit_owner_approval(
         record_root="/governed/root",
         expected_current_pointer_sha="a" * 64,
         target_generation_id="g-pre-cutover",
-        target_catalog_path=(
-            "_record_store/catalogs/g-pre-cutover/catalog.v2.json"
-        ),
+        target_catalog_path=("_record_store/catalogs/g-pre-cutover/catalog.v2.json"),
         target_catalog_sha="b" * 64,
         published_at="2026-08-15T08:00:00Z",
         owner_approved_by="not-owner",
@@ -116,9 +113,7 @@ def test_reselect_catalog_command_requires_explicit_owner_approval(
             "pointer_sha256": "c" * 64,
             "pointer": {
                 "generation_id": "g-pre-cutover",
-                "catalog_path": (
-                    "_record_store/catalogs/g-pre-cutover/catalog.v2.json"
-                ),
+                "catalog_path": ("_record_store/catalogs/g-pre-cutover/catalog.v2.json"),
                 "catalog_sha256": "b" * 64,
             },
             "catalog": {"schema_id": CATALOG_SCHEMA_V2},
@@ -159,9 +154,7 @@ def test_reselect_catalog_command_requires_explicit_owner_approval(
 
 def test_identity_declaration_is_create_once_and_exact(tmp_path: Path) -> None:
     project = tmp_path / "project"
-    record_root = project / (
-        "results/strategy_records/CN/aggressive_tech_manufacturing"
-    )
+    record_root = project / ("results/strategy_records/CN/aggressive_tech_manufacturing")
     record_root.mkdir(parents=True)
     values = _args(
         record_root=str(record_root),
@@ -175,9 +168,7 @@ def test_identity_declaration_is_create_once_and_exact(tmp_path: Path) -> None:
     identity = project / manager.IDENTITY_RELATIVE_PATH
 
     assert first == second
-    assert hashlib.sha256(identity.read_bytes()).hexdigest() == first[
-        "identity_sha256"
-    ]
+    assert hashlib.sha256(identity.read_bytes()).hexdigest() == first["identity_sha256"]
     assert oct(identity.stat().st_mode & 0o777) == "0o600"
     with pytest.raises(StrategyRecordConflict, match="conflict"):
         manager.command_declare_strategy_identity(
@@ -216,9 +207,7 @@ def test_prepare_performance_migration_writes_tmp_candidate_only(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project = tmp_path / "project"
-    record_root = project / (
-        "results/strategy_records/CN/aggressive_tech_manufacturing"
-    )
+    record_root = project / ("results/strategy_records/CN/aggressive_tech_manufacturing")
     previous_id = "20260813_1800"
     active_id = "20260814_1800"
     for record_id in (previous_id, active_id):
@@ -350,9 +339,7 @@ def test_prepare_performance_migration_writes_tmp_candidate_only(
             candidate_receipt_sha=result["candidate_receipt_sha256"],
             approved_manifest_sha=result["candidate_manifest_sha256"],
             approved_series_sha=result["series_sha256"],
-            approved_owner_declaration_sha=result[
-                "prospective_owner_declaration_sha256"
-            ],
+            approved_owner_declaration_sha=result["prospective_owner_declaration_sha256"],
         )
     )
     published = manager.command_publish_performance_migration(
@@ -436,8 +423,12 @@ def _initial_v3_store(project: Path) -> tuple[Path, dict[str, object]]:
                 "adjusted_nav_cny": nav,
                 "unit_count": Decimal("1000000.000000000000"),
                 "unit_nav": unit_nav,
-                "interval_return": Decimal("0.000000000000") if sequence == 1 else Decimal("0.010000000000"),
-                "cumulative_return": Decimal("0.000000000000") if sequence == 1 else Decimal("0.010000000000"),
+                "interval_return": (
+                    Decimal("0.000000000000") if sequence == 1 else Decimal("0.010000000000")
+                ),
+                "cumulative_return": (
+                    Decimal("0.000000000000") if sequence == 1 else Decimal("0.010000000000")
+                ),
                 "drawdown": Decimal("0.000000000000"),
                 "evidence_kind": "OWNER_DECLARED_REGISTERED_PROJECTION_MIGRATION",
                 "manual_manifest_sha256": sha[record_id]["manual"],
@@ -448,9 +439,7 @@ def _initial_v3_store(project: Path) -> tuple[Path, dict[str, object]]:
     performance_generation = "p-parent"
     prefix = root / "_record_store/performance" / performance_generation
     prefix.mkdir(parents=True)
-    series_sha, series_bytes = write_deterministic_parquet(
-        rows, prefix / "series.parquet"
-    )
+    series_sha, series_bytes = write_deterministic_parquet(rows, prefix / "series.parquet")
     owner = build_owner_declaration(
         performance_generation_id=performance_generation,
         declared_at="2026-01-02T02:01:00Z",
@@ -509,9 +498,18 @@ def _initial_v3_store(project: Path) -> tuple[Path, dict[str, object]]:
                 "execution_class": "NO_TRADE",
                 "publication_class": "OFFICIAL_FINANCIAL_STATE",
                 "storage_state": "ONLINE",
-                "manifest_ref": {"path": f"{record_id}/manifest.json", "sha256": sha[record_id]["manifest"]},
-                "manual_manifest_ref": {"path": f"{record_id}/manual_execution_manifest.json", "sha256": sha[record_id]["manual"]},
-                "effective_ledger_ref": {"path": f"{record_id}/ledger_after_manual_switch.parquet", "sha256": sha[record_id]["ledger"]},
+                "manifest_ref": {
+                    "path": f"{record_id}/manifest.json",
+                    "sha256": sha[record_id]["manifest"],
+                },
+                "manual_manifest_ref": {
+                    "path": f"{record_id}/manual_execution_manifest.json",
+                    "sha256": sha[record_id]["manual"],
+                },
+                "effective_ledger_ref": {
+                    "path": f"{record_id}/ledger_after_manual_switch.parquet",
+                    "sha256": sha[record_id]["ledger"],
+                },
                 "financial_state_sha256": sha[record_id]["fs"],
                 "ledger_parquet_sha256": sha[record_id]["ledger"],
             }
@@ -533,9 +531,7 @@ def _initial_v3_store(project: Path) -> tuple[Path, dict[str, object]]:
     return root, published
 
 
-def _write_applied_parquet_record(
-    stage: Path, *, record_id: str, source_record_id: str
-) -> None:
+def _write_applied_parquet_record(stage: Path, *, record_id: str, source_record_id: str) -> None:
     ledger_path = stage / "ledger_after_manual_switch.parquet"
     pq.write_table(
         pa.Table.from_pylist(
@@ -646,13 +642,9 @@ def test_catalog_v3_seal_publish_advances_performance_and_no_action_inherits(
     root, initial = _initial_v3_store(project)
     record_id = "20260103_1000"
     stage = Path(
-        manager.command_stage_init(
-            _args(record_root=str(root), record_id=record_id)
-        )["staging_dir"]
+        manager.command_stage_init(_args(record_root=str(root), record_id=record_id))["staging_dir"]
     )
-    _write_applied_parquet_record(
-        stage, record_id=record_id, source_record_id="20260102_1000"
-    )
+    _write_applied_parquet_record(stage, record_id=record_id, source_record_id="20260102_1000")
     published = manager.command_seal_publish(
         _args(
             record_root=str(root),
@@ -818,9 +810,7 @@ def test_seal_publish_normalizes_relative_record_root_for_dashboard(
         observed.append(values["record_root"])
         return ([{"record": "20260809_1000", "source_refs": []}], [])
 
-    monkeypatch.setattr(
-        "scripts.cn_dashboard_common.scan_valid_records", scan_valid
-    )
+    monkeypatch.setattr("scripts.cn_dashboard_common.scan_valid_records", scan_valid)
     monkeypatch.setattr(
         "scripts.cn_dashboard_common.scan_historical_performance_records",
         scan_historical,
@@ -849,9 +839,7 @@ def test_seal_publish_atomically_adopts_existing_source_chain(
     for record_id in ("20260810_1943", "20260810_1948"):
         target = root / record_id
         target.mkdir()
-        (target / "payload.json").write_text(
-            '{"value":1}\n', encoding="utf-8"
-        )
+        (target / "payload.json").write_text('{"value":1}\n', encoding="utf-8")
 
     valid = [
         {
@@ -878,9 +866,7 @@ def test_seal_publish_atomically_adopts_existing_source_chain(
         "scripts.cn_dashboard_common.scan_historical_performance_records",
         lambda **kwargs: ([], []),
     )
-    monkeypatch.setattr(
-        manager, "_attach_dashboard_closure", lambda *args, **kwargs: None
-    )
+    monkeypatch.setattr(manager, "_attach_dashboard_closure", lambda *args, **kwargs: None)
     result = manager.command_seal_publish(
         _args(
             record_root=str(root),
@@ -915,9 +901,7 @@ def test_dashboard_projection_source_refs_deduplicate_and_conflict() -> None:
         {"path": "a", "sha256": "1" * 64},
         {"path": "b", "sha256": "2" * 64},
     ]
-    projection["valid_records"][0]["source_refs"].append(
-        {"path": "a", "sha256": "3" * 64}
-    )
+    projection["valid_records"][0]["source_refs"].append({"path": "a", "sha256": "3" * 64})
     with pytest.raises(StrategyRecordStoreError, match="refs conflict"):
         manager._normalize_dashboard_projection_source_refs(projection)
 
@@ -960,15 +944,11 @@ def test_archive_aware_seal_publish_extends_catalog_without_hot_scan(
             ],
             "rejected": [],
             "latest_seen": "20260810_1948",
-            "historical_records": [
-                {"record": "20260630_1614", "source_refs": []}
-            ],
+            "historical_records": [{"record": "20260630_1614", "source_refs": []}],
             "historical_rejected": [],
         },
     }
-    monkeypatch.setattr(
-        manager, "load_registered_catalog", lambda value: (pointer, catalog)
-    )
+    monkeypatch.setattr(manager, "load_registered_catalog", lambda value: (pointer, catalog))
     monkeypatch.setattr(manager, "_pointer_sha", lambda value: "a" * 64)
     new_valid = {
         "record": "20260810_2000",
@@ -1018,9 +998,7 @@ def test_archive_aware_seal_publish_extends_catalog_without_hot_scan(
     assert published["inherit_history_registry"] is False
     assert published["previous_record_id"] == "20260810_1948"
     projection = published["dashboard_projection"]
-    assert [row["record"] for row in projection["historical_records"]] == [
-        "20260630_1614"
-    ]
+    assert [row["record"] for row in projection["historical_records"]] == ["20260630_1614"]
     assert projection["historical_rejected"] == [
         "20260810_2000:historical_official_valuation_incomplete"
     ]
@@ -1033,9 +1011,7 @@ def test_stage_rejects_noncanonical_new_record_id(tmp_path: Path) -> None:
         StrategyRecordStoreError,
         match="new record_id must use YYYYMMDD_HHMM",
     ):
-        manager.command_stage_init(
-            _args(record_root=str(tmp_path), record_id="research-output")
-        )
+        manager.command_stage_init(_args(record_root=str(tmp_path), record_id="research-output"))
 
 
 def test_new_record_budgets_reject_file_count_and_total_bytes(
@@ -1106,9 +1082,7 @@ def test_consecutive_no_actions_preserve_history_state_binding(
     tmp_path: Path,
 ) -> None:
     project = tmp_path / "project"
-    root = project / (
-        "results/strategy_records/CN/aggressive_tech_manufacturing"
-    )
+    root = project / ("results/strategy_records/CN/aggressive_tech_manufacturing")
     record_ids = ("20260809_1000", "20260810_1000")
     for record_id in record_ids:
         (root / record_id).mkdir(parents=True)
@@ -1141,9 +1115,7 @@ def test_consecutive_no_actions_preserve_history_state_binding(
         "generated_at": "2026-08-10T00:00:00Z",
         "authority": "DASHBOARD_POST_HOC_INTEGRITY_DECLARATION",
         "intended_generation_id": "g-history",
-        "dashboard_projection_sha256": hashlib.sha256(
-            canonical_json_bytes(projection)
-        ).hexdigest(),
+        "dashboard_projection_sha256": hashlib.sha256(canonical_json_bytes(projection)).hexdigest(),
         "record_count": 0,
         "records": [],
     }
@@ -1206,9 +1178,7 @@ def test_consecutive_no_actions_preserve_history_state_binding(
     ):
         assert first["catalog"][key] == initial["catalog"][key]
         assert second["catalog"][key] == initial["catalog"][key]
-    assert second["catalog"]["history_registry"][
-        "intended_generation_id"
-    ] == "g-history"
+    assert second["catalog"]["history_registry"]["intended_generation_id"] == "g-history"
     assert registry_path.read_bytes() == registry_bytes
     assert [row["receipt_id"] for row in second["catalog"]["receipts"]] == [
         "no-action-1",
@@ -1238,9 +1208,7 @@ def test_restore_rejects_malicious_archive_members(tmp_path: Path) -> None:
         manager._restore_tar(symlink_archive, restore)
 
 
-@pytest.mark.skipif(
-    shutil.which("zstd") is None, reason="zstd executable unavailable"
-)
+@pytest.mark.skipif(shutil.which("zstd") is None, reason="zstd executable unavailable")
 def test_archive_rehearsal_is_copy_only_and_full_restore_verified(
     tmp_path: Path,
 ) -> None:
@@ -1265,10 +1233,7 @@ def test_main_inventory_json_is_machine_readable(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     (tmp_path / "legacy").mkdir()
-    assert (
-        manager.main(["inventory", "--record-root", str(tmp_path), "--json"])
-        == 0
-    )
+    assert manager.main(["inventory", "--record-root", str(tmp_path), "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is True
     assert payload["registered"] is False
@@ -1288,9 +1253,7 @@ def test_quarantine_move_is_resume_safe_and_rollback_restores(
             {
                 "record_id": record_id,
                 "relative_path": record_id,
-                **manager.build_inventory(
-                    record_dir, enforce_new_record_budget=False
-                ),
+                **manager.build_inventory(record_dir, enforce_new_record_budget=False),
             }
         )
     plan = {
@@ -1343,10 +1306,7 @@ def test_quarantine_refuses_dual_or_lost_locations(tmp_path: Path) -> None:
 def test_archive_candidate_rejects_unregistered_strict_record(
     tmp_path: Path,
 ) -> None:
-    root = (
-        tmp_path
-        / "results/strategy_records/CN/aggressive_tech_manufacturing"
-    )
+    root = tmp_path / "results/strategy_records/CN/aggressive_tech_manufacturing"
     root.mkdir(parents=True)
     _bootstrap(root)
     (root / "20260810_1948").mkdir()
@@ -1358,9 +1318,311 @@ def test_archive_candidate_rejects_unregistered_strict_record(
     )
     with pytest.raises(
         StrategyRecordStoreError,
-        match=(
-            "unregistered strict record directory blocks archive candidate: "
-            "20260810_1948"
-        ),
+        match=("unregistered strict record directory blocks archive candidate: " "20260810_1948"),
     ):
         manager.command_archive_candidate(args)
+
+
+def _continuity_receipt_fixture() -> tuple[dict[str, object], dict[str, object], str]:
+    closure: dict[str, object] = {
+        "record_id": "20260820_1321",
+        "relative_path": "20260820_1321",
+        "inventory_sha256": "1" * 64,
+        "total_bytes": 10,
+        "file_count": 1,
+        "manifest_path": "20260820_1321/manifest.json",
+        "manifest_sha256": "2" * 64,
+        "manual_manifest_path": "20260820_1321/manual_execution_manifest.json",
+        "manual_manifest_sha256": "3" * 64,
+        "ledger_path": "20260820_1321/ledger_after_manual_switch.parquet",
+        "ledger_sha256": "4" * 64,
+        "pnl_path": "20260820_1321/pnl_summary.csv",
+        "pnl_sha256": "5" * 64,
+        "financial_state_sha256": "6" * 64,
+    }
+    pointer: dict[str, object] = {
+        "active_record_id": "20260820_1321",
+        "active_closure": closure,
+    }
+    receipt: dict[str, object] = {
+        "schema_id": manager.NO_ACTION_RECEIPT_SCHEMA,
+        "receipt_id": "automation-20260821-daily-review-v1",
+        "created_at": "2026-08-21T01:30:00Z",
+        "status": "NO_ACTION",
+        "active_record_id": "20260820_1321",
+        "active_checkpoint": closure,
+        "payload_copied": False,
+        "v17_mainline_authority": False,
+        "broker_order_trade_authority": False,
+    }
+    receipt["content_sha256"] = manager.content_sha256(receipt)
+    catalog: dict[str, object] = {"receipts": [receipt]}
+    return pointer, catalog, str(receipt["content_sha256"])
+
+
+def test_seal_parser_exposes_governed_v3_continuity_bindings() -> None:
+    parsed = manager.build_parser().parse_args(
+        [
+            "seal-publish",
+            "--record-root",
+            "/records",
+            "--record-id",
+            "20260821_1200",
+            "--expected-pointer-sha",
+            "a" * 64,
+            "--expected-catalog-sha",
+            "b" * 64,
+            "--continuity-receipt-id",
+            "automation-20260821-daily-review-v1",
+            "--expected-continuity-receipt-sha",
+            "c" * 64,
+        ]
+    )
+    assert parsed.expected_catalog_sha == "b" * 64
+    assert parsed.continuity_receipt_id == "automation-20260821-daily-review-v1"
+    assert parsed.expected_continuity_receipt_sha == "c" * 64
+
+    late = manager.build_parser().parse_args(
+        [
+            "seal-publish",
+            "--record-root",
+            "/records",
+            "--record-id",
+            "20260822_0930",
+            "--expected-pointer-sha",
+            "a" * 64,
+            "--publication-class",
+            manager.LATE_OFFICIAL_VALUATION_PUBLICATION,
+            "--expected-valuation-date",
+            "2026-08-21",
+            "--expected-publication-date",
+            "2026-08-22",
+            "--publication-delay-reason",
+            manager.LATE_PUBLICATION_REASON,
+        ]
+    )
+    assert late.publication_class == manager.LATE_OFFICIAL_VALUATION_PUBLICATION
+    assert late.expected_valuation_date == "2026-08-21"
+    assert late.expected_publication_date == "2026-08-22"
+
+
+@pytest.mark.parametrize(
+    "mutation,pattern",
+    [
+        ("missing", "continuity receipt must be unique"),
+        ("duplicate", "continuity receipt must be unique"),
+        ("hash", "continuity receipt content hash mismatch"),
+        ("date", "continuity receipt date mismatch"),
+        ("checkpoint", "continuity receipt active checkpoint mismatch"),
+        ("source", "candidate source record is not active"),
+    ],
+)
+def test_continuity_receipt_validation_fail_closed(mutation: str, pattern: str) -> None:
+    pointer, catalog, receipt_sha = _continuity_receipt_fixture()
+    receipt = catalog["receipts"][0]
+    assert isinstance(receipt, dict)
+    receipt_id = receipt["receipt_id"]
+    candidate_date = "2026-08-21"
+    source_record = "20260820_1321"
+    if mutation == "missing":
+        receipt_id = "missing"
+    elif mutation == "duplicate":
+        catalog["receipts"].append(dict(receipt))
+    elif mutation == "hash":
+        receipt["content_sha256"] = "f" * 64
+    elif mutation == "date":
+        receipt["created_at"] = "2026-08-20T01:30:00Z"
+        receipt["content_sha256"] = manager.content_sha256(receipt)
+        receipt_sha = str(receipt["content_sha256"])
+    elif mutation == "checkpoint":
+        receipt["active_checkpoint"] = {**receipt["active_checkpoint"], "file_count": 2}
+        receipt["content_sha256"] = manager.content_sha256(receipt)
+        receipt_sha = str(receipt["content_sha256"])
+    elif mutation == "source":
+        source_record = "20260819_1200"
+    with pytest.raises(StrategyRecordStoreError, match=pattern):
+        manager._find_and_validate_continuity_receipt(
+            catalog=catalog,
+            pointer=pointer,
+            receipt_id=receipt_id,
+            expected_sha=receipt_sha,
+            candidate_date=candidate_date,
+            source_record=source_record,
+        )
+
+
+def _late_validation_fixture() -> tuple[argparse.Namespace, dict, dict, dict, dict]:
+    declaration = {
+        "publication_class": manager.LATE_OFFICIAL_VALUATION_PUBLICATION,
+        "expected_valuation_date": "2026-08-21",
+        "expected_publication_date": "2026-08-22",
+        "publication_delay_reason": manager.LATE_PUBLICATION_REASON,
+    }
+    recorded_at = "2026-08-22T09:30:00+08:00"
+    checkpoint = {"record_id": "20260820_1321"}
+    delay = {
+        "schema_id": manager.PUBLICATION_DELAY_SCHEMA,
+        **declaration,
+        "evidence_date": "2026-08-21",
+        "source_record": "20260820_1321",
+        "continuity_receipt_id": "automation-20260821-daily-review-v1",
+        "continuity_receipt_sha256": "a" * 64,
+        "continuity_receipt_created_at": "2026-08-21T13:27:37Z",
+        "continuity_checkpoint_digest": manager.content_sha256(checkpoint),
+        "recorded_at_iso": recorded_at,
+        "delay_days": 1,
+        "historical_holdings_storage_authority": True,
+        "v17_mainline_authority": False,
+        "broker_order_trade_authority": False,
+    }
+    manifest = {
+        **declaration,
+        "recorded_at_iso": recorded_at,
+        "publication_delay": delay,
+    }
+    manual = {
+        **declaration,
+        "recorded_at_iso": recorded_at,
+        "publication_delay": dict(delay),
+    }
+    strict_record = {
+        "data_date": "2026-08-21",
+        "source_record": "20260820_1321",
+    }
+    receipt = {
+        "receipt_id": "automation-20260821-daily-review-v1",
+        "content_sha256": "a" * 64,
+        "created_at": "2026-08-21T13:27:37Z",
+        "active_checkpoint": checkpoint,
+    }
+    args = _args(
+        publication_class=manager.LATE_OFFICIAL_VALUATION_PUBLICATION,
+        expected_valuation_date="2026-08-21",
+        expected_publication_date="2026-08-22",
+        publication_delay_reason=manager.LATE_PUBLICATION_REASON,
+        published_at=None,
+    )
+    return args, strict_record, manifest, manual, receipt
+
+
+def test_late_publication_contract_uses_one_manager_instant() -> None:
+    args, strict_record, manifest, manual, receipt = _late_validation_fixture()
+    delay = manager._validate_late_publication(
+        args=args,
+        record_id="20260822_0930",
+        sealed_at="2026-08-22T01:31:00Z",
+        strict_record=strict_record,
+        manifest=manifest,
+        manual=manual,
+        receipt=receipt,
+    )
+    assert delay["publication_class"] == manager.LATE_OFFICIAL_VALUATION_PUBLICATION
+    assert delay["delay_days"] == 1
+    assert delay["actual_sealed_at"] == delay["actual_published_at"]
+    assert delay["actual_publication_local_date"] == "2026-08-22"
+    assert delay["v17_mainline_authority"] is False
+    assert delay["broker_order_trade_authority"] is False
+
+
+@pytest.mark.parametrize(
+    "mutation,pattern",
+    [
+        ("clock_date", "manager local date mismatch"),
+        ("timezone", "timezone is missing"),
+        ("reason", "late publication reason mismatch"),
+        ("class", "publication class declarations conflict"),
+        ("multi_day", "delay must be exactly one day"),
+        ("record_id", "record id does not match"),
+        ("ordering", "timestamp ordering"),
+    ],
+)
+def test_late_publication_contract_rejects_invalid_timing_and_declarations(
+    mutation: str, pattern: str
+) -> None:
+    args, strict_record, manifest, manual, receipt = _late_validation_fixture()
+    record_id = "20260822_0930"
+    sealed_at = "2026-08-22T01:31:00Z"
+    if mutation == "clock_date":
+        sealed_at = "2026-08-23T01:31:00Z"
+    elif mutation == "timezone":
+        manifest["recorded_at_iso"] = manual["recorded_at_iso"] = "2026-08-22T09:30:00"
+        manifest["publication_delay"]["recorded_at_iso"] = "2026-08-22T09:30:00"
+        manual["publication_delay"]["recorded_at_iso"] = "2026-08-22T09:30:00"
+    elif mutation == "reason":
+        args.publication_delay_reason = "OTHER"
+    elif mutation == "class":
+        manifest["publication_class"] = "OFFICIAL_FINANCIAL_STATE"
+    elif mutation == "multi_day":
+        args.expected_valuation_date = "2026-08-20"
+        manifest["expected_valuation_date"] = "2026-08-20"
+        manual["expected_valuation_date"] = "2026-08-20"
+        manifest["publication_delay"]["expected_valuation_date"] = "2026-08-20"
+        manual["publication_delay"]["expected_valuation_date"] = "2026-08-20"
+    elif mutation == "record_id":
+        record_id = "20260822_0931"
+    elif mutation == "ordering":
+        receipt["created_at"] = "2026-08-22T01:30:30Z"
+        manifest["publication_delay"]["continuity_receipt_created_at"] = "2026-08-22T01:30:30Z"
+        manual["publication_delay"]["continuity_receipt_created_at"] = "2026-08-22T01:30:30Z"
+    with pytest.raises(StrategyRecordStoreError, match=pattern):
+        manager._validate_late_publication(
+            args=args,
+            record_id=record_id,
+            sealed_at=sealed_at,
+            strict_record=strict_record,
+            manifest=manifest,
+            manual=manual,
+            receipt=receipt,
+        )
+
+
+def test_late_publication_freshness_rejects_existing_final_and_generations(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "records"
+    stage = root / "_record_store/staging/20260822_0930"
+    stage.mkdir(parents=True)
+    manager._validate_late_freshness(
+        root=root,
+        catalog={"records": []},
+        stage=stage,
+        target=root / "20260822_0930",
+        record_id="20260822_0930",
+        generation_id="g-late",
+        performance_generation_id="p-late",
+    )
+    (root / "20260822_0930").mkdir()
+    with pytest.raises(StrategyRecordConflict, match="fresh final"):
+        manager._validate_late_freshness(
+            root=root,
+            catalog={"records": []},
+            stage=stage,
+            target=root / "20260822_0930",
+            record_id="20260822_0930",
+            generation_id="g-late",
+            performance_generation_id="p-late",
+        )
+
+
+def test_manager_clock_is_aware_utc() -> None:
+    observed = manager._manager_utc_now()
+    assert observed.tzinfo is not None
+    assert observed.utcoffset() == timezone.utc.utcoffset(datetime.now(timezone.utc))
+
+
+def test_late_publication_rejects_caller_published_at_before_stage_adoption(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    root, initial = _initial_v3_store(project)
+    with pytest.raises(StrategyRecordStoreError, match="rejects caller-supplied"):
+        manager.command_seal_publish(
+            _args(
+                record_root=str(root),
+                record_id="20260822_0930",
+                expected_pointer_sha=initial["pointer_sha256"],
+                publication_class=manager.LATE_OFFICIAL_VALUATION_PUBLICATION,
+                published_at="2026-08-22T01:31:00Z",
+            )
+        )
+    assert not (root / "20260822_0930").exists()

@@ -166,6 +166,32 @@ node --check portfolio_dashboard/js/cn_aggressive_dashboard_contract_v1.js
 node --check portfolio_dashboard/js/cn_aggressive_dashboard_contract_v2.js
 ```
 
+Checker 还输出只读的 `publication_requirement`。当 registered canonical
+performance 落后于同日已绑定 no-action receipt 的 strict-close mark，且当前 record
+不是完整 official valuation 时，它固定返回
+`OFFICIAL_VALUATION_PUBLICATION_REQUIRED`。该代码只说明上游 owner-authorized
+official writer 尚未闭合；它不授予 Dashboard 调用 provider、`stage-init`、
+`seal-publish` 或修改 Store pointer 的权限。scheduled Dashboard 遇到该状态必须保留
+既有公开 last-good bytes、报告 typed blocker，并等待独立受权 writer。
+
+## Late official valuation publication
+
+当且仅当 owner 对一次具体交易日另行授权时，独立 Store writer 可以使用显式
+`LATE_OFFICIAL_VALUATION_PUBLICATION` 合同，把已经冻结并验证的交易日估值在次日完成
+immutable publication。该异常路径严格区分：
+
+- `valuation_date`、strict Market/benchmark evidence date、receipt date 和 performance
+  observation date 属于原交易日；
+- `record_id`、`recorded_at`、`sealed_at`、`published_at` 使用次日的真实系统时间；
+- 只允许一日延迟、typed reason、零交易、零资金流、股数/成本/现金不变和一次
+  expected-pointer CAS；普通同日路径的日期合同不放宽；
+- v2 按经济估值日显示 `mark_as_of` 和 `holdings_valid_through`，私有 bundle 保留
+  publication-delay audit metadata，公开 v1 bundle 不包含 receipt、reason、内部时间或
+  evidence refs。
+
+该合同不授予 `cn-dashboard` recurring writer 权限；日常 automation 仍只读并通过
+`OFFICIAL_VALUATION_PUBLICATION_REQUIRED` 请求上游 owner-authorized writer。
+
 `build_cn_dashboard_history_integrity.py` 和 legacy scanner 不属于 registered governed-root
 生产路径；不得用它们为 v1/v2 恢复业绩 authority。
 

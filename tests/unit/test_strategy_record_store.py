@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from quant_investor.strategy_records import store as store_module
+
 from quant_investor.strategy_records.store import (
     ARCHIVE_LOCATOR_SCHEMA,
     ARCHIVE_MANIFEST_SCHEMA,
@@ -99,9 +101,7 @@ def test_catalog_corruption_and_pointer_hardlink_are_rejected(
     result = _bootstrap(tmp_path)
     catalog_path = tmp_path / result["pointer"]["catalog_path"]
     original = catalog_path.read_bytes()
-    catalog_path.write_bytes(
-        original.replace(b'"record_count":2', b'"record_count":9')
-    )
+    catalog_path.write_bytes(original.replace(b'"record_count":2', b'"record_count":9'))
     with pytest.raises(StrategyRecordStoreError):
         load_registered_catalog(tmp_path)
 
@@ -166,9 +166,7 @@ def test_reselect_catalog_uses_exact_existing_generation_and_pointer_cas(
         published_at="2026-08-10T00:00:00Z",
         catalog_schema=CATALOG_SCHEMA_V2,
     )
-    original_catalog = (
-        tmp_path / first["pointer"]["catalog_path"]
-    ).read_bytes()
+    original_catalog = (tmp_path / first["pointer"]["catalog_path"]).read_bytes()
     second = publish_catalog(
         tmp_path,
         expected_pointer_sha256=first["pointer_sha256"],
@@ -267,10 +265,7 @@ def test_catalog_v2_validates_archive_closure_and_keeps_active_online(
     tmp_path: Path,
 ) -> None:
     project = tmp_path / "project"
-    root = (
-        project
-        / "results/strategy_records/CN/aggressive_tech_manufacturing"
-    )
+    root = project / "results/strategy_records/CN/aggressive_tech_manufacturing"
     for record_id in ("20260601_1000", "20260809_1000", "20260810_1000"):
         (root / record_id).mkdir(parents=True)
     initial = bootstrap_catalog(
@@ -286,8 +281,7 @@ def test_catalog_v2_validates_archive_closure_and_keeps_active_online(
         published_at="2026-08-10T00:00:00Z",
     )
     month = project / (
-        "results/strategy_record_archives/CN/aggressive_tech_manufacturing/"
-        "monthly/v1/2026-06"
+        "results/strategy_record_archives/CN/aggressive_tech_manufacturing/" "monthly/v1/2026-06"
     )
     archive = month / "archive.tar.zst"
     archive.parent.mkdir(parents=True)
@@ -403,3 +397,46 @@ def test_catalog_v2_rejects_state_pair_mismatch(tmp_path: Path) -> None:
             generation_id="g1",
             catalog_schema=CATALOG_SCHEMA_V2,
         )
+
+
+def _late_delay_record() -> dict:
+    return {
+        "record_id": "20260822_0930",
+        "sealed_at": "2026-08-22T01:31:00Z",
+        "publication_delay": {
+            "schema_id": store_module.PUBLICATION_DELAY_SCHEMA,
+            "publication_class": store_module.LATE_OFFICIAL_VALUATION_PUBLICATION,
+            "expected_valuation_date": "2026-08-21",
+            "expected_publication_date": "2026-08-22",
+            "publication_delay_reason": store_module.LATE_PUBLICATION_REASON,
+            "actual_sealed_at": "2026-08-22T01:31:00Z",
+            "actual_published_at": "2026-08-22T01:31:00Z",
+            "actual_publication_local_date": "2026-08-22",
+            "candidate_recorded_at": "2026-08-22T09:30:00+08:00",
+            "continuity_receipt_id": "automation-20260821-daily-review-v1",
+            "continuity_receipt_sha256": "a" * 64,
+            "continuity_receipt_created_at": "2026-08-21T13:27:37Z",
+            "continuity_checkpoint_digest": "b" * 64,
+            "source_record": "20260820_1321",
+            "evidence_date": "2026-08-21",
+            "delay_days": 1,
+            "historical_holdings_storage_authority": True,
+            "v17_mainline_authority": False,
+            "broker_order_trade_authority": False,
+        },
+    }
+
+
+def test_publication_delay_metadata_is_typed_and_time_ordered() -> None:
+    record = _late_delay_record()
+    store_module._validate_publication_delay(record)
+    record["publication_delay"]["delay_days"] = 2
+    with pytest.raises(StrategyRecordStoreError, match="contract is invalid"):
+        store_module._validate_publication_delay(record)
+
+
+def test_publication_delay_metadata_rejects_recorded_minute_drift() -> None:
+    record = _late_delay_record()
+    record["publication_delay"]["candidate_recorded_at"] = "2026-08-22T09:31:00+08:00"
+    with pytest.raises(StrategyRecordStoreError, match="record minute mismatch"):
+        store_module._validate_publication_delay(record)

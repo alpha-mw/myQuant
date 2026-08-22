@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Iterable, Mapping
+from zoneinfo import ZoneInfo
 
 from quant_investor.strategy_records.store import (
     StrategyRecordStoreError,
@@ -32,6 +33,12 @@ ARCHIVE_LOCATOR_SCHEMA_VERSION = "myquant.strategy_record_archive_locator.v1"
 ARCHIVE_MANIFEST_SCHEMA_VERSION = "myquant.strategy_record_archive_manifest.v1"
 ARCHIVE_RESTORE_RECEIPT_SCHEMA_VERSION = "myquant.strategy_record_archive_restore_receipt.v1"
 TRANSACTION_BACKFILL_PROVENANCE_SCHEMA_VERSION = "cn_aggressive_transaction_backfill_provenance.v1"
+STRICT_MARKET_CLOSE_EVIDENCE_SCHEMA_VERSION = "cn_dashboard_strict_market_close_evidence.v1"
+ORDINARY_PUBLICATION_CLASS = "ORDINARY_SAME_DAY_OFFICIAL_VALUATION"
+LATE_PUBLICATION_CLASS = "LATE_OFFICIAL_VALUATION_PUBLICATION"
+LATE_PUBLICATION_SCHEMA = "myquant.strategy_record_publication_delay.v1"
+LATE_PUBLICATION_REASON = "SHARED_CHECKOUT_SAFETY_GATE_DELAY"
+LATE_SOURCE_RECORD = "20260820_1321"
 MARKET = "CN"
 STRATEGY = "aggressive_tech_manufacturing"
 LEGACY_RETURN_METHOD = "initial_capital_return_excluding_external_flows"
@@ -466,6 +473,129 @@ def _execution_kind(status_value: Any) -> str:
     raise DashboardInputError(f"manual_manifest_status_not_effective:{status_text}")
 
 
+def _aware_publication_timestamp(value: Any, *, label: str) -> datetime:
+    if not isinstance(value, str) or not value.strip():
+        raise DashboardInputError(f"{label}_missing")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise DashboardInputError(f"{label}_invalid") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise DashboardInputError(f"{label}_timezone_missing")
+    return parsed
+
+
+def _validate_publication_timing(
+    *, manifest: dict[str, Any], manual: dict[str, Any], record_dir: Path
+) -> None:
+    manifest_class = manifest.get("publication_class")
+    manual_class = manual.get("publication_class")
+    manifest_delay = manifest.get("publication_delay")
+    manual_delay = manual.get("publication_delay")
+    if (
+        manifest_class is None
+        and manual_class is None
+        and manifest_delay is None
+        and manual_delay is None
+    ):
+        return
+    if manifest_class != manual_class:
+        raise DashboardInputError("publication_class_readback_mismatch")
+    if manifest.get("recorded_at_iso") != manual.get("recorded_at_iso"):
+        raise DashboardInputError("publication_recorded_at_readback_mismatch")
+    recorded = _aware_publication_timestamp(
+        manual.get("recorded_at_iso"), label="publication_recorded_at"
+    )
+    recorded_shanghai = recorded.astimezone(ZoneInfo("Asia/Shanghai"))
+    if record_dir.name != recorded_shanghai.strftime("%Y%m%d_%H%M"):
+        raise DashboardInputError("publication_record_id_minute_mismatch")
+    trade_date = _record_date(
+        manual.get("valuation_trade_date") or manual.get("trade_date"),
+        "publication_valuation_trade_date",
+    )
+    if manifest_class == ORDINARY_PUBLICATION_CLASS:
+        if manifest_delay is not None or manual_delay is not None:
+            raise DashboardInputError("ordinary_publication_delay_not_allowed")
+        if recorded_shanghai.date().isoformat() != trade_date:
+            raise DashboardInputError("ordinary_publication_must_be_same_day")
+        return
+    if manifest_class != LATE_PUBLICATION_CLASS:
+        raise DashboardInputError("publication_class_invalid")
+    if not isinstance(manifest_delay, dict) or manifest_delay != manual_delay:
+        raise DashboardInputError("publication_delay_readback_mismatch")
+    expected_keys = {
+        "schema_id",
+        "publication_class",
+        "expected_valuation_date",
+        "evidence_date",
+        "expected_publication_date",
+        "source_record",
+        "continuity_receipt_id",
+        "continuity_receipt_sha256",
+        "continuity_receipt_created_at",
+        "continuity_checkpoint_digest",
+        "recorded_at_iso",
+        "publication_delay_reason",
+        "delay_days",
+        "historical_holdings_storage_authority",
+        "v17_mainline_authority",
+        "broker_order_trade_authority",
+    }
+    if set(manifest_delay) != expected_keys:
+        raise DashboardInputError("publication_delay_shape_invalid")
+    if (
+        manifest_delay.get("schema_id") != LATE_PUBLICATION_SCHEMA
+        or manifest_delay.get("publication_class") != LATE_PUBLICATION_CLASS
+        or manifest_delay.get("expected_valuation_date") != "2026-08-21"
+        or manifest_delay.get("evidence_date") != "2026-08-21"
+        or manifest_delay.get("expected_publication_date") != "2026-08-22"
+        or manifest_delay.get("source_record") != LATE_SOURCE_RECORD
+        or manifest_delay.get("publication_delay_reason") != LATE_PUBLICATION_REASON
+        or manifest_delay.get("delay_days") != 1
+        or manifest_delay.get("historical_holdings_storage_authority") is not True
+        or manifest_delay.get("v17_mainline_authority") is not False
+        or manifest_delay.get("broker_order_trade_authority") is not False
+        or manifest.get("historical_holdings_storage_authority") is not True
+        or manifest.get("v17_mainline_authority") is not False
+        or manifest.get("broker_order_trade_authority") is not False
+        or manual.get("historical_holdings_storage_authority") is not True
+        or manual.get("v17_mainline_authority") is not False
+        or manual.get("broker_order_trade_authority") is not False
+    ):
+        raise DashboardInputError("publication_delay_contract_invalid")
+    if (
+        trade_date != manifest_delay["expected_valuation_date"]
+        or manifest.get("source_record") != manifest_delay["source_record"]
+        or manual.get("source_record") != manifest_delay["source_record"]
+        or recorded_shanghai.date().isoformat() != manifest_delay["expected_publication_date"]
+        or manifest_delay.get("recorded_at_iso") != manual.get("recorded_at_iso")
+    ):
+        raise DashboardInputError("publication_delay_identity_mismatch")
+    for key in (
+        "continuity_receipt_id",
+        "continuity_receipt_sha256",
+        "continuity_receipt_created_at",
+        "continuity_checkpoint_digest",
+    ):
+        if manifest_delay.get(key) != manual.get(key) or manifest_delay.get(key) != manifest.get(
+            key
+        ):
+            raise DashboardInputError("publication_delay_receipt_binding_mismatch")
+    receipt_at = _aware_publication_timestamp(
+        manifest_delay["continuity_receipt_created_at"],
+        label="publication_receipt_created_at",
+    )
+    if receipt_at > recorded:
+        raise DashboardInputError("publication_delay_receipt_after_record")
+    if (
+        date.fromisoformat(manifest_delay["expected_publication_date"])
+        - date.fromisoformat(manifest_delay["expected_valuation_date"])
+    ).days != 1:
+        raise DashboardInputError("publication_delay_not_exactly_one_day")
+    if any(key in manifest or key in manual for key in ("sealed_at", "published_at")):
+        raise DashboardInputError("publication_delay_seal_claim_not_allowed")
+
+
 def _record_date(value: Any, label: str) -> str:
     text = str(value or "")
     try:
@@ -619,6 +749,11 @@ def validate_record(record_dir: Path, record_root: Path, project_root: Path) -> 
     backfill_provenance_required = embedded_manual is None
     if embedded_manual is not None and embedded_manual != manual:
         raise DashboardInputError("manifest_manual_execution_readback_mismatch")
+    _validate_publication_timing(
+        manifest=manifest,
+        manual=manual,
+        record_dir=record_dir,
+    )
     execution_kind = _execution_kind(manual.get("status") or manual.get("execution_status"))
     if manual.get("no_broker_api_called") is not True:
         raise DashboardInputError("manual_manifest_no_broker_proof_missing")
@@ -818,9 +953,34 @@ def validate_record(record_dir: Path, record_root: Path, project_root: Path) -> 
         ):
             raise DashboardInputError("official_valuation_evidence_sha_mismatch")
         evidence = load_json(valuation_evidence_artifact)
-        if (
-            not isinstance(evidence, dict)
-            or evidence.get("schema_version") != "cn_dashboard_tushare_close_evidence.v1"
+        if not isinstance(evidence, dict):
+            raise DashboardInputError("official_valuation_evidence_contract_invalid")
+        evidence_schema = evidence.get("schema_version")
+        if evidence_schema == STRICT_MARKET_CLOSE_EVIDENCE_SCHEMA_VERSION:
+            # The current producer binds local strict-Parquet evidence.  The
+            # older provider-shaped contract remains readable for historical
+            # records, but may not be emitted by the new offline path.
+            evidence_text = json.dumps(evidence, ensure_ascii=False, sort_keys=True).lower()
+            if any(
+                token in evidence_text
+                for token in ("tushare", "provider", "stock_api", "index_api")
+            ):
+                raise DashboardInputError("official_valuation_evidence_provider_claim")
+            if (
+                evidence.get("market") != MARKET
+                or _record_date(
+                    evidence.get("trade_date"),
+                    "official_valuation_evidence_trade_date",
+                )
+                != data_date
+            ):
+                raise DashboardInputError("official_valuation_evidence_contract_invalid")
+            strict_stock_rows = evidence.get("stocks")
+            strict_index_rows = evidence.get("indices")
+            if not isinstance(strict_stock_rows, list) or not isinstance(strict_index_rows, list):
+                raise DashboardInputError("official_valuation_evidence_rows_invalid")
+        elif (
+            evidence_schema != "cn_dashboard_tushare_close_evidence.v1"
             or evidence.get("provider") != "tushare.pro"
             or evidence.get("stock_api") != "daily"
             or evidence.get("index_api") != "index_daily"
@@ -837,8 +997,13 @@ def validate_record(record_dir: Path, record_root: Path, project_root: Path) -> 
         index_rows = evidence.get("indices")
         if not isinstance(stock_rows, list) or not isinstance(index_rows, list):
             raise DashboardInputError("official_valuation_evidence_rows_invalid")
-        stocks = {str(row.get("ts_code")): row for row in stock_rows}
-        indices = {str(row.get("ts_code")): row for row in index_rows}
+        symbol_key = (
+            "symbol"
+            if evidence_schema == STRICT_MARKET_CLOSE_EVIDENCE_SCHEMA_VERSION
+            else "ts_code"
+        )
+        stocks = {str(row.get(symbol_key) or row.get("ts_code")): row for row in stock_rows}
+        indices = {str(row.get("ts_code") or row.get("symbol")): row for row in index_rows}
         if set(stocks) != seen_symbols or set(indices) != {
             "000300.SH",
             "000688.SH",
@@ -857,6 +1022,25 @@ def validate_record(record_dir: Path, record_root: Path, project_root: Path) -> 
                 raise DashboardInputError(
                     "official_valuation_stock_close_mismatch:" + position_symbol
                 )
+            if evidence_schema == STRICT_MARKET_CLOSE_EVIDENCE_SCHEMA_VERSION:
+                path_value = row.get("serving_parquet_path") or row.get("serving_path")
+                sha_value = row.get("serving_parquet_sha256") or row.get("parquet_sha256")
+                if (
+                    not isinstance(path_value, str)
+                    or path_value.startswith("/")
+                    or ".." in Path(path_value).parts
+                    or not isinstance(sha_value, str)
+                    or not SHA256_RE.fullmatch(sha_value)
+                ):
+                    raise DashboardInputError(
+                        "official_valuation_stock_source_ref_invalid:" + position_symbol
+                    )
+                stock_path = project_root / path_value
+                stock_artifact = stable_read(stock_path, project_root)
+                if stock_artifact.sha256 != sha_value:
+                    raise DashboardInputError(
+                        "official_valuation_stock_source_sha_mismatch:" + position_symbol
+                    )
             position["price_date"] = data_date
         for code, row in indices.items():
             if (
@@ -868,6 +1052,24 @@ def validate_record(record_dir: Path, record_root: Path, project_root: Path) -> 
                 or _number(row.get("close"), f"index_close:{code}") <= 0
             ):
                 raise DashboardInputError("official_valuation_index_close_invalid:" + code)
+            if evidence_schema == STRICT_MARKET_CLOSE_EVIDENCE_SCHEMA_VERSION:
+                benchmark_path = evidence.get("benchmark_input_path") or row.get(
+                    "benchmark_input_path"
+                )
+                benchmark_sha = evidence.get("benchmark_input_sha256") or row.get(
+                    "benchmark_input_sha256"
+                )
+                if (
+                    not isinstance(benchmark_path, str)
+                    or benchmark_path.startswith("/")
+                    or ".." in Path(benchmark_path).parts
+                    or not isinstance(benchmark_sha, str)
+                    or not SHA256_RE.fullmatch(benchmark_sha)
+                ):
+                    raise DashboardInputError("official_valuation_benchmark_source_ref_invalid")
+                benchmark_artifact = stable_read(project_root / benchmark_path, project_root)
+                if benchmark_artifact.sha256 != benchmark_sha:
+                    raise DashboardInputError("official_valuation_benchmark_source_sha_mismatch")
         if source_record:
             source_dir = record_root / source_record
             source_manifest = stable_read(source_dir / "manifest.json", project_root)
@@ -911,6 +1113,8 @@ def validate_record(record_dir: Path, record_root: Path, project_root: Path) -> 
         "data_date": data_date,
         "execution_status": str(manual.get("status") or manual.get("execution_status")),
         "execution_kind": execution_kind,
+        "publication_class": manifest.get("publication_class"),
+        "publication_delay": manifest.get("publication_delay"),
         "valuation_status": valuation_status,
         "official_valuation": manual.get("official_valuation"),
         "valuation_completeness_passed": manual.get("valuation_completeness_passed"),
@@ -3005,7 +3209,19 @@ def build_bundle(
         "industry_and_theme_exposure_not_hash_bound_in_effective_ledger",
     ]
     status_gaps: list[str] = []
-    if performance_age_days > 0:
+    publication_delay = latest.get("publication_delay")
+    late_publication_current = (
+        latest.get("publication_class") == "LATE_OFFICIAL_VALUATION_PUBLICATION"
+        and isinstance(publication_delay, dict)
+        and publication_delay.get("expected_valuation_date") == latest["data_date"]
+        and publication_delay.get("expected_publication_date") == today.isoformat()
+        and publication_delay.get("delay_days") == 1
+        and latest.get("official_valuation") is True
+        and latest.get("valuation_completeness_passed") is True
+    )
+    if late_publication_current:
+        warnings.append("late_official_valuation_publication_delay_days:1")
+    if performance_age_days > 0 and not late_publication_current:
         stale_warning = "latest_performance_stale_calendar_days:" f"{performance_age_days}"
         warnings.append(stale_warning)
         status_gaps.append(stale_warning)

@@ -40,9 +40,18 @@ VIEW_ONLY_AUTHORITY = "VIEW_ONLY_NO_STORE_OR_PERFORMANCE_AUTHORITY"
 MARK_SOURCE_KIND = "STRICT_CN_EOD_CLOSE"
 DAILY_SCOPE = "DAILY_SYNC_LATEST_VERIFIED_LOCAL_CLOSE"
 NO_ACTION_RECEIPT_SCHEMA = "myquant.strategy_record_no_action_receipt.v1"
+LATE_PUBLICATION_CLASS = "LATE_OFFICIAL_VALUATION_PUBLICATION"
+LATE_PUBLICATION_SCHEMA = "publication_delay.v1"
+LATE_CATALOG_PUBLICATION_SCHEMA = "myquant.strategy_record_publication_delay.v1"
+LATE_PUBLICATION_REASON = "SHARED_CHECKOUT_SAFETY_GATE_DELAY"
+LATE_VALUATION_DATE = date(2026, 8, 21)
+LATE_PUBLICATION_DATE = date(2026, 8, 22)
+LATE_SOURCE_RECORD = "20260820_1321"
+LATE_FRESHNESS_REASON = "LATE_OFFICIAL_FINANCIAL_PUBLICATION_FOR_LATEST_LOCAL_CLOSE"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _SYMBOL_RE = re.compile(r"^[0-9]{6}\.(?:SH|SZ|BJ)$")
 _ATTEMPT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+_RECORD_ID_RE = re.compile(r"^[0-9]{8}_[0-9]{4}$")
 _SHANGHAI_TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?\+08:00$")
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 
@@ -209,6 +218,393 @@ def _local_date_from_timestamp(value: Any, *, label: str) -> date:
     if parsed.tzinfo is None:
         raise DashboardV2Error(f"{label}_timezone_missing")
     return parsed.astimezone(_SHANGHAI).date()
+
+
+def _catalog_record_closure(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Project one ONLINE catalog row into the pointer-closure shape."""
+
+    keys = (
+        "record_id",
+        "relative_path",
+        "inventory_sha256",
+        "total_bytes",
+        "file_count",
+        "manifest_path",
+        "manifest_sha256",
+        "manual_manifest_path",
+        "manual_manifest_sha256",
+        "ledger_path",
+        "ledger_sha256",
+        "pnl_path",
+        "pnl_sha256",
+        "financial_state_sha256",
+    )
+    closure = {key: record.get(key) for key in keys}
+    if any(value is None for value in closure.values()):
+        raise DashboardV2Error("financial_publication_source_closure_missing")
+    return closure
+
+
+def _validate_continuity_receipt(
+    receipt: Mapping[str, Any],
+    *,
+    expected_active_record_id: str,
+    expected_checkpoint: Mapping[str, Any],
+    generation_local_date: date,
+    expected_created_local_date: date | None = None,
+) -> None:
+    """Validate one no-action receipt independently of Dashboard state."""
+
+    expected_date = expected_created_local_date or generation_local_date
+    if (
+        receipt.get("schema_id") != NO_ACTION_RECEIPT_SCHEMA
+        or receipt.get("status") != "NO_ACTION"
+        or receipt.get("payload_copied") is not False
+        or receipt.get("v17_mainline_authority") is not False
+        or receipt.get("broker_order_trade_authority") is not False
+        or receipt.get("active_record_id") != expected_active_record_id
+        or receipt.get("active_checkpoint") != dict(expected_checkpoint)
+        or receipt.get("content_sha256") != store_content_sha256(receipt)
+        or _local_date_from_timestamp(receipt.get("created_at"), label="daily_receipt_created_at")
+        != expected_date
+    ):
+        raise DashboardV2Error("daily_continuity_receipt_invalid")
+
+
+def _reject_unrelated_same_day_receipts(
+    receipts: Any, *, expected_receipt_id: str, generation_local_date: date
+) -> None:
+    if not isinstance(receipts, list):
+        raise DashboardV2Error("daily_continuity_receipts_invalid")
+    for candidate in receipts:
+        if not isinstance(candidate, dict) or candidate.get("receipt_id") == expected_receipt_id:
+            continue
+        try:
+            candidate_date = _local_date_from_timestamp(
+                candidate.get("created_at"), label="daily_receipt_created_at"
+            )
+        except DashboardV2Error as exc:
+            # A malformed receipt is not safely classifiable as historical
+            # noise, so it cannot be ignored by a current Dashboard build.
+            raise DashboardV2Error("daily_continuity_receipt_unrelated") from exc
+        if candidate_date == generation_local_date:
+            raise DashboardV2Error("daily_continuity_receipt_unrelated")
+
+
+def _publication_delay_semantics(value: Any, *, label: str) -> dict[str, Any]:
+    """Normalize one producer or catalog publication-delay projection.
+
+    The producer keeps the self-contained ``publication_delay.v1`` object in
+    both manifests.  Store-v3 keeps a manager-validated projection under the
+    catalog row, with actual seal/publication timestamps.  They are different
+    physical schemas but must describe the same immutable event.
+    """
+
+    if not isinstance(value, dict):
+        raise DashboardV2Error(f"{label}_invalid")
+    if value.get("schema_id") == LATE_PUBLICATION_SCHEMA or (
+        value.get("schema_id") == LATE_CATALOG_PUBLICATION_SCHEMA
+        and "recorded_at_iso" in value
+        and "actual_sealed_at" not in value
+    ):
+        required = {
+            "schema_id",
+            "publication_class",
+            "expected_valuation_date",
+            "evidence_date",
+            "expected_publication_date",
+            "source_record",
+            "continuity_receipt_id",
+            "continuity_receipt_sha256",
+            "continuity_receipt_created_at",
+            "continuity_checkpoint_digest",
+            "recorded_at_iso",
+            "publication_delay_reason",
+            "historical_holdings_storage_authority",
+            "v17_mainline_authority",
+            "broker_order_trade_authority",
+            "delay_days",
+        }
+        if set(value) != required:
+            raise DashboardV2Error(f"{label}_shape_invalid")
+        result = {
+            "publication_class": value.get("publication_class"),
+            "valuation_date": value.get("expected_valuation_date"),
+            "evidence_date": value.get("evidence_date"),
+            "publication_date": value.get("expected_publication_date"),
+            "source_record": value.get("source_record"),
+            "continuity_receipt_id": value.get("continuity_receipt_id"),
+            "continuity_receipt_sha256": value.get("continuity_receipt_sha256"),
+            "continuity_receipt_created_at": value.get("continuity_receipt_created_at"),
+            "continuity_checkpoint_digest": value.get("continuity_checkpoint_digest"),
+            "recorded_at_iso": value.get("recorded_at_iso"),
+            "reason": value.get("publication_delay_reason"),
+            "delay_days": value.get("delay_days"),
+            "actual_sealed_at": None,
+            "actual_published_at": None,
+            "candidate_recorded_at": value.get("recorded_at_iso"),
+        }
+        if (
+            result["publication_class"] != LATE_PUBLICATION_CLASS
+            or result["reason"] != LATE_PUBLICATION_REASON
+            or result["source_record"] != LATE_SOURCE_RECORD
+            or result["valuation_date"] != LATE_VALUATION_DATE.isoformat()
+            or result["evidence_date"] != LATE_VALUATION_DATE.isoformat()
+            or result["publication_date"] != LATE_PUBLICATION_DATE.isoformat()
+            or result["delay_days"] != 1
+            or not _valid_sha(result["continuity_receipt_sha256"])
+            or not _valid_sha(result["continuity_checkpoint_digest"])
+            or not isinstance(result["continuity_receipt_id"], str)
+            or not result["continuity_receipt_id"]
+            or not isinstance(result["recorded_at_iso"], str)
+            or value.get("historical_holdings_storage_authority") is not True
+            or value.get("v17_mainline_authority") is not False
+            or value.get("broker_order_trade_authority") is not False
+        ):
+            raise DashboardV2Error(f"{label}_contract_invalid")
+        return result
+
+    if value.get("schema_id") == LATE_CATALOG_PUBLICATION_SCHEMA:
+        required = {
+            "schema_id",
+            "publication_class",
+            "expected_valuation_date",
+            "evidence_date",
+            "expected_publication_date",
+            "publication_delay_reason",
+            "source_record",
+            "actual_sealed_at",
+            "actual_published_at",
+            "actual_publication_local_date",
+            "candidate_recorded_at",
+            "continuity_receipt_id",
+            "continuity_receipt_sha256",
+            "continuity_receipt_created_at",
+            "continuity_checkpoint_digest",
+            "delay_days",
+            "historical_holdings_storage_authority",
+            "v17_mainline_authority",
+            "broker_order_trade_authority",
+        }
+        if set(value) != required:
+            raise DashboardV2Error(f"{label}_shape_invalid")
+        result = {
+            "publication_class": value.get("publication_class"),
+            "valuation_date": value.get("expected_valuation_date"),
+            "evidence_date": value.get("evidence_date"),
+            "publication_date": value.get("expected_publication_date"),
+            "source_record": value.get("source_record"),
+            "continuity_receipt_id": value.get("continuity_receipt_id"),
+            "continuity_receipt_sha256": value.get("continuity_receipt_sha256"),
+            "continuity_receipt_created_at": value.get("continuity_receipt_created_at"),
+            "continuity_checkpoint_digest": value.get("continuity_checkpoint_digest"),
+            "recorded_at_iso": value.get("candidate_recorded_at"),
+            "reason": value.get("publication_delay_reason"),
+            "delay_days": value.get("delay_days"),
+            "actual_sealed_at": value.get("actual_sealed_at"),
+            "actual_published_at": value.get("actual_published_at"),
+            "actual_publication_local_date": value.get("actual_publication_local_date"),
+            "candidate_recorded_at": value.get("candidate_recorded_at"),
+        }
+        if (
+            result["publication_class"] != LATE_PUBLICATION_CLASS
+            or result["reason"] != LATE_PUBLICATION_REASON
+            or result["valuation_date"] != LATE_VALUATION_DATE.isoformat()
+            or result["evidence_date"] != LATE_VALUATION_DATE.isoformat()
+            or result["publication_date"] != LATE_PUBLICATION_DATE.isoformat()
+            or result["source_record"] != LATE_SOURCE_RECORD
+            or result["delay_days"] != 1
+            or result["actual_publication_local_date"] != LATE_PUBLICATION_DATE.isoformat()
+            or not _valid_sha(result["continuity_receipt_sha256"])
+            or not _valid_sha(result["continuity_checkpoint_digest"])
+            or not isinstance(result["continuity_receipt_id"], str)
+            or not result["continuity_receipt_id"]
+            or not isinstance(result["candidate_recorded_at"], str)
+            or value.get("historical_holdings_storage_authority") is not True
+            or value.get("v17_mainline_authority") is not False
+            or value.get("broker_order_trade_authority") is not False
+        ):
+            raise DashboardV2Error(f"{label}_contract_invalid")
+        return result
+
+    raise DashboardV2Error(f"{label}_schema_invalid")
+
+
+def _validate_late_publication_metadata(
+    *,
+    project_root: Path,
+    record_root: Path,
+    generation_local_date: date,
+    record: Mapping[str, Any],
+    lineage: Mapping[str, Any],
+    artifacts: Mapping[str, _Artifact],
+    catalog: Mapping[str, Any],
+    pointer: Mapping[str, Any],
+) -> tuple[dict[str, Any], bool, list[dict[str, str]]]:
+    """Validate the late 2026-08-21 close and return its private projection."""
+
+    record_id = str(record.get("record_id") or "")
+    if not _RECORD_ID_RE.fullmatch(record_id):
+        raise DashboardV2Error("late_publication_record_id_invalid")
+    if lineage.get("publication_class") != LATE_PUBLICATION_CLASS:
+        raise DashboardV2Error("late_publication_lineage_class_invalid")
+    if lineage.get("valuation_date") != LATE_VALUATION_DATE.isoformat():
+        raise DashboardV2Error("late_publication_lineage_valuation_date_invalid")
+    if lineage.get("source_record_id") != LATE_SOURCE_RECORD:
+        raise DashboardV2Error("late_publication_lineage_source_invalid")
+
+    manifest = _json_object(artifacts["manifest"], label="active_manifest")
+    manual = _json_object(artifacts["manual_manifest"], label="active_manual_manifest")
+    manifest_delay = manifest.get("publication_delay")
+    manual_delay = manual.get("publication_delay")
+    if manifest.get("publication_class") != LATE_PUBLICATION_CLASS:
+        raise DashboardV2Error("late_publication_manifest_class_invalid")
+    if manual.get("publication_class") != LATE_PUBLICATION_CLASS:
+        raise DashboardV2Error("late_publication_manual_class_invalid")
+    if not isinstance(manifest_delay, dict) or manifest_delay != manual_delay:
+        raise DashboardV2Error("late_publication_manifest_manual_delay_mismatch")
+    manifest_semantics = _publication_delay_semantics(
+        manifest_delay, label="late_publication_manifest_delay"
+    )
+    catalog_delay = record.get("publication_delay")
+    catalog_semantics = _publication_delay_semantics(
+        catalog_delay, label="late_publication_catalog_delay"
+    )
+    for key in (
+        "publication_class",
+        "valuation_date",
+        "evidence_date",
+        "publication_date",
+        "continuity_receipt_id",
+        "continuity_receipt_sha256",
+        "continuity_receipt_created_at",
+        "reason",
+        "delay_days",
+    ):
+        if catalog_semantics.get(key) != manifest_semantics.get(key):
+            raise DashboardV2Error("late_publication_catalog_manifest_mismatch")
+    if catalog_semantics.get("source_record") not in (None, LATE_SOURCE_RECORD):
+        raise DashboardV2Error("late_publication_catalog_source_invalid")
+
+    valuation_date = date.fromisoformat(manifest_semantics["valuation_date"])
+    publication_date = date.fromisoformat(manifest_semantics["publication_date"])
+    if publication_date != LATE_PUBLICATION_DATE or valuation_date != LATE_VALUATION_DATE:
+        raise DashboardV2Error("late_publication_fixed_dates_invalid")
+    if generation_local_date < publication_date:
+        raise DashboardV2Error("late_publication_generation_before_publication")
+    if (
+        manifest.get("source_record") != LATE_SOURCE_RECORD
+        or manual.get("source_record") != LATE_SOURCE_RECORD
+    ):
+        raise DashboardV2Error("late_publication_manifest_source_invalid")
+    if manifest.get("recorded_at_iso") != manual.get("recorded_at_iso"):
+        raise DashboardV2Error("late_publication_recorded_at_mismatch")
+    recorded_at = _local_date_from_timestamp(
+        manifest.get("recorded_at_iso"), label="late_publication_recorded_at"
+    )
+    if recorded_at != publication_date:
+        raise DashboardV2Error("late_publication_recorded_date_invalid")
+    sealed_at = _local_date_from_timestamp(
+        record.get("sealed_at"), label="late_publication_sealed_at"
+    )
+    if sealed_at != publication_date:
+        raise DashboardV2Error("late_publication_sealed_date_invalid")
+    if record_id[:8] != publication_date.strftime("%Y%m%d"):
+        raise DashboardV2Error("late_publication_record_date_invalid")
+    for key in ("published_at", "recorded_at"):
+        if (
+            record.get(key) is not None
+            and _local_date_from_timestamp(record.get(key), label=f"late_publication_{key}")
+            != publication_date
+        ):
+            raise DashboardV2Error(f"late_publication_{key}_date_invalid")
+    if catalog_semantics.get("actual_sealed_at") is not None:
+        if catalog_semantics["actual_sealed_at"] != record.get("sealed_at"):
+            raise DashboardV2Error("late_publication_catalog_sealed_at_mismatch")
+    if catalog_semantics.get("actual_published_at") is not None:
+        if (
+            _local_date_from_timestamp(
+                catalog_semantics["actual_published_at"],
+                label="late_publication_actual_published_at",
+            )
+            != publication_date
+        ):
+            raise DashboardV2Error("late_publication_published_date_invalid")
+    if catalog_semantics.get("candidate_recorded_at") != manifest.get("recorded_at_iso"):
+        raise DashboardV2Error("late_publication_candidate_recorded_at_mismatch")
+
+    snapshot = manifest.get("data_snapshot")
+    if not isinstance(snapshot, dict):
+        raise DashboardV2Error("late_publication_data_snapshot_missing")
+    for key in ("valuation_trade_date", "analysis_trade_date", "latest_complete_trade_date"):
+        value = snapshot.get(key)
+        if value is not None and str(value).replace("-", "") != "20260821":
+            raise DashboardV2Error(f"late_publication_{key}_invalid")
+    evidence_path = (manifest.get("files") or {}).get("valuation_evidence")
+    manual_evidence_path = manual.get("valuation_evidence_path")
+    if not isinstance(evidence_path, str) or not evidence_path:
+        raise DashboardV2Error("late_publication_evidence_path_missing")
+    if manual_evidence_path not in (None, evidence_path):
+        raise DashboardV2Error("late_publication_evidence_path_mismatch")
+    evidence_artifact = _stable_artifact(record_root / record_id / evidence_path, project_root)
+    evidence = _json_object(evidence_artifact, label="late_publication_evidence")
+    if evidence.get("schema_version") != "cn_dashboard_strict_market_close_evidence.v1":
+        raise DashboardV2Error("late_publication_evidence_schema_invalid")
+    if str(evidence.get("trade_date") or "").replace("-", "") != "20260821":
+        raise DashboardV2Error("late_publication_evidence_date_invalid")
+    if str(evidence.get("latest_complete_trade_date") or "").replace("-", "") != "20260821":
+        raise DashboardV2Error("late_publication_evidence_close_date_invalid")
+    for declared in (
+        manual.get("valuation_evidence_sha256"),
+        snapshot.get("valuation_evidence_sha256"),
+    ):
+        if declared is not None and declared != evidence_artifact.sha256:
+            raise DashboardV2Error("late_publication_evidence_sha_mismatch")
+
+    source_records = [
+        row
+        for row in catalog.get("records", [])
+        if isinstance(row, dict) and row.get("record_id") == LATE_SOURCE_RECORD
+    ]
+    if len(source_records) != 1:
+        raise DashboardV2Error("late_publication_source_record_invalid")
+    source_closure = _catalog_record_closure(source_records[0])
+    receipt_id = manifest_semantics["continuity_receipt_id"]
+    receipt_matches = [
+        value
+        for value in catalog.get("receipts", [])
+        if isinstance(value, dict) and value.get("receipt_id") == receipt_id
+    ]
+    if len(receipt_matches) != 1:
+        raise DashboardV2Error("late_publication_receipt_invalid")
+    receipt = receipt_matches[0]
+    _validate_continuity_receipt(
+        receipt,
+        expected_active_record_id=LATE_SOURCE_RECORD,
+        expected_checkpoint=source_closure,
+        generation_local_date=generation_local_date,
+        expected_created_local_date=valuation_date,
+    )
+    if (
+        receipt.get("content_sha256") != manifest_semantics["continuity_receipt_sha256"]
+        or receipt.get("created_at") != manifest_semantics["continuity_receipt_created_at"]
+    ):
+        raise DashboardV2Error("late_publication_receipt_binding_invalid")
+    if manifest_semantics.get("continuity_checkpoint_digest") is not None and (
+        manifest_semantics["continuity_checkpoint_digest"] != store_content_sha256(source_closure)
+    ):
+        raise DashboardV2Error("late_publication_receipt_checkpoint_invalid")
+
+    projection = copy.deepcopy(catalog_delay)
+    refs = [_source_ref(evidence_artifact)]
+    current = generation_local_date == publication_date
+    if current:
+        _reject_unrelated_same_day_receipts(
+            catalog.get("receipts"),
+            expected_receipt_id=receipt_id,
+            generation_local_date=valuation_date,
+        )
+    return projection, current, refs
 
 
 def _generation_timestamp(value: Any, *, label: str) -> datetime:
@@ -631,12 +1027,6 @@ def build_v2_bundle(
     )
     _verify_v1_against_closure(v1_bundle, closure, artifacts["ledger"])
 
-    receipt_id = f"automation-{generation_local_date.strftime('%Y%m%d')}" "-daily-review-v1"
-    matching_receipts = [
-        receipt
-        for receipt in catalog.get("receipts", [])
-        if isinstance(receipt, dict) and receipt.get("receipt_id") == receipt_id
-    ]
     active_id = str(pointer.get("active_record_id") or "")
     active_lineage = [
         row
@@ -649,46 +1039,131 @@ def build_v2_bundle(
         if isinstance(row, dict) and row.get("record_id") == active_id
     ]
     financial_publication = False
+    late_publication = False
+    late_publication_current = False
+    publication_delay_projection: dict[str, Any] | None = None
+    late_publication_refs: list[dict[str, str]] = []
     if len(active_lineage) == 1 and len(active_records) == 1:
         lineage_row = active_lineage[0]
         record_row = active_records[0]
-        financial_publication = (
-            lineage_row.get("publication_class") == "OFFICIAL_FINANCIAL_STATE"
-            and lineage_row.get("valuation_date") == generation_date_text
-            and _local_date_from_timestamp(
-                record_row.get("sealed_at"), label="active_record_sealed_at"
+        if lineage_row.get("publication_class") == LATE_PUBLICATION_CLASS:
+            (
+                publication_delay_projection,
+                late_publication_current,
+                late_publication_refs,
+            ) = _validate_late_publication_metadata(
+                project_root=root,
+                record_root=records,
+                generation_local_date=generation_local_date,
+                record=record_row,
+                lineage=lineage_row,
+                artifacts=artifacts,
+                catalog=catalog,
+                pointer=pointer,
             )
-            == generation_local_date
-        )
-    if matching_receipts:
+            late_publication = True
+            financial_publication = late_publication_current
+            delay_semantics = _publication_delay_semantics(
+                publication_delay_projection, label="late_publication_catalog_delay"
+            )
+            receipt_id = str(delay_semantics["continuity_receipt_id"])
+        else:
+            receipt_id = f"automation-{generation_local_date.strftime('%Y%m%d')}" "-daily-review-v1"
+            financial_publication = (
+                lineage_row.get("publication_class") == "OFFICIAL_FINANCIAL_STATE"
+                and lineage_row.get("valuation_date") == generation_date_text
+                and _local_date_from_timestamp(
+                    record_row.get("sealed_at"), label="active_record_sealed_at"
+                )
+                == generation_local_date
+            )
+    else:
+        receipt_id = f"automation-{generation_local_date.strftime('%Y%m%d')}" "-daily-review-v1"
+    matching_receipts = [
+        receipt
+        for receipt in catalog.get("receipts", [])
+        if isinstance(receipt, dict) and receipt.get("receipt_id") == receipt_id
+    ]
+    if late_publication:
+        # The late record carries its own inherited receipt binding.  It is a
+        # financial publication only on its actual publication date (8/22).
+        # On a later required date the immutable 8/21 point remains useful as
+        # historical evidence, but it cannot silently extend today's freshness.
+        if late_publication_current:
+            continuity_status = "FINANCIAL_STATE_PUBLICATION"
+            financial_state_changed = True
+            continuity_receipt_id = None
+            receipt_sha = None
+            freshness_reason = LATE_FRESHNESS_REASON
+        else:
+            continuity_status = "UNCONFIRMED"
+            financial_state_changed = False
+            continuity_receipt_id = None
+            receipt_sha = None
+            freshness_reason = "DAILY_CONTINUITY_RECEIPT_MISSING"
+    elif matching_receipts:
         if len(matching_receipts) != 1:
             raise DashboardV2Error("daily_continuity_receipt_duplicate")
         receipt = matching_receipts[0]
-        if (
-            receipt.get("schema_id") != NO_ACTION_RECEIPT_SCHEMA
-            or receipt.get("status") != "NO_ACTION"
-            or receipt.get("payload_copied") is not False
-            or receipt.get("active_record_id") != pointer.get("active_record_id")
-            or receipt.get("active_checkpoint") != closure
-            or receipt.get("content_sha256") != store_content_sha256(receipt)
-            or _local_date_from_timestamp(
-                receipt.get("created_at"), label="daily_receipt_created_at"
+        if financial_publication:
+            # An official valuation can supersede exactly one inherited
+            # predecessor receipt.  The receipt is expected to bind the
+            # source record closure, not the newly published active closure.
+            source_record_id = lineage_row.get("source_record_id")
+            if not isinstance(source_record_id, str) or not source_record_id:
+                raise DashboardV2Error("financial_publication_source_record_missing")
+            source_records = [
+                row
+                for row in catalog.get("records", [])
+                if isinstance(row, dict) and row.get("record_id") == source_record_id
+            ]
+            if len(source_records) != 1:
+                raise DashboardV2Error("financial_publication_source_record_invalid")
+            source_closure = _catalog_record_closure(source_records[0])
+            _validate_continuity_receipt(
+                receipt,
+                expected_active_record_id=source_record_id,
+                expected_checkpoint=source_closure,
+                generation_local_date=generation_local_date,
             )
-            != generation_local_date
-        ):
-            raise DashboardV2Error("daily_continuity_receipt_invalid")
-        continuity_status = "NO_ACTION_BOUND"
-        financial_state_changed = False
-        continuity_receipt_id: str | None = receipt_id
-        receipt_sha: str | None = str(receipt["content_sha256"])
-        freshness_reason = "CURRENT_DAILY_RECEIPT_AND_LATEST_LOCAL_CLOSE"
+            continuity_status = "FINANCIAL_STATE_PUBLICATION"
+            financial_state_changed = True
+            continuity_receipt_id = None
+            receipt_sha = None
+            freshness_reason = "CURRENT_FINANCIAL_PUBLICATION_AND_LATEST_LOCAL_CLOSE"
+        else:
+            _validate_continuity_receipt(
+                receipt,
+                expected_active_record_id=str(pointer.get("active_record_id") or ""),
+                expected_checkpoint=closure,
+                generation_local_date=generation_local_date,
+            )
+            continuity_status = "NO_ACTION_BOUND"
+            financial_state_changed = False
+            continuity_receipt_id = receipt_id
+            receipt_sha = str(receipt["content_sha256"])
+            freshness_reason = "CURRENT_DAILY_RECEIPT_AND_LATEST_LOCAL_CLOSE"
     elif financial_publication:
+        _reject_unrelated_same_day_receipts(
+            catalog.get("receipts"),
+            expected_receipt_id=receipt_id,
+            generation_local_date=generation_local_date,
+        )
         continuity_status = "FINANCIAL_STATE_PUBLICATION"
         financial_state_changed = True
         continuity_receipt_id = None
         receipt_sha = None
         freshness_reason = "CURRENT_FINANCIAL_PUBLICATION_AND_LATEST_LOCAL_CLOSE"
     else:
+        # A receipt created on this local date but carrying another identifier
+        # is not harmless noise: it can mask an unrelated checkpoint or a
+        # malformed automation attempt.  Fail closed instead of downgrading it
+        # to an apparently ordinary missing receipt.
+        _reject_unrelated_same_day_receipts(
+            catalog.get("receipts"),
+            expected_receipt_id=receipt_id,
+            generation_local_date=generation_local_date,
+        )
         continuity_status = "UNCONFIRMED"
         financial_state_changed = False
         continuity_receipt_id = None
@@ -721,6 +1196,15 @@ def build_v2_bundle(
     ).isoformat()
     if date.fromisoformat(mark_date) > generation_local_date:
         raise DashboardV2Error("market_mark_date_after_generation_date")
+    if (
+        late_publication
+        and late_publication_current
+        and mark_date != LATE_VALUATION_DATE.isoformat()
+    ):
+        # The late publication is a catch-up for the 8/21 close.  A weekend
+        # build may serve that close on 8/22, but must never turn a synthetic
+        # 8/22 market pointer into an economic valuation.
+        raise DashboardV2Error("late_publication_market_date_mismatch")
     if coverage.get("latest_complete_trade_date") != mark_compact:
         raise DashboardV2Error("market_coverage_trade_date_mismatch")
     suspended = coverage.get("suspended_symbols")
@@ -846,13 +1330,18 @@ def build_v2_bundle(
             _source_ref(market_manifest),
             *closure_refs,
             *serving_refs,
+            *late_publication_refs,
         ]
     )
     freshness_updated = continuity_status != "UNCONFIRMED"
     holdings_valid_through = (
-        generation_date_text
-        if freshness_updated
-        else _date_text(v1_bundle.get("latest_data_date"), label="anchor_data_date")
+        mark_date
+        if late_publication and late_publication_current
+        else (
+            generation_date_text
+            if freshness_updated
+            else _date_text(v1_bundle.get("latest_data_date"), label="anchor_data_date")
+        )
     )
     freshness_valid_through = f"{generation_date_text}T23:59:59+08:00"
     bundle: dict[str, Any] = {
@@ -876,6 +1365,7 @@ def build_v2_bundle(
             "receipt_id": continuity_receipt_id,
             "receipt_content_sha256": receipt_sha,
         },
+        "publication_delay": publication_delay_projection,
         "freshness": {
             "status": "UPDATED" if freshness_updated else "STALE",
             "scope": DAILY_SCOPE,
@@ -952,6 +1442,7 @@ def validate_v2_shape(bundle: dict) -> list[str]:
         "canonical_v1_ref",
         "integrity",
         "continuity_authority",
+        "publication_delay",
         "freshness",
         "completeness",
         "research_mark",
@@ -988,6 +1479,17 @@ def validate_v2_shape(bundle: dict) -> list[str]:
     if integrity != {"status": "VERIFIED"}:
         errors.append("integrity_invalid")
 
+    publication_delay = bundle.get("publication_delay")
+    late_projection = publication_delay is not None
+    late_valuation_date: str | None = None
+    if publication_delay is not None:
+        try:
+            late_valuation_date = _publication_delay_semantics(
+                publication_delay, label="publication_delay_projection"
+            )["valuation_date"]
+        except DashboardV2Error as exc:
+            errors.append(str(exc))
+
     continuity = bundle.get("continuity_authority")
     continuity_required = {
         "status",
@@ -1018,7 +1520,10 @@ def validate_v2_shape(bundle: dict) -> list[str]:
         except DashboardV2Error:
             holdings_valid_through = ""
             errors.append("continuity_valid_through_invalid")
-        if status != "UNCONFIRMED" and holdings_valid_through != generation_date:
+        expected_holdings_date = generation_date
+        if late_projection and status != "UNCONFIRMED":
+            expected_holdings_date = late_valuation_date or ""
+        if status != "UNCONFIRMED" and holdings_valid_through != expected_holdings_date:
             errors.append("continuity_valid_through_invalid")
         if not str(continuity.get("anchor_record_id") or ""):
             errors.append("continuity_anchor_record_invalid")
@@ -1075,6 +1580,7 @@ def validate_v2_shape(bundle: dict) -> list[str]:
         if freshness.get("reason") not in {
             "CURRENT_DAILY_RECEIPT_AND_LATEST_LOCAL_CLOSE",
             "CURRENT_FINANCIAL_PUBLICATION_AND_LATEST_LOCAL_CLOSE",
+            LATE_FRESHNESS_REASON,
             "DAILY_CONTINUITY_RECEIPT_MISSING",
         }:
             errors.append("freshness_reason_invalid")
@@ -1083,6 +1589,18 @@ def validate_v2_shape(bundle: dict) -> list[str]:
             and freshness.get("reason") == "DAILY_CONTINUITY_RECEIPT_MISSING"
         ):
             errors.append("freshness_updated_reason_invalid")
+        if (
+            freshness.get("status") == "UPDATED"
+            and freshness.get("reason") == LATE_FRESHNESS_REASON
+            and (
+                not late_projection
+                or not isinstance(continuity, dict)
+                or continuity.get("status") != "FINANCIAL_STATE_PUBLICATION"
+                or freshness.get("mark_as_of") != late_valuation_date
+                or continuity.get("holdings_valid_through") != freshness.get("mark_as_of")
+            )
+        ):
+            errors.append("late_publication_freshness_binding_invalid")
         if (
             freshness.get("status") == "STALE"
             and freshness.get("reason") != "DAILY_CONTINUITY_RECEIPT_MISSING"

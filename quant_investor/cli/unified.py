@@ -8,11 +8,13 @@ Factor or Research handlers can call System activation.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
 from pathlib import Path
 from typing import Any
 
 from quant_investor.cli.input import read_exact_request
 from quant_investor.cli.output import CommandError
+from quant_investor.contracts import canonical_json_bytes
 
 
 def _exact_fields(value: Any, fields: set[str], *, code: str) -> dict[str, Any]:
@@ -1174,6 +1176,205 @@ def research_compile_evidence(
     return compile_evidence(**values)
 
 
+def research_compile_daily(
+    *, workspace_root: str, request_path: str, expected_request_sha256: str
+) -> dict[str, Any]:
+    """Compile one exact, offline, inactive daily Intelligence closure."""
+
+    from quant_investor.factors.production_authority import (
+        assert_factor_production_pointer,
+        read_factor_production_research_inputs,
+    )
+    from quant_investor.intelligence import (
+        build_factor_research_rank,
+        compile_daily_intelligence,
+    )
+
+    _, document = _request(
+        workspace_root=workspace_root,
+        request_path=request_path,
+        expected_request_sha256=expected_request_sha256,
+    )
+    values = _exact_fields(
+        document,
+        {
+            "as_of",
+            "expected_factor_pointer_sha256",
+            "industry_source",
+            "low_observation_path",
+            "low_observation_sha256",
+            "policy",
+            "strategy_id",
+            "theme_source",
+            "w80_observation_path",
+            "w80_observation_sha256",
+        },
+        code="RESEARCH_COMPILE_DAILY_REQUEST_INVALID",
+    )
+    _, low_observation = _request(
+        workspace_root=workspace_root,
+        request_path=values.pop("low_observation_path"),
+        expected_request_sha256=values.pop("low_observation_sha256"),
+    )
+    _, w80_observation = _request(
+        workspace_root=workspace_root,
+        request_path=values.pop("w80_observation_path"),
+        expected_request_sha256=values.pop("w80_observation_sha256"),
+    )
+    expected_pointer = values.pop("expected_factor_pointer_sha256")
+    snapshot = read_factor_production_research_inputs(
+        workspace_root,
+        expected_pointer_sha256=expected_pointer,
+    )
+    rank = build_factor_research_rank(
+        snapshot=snapshot,
+        observations=[low_observation, w80_observation],
+        policy=values["policy"],
+        as_of=values["as_of"],
+    )
+
+    def source_document(reference: Any, *, code: str) -> dict[str, Any]:
+        row = _exact_fields(reference, {"path", "sha256"}, code=code)
+        _, loaded = _request(
+            workspace_root=workspace_root,
+            request_path=row["path"],
+            expected_request_sha256=row["sha256"],
+        )
+        return loaded
+
+    companies = [row["symbol"] for row in rank["payload"]["pool_rows"]]
+    industry_source = values.pop("industry_source")
+    if industry_source is None:
+        industry_projection = None
+    else:
+        industry_values = _exact_fields(
+            industry_source,
+            {
+                "membership_capture",
+                "membership_partitions",
+                "membership_plan",
+                "taxonomy_capture",
+                "taxonomy_plan",
+            },
+            code="RESEARCH_DAILY_INDUSTRY_SOURCE_INVALID",
+        )
+        partitions = industry_values["membership_partitions"]
+        if type(partitions) is not list or not partitions:
+            raise CommandError("RESEARCH_DAILY_INDUSTRY_SOURCE_INVALID")
+        from quant_investor.intelligence import project_tushare_industry_source
+
+        industry_projection = project_tushare_industry_source(
+            taxonomy_plan=source_document(
+                industry_values["taxonomy_plan"],
+                code="RESEARCH_DAILY_INDUSTRY_SOURCE_INVALID",
+            ),
+            taxonomy_capture=source_document(
+                industry_values["taxonomy_capture"],
+                code="RESEARCH_DAILY_INDUSTRY_SOURCE_INVALID",
+            ),
+            membership_plan=source_document(
+                industry_values["membership_plan"],
+                code="RESEARCH_DAILY_INDUSTRY_SOURCE_INVALID",
+            ),
+            membership_capture=source_document(
+                industry_values["membership_capture"],
+                code="RESEARCH_DAILY_INDUSTRY_SOURCE_INVALID",
+            ),
+            partition_documents=[
+                source_document(
+                    reference,
+                    code="RESEARCH_DAILY_INDUSTRY_SOURCE_INVALID",
+                )
+                for reference in partitions
+            ],
+            companies=sorted(companies, key=lambda item: item.encode("ascii")),
+            as_of=values["as_of"],
+        )
+
+    theme_source = values.pop("theme_source")
+    if theme_source is None:
+        theme_projection = None
+    else:
+        theme_values = _exact_fields(
+            theme_source,
+            {
+                "dc_capture",
+                "dc_partitions",
+                "dc_plan",
+                "tdx_capture",
+                "tdx_partitions",
+                "tdx_plan",
+            },
+            code="RESEARCH_DAILY_THEME_SOURCE_INVALID",
+        )
+        dc_partitions = theme_values["dc_partitions"]
+        tdx_partitions = theme_values["tdx_partitions"]
+        if type(dc_partitions) is not list or not dc_partitions or type(tdx_partitions) is not list:
+            raise CommandError("RESEARCH_DAILY_THEME_SOURCE_INVALID")
+        from quant_investor.intelligence import project_tushare_theme_source
+
+        theme_projection = project_tushare_theme_source(
+            dc_plan=source_document(
+                theme_values["dc_plan"],
+                code="RESEARCH_DAILY_THEME_SOURCE_INVALID",
+            ),
+            dc_capture=source_document(
+                theme_values["dc_capture"],
+                code="RESEARCH_DAILY_THEME_SOURCE_INVALID",
+            ),
+            dc_partitions=[
+                source_document(
+                    reference,
+                    code="RESEARCH_DAILY_THEME_SOURCE_INVALID",
+                )
+                for reference in dc_partitions
+            ],
+            tdx_plan=(
+                None
+                if theme_values["tdx_plan"] is None
+                else source_document(
+                    theme_values["tdx_plan"],
+                    code="RESEARCH_DAILY_THEME_SOURCE_INVALID",
+                )
+            ),
+            tdx_capture=(
+                None
+                if theme_values["tdx_capture"] is None
+                else source_document(
+                    theme_values["tdx_capture"],
+                    code="RESEARCH_DAILY_THEME_SOURCE_INVALID",
+                )
+            ),
+            tdx_partitions=[
+                source_document(
+                    reference,
+                    code="RESEARCH_DAILY_THEME_SOURCE_INVALID",
+                )
+                for reference in tdx_partitions
+            ],
+            policy=values["policy"],
+            as_of=values["as_of"],
+        )
+        if (
+            theme_projection["payload"]["company_set_sha256"]
+            != hashlib.sha256(
+                canonical_json_bytes(sorted(companies, key=lambda item: item.encode("ascii")))
+            ).hexdigest()
+        ):
+            raise CommandError("RESEARCH_DAILY_THEME_COMPANY_SET_MISMATCH")
+    result = compile_daily_intelligence(
+        rank=rank,
+        industry_projection=industry_projection,
+        theme_projection=theme_projection,
+        **values,
+    )
+    assert_factor_production_pointer(
+        workspace_root,
+        expected_pointer_sha256=expected_pointer,
+    )
+    return result
+
+
 def research_readiness(
     *, workspace_root: str, request_path: str, expected_request_sha256: str
 ) -> dict[str, Any]:
@@ -1229,6 +1430,7 @@ __all__ = [
     "factor_production_verify",
     "factor_status",
     "research_compile_evidence",
+    "research_compile_daily",
     "research_evaluate",
     "research_forward",
     "research_inspect",

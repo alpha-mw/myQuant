@@ -31,6 +31,7 @@
   var FRESHNESS_REASONS = [
     "CURRENT_DAILY_RECEIPT_AND_LATEST_LOCAL_CLOSE",
     "CURRENT_FINANCIAL_PUBLICATION_AND_LATEST_LOCAL_CLOSE",
+    "LATE_OFFICIAL_FINANCIAL_PUBLICATION_FOR_LATEST_LOCAL_CLOSE",
     "DAILY_CONTINUITY_RECEIPT_MISSING"
   ];
   var POSITION_PRICE_EVIDENCE = [
@@ -206,16 +207,78 @@
       errors.push("freshness.valid_through is not the local end of day");
     }
     if (value.status === "UPDATED") {
-      if (continuity.holdings_valid_through !== generationLocalDate) {
+      var late = value.reason === "LATE_OFFICIAL_FINANCIAL_PUBLICATION_FOR_LATEST_LOCAL_CLOSE";
+      if (late) {
+        if (continuity.status !== "FINANCIAL_STATE_PUBLICATION" ||
+            continuity.holdings_valid_through !== value.mark_as_of ||
+            value.mark_as_of >= generationLocalDate) {
+          errors.push("late UPDATED freshness is inconsistent");
+        }
+      } else if (continuity.holdings_valid_through !== generationLocalDate) {
         errors.push("UPDATED holdings continuity must reach the generation date");
       }
       var expectedReason = continuity.status === "NO_ACTION_BOUND"
         ? "CURRENT_DAILY_RECEIPT_AND_LATEST_LOCAL_CLOSE"
         : "CURRENT_FINANCIAL_PUBLICATION_AND_LATEST_LOCAL_CLOSE";
-      if (value.reason !== expectedReason) errors.push("UPDATED freshness reason is inconsistent");
+      if (!late && value.reason !== expectedReason) errors.push("UPDATED freshness reason is inconsistent");
       if (continuity.status === "UNCONFIRMED") errors.push("unconfirmed continuity cannot be UPDATED");
     } else if (value.reason !== "DAILY_CONTINUITY_RECEIPT_MISSING") {
       errors.push("STALE freshness reason is inconsistent");
+    }
+  }
+
+  function validatePublicationDelay(value, errors) {
+    if (value === null) return;
+    if (!isObject(value)) {
+      errors.push("publication_delay is invalid");
+      return;
+    }
+    var producerKeys = [
+      "schema_id", "publication_class", "expected_valuation_date", "evidence_date",
+      "expected_publication_date", "source_record", "continuity_receipt_id",
+      "continuity_receipt_sha256", "continuity_receipt_created_at",
+      "continuity_checkpoint_digest", "recorded_at_iso", "publication_delay_reason",
+      "historical_holdings_storage_authority", "v17_mainline_authority",
+      "broker_order_trade_authority", "delay_days"
+    ];
+    var catalogKeys = [
+      "schema_id", "publication_class", "expected_valuation_date", "evidence_date",
+      "expected_publication_date", "publication_delay_reason", "source_record",
+      "actual_sealed_at", "actual_published_at", "actual_publication_local_date",
+      "candidate_recorded_at", "continuity_receipt_id", "continuity_receipt_sha256",
+      "continuity_receipt_created_at", "continuity_checkpoint_digest", "delay_days",
+      "historical_holdings_storage_authority", "v17_mainline_authority",
+      "broker_order_trade_authority"
+    ];
+    var producer = hasExactKeys(value, producerKeys);
+    var catalog = hasExactKeys(value, catalogKeys);
+    if (!producer && !catalog) {
+      errors.push("publication_delay shape is invalid");
+      return;
+    }
+    if (value.publication_class !== "LATE_OFFICIAL_VALUATION_PUBLICATION" ||
+        value.expected_valuation_date !== "2026-08-21" ||
+        value.evidence_date !== "2026-08-21" ||
+        value.expected_publication_date !== "2026-08-22" ||
+        value.source_record !== "20260820_1321" ||
+        value.publication_delay_reason !== "SHARED_CHECKOUT_SAFETY_GATE_DELAY" ||
+        value.delay_days !== 1 ||
+        value.historical_holdings_storage_authority !== true ||
+        value.v17_mainline_authority !== false ||
+        value.broker_order_trade_authority !== false ||
+        !SHA256_RE.test(value.continuity_receipt_sha256 || "") ||
+        !SHA256_RE.test(value.continuity_checkpoint_digest || "")) {
+      errors.push("publication_delay contract is invalid");
+    }
+    if (producer) {
+      if (value.schema_id !== "publication_delay.v1" ||
+          !validShanghaiDateTime(value.recorded_at_iso)) {
+        errors.push("producer publication_delay timing is invalid");
+      }
+    } else if (value.schema_id !== "myquant.strategy_record_publication_delay.v1" ||
+               value.actual_publication_local_date !== "2026-08-22" ||
+               !validShanghaiDateTime(value.candidate_recorded_at)) {
+      errors.push("catalog publication_delay timing is invalid");
     }
   }
 
@@ -441,7 +504,7 @@
     var topKeys = [
       "schema_version", "publication_attempt_id", "generated_at",
       "generation_local_date", "canonical_v1", "canonical_v1_ref", "integrity",
-      "continuity_authority", "freshness", "completeness", "research_mark",
+      "continuity_authority", "publication_delay", "freshness", "completeness", "research_mark",
       "source_refs", "content_sha256"
     ];
     if (!hasExactKeys(value, topKeys)) return { valid: false, errors: ["v2 bundle shape is invalid"] };
@@ -462,6 +525,7 @@
       errors.push("integrity status is invalid");
     }
     validateContinuity(value.continuity_authority, value.generation_local_date, errors);
+    validatePublicationDelay(value.publication_delay, errors);
     if (isObject(value.canonical_v1) && isObject(value.continuity_authority)) {
       if (value.continuity_authority.anchor_record_id !== value.canonical_v1.latest_valid_record ||
           value.continuity_authority.anchor_data_date !== value.canonical_v1.latest_data_date) {

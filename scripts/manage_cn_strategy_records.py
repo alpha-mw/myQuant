@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 import fcntl
 import hashlib
@@ -25,6 +25,7 @@ import sys
 import tarfile
 import tempfile
 from typing import Any
+from zoneinfo import ZoneInfo
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -94,6 +95,43 @@ _STRICT_RUN_ID = re.compile(r"^[0-9]{8}_[0-9]{4}$")
 _ARCHIVE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 TRANSACTION_PLAN_SCHEMA = "myquant.strategy_record_quarantine_plan.v1"
 TRANSACTION_EVENT_SCHEMA = "myquant.strategy_record_quarantine_event.v1"
+NO_ACTION_RECEIPT_SCHEMA = "myquant.strategy_record_no_action_receipt.v1"
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
+_V3_OFFICIAL_RECORD_FILES = {
+    "manifest.json",
+    "manual_execution_manifest.json",
+    "ledger_after_manual_switch.parquet",
+    "pnl_summary.csv",
+    "strict_market_close_evidence.json",
+}
+LATE_OFFICIAL_VALUATION_PUBLICATION = "LATE_OFFICIAL_VALUATION_PUBLICATION"
+LATE_PUBLICATION_REASON = "SHARED_CHECKOUT_SAFETY_GATE_DELAY"
+PUBLICATION_DELAY_SCHEMA = "myquant.strategy_record_publication_delay.v1"
+
+
+def _manager_utc_now() -> datetime:
+    """Return the manager-owned aware UTC clock instant."""
+
+    return datetime.now(timezone.utc).replace(microsecond=0)
+
+
+def _aware_timestamp(value: Any, *, label: str) -> datetime:
+    if not isinstance(value, str) or not value.strip():
+        raise StrategyRecordStoreError(f"{label} is invalid")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise StrategyRecordStoreError(f"{label} is invalid") from exc
+    if parsed.tzinfo is None:
+        raise StrategyRecordStoreError(f"{label} timezone is missing")
+    return parsed
+
+
+def _utc_timestamp(value: datetime) -> str:
+    if value.tzinfo is None:
+        raise StrategyRecordStoreError("manager publication clock is not timezone-aware")
+    return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _sealed(value: dict[str, Any]) -> dict[str, Any]:
@@ -149,9 +187,7 @@ def _operation_lock(record_root: str | os.PathLike[str]):
     store = root / STORE_DIRECTORY
     store.mkdir(parents=True, exist_ok=True)
     lock_path = store / ".operation.v2.lock"
-    descriptor = os.open(
-        lock_path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600
-    )
+    descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
@@ -169,12 +205,7 @@ def _sha(raw: bytes) -> str:
 def _timestamp(value: str | None) -> str:
     if value:
         return value
-    return (
-        datetime.now(timezone.utc)
-        .replace(microsecond=0)
-        .isoformat()
-        .replace("+00:00", "Z")
-    )
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _record_id(value: str) -> str:
@@ -186,9 +217,7 @@ def _record_id(value: str) -> str:
 def _strict_run_id(value: str) -> str:
     record_id = _record_id(value)
     if _STRICT_RUN_ID.fullmatch(record_id) is None:
-        raise StrategyRecordStoreError(
-            "new record_id must use YYYYMMDD_HHMM"
-        )
+        raise StrategyRecordStoreError("new record_id must use YYYYMMDD_HHMM")
     return record_id
 
 
@@ -216,28 +245,16 @@ def _safe_relative(value: str) -> str:
 
 
 def _file_sha(path: Path, size: int) -> str:
-    flags = (
-        os.O_RDONLY
-        | getattr(os, "O_NOFOLLOW", 0)
-        | getattr(os, "O_CLOEXEC", 0)
-    )
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
     try:
         descriptor = os.open(path, flags)
     except OSError as exc:
-        raise StrategyRecordStoreError(
-            "inventory file is unavailable or unsafe"
-        ) from exc
+        raise StrategyRecordStoreError("inventory file is unavailable or unsafe") from exc
     digest = hashlib.sha256()
     try:
         before = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(before.st_mode)
-            or before.st_nlink != 1
-            or before.st_size != size
-        ):
-            raise StrategyRecordStoreError(
-                "inventory requires regular single-link files"
-            )
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_size != size:
+            raise StrategyRecordStoreError("inventory requires regular single-link files")
         remaining = size
         while remaining:
             chunk = os.read(descriptor, min(1024 * 1024, remaining))
@@ -256,9 +273,7 @@ def _file_sha(path: Path, size: int) -> str:
             item.st_ctime_ns,
         )
         if remaining or identity(before) != identity(after):
-            raise StrategyRecordStoreError(
-                "inventory file changed during read"
-            )
+            raise StrategyRecordStoreError("inventory file changed during read")
         return digest.hexdigest()
     finally:
         os.close(descriptor)
@@ -275,9 +290,7 @@ def build_inventory(
     file_count = 0
     total_bytes = 0
     casefold_paths: set[str] = set()
-    for current, dirnames, filenames in os.walk(
-        directory, topdown=True, followlinks=False
-    ):
+    for current, dirnames, filenames in os.walk(directory, topdown=True, followlinks=False):
         current_path = Path(current)
         dirnames.sort()
         filenames.sort()
@@ -287,9 +300,7 @@ def build_inventory(
             _safe_relative(relative)
             folded = relative.casefold()
             if folded in casefold_paths:
-                raise StrategyRecordStoreError(
-                    "casefold-colliding inventory path"
-                )
+                raise StrategyRecordStoreError("casefold-colliding inventory path")
             casefold_paths.add(folded)
             metadata = os.lstat(child)
             if stat.S_ISLNK(metadata.st_mode):
@@ -308,26 +319,14 @@ def build_inventory(
                 raise StrategyRecordStoreError(
                     "inventory requires regular files without hard links"
                 )
-            if (
-                enforce_new_record_budget
-                and metadata.st_size > NEW_RECORD_MAX_FILE_BYTES
-            ):
-                raise StrategyRecordStoreError(
-                    "new record file exceeds byte budget"
-                )
+            if enforce_new_record_budget and metadata.st_size > NEW_RECORD_MAX_FILE_BYTES:
+                raise StrategyRecordStoreError("new record file exceeds byte budget")
             file_count += 1
             total_bytes += metadata.st_size
             if enforce_new_record_budget and file_count > NEW_RECORD_MAX_FILES:
-                raise StrategyRecordStoreError(
-                    "new record exceeds file-count budget"
-                )
-            if (
-                enforce_new_record_budget
-                and total_bytes > NEW_RECORD_MAX_TOTAL_BYTES
-            ):
-                raise StrategyRecordStoreError(
-                    "new record exceeds total byte budget"
-                )
+                raise StrategyRecordStoreError("new record exceeds file-count budget")
+            if enforce_new_record_budget and total_bytes > NEW_RECORD_MAX_TOTAL_BYTES:
+                raise StrategyRecordStoreError("new record exceeds total byte budget")
             rows.append(
                 {
                     "path": relative,
@@ -353,17 +352,10 @@ def _record_entry(
     enforce_new_record_budget: bool,
 ) -> dict[str, Any]:
     relative = _safe_relative(relative_path)
-    if (
-        relative.startswith(f"{STORE_DIRECTORY}/")
-        or relative == STORE_DIRECTORY
-    ):
-        raise StrategyRecordStoreError(
-            "record path cannot be inside _record_store"
-        )
+    if relative.startswith(f"{STORE_DIRECTORY}/") or relative == STORE_DIRECTORY:
+        raise StrategyRecordStoreError("record path cannot be inside _record_store")
     path = root / relative
-    inventory = build_inventory(
-        path, enforce_new_record_budget=enforce_new_record_budget
-    )
+    inventory = build_inventory(path, enforce_new_record_budget=enforce_new_record_budget)
     return {
         "record_id": _record_id(path.name),
         "relative_path": relative,
@@ -383,13 +375,9 @@ def _live_catalog_entries(root: Path, *, sealed_at: str) -> list[dict[str, Any]]
             continue
         metadata = os.lstat(child)
         if stat.S_ISLNK(metadata.st_mode):
-            raise StrategyRecordStoreError(
-                f"top-level symlink is forbidden: {child.name}"
-            )
+            raise StrategyRecordStoreError(f"top-level symlink is forbidden: {child.name}")
         if stat.S_ISDIR(metadata.st_mode):
-            inventory = build_inventory(
-                child, enforce_new_record_budget=False
-            )
+            inventory = build_inventory(child, enforce_new_record_budget=False)
             strict = _STRICT_RUN_ID.fullmatch(child.name) is not None
             records.append(
                 {
@@ -399,30 +387,18 @@ def _live_catalog_entries(root: Path, *, sealed_at: str) -> list[dict[str, Any]]
                         else "aux-" + child.name.lstrip("._")
                     ),
                     "relative_path": child.name,
-                    "state": (
-                        "ONLINE" if strict else "NONSTANDARD_RESEARCH_OUTPUT"
-                    ),
-                    "storage_state": (
-                        "ONLINE" if strict else "NONSTANDARD_RESEARCH_OUTPUT"
-                    ),
-                    "record_class": (
-                        "LEGACY_STRICT"
-                        if strict
-                        else "NONSTANDARD_RESEARCH_OUTPUT"
-                    ),
+                    "state": ("ONLINE" if strict else "NONSTANDARD_RESEARCH_OUTPUT"),
+                    "storage_state": ("ONLINE" if strict else "NONSTANDARD_RESEARCH_OUTPUT"),
+                    "record_class": ("LEGACY_STRICT" if strict else "NONSTANDARD_RESEARCH_OUTPUT"),
                     "history_eligible": strict,
-                    "archive_eligible": bool(
-                        strict and child.name < "20260701_0000"
-                    ),
+                    "archive_eligible": bool(strict and child.name < "20260701_0000"),
                     "sealed_at": sealed_at,
                     **inventory,
                 }
             )
             continue
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
-            raise StrategyRecordStoreError(
-                f"unsupported top-level object: {child.name}"
-            )
+            raise StrategyRecordStoreError(f"unsupported top-level object: {child.name}")
         records.append(
             {
                 "record_id": _record_id(child.name.lstrip(".") or "dot-file"),
@@ -445,9 +421,7 @@ def _live_catalog_entries(root: Path, *, sealed_at: str) -> list[dict[str, Any]]
                 ],
             }
         )
-        records[-1]["inventory_sha256"] = _sha(
-            canonical_json_bytes(records[-1]["inventory"])
-        )
+        records[-1]["inventory_sha256"] = _sha(canonical_json_bytes(records[-1]["inventory"]))
     return records
 
 
@@ -460,28 +434,18 @@ def _attach_dashboard_closure(
 ) -> None:
     valid = projection.get("valid_records")
     if not isinstance(valid, list):
-        raise StrategyRecordStoreError(
-            "dashboard projection valid_records is missing"
-        )
+        raise StrategyRecordStoreError("dashboard projection valid_records is missing")
     by_id = {row["record_id"]: row for row in records}
     historical = projection.get("historical_records")
     if not isinstance(historical, list):
-        raise StrategyRecordStoreError(
-            "dashboard projection historical_records is missing"
-        )
-    accepted_ids = {
-        item.get("record")
-        for item in [*valid, *historical]
-        if isinstance(item, dict)
-    }
+        raise StrategyRecordStoreError("dashboard projection historical_records is missing")
+    accepted_ids = {item.get("record") for item in [*valid, *historical] if isinstance(item, dict)}
     for record in records:
         if record.get("state") == "ONLINE":
             record["history_eligible"] = record.get("record_id") in accepted_ids
     for projected in valid:
         if not isinstance(projected, dict):
-            raise StrategyRecordStoreError(
-                "dashboard projection contains an invalid record"
-            )
+            raise StrategyRecordStoreError("dashboard projection contains an invalid record")
         record_id = projected.get("record")
         catalog_row = by_id.get(record_id)
         if catalog_row is None:
@@ -519,9 +483,7 @@ def _attach_dashboard_closure(
         ):
             if projected.get(key) is not None:
                 catalog_row[key] = projected[key]
-        catalog_row["evidence_status"] = projected.get(
-            "evidence_status", "HASH_VERIFIED"
-        )
+        catalog_row["evidence_status"] = projected.get("evidence_status", "HASH_VERIFIED")
         catalog_row["summary"] = {
             "symbols": [
                 item.get("symbol")
@@ -538,33 +500,22 @@ def _normalize_dashboard_projection_source_refs(
     for key in ("valid_records", "historical_records"):
         rows = projection.get(key)
         if not isinstance(rows, list):
-            raise StrategyRecordStoreError(
-                "Dashboard projection is incomplete"
-            )
+            raise StrategyRecordStoreError("Dashboard projection is incomplete")
         for row in rows:
-            if not isinstance(row, dict) or not isinstance(
-                row.get("source_refs"), list
-            ):
-                raise StrategyRecordStoreError(
-                    "Dashboard projection source refs are invalid"
-                )
+            if not isinstance(row, dict) or not isinstance(row.get("source_refs"), list):
+                raise StrategyRecordStoreError("Dashboard projection source refs are invalid")
             refs_by_path: dict[str, str] = {}
             for ref in row["source_refs"]:
                 path = ref.get("path") if isinstance(ref, dict) else None
                 digest = ref.get("sha256") if isinstance(ref, dict) else None
                 if not isinstance(path, str) or not isinstance(digest, str):
-                    raise StrategyRecordStoreError(
-                        "Dashboard projection source ref is invalid"
-                    )
+                    raise StrategyRecordStoreError("Dashboard projection source ref is invalid")
                 previous = refs_by_path.get(path)
                 if previous is not None and previous != digest:
-                    raise StrategyRecordStoreError(
-                        "Dashboard projection source refs conflict"
-                    )
+                    raise StrategyRecordStoreError("Dashboard projection source refs conflict")
                 refs_by_path[path] = digest
             row["source_refs"] = [
-                {"path": path, "sha256": refs_by_path[path]}
-                for path in sorted(refs_by_path)
+                {"path": path, "sha256": refs_by_path[path]} for path in sorted(refs_by_path)
             ]
 
 
@@ -576,9 +527,7 @@ def _legacy_record_paths(root: Path, requested: list[str]) -> list[str]:
         if child.name == STORE_DIRECTORY or child.name.startswith("."):
             continue
         metadata = os.lstat(child)
-        if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(
-            metadata.st_mode
-        ):
+        if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
             result.append(child.name)
     return result
 
@@ -618,12 +567,8 @@ def command_inventory(args: argparse.Namespace) -> dict[str, Any]:
     result = {
         "registered": loaded is not None,
         "pointer_sha256": _pointer_sha(root) if loaded is not None else None,
-        "active_record_id": (
-            pointer.get("active_record_id") if pointer else None
-        ),
-        "previous_record_id": (
-            pointer.get("previous_record_id") if pointer else None
-        ),
+        "active_record_id": (pointer.get("active_record_id") if pointer else None),
+        "previous_record_id": (pointer.get("previous_record_id") if pointer else None),
         "record_count": catalog.get("record_count", 0) if catalog else 0,
         "records": catalog.get("records", []) if catalog else [],
         "orphan_record_dirs": _orphans(root, catalog),
@@ -638,9 +583,7 @@ def _load_projection(path: str | None) -> Any:
     try:
         return json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise StrategyRecordStoreError(
-            "dashboard projection JSON is invalid"
-        ) from exc
+        raise StrategyRecordStoreError("dashboard projection JSON is invalid") from exc
 
 
 def command_bootstrap(args: argparse.Namespace) -> dict[str, Any]:
@@ -656,9 +599,7 @@ def command_bootstrap(args: argparse.Namespace) -> dict[str, Any]:
         )
         for path in paths
     ]
-    active = args.active_record_id or (
-        records[-1]["record_id"] if records else None
-    )
+    active = args.active_record_id or (records[-1]["record_id"] if records else None)
     previous = args.previous_record_id
     if previous is None and len(records) > 1:
         previous = records[-2]["record_id"]
@@ -677,9 +618,7 @@ def command_bootstrap_live(args: argparse.Namespace) -> dict[str, Any]:
     root = Path(args.record_root).resolve()
     sealed_at = _timestamp(args.published_at)
     if args.record_dir:
-        raise StrategyRecordStoreError(
-            "bootstrap-live classifies the complete top-level inventory"
-        )
+        raise StrategyRecordStoreError("bootstrap-live classifies the complete top-level inventory")
     records = _live_catalog_entries(root, sealed_at=sealed_at)
     projection = _load_projection(args.dashboard_projection_json)
     if projection is None and args.project_root:
@@ -688,16 +627,10 @@ def command_bootstrap_live(args: argparse.Namespace) -> dict[str, Any]:
                 build_dashboard_catalog_projection,
             )
         except ImportError as exc:
-            raise StrategyRecordStoreError(
-                "dashboard projection builder is unavailable"
-            ) from exc
-        projection = build_dashboard_catalog_projection(
-            root, Path(args.project_root)
-        )
+            raise StrategyRecordStoreError("dashboard projection builder is unavailable") from exc
+        projection = build_dashboard_catalog_projection(root, Path(args.project_root))
     if not isinstance(projection, dict):
-        raise StrategyRecordStoreError(
-            "bootstrap-live requires a Dashboard projection"
-        )
+        raise StrategyRecordStoreError("bootstrap-live requires a Dashboard projection")
     valid = projection.get("valid_records")
     if not isinstance(valid, list) or len(valid) < 2:
         raise StrategyRecordStoreError(
@@ -706,13 +639,9 @@ def command_bootstrap_live(args: argparse.Namespace) -> dict[str, Any]:
     active = args.active_record_id or valid[-1].get("record")
     previous = args.previous_record_id or valid[-2].get("record")
     if args.expected_current_id and active != args.expected_current_id:
-        raise StrategyRecordStoreError(
-            "active record does not match expectation"
-        )
+        raise StrategyRecordStoreError("active record does not match expectation")
     if args.expected_previous_id and previous != args.expected_previous_id:
-        raise StrategyRecordStoreError(
-            "previous record does not match expectation"
-        )
+        raise StrategyRecordStoreError("previous record does not match expectation")
     if args.expected_inventory_sha:
         by_id = {record["record_id"]: record for record in records}
         active_record = by_id.get(active)
@@ -720,9 +649,7 @@ def command_bootstrap_live(args: argparse.Namespace) -> dict[str, Any]:
             active_record is None
             or active_record["inventory_sha256"] != args.expected_inventory_sha
         ):
-            raise StrategyRecordStoreError(
-                "active inventory SHA does not match expectation"
-            )
+            raise StrategyRecordStoreError("active inventory SHA does not match expectation")
     project_root = Path(args.project_root) if args.project_root else PROJECT_ROOT
     _attach_dashboard_closure(
         records,
@@ -743,9 +670,7 @@ def command_bootstrap_live(args: argparse.Namespace) -> dict[str, Any]:
 
 def command_publish(args: argparse.Namespace) -> dict[str, Any]:
     try:
-        records = json.loads(
-            Path(args.records_json).read_text(encoding="utf-8")
-        )
+        records = json.loads(Path(args.records_json).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise StrategyRecordStoreError("records JSON is invalid") from exc
     if not isinstance(records, list):
@@ -765,19 +690,13 @@ def command_publish(args: argparse.Namespace) -> dict[str, Any]:
 def command_stage_init(args: argparse.Namespace) -> dict[str, Any]:
     root = Path(args.record_root)
     if load_registered_catalog(root) is None:
-        raise StrategyRecordStoreError(
-            "stage-init requires a registered catalog"
-        )
+        raise StrategyRecordStoreError("stage-init requires a registered catalog")
     record_id = _strict_run_id(args.record_id)
     stage_root = root / STORE_DIRECTORY / "staging"
     stage_root.mkdir(parents=True, exist_ok=True)
-    stage_metadata = _regular_directory(
-        stage_root, label="strategy-record staging root"
-    )
+    stage_metadata = _regular_directory(stage_root, label="strategy-record staging root")
     if stage_metadata.st_dev != os.lstat(root).st_dev:
-        raise StrategyRecordStoreError(
-            "staging directory is not on record filesystem"
-        )
+        raise StrategyRecordStoreError("staging directory is not on record filesystem")
     stage = stage_root / record_id
     try:
         stage.mkdir(mode=0o700)
@@ -814,9 +733,549 @@ def _reject_disabled_ledger_candidates(record_dir: Path) -> None:
             )
 
 
-def _record_root_relative(
-    *, project: Path, root: Path, project_relative: Any, label: str
-) -> str:
+def _catalog_sha(root: Path, pointer: dict[str, Any]) -> str:
+    """Return the byte SHA of the catalog selected by one pointer."""
+
+    relative = pointer.get("catalog_path")
+    if not isinstance(relative, str):
+        raise StrategyRecordStoreError("pointer catalog path is invalid")
+    _safe_relative(relative)
+    path = root / relative
+    try:
+        metadata = os.lstat(path)
+    except OSError as exc:
+        raise StrategyRecordStoreError("pointer catalog is unavailable") from exc
+    if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+        raise StrategyRecordStoreError("pointer catalog must be a regular file")
+    first = path.read_bytes()
+    second = path.read_bytes()
+    if first != second:
+        raise StrategyRecordStoreError("pointer catalog changed during read")
+    digest = _sha(first)
+    if digest != pointer.get("catalog_sha256"):
+        raise StrategyRecordStoreError("pointer catalog SHA-256 mismatch")
+    return digest
+
+
+def _require_v3_checkpoint(
+    *,
+    root: Path,
+    expected_pointer_sha: str,
+    expected_catalog_sha: str,
+    continuity_receipt_id: str | None = None,
+    continuity_receipt_sha: str | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Reload and bind the exact pointer/catalog checkpoint used by a publish.
+
+    This is deliberately independent of the caller's earlier in-memory copy.
+    It is used both before stage adoption and immediately before the pointer CAS
+    so a catalog-only edit cannot be mistaken for a stable pointer checkpoint.
+    """
+
+    if (
+        not isinstance(expected_pointer_sha, str)
+        or _SHA256_RE.fullmatch(expected_pointer_sha) is None
+    ):
+        raise StrategyRecordStoreError("expected pointer SHA-256 is invalid")
+    if (
+        not isinstance(expected_catalog_sha, str)
+        or _SHA256_RE.fullmatch(expected_catalog_sha) is None
+    ):
+        raise StrategyRecordStoreError("expected catalog SHA-256 is invalid")
+    observed_pointer = _pointer_sha(root)
+    if observed_pointer != expected_pointer_sha:
+        raise StrategyRecordStoreError("source pointer drifted before catalog v3 publication")
+    loaded = load_registered_catalog(root)
+    if loaded is None:
+        raise StrategyRecordStoreError("catalog v3 publication requires a registered catalog")
+    pointer, catalog = loaded
+    if pointer.get("catalog_sha256") != expected_catalog_sha:
+        raise StrategyRecordStoreError("source catalog drifted before catalog v3 publication")
+    if _catalog_sha(root, pointer) != expected_catalog_sha:
+        raise StrategyRecordStoreError(
+            "source catalog byte SHA drifted before catalog v3 publication"
+        )
+    if continuity_receipt_id is not None:
+        _find_and_validate_continuity_receipt(
+            catalog=catalog,
+            pointer=pointer,
+            receipt_id=continuity_receipt_id,
+            expected_sha=continuity_receipt_sha,
+            candidate_date=None,
+            source_record=None,
+        )
+    return pointer, catalog
+
+
+def _shanghai_local_date(value: Any, *, label: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise StrategyRecordStoreError(f"{label} is invalid")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise StrategyRecordStoreError(f"{label} is invalid") from exc
+    if parsed.tzinfo is None:
+        raise StrategyRecordStoreError(f"{label} timezone is missing")
+    return parsed.astimezone(_SHANGHAI).date().isoformat()
+
+
+def _find_and_validate_continuity_receipt(
+    *,
+    catalog: dict[str, Any],
+    pointer: dict[str, Any],
+    receipt_id: Any,
+    expected_sha: Any,
+    candidate_date: str | None,
+    source_record: str | None,
+) -> dict[str, Any]:
+    """Validate exactly one inherited no-action receipt.
+
+    A continuity receipt is catalog metadata, not a candidate payload.  Its
+    active checkpoint must be the exact current pointer closure; this prevents
+    an old or unrelated no-action receipt from authorizing a new financial
+    state.  ``candidate_date`` and ``source_record`` are checked when a staged
+    candidate is available and intentionally omitted for the final checkpoint
+    recheck.
+    """
+
+    if not isinstance(receipt_id, str) or not receipt_id:
+        raise StrategyRecordStoreError("continuity receipt id is required")
+    if not isinstance(expected_sha, str) or _SHA256_RE.fullmatch(expected_sha) is None:
+        raise StrategyRecordStoreError("continuity receipt SHA-256 is invalid")
+    receipts = catalog.get("receipts")
+    if not isinstance(receipts, list):
+        raise StrategyRecordStoreError("catalog receipts are invalid")
+    matches = [
+        row for row in receipts if isinstance(row, dict) and row.get("receipt_id") == receipt_id
+    ]
+    if len(matches) != 1:
+        raise StrategyRecordStoreError("continuity receipt must be unique")
+    receipt = matches[0]
+    if receipt.get("schema_id") != NO_ACTION_RECEIPT_SCHEMA:
+        raise StrategyRecordStoreError("continuity receipt schema mismatch")
+    if receipt.get("content_sha256") != content_sha256(receipt):
+        raise StrategyRecordStoreError("continuity receipt content hash mismatch")
+    if receipt.get("content_sha256") != expected_sha:
+        raise StrategyRecordStoreError("continuity receipt SHA-256 mismatch")
+    if (
+        receipt.get("status") != "NO_ACTION"
+        or receipt.get("payload_copied") is not False
+        or receipt.get("v17_mainline_authority") is not False
+        or receipt.get("broker_order_trade_authority") is not False
+    ):
+        raise StrategyRecordStoreError("continuity receipt authority/status is invalid")
+    active_id = pointer.get("active_record_id")
+    closure = pointer.get("active_closure")
+    if (
+        not isinstance(active_id, str)
+        or not isinstance(closure, dict)
+        or receipt.get("active_record_id") != active_id
+        or receipt.get("active_checkpoint") != closure
+    ):
+        raise StrategyRecordStoreError("continuity receipt active checkpoint mismatch")
+    if candidate_date is not None:
+        if (
+            _shanghai_local_date(receipt.get("created_at"), label="continuity receipt created_at")
+            != candidate_date
+        ):
+            raise StrategyRecordStoreError("continuity receipt date mismatch")
+        if source_record != active_id:
+            raise StrategyRecordStoreError("candidate source record is not active")
+    return receipt
+
+
+def _candidate_binding_value(document: dict[str, Any], name: str) -> Any:
+    """Read the canonical continuity binding, accepting the legacy alias."""
+
+    direct = document.get(name)
+    if direct is not None:
+        return direct
+    snapshot = document.get("data_snapshot")
+    if isinstance(snapshot, dict) and snapshot.get(name) is not None:
+        return snapshot.get(name)
+    alias = {
+        "continuity_receipt_id": "no_action_receipt_id",
+        "continuity_receipt_sha256": "no_action_receipt_sha256",
+    }.get(name)
+    if alias is None:
+        return None
+    if document.get(alias) is not None:
+        return document.get(alias)
+    if isinstance(snapshot, dict):
+        return snapshot.get(alias)
+    return None
+
+
+def _date_value(value: Any, *, label: str) -> str:
+    text = str(value or "").strip()
+    if len(text) == 8 and text.isdigit():
+        text = f"{text[:4]}-{text[4:6]}-{text[6:]}"
+    try:
+        return date.fromisoformat(text).isoformat()
+    except ValueError as exc:
+        raise StrategyRecordStoreError(f"{label} is invalid") from exc
+
+
+def _late_declaration(document: dict[str, Any], *, label: str) -> dict[str, str]:
+    nested = document.get("publication_delay")
+    snapshot = document.get("data_snapshot")
+    sources = [value for value in (nested, document, snapshot) if isinstance(value, dict)]
+
+    def selected(*names: str) -> Any:
+        for source in sources:
+            for name in names:
+                if source.get(name) is not None:
+                    return source.get(name)
+        return None
+
+    publication_class = selected("publication_class")
+    valuation_date = _date_value(
+        selected("expected_valuation_date", "valuation_date", "valuation_trade_date"),
+        label=f"{label} expected valuation date",
+    )
+    publication_date = _date_value(
+        selected("expected_publication_date", "publication_date"),
+        label=f"{label} expected publication date",
+    )
+    reason = selected("publication_delay_reason", "reason")
+    if publication_class != LATE_OFFICIAL_VALUATION_PUBLICATION:
+        raise StrategyRecordStoreError(f"{label} publication class mismatch")
+    if reason != LATE_PUBLICATION_REASON:
+        raise StrategyRecordStoreError(f"{label} publication delay reason mismatch")
+    normalized = {
+        "publication_class": publication_class,
+        "expected_valuation_date": valuation_date,
+        "expected_publication_date": publication_date,
+        "publication_delay_reason": str(reason),
+    }
+    for source in sources:
+        if (
+            source.get("publication_class") is not None
+            and source.get("publication_class") != normalized["publication_class"]
+        ):
+            raise StrategyRecordStoreError(f"{label} publication class declarations conflict")
+        for canonical, names in (
+            (
+                "expected_valuation_date",
+                ("expected_valuation_date", "valuation_date", "valuation_trade_date"),
+            ),
+            (
+                "expected_publication_date",
+                ("expected_publication_date", "publication_date"),
+            ),
+        ):
+            for name in names:
+                if (
+                    source.get(name) is not None
+                    and _date_value(source.get(name), label=f"{label} {name}")
+                    != normalized[canonical]
+                ):
+                    raise StrategyRecordStoreError(f"{label} {canonical} declarations conflict")
+        for name in ("publication_delay_reason", "reason"):
+            if (
+                source.get(name) is not None
+                and source.get(name) != normalized["publication_delay_reason"]
+            ):
+                raise StrategyRecordStoreError(
+                    f"{label} publication delay reason declarations conflict"
+                )
+    return normalized
+
+
+def _validate_late_publication(
+    *,
+    args: argparse.Namespace,
+    record_id: str,
+    sealed_at: str,
+    strict_record: dict[str, Any],
+    manifest: dict[str, Any],
+    manual: dict[str, Any],
+    receipt: dict[str, Any],
+) -> dict[str, Any]:
+    expected_valuation_date = _date_value(
+        getattr(args, "expected_valuation_date", None),
+        label="expected valuation date",
+    )
+    expected_publication_date = _date_value(
+        getattr(args, "expected_publication_date", None),
+        label="expected publication date",
+    )
+    if getattr(args, "publication_delay_reason", None) != LATE_PUBLICATION_REASON:
+        raise StrategyRecordStoreError("late publication reason mismatch")
+    if (
+        date.fromisoformat(expected_publication_date) - date.fromisoformat(expected_valuation_date)
+    ).days != 1:
+        raise StrategyRecordStoreError("late publication delay must be exactly one day")
+    manifest_declaration = _late_declaration(manifest, label="manifest")
+    manual_declaration = _late_declaration(manual, label="manual manifest")
+    expected_declaration = {
+        "publication_class": LATE_OFFICIAL_VALUATION_PUBLICATION,
+        "expected_valuation_date": expected_valuation_date,
+        "expected_publication_date": expected_publication_date,
+        "publication_delay_reason": LATE_PUBLICATION_REASON,
+    }
+    if manifest_declaration != manual_declaration or manifest_declaration != expected_declaration:
+        raise StrategyRecordStoreError("late publication candidate declarations mismatch")
+    if strict_record.get("data_date") != expected_valuation_date:
+        raise StrategyRecordStoreError("late publication valuation date mismatch")
+    manifest_delay = manifest.get("publication_delay")
+    manual_delay = manual.get("publication_delay")
+    if not isinstance(manifest_delay, dict) or manifest_delay != manual_delay:
+        raise StrategyRecordStoreError("late publication delay declarations are not identical")
+    if (
+        manifest_delay.get("schema_id") != PUBLICATION_DELAY_SCHEMA
+        or manifest_delay.get("publication_class") != LATE_OFFICIAL_VALUATION_PUBLICATION
+        or manifest_delay.get("delay_days") != 1
+        or manifest_delay.get("evidence_date") != expected_valuation_date
+        or manifest_delay.get("source_record") != strict_record.get("source_record")
+        or manifest_delay.get("continuity_receipt_id") != receipt.get("receipt_id")
+        or manifest_delay.get("continuity_receipt_sha256") != receipt.get("content_sha256")
+        or manifest_delay.get("continuity_receipt_created_at") != receipt.get("created_at")
+        or manifest_delay.get("continuity_checkpoint_digest")
+        != content_sha256(receipt.get("active_checkpoint") or {})
+        or manifest_delay.get("recorded_at_iso") != manifest.get("recorded_at_iso")
+        or manifest_delay.get("historical_holdings_storage_authority") is not True
+        or manifest_delay.get("v17_mainline_authority") is not False
+        or manifest_delay.get("broker_order_trade_authority") is not False
+    ):
+        raise StrategyRecordStoreError("late publication delay binding mismatch")
+    manifest_recorded = manifest.get("recorded_at_iso")
+    manual_recorded = manual.get("recorded_at_iso")
+    if manifest_recorded != manual_recorded:
+        raise StrategyRecordStoreError("late publication recorded timestamp mismatch")
+    recorded = _aware_timestamp(manifest_recorded, label="candidate recorded_at_iso")
+    sealed = _aware_timestamp(sealed_at, label="manager sealed_at")
+    receipt_created = _aware_timestamp(
+        receipt.get("created_at"), label="continuity receipt created_at"
+    )
+    if not receipt_created <= recorded <= sealed:
+        raise StrategyRecordStoreError(
+            "late publication timestamp ordering must be receipt<=recorded<=seal"
+        )
+    recorded_shanghai = recorded.astimezone(_SHANGHAI)
+    sealed_shanghai = sealed.astimezone(_SHANGHAI)
+    if record_id != recorded_shanghai.strftime("%Y%m%d_%H%M"):
+        raise StrategyRecordStoreError(
+            "late publication record id does not match recorded Shanghai minute"
+        )
+    if recorded_shanghai.date().isoformat() != expected_publication_date:
+        raise StrategyRecordStoreError("late publication recorded local date mismatch")
+    if sealed_shanghai.date().isoformat() != expected_publication_date:
+        raise StrategyRecordStoreError("late publication manager local date mismatch")
+    return {
+        "schema_id": PUBLICATION_DELAY_SCHEMA,
+        **expected_declaration,
+        "actual_sealed_at": sealed_at,
+        "actual_published_at": sealed_at,
+        "actual_publication_local_date": sealed_shanghai.date().isoformat(),
+        "candidate_recorded_at": str(manifest_recorded),
+        "continuity_receipt_id": str(receipt["receipt_id"]),
+        "continuity_receipt_sha256": str(receipt["content_sha256"]),
+        "continuity_receipt_created_at": str(receipt["created_at"]),
+        "continuity_checkpoint_digest": str(manifest_delay["continuity_checkpoint_digest"]),
+        "source_record": str(strict_record["source_record"]),
+        "evidence_date": expected_valuation_date,
+        "delay_days": 1,
+        "historical_holdings_storage_authority": True,
+        "v17_mainline_authority": False,
+        "broker_order_trade_authority": False,
+    }
+
+
+def _validate_late_freshness(
+    *,
+    root: Path,
+    catalog: dict[str, Any],
+    stage: Path,
+    target: Path,
+    record_id: str,
+    generation_id: Any,
+    performance_generation_id: Any,
+) -> None:
+    _regular_directory(stage, label="late publication staging record")
+    if target.exists() or os.path.lexists(target):
+        raise StrategyRecordConflict("late publication requires a fresh final record id")
+    if any(
+        isinstance(row, dict) and row.get("record_id") == record_id
+        for row in catalog.get("records", [])
+    ):
+        raise StrategyRecordConflict("late publication record id is already registered")
+    generation = _record_id(str(generation_id or ""))
+    performance_generation = _record_id(str(performance_generation_id or ""))
+    if (root / STORE_DIRECTORY / "catalogs" / generation).exists():
+        raise StrategyRecordConflict("late publication catalog generation already exists")
+    if (root / STORE_DIRECTORY / "performance" / performance_generation).exists():
+        raise StrategyRecordConflict("late publication performance generation already exists")
+
+
+def _validate_v3_stage_candidate(
+    *,
+    root: Path,
+    project: Path,
+    stage: Path,
+    record_id: str,
+    pointer: dict[str, Any],
+    catalog: dict[str, Any],
+    expected_catalog_sha: Any,
+    continuity_receipt_id: Any,
+    continuity_receipt_sha: Any,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Validate an official no-trade candidate before moving stage bytes."""
+
+    if (
+        not isinstance(expected_catalog_sha, str)
+        or _SHA256_RE.fullmatch(expected_catalog_sha) is None
+    ):
+        raise StrategyRecordStoreError(
+            "catalog v3 official no-trade valuation requires expected-catalog-sha"
+        )
+    if pointer.get("catalog_sha256") != expected_catalog_sha:
+        raise StrategyRecordStoreError("expected catalog SHA does not match pointer")
+    if _catalog_sha(root, pointer) != expected_catalog_sha:
+        raise StrategyRecordStoreError("expected catalog SHA does not match catalog bytes")
+    if not isinstance(getattr(stage, "name", None), str) or stage.name != record_id:
+        raise StrategyRecordStoreError("staging record identity mismatch")
+    _regular_directory(stage, label="staging record")
+    _reject_disabled_ledger_candidates(stage)
+    stage_inventory = build_inventory(stage, enforce_new_record_budget=True)
+    stage_files = {
+        str(row.get("path")) for row in stage_inventory["inventory"] if row.get("type") == "file"
+    }
+    if stage_files != _V3_OFFICIAL_RECORD_FILES or any(
+        row.get("type") == "directory" for row in stage_inventory["inventory"]
+    ):
+        raise StrategyRecordStoreError(
+            "catalog v3 official no-trade valuation stage inventory is not exact"
+        )
+    parquet_entries = [
+        row
+        for row in stage_inventory["inventory"]
+        if row.get("type") == "file"
+        and PurePosixPath(str(row.get("path"))).name == "ledger_after_manual_switch.parquet"
+    ]
+    if len(parquet_entries) != 1:
+        raise StrategyRecordStoreError(
+            "catalog v3 official no-trade valuation requires one Parquet ledger"
+        )
+    if any(
+        row.get("inventory_sha256") == stage_inventory["inventory_sha256"]
+        for row in catalog.get("records", [])
+        if isinstance(row, dict)
+    ):
+        raise StrategyRecordStoreError("staging inventory is not fresh")
+
+    try:
+        from scripts.cn_dashboard_common import (
+            DashboardInputError,
+            load_json,
+            stable_read,
+            validate_record,
+        )
+    except ImportError as exc:
+        raise StrategyRecordStoreError("Dashboard validation is unavailable") from exc
+    try:
+        manifest_artifact = stable_read(stage / "manifest.json", project)
+        manifest = load_json(manifest_artifact)
+        manual_artifact = stable_read(stage / "manual_execution_manifest.json", project)
+        manual = load_json(manual_artifact)
+        strict_record = validate_record(stage, root, project)
+    except DashboardInputError as exc:
+        raise StrategyRecordStoreError(
+            f"staged record did not pass current-record validation: {exc}"
+        ) from exc
+    if not isinstance(manifest, dict) or not isinstance(manual, dict):
+        raise StrategyRecordStoreError("staged manifest/manual is not an object")
+    if strict_record.get("record") != record_id:
+        raise StrategyRecordStoreError("staged record identity drifted")
+    if strict_record.get("execution_kind") == "applied_effective_ledger":
+        raise StrategyRecordStoreError("staged candidate is not an official no-trade valuation")
+    if manual.get("official_valuation") is not True:
+        raise StrategyRecordStoreError("staged candidate official valuation is missing")
+    active_id = pointer.get("active_record_id")
+    closure = pointer.get("active_closure")
+    if not isinstance(active_id, str) or not isinstance(closure, dict):
+        raise StrategyRecordStoreError("current pointer active closure is invalid")
+    if (
+        manifest.get("source_record") != active_id
+        or manual.get("source_record") != active_id
+        or strict_record.get("source_record") != active_id
+    ):
+        raise StrategyRecordStoreError("staged candidate source record is not active")
+    # The candidate's declared preimage must be the exact pointer-selected
+    # closure.  These fields are independent of validate_record's own source
+    # read so a producer cannot claim an alternate predecessor.
+    for document, label in ((manifest, "manifest"), (manual, "manual")):
+        if document.get("source_manifest_sha256") != closure.get("manifest_sha256"):
+            raise StrategyRecordStoreError(f"staged {label} source manifest preimage mismatch")
+    expected_pointer_sha = _pointer_sha(root)
+    expected_generation = pointer.get("generation_id")
+    for document, label in ((manifest, "manifest"), (manual, "manual")):
+        if _candidate_binding_value(document, "source_pointer_sha256") != expected_pointer_sha:
+            raise StrategyRecordStoreError(f"staged {label} source pointer preimage mismatch")
+        if (
+            _candidate_binding_value(document, "source_catalog_generation_id")
+            != expected_generation
+        ):
+            raise StrategyRecordStoreError(f"staged {label} source catalog generation mismatch")
+        if _candidate_binding_value(document, "source_catalog_sha256") != expected_catalog_sha:
+            raise StrategyRecordStoreError(f"staged {label} source catalog preimage mismatch")
+        checkpoint_digest = _candidate_binding_value(document, "continuity_checkpoint_digest")
+        if checkpoint_digest != content_sha256(closure):
+            raise StrategyRecordStoreError(f"staged {label} continuity checkpoint digest mismatch")
+    if manual.get("source_manual_manifest_sha256") != closure.get("manual_manifest_sha256"):
+        raise StrategyRecordStoreError("staged manual source manifest preimage mismatch")
+    if manual.get("source_contained_ledger_sha256") != closure.get("ledger_sha256"):
+        raise StrategyRecordStoreError("staged manual source ledger preimage mismatch")
+    provenance = manual.get("ledger_provenance")
+    if not isinstance(provenance, dict) or provenance.get("source_record") != active_id:
+        raise StrategyRecordStoreError("staged ledger provenance source is invalid")
+    if provenance.get("source_ledger_sha256") != closure.get("ledger_sha256"):
+        raise StrategyRecordStoreError("staged ledger provenance preimage mismatch")
+    # A fresh no-trade state cannot carry an order, fill, funding, or broker
+    # authority assertion, even if validate_record can parse the payload.
+    if (
+        manual.get("no_trade_performed") is not True
+        or manual.get("broker_order_trade_authority") is not False
+        or manual.get("v17_mainline_authority") is not False
+        or manual.get("trade_count") != 0
+        or manual.get("order_count") != 0
+        or manual.get("fill_count") != 0
+        or manual.get("applied_local_trades") != []
+        or manual.get("applied_owner_declared_trades") != []
+        or manual.get("funding_events") != []
+    ):
+        raise StrategyRecordStoreError(
+            "staged official valuation contains trade or funding authority"
+        )
+    try:
+        net_external_flow = float(manual.get("net_external_flow"))
+        excluded_external_flow = float(manual.get("excluded_external_flow"))
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise StrategyRecordStoreError(
+            "staged official valuation external-flow fields are invalid"
+        ) from exc
+    if net_external_flow != 0.0 or excluded_external_flow != 0.0:
+        raise StrategyRecordStoreError("staged official valuation contains external flow")
+    for document, label in ((manifest, "manifest"), (manual, "manual")):
+        if _candidate_binding_value(document, "continuity_receipt_id") != continuity_receipt_id:
+            raise StrategyRecordStoreError(f"staged {label} continuity receipt id mismatch")
+        if (
+            _candidate_binding_value(document, "continuity_receipt_sha256")
+            != continuity_receipt_sha
+        ):
+            raise StrategyRecordStoreError(f"staged {label} continuity receipt SHA mismatch")
+    receipt = _find_and_validate_continuity_receipt(
+        catalog=catalog,
+        pointer=pointer,
+        receipt_id=continuity_receipt_id,
+        expected_sha=continuity_receipt_sha,
+        candidate_date=str(strict_record.get("data_date")),
+        source_record=active_id,
+    )
+    return strict_record, manifest, manual, receipt
+
+
+def _record_root_relative(*, project: Path, root: Path, project_relative: Any, label: str) -> str:
     if not isinstance(project_relative, str):
         raise StrategyRecordStoreError(f"{label} is absent")
     _safe_relative(project_relative)
@@ -840,20 +1299,14 @@ def _integer_positions(strict_record: dict[str, Any]) -> dict[str, int]:
             numeric = float(shares)
             integral = int(numeric)
         except (TypeError, ValueError, OverflowError) as exc:
-            raise StrategyRecordStoreError(
-                "cash-flow position quantity is not integral"
-            ) from exc
+            raise StrategyRecordStoreError("cash-flow position quantity is not integral") from exc
         if float(integral) != numeric:
-            raise StrategyRecordStoreError(
-                "cash-flow position quantity is not integral"
-            )
+            raise StrategyRecordStoreError("cash-flow position quantity is not integral")
         result[symbol] = integral
     return result
 
 
-def _load_cash_flow_declaration(
-    value: str, *, project: Path
-) -> tuple[dict[str, Any], str]:
+def _load_cash_flow_declaration(value: str, *, project: Path) -> tuple[dict[str, Any], str]:
     try:
         path_text, expected_sha = value.rsplit("=", 1)
     except ValueError as exc:
@@ -889,9 +1342,7 @@ def _seal_publish_catalog_v3(
         raise StrategyRecordStoreError("catalog v3 seal-publish requires generation_id")
     performance_generation = getattr(args, "performance_generation_id", None)
     if not performance_generation:
-        raise StrategyRecordStoreError(
-            "catalog v3 seal-publish requires performance_generation_id"
-        )
+        raise StrategyRecordStoreError("catalog v3 seal-publish requires performance_generation_id")
     project = Path(args.project_root).resolve(strict=True)
     if project_root_for_record_root(root).resolve(strict=True) != project:
         raise StrategyRecordStoreError("project root does not bind the governed record root")
@@ -909,9 +1360,7 @@ def _seal_publish_catalog_v3(
     manual = load_json(manual_artifact)
     if not isinstance(manual, dict):
         raise StrategyRecordStoreError("manual manifest is not an object")
-    effective_ledger = manual.get("effective_manual_ledger_path") or manual.get(
-        "next_ledger_path"
-    )
+    effective_ledger = manual.get("effective_manual_ledger_path") or manual.get("next_ledger_path")
     if effective_ledger != "ledger_after_manual_switch.parquet":
         raise StrategyRecordStoreError(
             "catalog v3 financial state requires the exact Parquet ledger"
@@ -924,12 +1373,38 @@ def _seal_publish_catalog_v3(
         ) from exc
     if strict_record.get("record") != record_id:
         raise StrategyRecordStoreError("sealed record identity drifted")
-    if (
-        strict_record.get("execution_kind") != "applied_effective_ledger"
-        and strict_record.get("official_valuation") is not True
-    ):
-        raise StrategyRecordStoreError(
-            "new no-trade financial state must be an official valuation"
+    official_no_trade = strict_record.get("execution_kind") != "applied_effective_ledger"
+    if official_no_trade and strict_record.get("official_valuation") is not True:
+        raise StrategyRecordStoreError("new no-trade financial state must be an official valuation")
+
+    expected_catalog_sha = getattr(args, "expected_catalog_sha", None)
+    continuity_receipt_id = getattr(args, "continuity_receipt_id", None)
+    continuity_receipt_sha = getattr(args, "expected_continuity_receipt_sha", None)
+    if official_no_trade:
+        if not isinstance(expected_catalog_sha, str):
+            raise StrategyRecordStoreError(
+                "catalog v3 official no-trade valuation requires expected-catalog-sha"
+            )
+        if not isinstance(continuity_receipt_id, str):
+            raise StrategyRecordStoreError(
+                "catalog v3 official no-trade valuation requires continuity-receipt-id"
+            )
+        if not isinstance(continuity_receipt_sha, str):
+            raise StrategyRecordStoreError(
+                "catalog v3 official no-trade valuation requires expected-continuity-receipt-sha"
+            )
+        _require_v3_checkpoint(
+            root=root,
+            expected_pointer_sha=args.expected_pointer_sha,
+            expected_catalog_sha=expected_catalog_sha,
+        )
+        _find_and_validate_continuity_receipt(
+            catalog=catalog,
+            pointer=pointer,
+            receipt_id=continuity_receipt_id,
+            expected_sha=continuity_receipt_sha,
+            candidate_date=str(strict_record.get("data_date")),
+            source_record=str(strict_record.get("source_record") or ""),
         )
 
     for path_key in ("manifest_path", "manual_manifest_path", "ledger_path", "pnl_path"):
@@ -939,9 +1414,7 @@ def _seal_publish_catalog_v3(
             project_relative=strict_record.get(path_key),
             label=f"new record {path_key}",
         )
-    if PurePosixPath(new_record["ledger_path"]).name != (
-        "ledger_after_manual_switch.parquet"
-    ):
+    if PurePosixPath(new_record["ledger_path"]).name != ("ledger_after_manual_switch.parquet"):
         raise StrategyRecordStoreError("catalog v3 effective ledger is not Parquet")
     for sha_key in (
         "manifest_sha256",
@@ -960,9 +1433,19 @@ def _seal_publish_catalog_v3(
         "symbols": [row["symbol"] for row in strict_record["positions"]],
         "actions": [],
     }
-    records = [
-        new_record if row.get("record_id") == record_id else row for row in records
-    ]
+    late_publication = (
+        getattr(args, "publication_class", None) == LATE_OFFICIAL_VALUATION_PUBLICATION
+    )
+    if late_publication:
+        delay = getattr(args, "_validated_publication_delay", None)
+        if not isinstance(delay, dict):
+            raise StrategyRecordStoreError(
+                "late official valuation publication delay is unvalidated"
+            )
+        if delay.get("actual_sealed_at") != sealed_at:
+            raise StrategyRecordStoreError("late publication sealed timestamp drifted")
+        new_record["publication_delay"] = dict(delay)
+    records = [new_record if row.get("record_id") == record_id else row for row in records]
 
     active_record_id = pointer.get("active_record_id")
     if not isinstance(active_record_id, str):
@@ -1019,9 +1502,7 @@ def _seal_publish_catalog_v3(
         try:
             pre_record = validate_record(root / active_record_id, root, project)
         except DashboardInputError as exc:
-            raise StrategyRecordStoreError(
-                f"cash-flow pre-state validation failed: {exc}"
-            ) from exc
+            raise StrategyRecordStoreError(f"cash-flow pre-state validation failed: {exc}") from exc
         declaration, _ = _load_cash_flow_declaration(flow_refs[0], project=project)
         pre_row = {
             "record_id": active_record_id,
@@ -1078,7 +1559,13 @@ def _seal_publish_catalog_v3(
             "valuation_date": strict_record["data_date"],
             "execution_class": execution_class,
             "publication_class": (
-                "CORRECTION" if explicit_correction else "OFFICIAL_FINANCIAL_STATE"
+                "CORRECTION"
+                if explicit_correction
+                else (
+                    LATE_OFFICIAL_VALUATION_PUBLICATION
+                    if late_publication
+                    else "OFFICIAL_FINANCIAL_STATE"
+                )
             ),
             "storage_state": "ONLINE",
             "manifest_ref": {
@@ -1128,15 +1615,11 @@ def _seal_publish_catalog_v3(
         generated_at=sealed_at,
         identity_path=parent_manifest["identity_declaration"]["path"],
         identity_sha256=parent_manifest["identity_declaration"]["sha256"],
-        parent_performance_manifest_sha256=catalog["performance_history_ref"][
-            "manifest"
-        ]["sha256"],
+        parent_performance_manifest_sha256=catalog["performance_history_ref"]["manifest"]["sha256"],
         source_pointer_sha256=args.expected_pointer_sha,
         source_catalog_generation_id=pointer["generation_id"],
         source_catalog_sha256=pointer["catalog_sha256"],
-        dashboard_projection_sha256=parent_manifest[
-            "source_dashboard_projection_sha256"
-        ],
+        dashboard_projection_sha256=parent_manifest["source_dashboard_projection_sha256"],
         normalized_projection_semantic_sha256=parent_manifest[
             "normalized_projection_semantic_sha256"
         ],
@@ -1160,8 +1643,18 @@ def _seal_publish_catalog_v3(
         manifest_bytes=len(manifest_raw),
     )
     load_performance_history(root, performance_ref)
-    if _pointer_sha(root) != args.expected_pointer_sha:
-        raise StrategyRecordStoreError("source pointer drifted before catalog v3 CAS")
+    # The final checkpoint must be independently reloaded after all expensive
+    # candidate/performance work.  A pointer-only check is insufficient because
+    # the selected catalog can be replaced while the pointer remains unchanged.
+    _require_v3_checkpoint(
+        root=root,
+        expected_pointer_sha=args.expected_pointer_sha,
+        expected_catalog_sha=(
+            expected_catalog_sha if official_no_trade else pointer.get("catalog_sha256")
+        ),
+        continuity_receipt_id=(continuity_receipt_id if official_no_trade else None),
+        continuity_receipt_sha=(continuity_receipt_sha if official_no_trade else None),
+    )
     result = publish_catalog(
         root,
         expected_pointer_sha256=args.expected_pointer_sha,
@@ -1178,7 +1671,7 @@ def _seal_publish_catalog_v3(
     readback = load_registered_catalog(root)
     if readback is None or readback != (result["pointer"], result["catalog"]):
         raise StrategyRecordStoreError("catalog v3 seal-publish readback mismatch")
-    return {
+    output = {
         **result,
         "performance_generation_id": performance_generation,
         "performance_manifest_sha256": manifest_sha,
@@ -1186,15 +1679,16 @@ def _seal_publish_catalog_v3(
         "performance_owner_declaration_sha256": owner_sha,
         "performance_contract_ready": True,
     }
+    if late_publication:
+        output["publication_delay"] = dict(new_record["publication_delay"])
+    return output
 
 
 def command_seal_publish(args: argparse.Namespace) -> dict[str, Any]:
     root = Path(args.record_root).resolve(strict=True)
     loaded = load_registered_catalog(root)
     if loaded is None:
-        raise StrategyRecordStoreError(
-            "seal-publish requires a registered catalog"
-        )
+        raise StrategyRecordStoreError("seal-publish requires a registered catalog")
     pointer, catalog = loaded
     observed_pointer_sha = _pointer_sha(root)
     if observed_pointer_sha != args.expected_pointer_sha:
@@ -1202,46 +1696,209 @@ def command_seal_publish(args: argparse.Namespace) -> dict[str, Any]:
             StrategyRecordCASMismatch,
         )
 
-        raise StrategyRecordCASMismatch(
-            args.expected_pointer_sha, observed_pointer_sha
-        )
+        raise StrategyRecordCASMismatch(args.expected_pointer_sha, observed_pointer_sha)
     record_id = _strict_run_id(args.record_id)
     stage = root / STORE_DIRECTORY / "staging" / record_id
     target = root / record_id
     adopting_existing = not stage.exists() and target.exists()
-    sealed_at = _timestamp(args.published_at)
+    publication_class = getattr(args, "publication_class", None)
+    if publication_class not in (None, LATE_OFFICIAL_VALUATION_PUBLICATION):
+        raise StrategyRecordStoreError("seal-publish publication class is unsupported")
+    late_publication = publication_class == LATE_OFFICIAL_VALUATION_PUBLICATION
+    if late_publication:
+        if getattr(args, "published_at", None) is not None:
+            raise StrategyRecordStoreError(
+                "late official valuation rejects caller-supplied published_at"
+            )
+        manager_now = getattr(args, "_manager_now_utc", None)
+        if manager_now is None:
+            manager_now = _manager_utc_now()
+        if not isinstance(manager_now, datetime) or manager_now.tzinfo is None:
+            raise StrategyRecordStoreError("manager publication clock is invalid")
+        sealed_at = _utc_timestamp(manager_now)
+        if catalog.get("schema_id") != CATALOG_SCHEMA_V3:
+            raise StrategyRecordStoreError("late official valuation requires catalog v3")
+        if not stage.exists() or adopting_existing:
+            raise StrategyRecordStoreError(
+                "late official valuation requires a fresh staging record"
+            )
+        _validate_late_freshness(
+            root=root,
+            catalog=catalog,
+            stage=stage,
+            target=target,
+            record_id=record_id,
+            generation_id=getattr(args, "generation_id", None),
+            performance_generation_id=getattr(args, "performance_generation_id", None),
+        )
+    else:
+        sealed_at = _timestamp(args.published_at)
     source_candidate = stage if stage.exists() else target
+    catalog_v3 = catalog.get("schema_id") == CATALOG_SCHEMA_V3
+    official_no_trade_candidate = False
+    if catalog_v3 and stage.exists():
+        # Inspect only the candidate's declared execution class before deciding
+        # which publication contract applies.  Applied-trade publications keep
+        # their existing semantics; official no-trade valuations must prove the
+        # stronger continuity contract before stage adoption.
+        _regular_directory(stage, label="staging record")
+        manual_path = stage / "manual_execution_manifest.json"
+        try:
+            manual_metadata = os.lstat(manual_path)
+        except OSError as exc:
+            raise StrategyRecordStoreError(
+                "staged manual manifest is unavailable or unsafe"
+            ) from exc
+        if not stat.S_ISREG(manual_metadata.st_mode) or stat.S_ISLNK(manual_metadata.st_mode):
+            raise StrategyRecordStoreError("staged manual manifest is unavailable or unsafe")
+        try:
+            candidate_manual = json.loads(manual_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise StrategyRecordStoreError(
+                "staged manual manifest is unavailable or invalid"
+            ) from exc
+        official_no_trade_candidate = (
+            isinstance(candidate_manual, dict)
+            and candidate_manual.get("official_valuation") is True
+        )
+        if official_no_trade_candidate:
+            if target.exists():
+                raise StrategyRecordConflict(
+                    "official no-trade valuation requires a fresh target record"
+                )
+            expected_catalog_sha = getattr(args, "expected_catalog_sha", None)
+            continuity_receipt_id = getattr(args, "continuity_receipt_id", None)
+            continuity_receipt_sha = getattr(args, "expected_continuity_receipt_sha", None)
+            if not isinstance(expected_catalog_sha, str):
+                raise StrategyRecordStoreError(
+                    "catalog v3 official no-trade valuation requires expected-catalog-sha"
+                )
+            if not isinstance(continuity_receipt_id, str):
+                raise StrategyRecordStoreError(
+                    "catalog v3 official no-trade valuation requires continuity-receipt-id"
+                )
+            if not isinstance(continuity_receipt_sha, str):
+                raise StrategyRecordStoreError(
+                    "catalog v3 official no-trade valuation requires expected-continuity-receipt-sha"
+                )
+            # This reload is deliberately before inventory adoption: a bad
+            # pointer/catalog/receipt leaves the staging directory untouched.
+            checkpoint_pointer, checkpoint_catalog = _require_v3_checkpoint(
+                root=root,
+                expected_pointer_sha=args.expected_pointer_sha,
+                expected_catalog_sha=expected_catalog_sha,
+            )
+            if checkpoint_pointer != pointer or checkpoint_catalog != catalog:
+                raise StrategyRecordStoreError(
+                    "source pointer/catalog changed before stage validation"
+                )
+            if not getattr(args, "project_root", None):
+                raise StrategyRecordStoreError(
+                    "catalog v3 official no-trade valuation requires project-root"
+                )
+            stage_validation = _validate_v3_stage_candidate(
+                root=root,
+                project=Path(args.project_root).resolve(strict=True),
+                stage=stage,
+                record_id=record_id,
+                pointer=pointer,
+                catalog=catalog,
+                expected_catalog_sha=expected_catalog_sha,
+                continuity_receipt_id=continuity_receipt_id,
+                continuity_receipt_sha=continuity_receipt_sha,
+            )
+            if late_publication:
+                stage_strict, stage_manifest, stage_manual, stage_receipt = stage_validation
+                args._validated_publication_delay = _validate_late_publication(
+                    args=args,
+                    record_id=record_id,
+                    sealed_at=sealed_at,
+                    strict_record=stage_strict,
+                    manifest=stage_manifest,
+                    manual=stage_manual,
+                    receipt=stage_receipt,
+                )
+        elif late_publication:
+            raise StrategyRecordStoreError(
+                "late official valuation must be an official no-trade candidate"
+            )
     if catalog.get("schema_id") == CATALOG_SCHEMA_V3:
         _reject_disabled_ledger_candidates(source_candidate)
     if stage.exists():
-        staged_inventory = build_inventory(
-            stage, enforce_new_record_budget=True
-        )
+        staged_inventory = build_inventory(stage, enforce_new_record_budget=True)
     elif target.exists():
-        staged_inventory = build_inventory(
-            target, enforce_new_record_budget=True
-        )
+        staged_inventory = build_inventory(target, enforce_new_record_budget=True)
     else:
         raise StrategyRecordStoreError("staging record is absent")
     if target.exists():
-        target_inventory = build_inventory(
-            target, enforce_new_record_budget=True
-        )
+        target_inventory = build_inventory(target, enforce_new_record_budget=True)
         if not _same_inventory(staged_inventory, target_inventory):
-            raise StrategyRecordConflict(
-                "record identity exists with different bytes"
-            )
+            raise StrategyRecordConflict("record identity exists with different bytes")
     else:
         if os.lstat(stage).st_dev != os.lstat(root).st_dev:
-            raise StrategyRecordStoreError(
-                "staging and records are not on one filesystem"
-            )
+            raise StrategyRecordStoreError("staging and records are not on one filesystem")
         os.replace(stage, target)
-        target_inventory = build_inventory(
-            target, enforce_new_record_budget=True
-        )
+        target_inventory = build_inventory(target, enforce_new_record_budget=True)
         if not _same_inventory(staged_inventory, target_inventory):
             raise StrategyRecordStoreError("sealed record readback mismatch")
+        if official_no_trade_candidate:
+            try:
+                from scripts.cn_dashboard_common import (
+                    DashboardInputError,
+                    load_json,
+                    stable_read,
+                    validate_record,
+                )
+
+                final_record = validate_record(
+                    target, root, Path(args.project_root).resolve(strict=True)
+                )
+            except (DashboardInputError, OSError, ValueError) as exc:
+                raise StrategyRecordStoreError(
+                    f"adopted official valuation failed final validation: {exc}"
+                ) from exc
+            if any(
+                str(final_record.get(key) or "").startswith(f"{STORE_DIRECTORY}/staging/")
+                for key in (
+                    "manifest_path",
+                    "manual_manifest_path",
+                    "ledger_path",
+                    "pnl_path",
+                )
+            ):
+                raise StrategyRecordStoreError(
+                    "adopted official valuation retains staging source refs"
+                )
+            if late_publication:
+                final_manifest = load_json(
+                    stable_read(target / "manifest.json", Path(args.project_root))
+                )
+                final_manual = load_json(
+                    stable_read(target / "manual_execution_manifest.json", Path(args.project_root))
+                )
+                if not isinstance(final_manifest, dict) or not isinstance(final_manual, dict):
+                    raise StrategyRecordStoreError(
+                        "adopted late publication manifest/manual is invalid"
+                    )
+                final_receipt = _find_and_validate_continuity_receipt(
+                    catalog=catalog,
+                    pointer=pointer,
+                    receipt_id=getattr(args, "continuity_receipt_id", None),
+                    expected_sha=getattr(args, "expected_continuity_receipt_sha", None),
+                    candidate_date=str(final_record.get("data_date")),
+                    source_record=str(final_record.get("source_record") or ""),
+                )
+                final_delay = _validate_late_publication(
+                    args=args,
+                    record_id=record_id,
+                    sealed_at=sealed_at,
+                    strict_record=final_record,
+                    manifest=final_manifest,
+                    manual=final_manual,
+                    receipt=final_receipt,
+                )
+                if final_delay != getattr(args, "_validated_publication_delay", None):
+                    raise StrategyRecordStoreError("adopted late publication metadata drifted")
     new_record = {
         "record_id": record_id,
         "relative_path": record_id,
@@ -1251,15 +1908,12 @@ def command_seal_publish(args: argparse.Namespace) -> dict[str, Any]:
         **target_inventory,
     }
     records = [dict(record) for record in catalog["records"]]
-    matches = [
-        record for record in records if record["record_id"] == record_id
-    ]
+    matches = [record for record in records if record["record_id"] == record_id]
     if matches:
         if not _same_inventory(matches[0], new_record):
             raise StrategyRecordConflict("catalog record identity collision")
         if pointer.get("active_record_id") == record_id and (
-            catalog.get("schema_id") == CATALOG_SCHEMA_V3
-            or not getattr(args, "project_root", None)
+            catalog.get("schema_id") == CATALOG_SCHEMA_V3 or not getattr(args, "project_root", None)
         ):
             return {
                 "idempotent": True,
@@ -1267,10 +1921,7 @@ def command_seal_publish(args: argparse.Namespace) -> dict[str, Any]:
                 "catalog": catalog,
                 "pointer_sha256": observed_pointer_sha,
             }
-        records = [
-            new_record if record["record_id"] == record_id else record
-            for record in records
-        ]
+        records = [new_record if record["record_id"] == record_id else record for record in records]
     else:
         records.append(new_record)
     if catalog.get("schema_id") == CATALOG_SCHEMA_V3:
@@ -1297,27 +1948,18 @@ def command_seal_publish(args: argparse.Namespace) -> dict[str, Any]:
                 validate_record,
             )
         except ImportError as exc:
-            raise StrategyRecordStoreError(
-                "Dashboard validation is unavailable"
-            ) from exc
+            raise StrategyRecordStoreError("Dashboard validation is unavailable") from exc
         project_root = Path(args.project_root)
-        archive_aware = any(
-            row.get("state") == "ARCHIVED" for row in records
-        )
+        archive_aware = any(row.get("state") == "ARCHIVED" for row in records)
         if archive_aware:
             existing_projection = catalog.get("dashboard_projection")
             if not isinstance(existing_projection, dict):
                 raise StrategyRecordStoreError(
                     "archive-aware publication requires Dashboard projection"
                 )
-            dashboard_projection = json.loads(
-                json.dumps(existing_projection, ensure_ascii=False)
-            )
+            dashboard_projection = json.loads(json.dumps(existing_projection, ensure_ascii=False))
             current_row = validate_record(target, root, project_root)
-            valid_by_id = {
-                row["record"]: row
-                for row in dashboard_projection["valid_records"]
-            }
+            valid_by_id = {row["record"]: row for row in dashboard_projection["valid_records"]}
             valid_by_id[record_id] = current_row
             dashboard_projection["valid_records"] = [
                 valid_by_id[key] for key in sorted(valid_by_id)
@@ -1332,8 +1974,7 @@ def command_seal_publish(args: argparse.Namespace) -> dict[str, Any]:
                 record_id,
             )
             historical_by_id = {
-                row["record"]: row
-                for row in dashboard_projection["historical_records"]
+                row["record"]: row for row in dashboard_projection["historical_records"]
             }
             historical_rejected = [
                 value
@@ -1350,24 +1991,16 @@ def command_seal_publish(args: argparse.Namespace) -> dict[str, Any]:
             except DashboardInputError as exc:
                 historical_by_id.pop(record_id, None)
                 historical_rejected.append(f"{record_id}:{exc}")
-            historical = [
-                historical_by_id[key] for key in sorted(historical_by_id)
-            ]
+            historical = [historical_by_id[key] for key in sorted(historical_by_id)]
             validate_historical_performance_sequence(historical)
             dashboard_projection["historical_records"] = historical
-            dashboard_projection["historical_rejected"] = sorted(
-                historical_rejected
-            )
+            dashboard_projection["historical_rejected"] = sorted(historical_rejected)
         else:
-            valid, rejected, latest_seen = scan_valid_records(
-                root, project_root
-            )
-            historical, historical_rejected = (
-                scan_historical_performance_records(
-                    record_root=root,
-                    project_root=project_root,
-                    strict_records=valid,
-                )
+            valid, rejected, latest_seen = scan_valid_records(root, project_root)
+            historical, historical_rejected = scan_historical_performance_records(
+                record_root=root,
+                project_root=project_root,
+                strict_records=valid,
             )
             dashboard_projection = {
                 "valid_records": valid,
@@ -1378,19 +2011,14 @@ def command_seal_publish(args: argparse.Namespace) -> dict[str, Any]:
             }
         _normalize_dashboard_projection_source_refs(dashboard_projection)
         if adopting_existing:
-            valid_by_id = {
-                row["record"]: row
-                for row in dashboard_projection["valid_records"]
-            }
+            valid_by_id = {row["record"]: row for row in dashboard_projection["valid_records"]}
             registered_ids = {row["record_id"] for row in records}
             source_id = valid_by_id.get(record_id, {}).get("source_record")
             visited = {record_id}
             adopted: list[dict[str, Any]] = []
             while source_id and source_id not in registered_ids:
                 if source_id in visited:
-                    raise StrategyRecordStoreError(
-                        "existing record source chain contains a cycle"
-                    )
+                    raise StrategyRecordStoreError("existing record source chain contains a cycle")
                 visited.add(source_id)
                 source_row = valid_by_id.get(source_id)
                 if source_row is None:
@@ -1398,9 +2026,7 @@ def command_seal_publish(args: argparse.Namespace) -> dict[str, Any]:
                         "existing record source chain is not Dashboard-valid"
                     )
                 source_path = root / _strict_run_id(source_id)
-                source_inventory = build_inventory(
-                    source_path, enforce_new_record_budget=True
-                )
+                source_inventory = build_inventory(source_path, enforce_new_record_budget=True)
                 adopted.append(
                     {
                         "record_id": source_id,
@@ -1414,9 +2040,7 @@ def command_seal_publish(args: argparse.Namespace) -> dict[str, Any]:
                 registered_ids.add(source_id)
                 source_id = source_row.get("source_record")
             if adopted:
-                records = [
-                    row for row in records if row["record_id"] != record_id
-                ]
+                records = [row for row in records if row["record_id"] != record_id]
                 records.extend(reversed(adopted))
                 records.append(new_record)
         _attach_dashboard_closure(
@@ -1425,18 +2049,13 @@ def command_seal_publish(args: argparse.Namespace) -> dict[str, Any]:
             root=root,
             project_root=project_root,
         )
-        if record_id not in {
-            row.get("record") for row in dashboard_projection["valid_records"]
-        }:
+        if record_id not in {row.get("record") for row in dashboard_projection["valid_records"]}:
             raise StrategyRecordStoreError(
                 "sealed record did not pass Dashboard current-record validation"
             )
     previous_record_id = pointer.get("active_record_id")
     if adopting_existing and dashboard_projection is not None:
-        valid_by_id = {
-            row["record"]: row
-            for row in dashboard_projection["valid_records"]
-        }
+        valid_by_id = {row["record"]: row for row in dashboard_projection["valid_records"]}
         direct_source = valid_by_id[record_id].get("source_record")
         if direct_source in {row["record_id"] for row in records}:
             previous_record_id = direct_source
@@ -1449,26 +2068,19 @@ def command_seal_publish(args: argparse.Namespace) -> dict[str, Any]:
     history_registry_ref = None
     if catalog_schema == CATALOG_SCHEMA_V2:
         if not args.generation_id:
-            raise StrategyRecordStoreError(
-                "archive-aware seal-publish requires generation_id"
-            )
+            raise StrategyRecordStoreError("archive-aware seal-publish requires generation_id")
         registry_output = (
-            root
-            / STORE_DIRECTORY
-            / "history_integrity"
-            / f"{args.generation_id}.v2.json"
+            root / STORE_DIRECTORY / "history_integrity" / f"{args.generation_id}.v2.json"
         )
-        history_registry, history_registry_ref = (
-            _build_candidate_history_registry(
-                project=Path(args.project_root),
-                root=root,
-                txid=args.generation_id,
-                generation_id=args.generation_id,
-                projection=dashboard_projection,
-                transformed=records,
-                output=str(registry_output),
-                generated_at=sealed_at,
-            )
+        history_registry, history_registry_ref = _build_candidate_history_registry(
+            project=Path(args.project_root),
+            root=root,
+            txid=args.generation_id,
+            generation_id=args.generation_id,
+            projection=dashboard_projection,
+            transformed=records,
+            output=str(registry_output),
+            generated_at=sealed_at,
         )
     return publish_catalog(
         root,
@@ -1490,9 +2102,7 @@ def command_no_action(args: argparse.Namespace) -> dict[str, Any]:
     root = Path(args.record_root)
     loaded = load_registered_catalog(root)
     if loaded is None:
-        raise StrategyRecordStoreError(
-            "no-action requires a registered catalog"
-        )
+        raise StrategyRecordStoreError("no-action requires a registered catalog")
     pointer, _ = loaded
     observed_pointer_sha = _pointer_sha(root)
     if observed_pointer_sha != args.expected_pointer_sha:
@@ -1500,15 +2110,9 @@ def command_no_action(args: argparse.Namespace) -> dict[str, Any]:
             StrategyRecordCASMismatch,
         )
 
-        raise StrategyRecordCASMismatch(
-            args.expected_pointer_sha, observed_pointer_sha
-        )
-    if not pointer.get("active_record_id") or not pointer.get(
-        "active_closure"
-    ):
-        raise StrategyRecordStoreError(
-            "no-action requires an active checkpoint"
-        )
+        raise StrategyRecordCASMismatch(args.expected_pointer_sha, observed_pointer_sha)
+    if not pointer.get("active_record_id") or not pointer.get("active_closure"):
+        raise StrategyRecordStoreError("no-action requires an active checkpoint")
     receipt = {
         "schema_id": "myquant.strategy_record_no_action_receipt.v1",
         "receipt_id": _record_id(args.receipt_id),
@@ -1553,9 +2157,7 @@ def command_verify(args: argparse.Namespace) -> dict[str, Any]:
             continue
         if state != "ONLINE":
             continue
-        observed = build_inventory(
-            root / record["relative_path"], enforce_new_record_budget=False
-        )
+        observed = build_inventory(root / record["relative_path"], enforce_new_record_budget=False)
         if not _same_inventory(observed, record):
             raise StrategyRecordStoreError(
                 f"registered record inventory mismatch: {record['record_id']}"
@@ -1579,13 +2181,23 @@ def command_verify(args: argparse.Namespace) -> dict[str, Any]:
         result["performance_generation_id"] = catalog["performance_history_ref"][
             "performance_generation_id"
         ]
-        result["performance_manifest_sha256"] = catalog["performance_history_ref"][
-            "manifest"
-        ]["sha256"]
+        result["performance_manifest_sha256"] = catalog["performance_history_ref"]["manifest"][
+            "sha256"
+        ]
         result["performance_series_sha256"] = performance["series_sha256"]
-        result["performance_owner_declaration_sha256"] = catalog[
-            "performance_history_ref"
-        ]["owner_declaration"]["sha256"]
+        result["performance_owner_declaration_sha256"] = catalog["performance_history_ref"][
+            "owner_declaration"
+        ]["sha256"]
+        late_publications = sum(
+            1
+            for row in catalog["records"]
+            if isinstance(row, dict)
+            and isinstance(row.get("publication_delay"), dict)
+            and row["publication_delay"].get("publication_class")
+            == LATE_OFFICIAL_VALUATION_PUBLICATION
+        )
+        if late_publications:
+            result["late_official_valuation_publications"] = late_publications
     return result
 
 
@@ -1619,9 +2231,7 @@ def command_reselect_catalog(args: argparse.Namespace) -> dict[str, Any]:
         "catalog_path": result["pointer"]["catalog_path"],
         "catalog_sha256": result["pointer"]["catalog_sha256"],
         "catalog_schema": result["catalog"]["schema_id"],
-        "performance_contract_ready": (
-            result["catalog"].get("performance_contract_ready") is True
-        ),
+        "performance_contract_ready": (result["catalog"].get("performance_contract_ready") is True),
         "owner_approved_by": args.owner_approved_by,
         "approval_reason": reason,
         "v17_mainline_authority": False,
@@ -1779,9 +2389,7 @@ def command_prepare_performance_migration(args: argparse.Namespace) -> dict[str,
         )
     lineage = build_lineage_index(catalog)
     validate_lineage_index(lineage, active_record_id=pointer.get("active_record_id"))
-    series_store_path = (
-        f"_record_store/performance/{performance_generation}/series.parquet"
-    )
+    series_store_path = f"_record_store/performance/{performance_generation}/series.parquet"
     owner_store_path = (
         f"_record_store/performance/{performance_generation}/owner_declaration.v1.json"
     )
@@ -1861,18 +2469,12 @@ def command_prepare_performance_migration(args: argparse.Namespace) -> dict[str,
             "date_range": [rows[0]["valuation_date"], rows[-1]["valuation_date"]],
             "first_record_id": rows[0]["record_id"],
             "last_record_id": rows[-1]["record_id"],
-            "first_raw_nav_cny": decimal_text(
-                rows[0]["raw_nav_cny"], quantum=MONEY_QUANTUM
-            ),
-            "last_raw_nav_cny": decimal_text(
-                rows[-1]["raw_nav_cny"], quantum=MONEY_QUANTUM
-            ),
+            "first_raw_nav_cny": decimal_text(rows[0]["raw_nav_cny"], quantum=MONEY_QUANTUM),
+            "last_raw_nav_cny": decimal_text(rows[-1]["raw_nav_cny"], quantum=MONEY_QUANTUM),
             "final_net_external_flow_cny": decimal_text(
                 rows[-1]["excluded_external_flow_cny"], quantum=MONEY_QUANTUM
             ),
-            "cumulative_return": decimal_text(
-                rows[-1]["cumulative_return"], quantum=UNIT_QUANTUM
-            ),
+            "cumulative_return": decimal_text(rows[-1]["cumulative_return"], quantum=UNIT_QUANTUM),
             "max_drawdown": decimal_text(
                 min(row["drawdown"] for row in rows), quantum=UNIT_QUANTUM
             ),
@@ -1896,9 +2498,7 @@ def command_prepare_performance_migration(args: argparse.Namespace) -> dict[str,
     )
     receipt_raw = canonical_json_bytes(receipt)
     receipt_path = candidate_dir / "candidate_receipt.v1.json"
-    receipt_sha = immutable_write(
-        receipt_path, receipt_raw, max_bytes=MAX_PERFORMANCE_JSON_BYTES
-    )
+    receipt_sha = immutable_write(receipt_path, receipt_raw, max_bytes=MAX_PERFORMANCE_JSON_BYTES)
     if _pointer_sha(root) != observed_pointer_sha:
         raise StrategyRecordStoreError("source pointer drifted during migration prepare")
     return {
@@ -2016,8 +2616,7 @@ def command_publish_performance_migration(args: argparse.Namespace) -> dict[str,
         or receipt.get("source_catalog_sha256") != pointer.get("catalog_sha256")
         or receipt.get("candidate_manifest_sha256") != args.candidate_manifest_sha
         or receipt.get("series_sha256") != args.series_sha
-        or receipt.get("prospective_owner_declaration_sha256")
-        != args.owner_declaration_sha
+        or receipt.get("prospective_owner_declaration_sha256") != args.owner_declaration_sha
         or receipt.get("lineage_document_sha256") != args.lineage_document_sha
         or receipt.get("prospective_owner_declaration") != owner
     ):
@@ -2030,8 +2629,7 @@ def command_publish_performance_migration(args: argparse.Namespace) -> dict[str,
         lineage_document.get("schema_id") != "myquant.strategy_record_lineage_index.v1"
         or lineage_document.get("active_record_id") != pointer.get("active_record_id")
         or lineage_document.get("previous_record_id") != pointer.get("previous_record_id")
-        or lineage_document.get("lineage_index_sha256")
-        != _sha(canonical_json_bytes(lineage))
+        or lineage_document.get("lineage_index_sha256") != _sha(canonical_json_bytes(lineage))
     ):
         raise StrategyRecordStoreError("performance lineage closure mismatch")
     validate_lineage_index(lineage, active_record_id=pointer.get("active_record_id"))
@@ -2047,9 +2645,8 @@ def command_publish_performance_migration(args: argparse.Namespace) -> dict[str,
         expected_series=performance_ref["series"],
     )
     rows = read_performance_parquet(candidate_dir / "series.parquet")
-    if (
-        len(rows) != receipt.get("row_count")
-        or rows[-1]["record_id"] != pointer.get("active_record_id")
+    if len(rows) != receipt.get("row_count") or rows[-1]["record_id"] != pointer.get(
+        "active_record_id"
     ):
         raise StrategyRecordStoreError("performance candidate active-row mismatch")
     prefix = root / STORE_DIRECTORY / "performance" / str(performance_generation)
@@ -2122,15 +2719,12 @@ def _selected_before(
         record_id = record.get("record_id")
         ordering = (
             record_id
-            if isinstance(record_id, str)
-            and _STRICT_RUN_ID.fullmatch(record_id)
+            if isinstance(record_id, str) and _STRICT_RUN_ID.fullmatch(record_id)
             else record.get("sealed_at")
         )
         if not isinstance(ordering, str):
             raise StrategyRecordStoreError("record ordering field is invalid")
-        if ordering < before and (
-            from_record_id is None or ordering >= from_record_id
-        ):
+        if ordering < before and (from_record_id is None or ordering >= from_record_id):
             result.append(record)
     return result
 
@@ -2151,15 +2745,11 @@ def _tar_members_safe(
         names.add(name)
         folded.add(name.casefold())
         if not (member.isfile() or member.isdir()):
-            raise StrategyRecordStoreError(
-                "malicious archive member type rejected"
-            )
+            raise StrategyRecordStoreError("malicious archive member type rejected")
         if member.isfile():
             expanded += member.size
             if expanded > ARCHIVE_MAX_EXPANDED_BYTES:
-                raise StrategyRecordStoreError(
-                    "archive expanded-byte budget exceeded"
-                )
+                raise StrategyRecordStoreError("archive expanded-byte budget exceeded")
     return members, expanded
 
 
@@ -2174,20 +2764,14 @@ def _restore_tar(tar_path: Path, restore_root: Path) -> None:
             destination.parent.mkdir(parents=True, exist_ok=True)
             source = archive.extractfile(member)
             if source is None:
-                raise StrategyRecordStoreError(
-                    "archive file member is unreadable"
-                )
-            descriptor = os.open(
-                destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
-            )
+                raise StrategyRecordStoreError("archive file member is unreadable")
+            descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             try:
                 remaining = member.size
                 while remaining:
                     chunk = source.read(min(1024 * 1024, remaining))
                     if not chunk:
-                        raise StrategyRecordStoreError(
-                            "archive member is truncated"
-                        )
+                        raise StrategyRecordStoreError("archive member is truncated")
                     os.write(descriptor, chunk)
                     remaining -= len(chunk)
             finally:
@@ -2197,9 +2781,7 @@ def _restore_tar(tar_path: Path, restore_root: Path) -> None:
 def _archive_filter(info: tarfile.TarInfo) -> tarfile.TarInfo:
     _safe_relative(info.name.rstrip("/"))
     if not (info.isfile() or info.isdir()):
-        raise StrategyRecordStoreError(
-            "source contains an unsafe archive member type"
-        )
+        raise StrategyRecordStoreError("source contains an unsafe archive member type")
     return info
 
 
@@ -2207,13 +2789,9 @@ def command_archive_rehearsal(args: argparse.Namespace) -> dict[str, Any]:
     root = Path(args.record_root)
     loaded = load_registered_catalog(root)
     if loaded is None:
-        raise StrategyRecordStoreError(
-            "archive rehearsal requires a registered catalog"
-        )
+        raise StrategyRecordStoreError("archive rehearsal requires a registered catalog")
     _, catalog = loaded
-    selected = _selected_before(
-        catalog, args.before, getattr(args, "from_record_id", None)
-    )
+    selected = _selected_before(catalog, args.before, getattr(args, "from_record_id", None))
     if not selected:
         raise StrategyRecordStoreError("archive rehearsal selection is empty")
     for record in selected:
@@ -2222,38 +2800,26 @@ def command_archive_rehearsal(args: argparse.Namespace) -> dict[str, Any]:
             enforce_new_record_budget=False,
         )
         if not _same_inventory(observed, record):
-            raise StrategyRecordStoreError(
-                f"source inventory mismatch: {record['record_id']}"
-            )
+            raise StrategyRecordStoreError(f"source inventory mismatch: {record['record_id']}")
     output_root = Path(args.output_root)
     output_root.mkdir(parents=True, exist_ok=True)
     _regular_directory(output_root, label="archive output root")
     logical_bytes = sum(int(record["total_bytes"]) for record in selected)
     required_free = 2 * logical_bytes + ARCHIVE_FREE_SPACE_RESERVE_BYTES
     if shutil.disk_usage(output_root).free < required_free:
-        raise StrategyRecordStoreError(
-            "insufficient free space for archive rehearsal"
-        )
+        raise StrategyRecordStoreError("insufficient free space for archive rehearsal")
     zstd = shutil.which("zstd")
     if zstd is None:
         raise StrategyRecordStoreError("zstd executable is unavailable")
-    safe_before = (
-        re.sub(r"[^A-Za-z0-9._-]+", "-", args.before).strip("-") or "cutoff"
-    )
-    archive_path = (
-        output_root / f"strategy-records-before-{safe_before}.tar.zst"
-    )
+    safe_before = re.sub(r"[^A-Za-z0-9._-]+", "-", args.before).strip("-") or "cutoff"
+    archive_path = output_root / f"strategy-records-before-{safe_before}.tar.zst"
     if archive_path.exists():
         raise StrategyRecordConflict("archive output already exists")
-    with tempfile.TemporaryDirectory(
-        prefix="strategy-record-archive-", dir=output_root
-    ) as temp:
+    with tempfile.TemporaryDirectory(prefix="strategy-record-archive-", dir=output_root) as temp:
         temp_root = Path(temp)
         tar_path = temp_root / "records.tar"
         staged_archive = temp_root / "records.tar.zst"
-        with tarfile.open(
-            tar_path, mode="w", format=tarfile.PAX_FORMAT
-        ) as archive:
+        with tarfile.open(tar_path, mode="w", format=tarfile.PAX_FORMAT) as archive:
             for record in selected:
                 archive.add(
                     root / record["relative_path"],
@@ -2288,15 +2854,11 @@ def command_archive_rehearsal(args: argparse.Namespace) -> dict[str, Any]:
             )
             if not _same_inventory(restored, record):
                 record_id = record["record_id"]
-                raise StrategyRecordStoreError(
-                    f"archive restore verification failed: {record_id}"
-                )
+                raise StrategyRecordStoreError(f"archive restore verification failed: {record_id}")
         try:
             os.link(staged_archive, archive_path, follow_symlinks=False)
         except FileExistsError:
-            raise StrategyRecordConflict(
-                "archive output already exists"
-            ) from None
+            raise StrategyRecordConflict("archive output already exists") from None
     archive_raw = archive_path.read_bytes()
     return {
         "valid": True,
@@ -2400,8 +2962,7 @@ def command_archive_finalize(args: argparse.Namespace) -> dict[str, Any]:
         raise StrategyRecordStoreError("archive_month is invalid")
     rehearsal_receipt_path = Path(args.rehearsal_receipt_json).resolve(strict=True)
     rehearsal_base = (
-        project
-        / "results/strategy_record_archives/CN/aggressive_tech_manufacturing"
+        project / "results/strategy_record_archives/CN/aggressive_tech_manufacturing"
     ).resolve(strict=True)
     if (
         rehearsal_base not in rehearsal_receipt_path.parents
@@ -2409,10 +2970,7 @@ def command_archive_finalize(args: argparse.Namespace) -> dict[str, Any]:
     ):
         raise StrategyRecordStoreError("rehearsal receipt is outside the allowlisted root")
     rehearsal = _load_json_object(rehearsal_receipt_path, label="rehearsal receipt")
-    if (
-        rehearsal.get("ok") is not True
-        and rehearsal.get("valid") is not True
-    ) or (
+    if (rehearsal.get("ok") is not True and rehearsal.get("valid") is not True) or (
         rehearsal.get("source_records_preserved") is not True
         or rehearsal.get("moved") is not False
         or rehearsal.get("deleted") is not False
@@ -2436,18 +2994,14 @@ def command_archive_finalize(args: argparse.Namespace) -> dict[str, Any]:
             or not str(record_id).startswith(expected_prefix)
         ):
             raise StrategyRecordStoreError("rehearsal selection is not an ONLINE calendar month")
-        observed = build_inventory(
-            root / record["relative_path"], enforce_new_record_budget=False
-        )
+        observed = build_inventory(root / record["relative_path"], enforce_new_record_budget=False)
         if not _same_inventory(observed, record):
             raise StrategyRecordStoreError(f"source inventory mismatch: {record_id}")
         selected.append(dict(record))
     source_archive = (project / str(rehearsal.get("archive_path"))).resolve(strict=True)
     if source_archive.parent != rehearsal_receipt_path.parent:
         raise StrategyRecordStoreError("rehearsal archive is outside the receipt namespace")
-    rehearsal_sha, rehearsal_bytes = regular_file_sha256(
-        source_archive, label="rehearsal archive"
-    )
+    rehearsal_sha, rehearsal_bytes = regular_file_sha256(source_archive, label="rehearsal archive")
     if (
         rehearsal.get("archive_sha256") != rehearsal_sha
         or rehearsal.get("archive_bytes") != rehearsal_bytes
@@ -2478,33 +3032,24 @@ def command_archive_finalize(args: argparse.Namespace) -> dict[str, Any]:
                 path = ref.get("path") if isinstance(ref, dict) else None
                 digest = ref.get("sha256") if isinstance(ref, dict) else None
                 if not isinstance(path, str) or not isinstance(digest, str):
-                    raise StrategyRecordStoreError(
-                        "Dashboard projection source ref is invalid"
-                    )
+                    raise StrategyRecordStoreError("Dashboard projection source ref is invalid")
                 previous_digest = refs_by_path.get(path)
                 if previous_digest is not None and previous_digest != digest:
-                    raise StrategyRecordStoreError(
-                        "Dashboard projection refs conflict"
-                    )
+                    raise StrategyRecordStoreError("Dashboard projection refs conflict")
                 refs_by_path[path] = digest
     manifest_records = []
     record_root_relative = root.relative_to(project).as_posix()
     for record in selected:
         projected_refs = logical_refs_by_id.get(record["record_id"])
         logical_source_refs = (
-            [
-                {"path": path, "sha256": digest}
-                for path, digest in sorted(projected_refs.items())
-            ]
+            [{"path": path, "sha256": digest} for path, digest in sorted(projected_refs.items())]
             if projected_refs
             else None
         )
         if logical_source_refs is None:
             logical_source_refs = [
                 {
-                    "path": (
-                        f"{record_root_relative}/{record['relative_path']}/{item['path']}"
-                    ),
+                    "path": (f"{record_root_relative}/{record['relative_path']}/{item['path']}"),
                     "sha256": item["sha256"],
                 }
                 for item in record["inventory"]
@@ -2544,11 +3089,7 @@ def command_archive_finalize(args: argparse.Namespace) -> dict[str, Any]:
     )
     manifest_sha = _write_exact_once(
         manifest_path,
-        {
-            key: value
-            for key, value in manifest.items()
-            if key != "content_sha256"
-        },
+        {key: value for key, value in manifest.items() if key != "content_sha256"},
     )
     zstd = shutil.which("zstd")
     if zstd is None:
@@ -2615,9 +3156,12 @@ def _transaction_root(root: Path, txid: str) -> Path:
 
 
 def _quarantine_root(project: Path, txid: str) -> Path:
-    return project / (
-        "results/strategy_record_quarantine/CN/aggressive_tech_manufacturing"
-    ) / txid / "records"
+    return (
+        project
+        / ("results/strategy_record_quarantine/CN/aggressive_tech_manufacturing")
+        / txid
+        / "records"
+    )
 
 
 def _read_canonical_transaction(path: Path, *, label: str) -> dict[str, Any]:
@@ -2717,9 +3261,7 @@ def _build_candidate_history_registry(
         "valid_records": [
             {
                 **row,
-                "source_refs": sorted(
-                    row["source_refs"], key=lambda item: item["path"]
-                ),
+                "source_refs": sorted(row["source_refs"], key=lambda item: item["path"]),
             }
             for row in projection["valid_records"]
         ],
@@ -2728,17 +3270,13 @@ def _build_candidate_history_registry(
         "historical_records": [
             {
                 **row,
-                "source_refs": sorted(
-                    row["source_refs"], key=lambda item: item["path"]
-                ),
+                "source_refs": sorted(row["source_refs"], key=lambda item: item["path"]),
             }
             for row in projection["historical_records"]
         ],
         "historical_rejected": projection["historical_rejected"],
     }
-    projection_sha = dashboard_sha256_bytes(
-        dashboard_canonical_json_bytes(normalized_projection)
-    )
+    projection_sha = dashboard_sha256_bytes(dashboard_canonical_json_bytes(normalized_projection))
     by_id = {row["record_id"]: row for row in transformed}
     archive_bindings: dict[str, dict[str, Any]] = {}
     registry_records: list[dict[str, Any]] = []
@@ -2792,9 +3330,9 @@ def _build_candidate_history_registry(
         relative = registry_path.relative_to(project).as_posix()
     except ValueError as exc:
         raise StrategyRecordStoreError("candidate history registry escapes project root") from exc
-    raw = (
-        json.dumps(registry, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-    ).encode("utf-8")
+    raw = (json.dumps(registry, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode(
+        "utf-8"
+    )
     digest = _write_bytes_exact_once(registry_path, raw)
     return registry, {"path": relative, "sha256": digest}
 
@@ -2812,8 +3350,7 @@ def command_archive_candidate(args: argparse.Namespace) -> dict[str, Any]:
     unregistered_strict = sorted(
         child.name
         for child in root.iterdir()
-        if _STRICT_RUN_ID.fullmatch(child.name) is not None
-        and child.name not in registered_ids
+        if _STRICT_RUN_ID.fullmatch(child.name) is not None and child.name not in registered_ids
     )
     if unregistered_strict:
         raise StrategyRecordStoreError(
@@ -3149,8 +3686,7 @@ def command_archive_quarantine_rollback(args: argparse.Namespace) -> dict[str, A
         catalog_schema=(
             CATALOG_SCHEMA_V2
             if any(
-                row.get("archive_locator") is not None
-                for row in plan["source_catalog"]["records"]
+                row.get("archive_locator") is not None for row in plan["source_catalog"]["records"]
             )
             else CATALOG_SCHEMA_V1
         ),
@@ -3186,9 +3722,7 @@ def command_archive_quarantine_verify(args: argparse.Namespace) -> dict[str, Any
             or complete.get("candidate_pointer_sha256") != _pointer_sha(root)
             or complete.get("record_count") != plan["record_count"]
         ):
-            raise StrategyRecordStoreError(
-                "quarantine completion receipt mismatch"
-            )
+            raise StrategyRecordStoreError("quarantine completion receipt mismatch")
     return {
         "valid": True,
         "transaction_id": args.transaction_id,
@@ -3264,6 +3798,36 @@ def build_parser() -> argparse.ArgumentParser:
     seal.add_argument(
         "--performance-generation-id",
         help="Required when advancing a catalog v3 official financial state",
+    )
+    seal.add_argument(
+        "--expected-catalog-sha",
+        help="Required for catalog v3 official no-trade valuation publication",
+    )
+    seal.add_argument(
+        "--continuity-receipt-id",
+        help="Required for catalog v3 official no-trade valuation publication",
+    )
+    seal.add_argument(
+        "--expected-continuity-receipt-sha",
+        help="Required for catalog v3 official no-trade valuation publication",
+    )
+    seal.add_argument(
+        "--publication-class",
+        choices=[LATE_OFFICIAL_VALUATION_PUBLICATION],
+        help="Explicit exceptional publication class; omit for ordinary paths",
+    )
+    seal.add_argument(
+        "--expected-valuation-date",
+        help="Required for a late official valuation publication (YYYY-MM-DD)",
+    )
+    seal.add_argument(
+        "--expected-publication-date",
+        help="Required for a late official valuation publication (YYYY-MM-DD)",
+    )
+    seal.add_argument(
+        "--publication-delay-reason",
+        choices=[LATE_PUBLICATION_REASON],
+        help="Required typed reason for a late official valuation publication",
     )
     seal.add_argument(
         "--cash-flow-artifact",
@@ -3415,6 +3979,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if getattr(args, "mutating", False):
             with _operation_lock(args.record_root):
+                if (
+                    getattr(args, "handler", None) is command_seal_publish
+                    and getattr(args, "publication_class", None)
+                    == LATE_OFFICIAL_VALUATION_PUBLICATION
+                ):
+                    args._manager_now_utc = _manager_utc_now()
                 result = args.handler(args)
         else:
             result = args.handler(args)
@@ -3428,9 +3998,7 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
-    print(
-        json.dumps({"ok": True, **result}, ensure_ascii=False, sort_keys=True)
-    )
+    print(json.dumps({"ok": True, **result}, ensure_ascii=False, sort_keys=True))
     return 0
 
 

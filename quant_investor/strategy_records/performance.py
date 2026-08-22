@@ -31,17 +31,15 @@ from .store import (
     regular_file_sha256,
 )
 
-
 PERFORMANCE_MANIFEST_SCHEMA: Final = "myquant.strategy_performance_manifest.v1"
-PERFORMANCE_OWNER_DECLARATION_SCHEMA: Final = (
-    "myquant.strategy_performance_owner_declaration.v1"
-)
+PERFORMANCE_OWNER_DECLARATION_SCHEMA: Final = "myquant.strategy_performance_owner_declaration.v1"
 PERFORMANCE_CASH_FLOW_SCHEMA: Final = "myquant.strategy_performance_cash_flow.v1"
 PERFORMANCE_HISTORY_REF_SCHEMA: Final = "myquant.strategy_performance_history_ref.v1"
 PERFORMANCE_SERIES_SCHEMA: Final = "myquant.strategy_performance_series.v1"
 PERFORMANCE_MIGRATION_RECEIPT_SCHEMA: Final = (
     "myquant.strategy_performance_migration_candidate_receipt.v1"
 )
+LATE_OFFICIAL_VALUATION_PUBLICATION: Final = "LATE_OFFICIAL_VALUATION_PUBLICATION"
 
 HISTORICAL_LABEL: Final = "aggressive_tech_manufacturing"
 CANONICAL_STRATEGY_ID: Final = "cn-aggressive-tech-manufacturing"
@@ -113,9 +111,7 @@ def _require_utc_timestamp(value: Any, *, label: str) -> str:
     if not isinstance(value, str) or _UTC_TIMESTAMP.fullmatch(value) is None:
         raise StrategyRecordStoreError(f"{label} is not a canonical UTC timestamp")
     try:
-        parsed = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(
-            tzinfo=timezone.utc
-        )
+        parsed = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
     except ValueError as exc:
         raise StrategyRecordStoreError(f"{label} is not a real UTC timestamp") from exc
     if parsed.strftime("%Y-%m-%dT%H:%M:%SZ") != value:
@@ -127,8 +123,10 @@ def _safe_relative(value: Any, *, label: str) -> str:
     if not isinstance(value, str) or not value or "\\" in value:
         raise StrategyRecordStoreError(f"{label} is not a canonical relative path")
     path = PurePosixPath(value)
-    if path.is_absolute() or str(path) != value or any(
-        part in {"", ".", ".."} for part in path.parts
+    if (
+        path.is_absolute()
+        or str(path) != value
+        or any(part in {"", ".", ".."} for part in path.parts)
     ):
         raise StrategyRecordStoreError(f"{label} is not a canonical relative path")
     return value
@@ -366,9 +364,7 @@ def build_seed_rows(
             if not isinstance(correction, Mapping):
                 raise StrategyRecordStoreError("normalized correction is invalid")
             target = correction.get("reversed_record_id")
-            amount = money(
-                correction.get("reversed_amount_cny"), label=f"{record_id}.correction"
-            )
+            amount = money(correction.get("reversed_amount_cny"), label=f"{record_id}.correction")
             if target not in funding_by_record or funding_by_record[target] != amount:
                 raise StrategyRecordStoreError(
                     "CANONICAL_PERFORMANCE_SOURCE_UNAVAILABLE:correction target does not close"
@@ -397,9 +393,7 @@ def build_seed_rows(
                     raw.get("equity_market_value_cny"), label=f"{record_id}.equity"
                 ),
                 "raw_nav_cny": raw_nav,
-                "portfolio_pnl_cny": money(
-                    raw.get("portfolio_pnl_cny"), label=f"{record_id}.pnl"
-                ),
+                "portfolio_pnl_cny": money(raw.get("portfolio_pnl_cny"), label=f"{record_id}.pnl"),
                 "excluded_external_flow_cny": cumulative_flow.quantize(MONEY_QUANTUM),
                 "adjusted_nav_cny": adjusted_nav,
                 "unit_count": unit_decimal(
@@ -438,11 +432,7 @@ def build_seed_rows(
             raise StrategyRecordStoreError(
                 "CANONICAL_PERFORMANCE_SOURCE_UNAVAILABLE:valuation time is not increasing"
             )
-        interval = (
-            Decimal("0")
-            if previous_unit is None
-            else current / previous_unit - Decimal("1")
-        )
+        interval = Decimal("0") if previous_unit is None else current / previous_unit - Decimal("1")
         cumulative = current / initial_unit - Decimal("1")
         high_water = max(high_water, current)
         drawdown = current / high_water - Decimal("1")
@@ -485,9 +475,7 @@ def validate_performance_rows(rows: Sequence[Mapping[str, Any]]) -> None:
         cash = money(row.get("cash_cny"), label="performance cash")
         equity = money(row.get("equity_market_value_cny"), label="performance equity")
         raw_nav = money(row.get("raw_nav_cny"), label="performance raw NAV")
-        excluded = money(
-            row.get("excluded_external_flow_cny"), label="performance external flow"
-        )
+        excluded = money(row.get("excluded_external_flow_cny"), label="performance external flow")
         adjusted = money(row.get("adjusted_nav_cny"), label="performance adjusted NAV")
         units = unit_decimal(row.get("unit_count"), label="performance unit count")
         unit_nav = unit_decimal(row.get("unit_nav"), label="performance unit NAV")
@@ -513,9 +501,7 @@ def validate_performance_rows(rows: Sequence[Mapping[str, Any]]) -> None:
             high_water = unit_nav
         assert high_water is not None
         expected_interval = (
-            Decimal("0")
-            if previous_unit is None
-            else unit_nav / previous_unit - Decimal("1")
+            Decimal("0") if previous_unit is None else unit_nav / previous_unit - Decimal("1")
         )
         expected_cumulative = unit_nav / initial_unit - Decimal("1")
         high_water = max(high_water, unit_nav)
@@ -617,9 +603,7 @@ def write_deterministic_parquet(
         right = replay_path.read_bytes()
         if left != right:
             raise StrategyRecordStoreError("performance Parquet replay is not deterministic")
-    digest, size = regular_file_sha256(
-        path, label="performance Parquet candidate"
-    )
+    digest, size = regular_file_sha256(path, label="performance Parquet candidate")
     if size > MAX_PERFORMANCE_PARQUET_BYTES:
         raise StrategyRecordStoreError("performance Parquet exceeds byte budget")
     return digest, size
@@ -652,9 +636,7 @@ def read_performance_parquet(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def _artifact_ref(
-    *, schema_id: str, path: str, sha256: str, byte_length: int
-) -> dict[str, Any]:
+def _artifact_ref(*, schema_id: str, path: str, sha256: str, byte_length: int) -> dict[str, Any]:
     return {
         "schema_id": schema_id,
         "path": _safe_relative(path, label="performance artifact path"),
@@ -771,9 +753,7 @@ def build_manifest(
                 normalized_projection_semantic_sha256,
                 label="normalized projection SHA",
             ),
-            "historical_seed_method": (
-                "owner_corrected_initial_capital_external_flow_excluded_v1"
-            ),
+            "historical_seed_method": ("owner_corrected_initial_capital_external_flow_excluded_v1"),
             "extension_method": "flow_neutral_unitization_v1",
             "performance_initial_capital_cny": decimal_text(
                 PERFORMANCE_INITIAL_CAPITAL, quantum=MONEY_QUANTUM
@@ -787,9 +767,7 @@ def build_manifest(
             "final_net_external_flow_cny": decimal_text(
                 last["excluded_external_flow_cny"], quantum=MONEY_QUANTUM
             ),
-            "cumulative_return": decimal_text(
-                last["cumulative_return"], quantum=UNIT_QUANTUM
-            ),
+            "cumulative_return": decimal_text(last["cumulative_return"], quantum=UNIT_QUANTUM),
             "max_drawdown": decimal_text(max_drawdown, quantum=UNIT_QUANTUM),
             "series": _artifact_ref(
                 schema_id=PERFORMANCE_SERIES_SCHEMA,
@@ -939,9 +917,7 @@ def validate_owner_declaration(
             raise StrategyRecordStoreError("performance owner declaration claims authority")
 
 
-def validate_manifest(
-    value: Mapping[str, Any], *, expected_ref: Mapping[str, Any]
-) -> None:
+def validate_manifest(value: Mapping[str, Any], *, expected_ref: Mapping[str, Any]) -> None:
     validate_semantic(value, label="performance manifest")
     generation = expected_ref["performance_generation_id"]
     if (
@@ -968,9 +944,7 @@ def validate_manifest(
             raise StrategyRecordStoreError("performance manifest claims authority")
 
 
-def load_performance_history(
-    record_root: Path, ref_value: Mapping[str, Any]
-) -> dict[str, Any]:
+def load_performance_history(record_root: Path, ref_value: Mapping[str, Any]) -> dict[str, Any]:
     ref = validate_performance_history_ref_shape(ref_value)
     manifest_ref = ref["manifest"]
     series_ref = ref["series"]
@@ -1016,9 +990,7 @@ def load_performance_history(
             last["excluded_external_flow_cny"], quantum=MONEY_QUANTUM
         ),
         "cumulative_return": decimal_text(last["cumulative_return"], quantum=UNIT_QUANTUM),
-        "max_drawdown": decimal_text(
-            min(row["drawdown"] for row in rows), quantum=UNIT_QUANTUM
-        ),
+        "max_drawdown": decimal_text(min(row["drawdown"] for row in rows), quantum=UNIT_QUANTUM),
     }
     for key, expected in expected_values.items():
         if manifest.get(key) != expected:
@@ -1091,9 +1063,11 @@ def build_lineage_index(catalog: Mapping[str, Any]) -> list[dict[str, Any]]:
             execution_class = "NO_TRADE"
         else:
             execution_class = "UNKNOWN_BLOCKED"
-        if supersedes is not None or "correction" in execution_status or source.get(
-            "funding_correction"
-        ) is not None:
+        if (
+            supersedes is not None
+            or "correction" in execution_status
+            or source.get("funding_correction") is not None
+        ):
             publication_class = "CORRECTION"
         elif source.get("official_valuation") is True or execution_class == "APPLIED_TRADES":
             publication_class = "OFFICIAL_FINANCIAL_STATE"
@@ -1119,9 +1093,7 @@ def build_lineage_index(catalog: Mapping[str, Any]) -> list[dict[str, Any]]:
                 "effective_ledger_ref": _lineage_ledger_ref(
                     stored_row.get("ledger_path"), stored_row.get("ledger_sha256")
                 ),
-                "financial_state_sha256": _optional_sha(
-                    stored_row.get("financial_state_sha256")
-                ),
+                "financial_state_sha256": _optional_sha(stored_row.get("financial_state_sha256")),
                 "ledger_parquet_sha256": (
                     _optional_sha(stored_row.get("ledger_sha256"))
                     if _is_parquet_ledger_path(stored_row.get("ledger_path"))
@@ -1147,8 +1119,7 @@ def _lineage_ref(path: Any, sha256: Any) -> dict[str, str] | None:
 
 def _is_parquet_ledger_path(path: Any) -> bool:
     return (
-        isinstance(path, str)
-        and PurePosixPath(path).name == "ledger_after_manual_switch.parquet"
+        isinstance(path, str) and PurePosixPath(path).name == "ledger_after_manual_switch.parquet"
     )
 
 
@@ -1161,9 +1132,7 @@ def _lineage_ledger_ref(path: Any, sha256: Any) -> dict[str, str] | None:
     return _lineage_ref(path, sha256)
 
 
-def validate_lineage_index(
-    value: Any, *, active_record_id: Any
-) -> tuple[str, ...]:
+def validate_lineage_index(value: Any, *, active_record_id: Any) -> tuple[str, ...]:
     if not isinstance(value, list) or not value:
         raise StrategyRecordStoreError("lineage_index is invalid")
     by_id: dict[str, dict[str, Any]] = {}
@@ -1196,6 +1165,7 @@ def validate_lineage_index(
             raise StrategyRecordStoreError("lineage execution_class is invalid")
         if row.get("publication_class") not in {
             "OFFICIAL_FINANCIAL_STATE",
+            LATE_OFFICIAL_VALUATION_PUBLICATION,
             "RECEIPT_ONLY_NO_ACTION",
             "CORRECTION",
         }:
@@ -1280,8 +1250,7 @@ def validate_cash_flow_artifact(
         or value.get("schema_id") != PERFORMANCE_CASH_FLOW_SCHEMA
         or value.get("historical_label") != HISTORICAL_LABEL
         or value.get("canonical_strategy_id") != CANONICAL_STRATEGY_ID
-        or value.get("timing_convention")
-        != "between_exact_pre_and_post_financial_states"
+        or value.get("timing_convention") != "between_exact_pre_and_post_financial_states"
         or value.get("authority_kind") != "owner_declaration"
         or value.get("declared_by") != "maxwell"
     ):
@@ -1289,9 +1258,7 @@ def validate_cash_flow_artifact(
     event_id = value.get("event_id")
     if not isinstance(event_id, str) or _GENERATION.fullmatch(event_id) is None:
         raise StrategyRecordStoreError("cash-flow event_id is invalid")
-    effective_at = _require_utc_timestamp(
-        value.get("effective_at"), label="cash-flow effective_at"
-    )
+    effective_at = _require_utc_timestamp(value.get("effective_at"), label="cash-flow effective_at")
     _require_utc_timestamp(value.get("declared_at"), label="cash-flow declared_at")
     try:
         shanghai_day = date.fromisoformat(str(value.get("shanghai_trade_date")))
@@ -1311,29 +1278,25 @@ def validate_cash_flow_artifact(
         raise StrategyRecordStoreError("cash-flow amount is not scale-4 canonical")
     if direction not in {"CONTRIBUTION", "REDEMPTION"} or amount == 0:
         raise StrategyRecordStoreError("cash-flow direction or amount is invalid")
-    if (direction == "CONTRIBUTION" and amount < 0) or (
-        direction == "REDEMPTION" and amount > 0
-    ):
+    if (direction == "CONTRIBUTION" and amount < 0) or (direction == "REDEMPTION" and amount > 0):
         raise StrategyRecordStoreError("cash-flow sign does not match direction")
     if dict(pre_positions) != dict(post_positions):
         raise StrategyRecordStoreError("cash-flow position quantities changed")
     pre_nav = money(pre_row.get("raw_nav_cny"), label="pre-flow NAV")
     post_nav = money(post_row.get("raw_nav_cny"), label="post-flow NAV")
-    if (
-        value.get("pre_flow_nav_cny")
-        != decimal_text(pre_nav, quantum=MONEY_QUANTUM)
-        or value.get("post_flow_nav_cny")
-        != decimal_text(post_nav, quantum=MONEY_QUANTUM)
-    ):
+    if value.get("pre_flow_nav_cny") != decimal_text(pre_nav, quantum=MONEY_QUANTUM) or value.get(
+        "post_flow_nav_cny"
+    ) != decimal_text(post_nav, quantum=MONEY_QUANTUM):
         raise StrategyRecordStoreError("cash-flow declared NAV binding mismatch")
     if abs(post_nav - pre_nav - amount) > CENT_TOLERANCE:
         raise StrategyRecordStoreError("cash-flow NAV bridge does not close")
     for side, row in (("pre", pre_row), ("post", post_row)):
         expected_record = value.get(f"{side}_flow_record_id")
         expected_sha = value.get(f"{side}_flow_financial_state_sha256")
-        if row.get("record_id") != expected_record or row.get(
-            "financial_state_sha256"
-        ) != expected_sha:
+        if (
+            row.get("record_id") != expected_record
+            or row.get("financial_state_sha256") != expected_sha
+        ):
             raise StrategyRecordStoreError("cash-flow financial-state binding mismatch")
     manual_path = _safe_relative(
         value.get("matching_manual_manifest_path"),
@@ -1389,13 +1352,9 @@ def extend_performance_rows(
     if any(row["record_id"] == record_id for row in rows):
         raise StrategyRecordStoreError("performance record_id is already present")
     cash = money(accounting.get("cash_after"), label="new performance cash")
-    equity = money(
-        accounting.get("market_value_after"), label="new performance equity"
-    )
+    equity = money(accounting.get("market_value_after"), label="new performance equity")
     raw_nav = money(accounting.get("total_value_after"), label="new performance NAV")
-    pnl = money(
-        accounting.get("portfolio_pnl_after"), label="new performance P&L"
-    )
+    pnl = money(accounting.get("portfolio_pnl_after"), label="new performance P&L")
     if abs(raw_nav - cash - equity) > CENT_TOLERANCE:
         raise StrategyRecordStoreError("new performance NAV accounting mismatch")
     previous = rows[-1]
@@ -1410,10 +1369,13 @@ def extend_performance_rows(
         else unit_decimal(previous["unit_count"], label="parent performance unit count")
     )
     unit_nav = unit_decimal(raw_nav / units, label="new performance unit NAV")
-    cumulative_flow = money(
-        previous["excluded_external_flow_cny"],
-        label="parent cumulative external flow",
-    ) + flow_amount
+    cumulative_flow = (
+        money(
+            previous["excluded_external_flow_cny"],
+            label="parent cumulative external flow",
+        )
+        + flow_amount
+    )
     execution_kind = str(strict_record.get("execution_kind") or "").lower()
     execution_status = str(strict_record.get("execution_status") or "").lower()
     evidence_kind = (
@@ -1434,9 +1396,7 @@ def extend_performance_rows(
         "equity_market_value_cny": equity,
         "raw_nav_cny": raw_nav,
         "portfolio_pnl_cny": pnl,
-        "excluded_external_flow_cny": money(
-            cumulative_flow, label="cumulative external flow"
-        ),
+        "excluded_external_flow_cny": money(cumulative_flow, label="cumulative external flow"),
         "adjusted_nav_cny": money(
             raw_nav - cumulative_flow, label="external-flow-excluded adjusted NAV"
         ),
@@ -1469,11 +1429,7 @@ def extend_performance_rows(
     high_water = initial_unit
     for index, row in enumerate(rows, start=1):
         current = unit_decimal(row["unit_nav"], label="unit NAV")
-        interval = (
-            Decimal("0")
-            if previous_unit is None
-            else current / previous_unit - Decimal("1")
-        )
+        interval = Decimal("0") if previous_unit is None else current / previous_unit - Decimal("1")
         cumulative = current / initial_unit - Decimal("1")
         high_water = max(high_water, current)
         drawdown = current / high_water - Decimal("1")

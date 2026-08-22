@@ -42,10 +42,12 @@ class _Reader:
         root: Path,
         exact_close: float | None = 110.0,
         suspended: bool = False,
+        latest_complete_trade_date: str = "20260817",
     ) -> None:
         self.root = root
         self.exact_close = exact_close
         self.suspended = suspended
+        self.latest_complete_trade_date = latest_complete_trade_date
         self.pointer = root / "data/parquet/cn/_latest.json"
         self.manifest = root / "data/parquet/cn/_snapshots/snapshot.json"
         self.serving = (
@@ -82,15 +84,15 @@ class _Reader:
             "healthy": True,
             "mode_policy": "strict",
             "snapshot_id": "snapshot",
-            "latest_complete_trade_date": "20260817",
-            "latest_trade_date": "20260817",
+            "latest_complete_trade_date": self.latest_complete_trade_date,
+            "latest_trade_date": self.latest_complete_trade_date,
             "latest_pointer_path": str(self.pointer),
             "manifest_path": str(self.manifest),
             "coverage": {
                 "coverage_schema_version": "cn-full-a-coverage.v4",
                 "complete": True,
                 "classification_sets_disjoint": True,
-                "latest_complete_trade_date": "20260817",
+                "latest_complete_trade_date": self.latest_complete_trade_date,
                 "suspended_symbols": [SYMBOL] if self.suspended else [],
                 "true_missing_symbols": [],
             },
@@ -109,14 +111,14 @@ class _Reader:
         **_: Any,
     ) -> _Result:
         assert symbol == SYMBOL
-        if start_date == "20260817":
+        if start_date == self.latest_complete_trade_date:
             rows = (
                 []
                 if self.exact_close is None
                 else [
                     {
                         "symbol": SYMBOL,
-                        "trade_date": "20260817",
+                        "trade_date": self.latest_complete_trade_date,
                         "close": self.exact_close,
                     }
                 ]
@@ -139,6 +141,7 @@ def _fixture(
     include_receipt: bool = True,
     exact_close: float | None = 110.0,
     suspended: bool = False,
+    latest_complete_trade_date: str = "20260817",
 ) -> tuple[dict[str, Any], Path, Path, _Reader, dict[str, Any]]:
     root = tmp_path
     record_root = root / "results/strategy_records/CN/aggressive_tech_manufacturing"
@@ -304,7 +307,12 @@ def _fixture(
             "utf-8"
         ),
     )
-    reader = _Reader(root=root, exact_close=exact_close, suspended=suspended)
+    reader = _Reader(
+        root=root,
+        exact_close=exact_close,
+        suspended=suspended,
+        latest_complete_trade_date=latest_complete_trade_date,
+    )
     return v1_bundle, v1_path, record_root, reader, catalog
 
 
@@ -315,17 +323,247 @@ def _build(
     reader: _Reader,
     **kwargs: Any,
 ) -> dict[str, Any]:
+    generation_date = kwargs.pop("generation_local_date", GENERATION_DATE)
+    generated_at = kwargs.pop(
+        "generated_at",
+        f"{generation_date.isoformat()}T10:00:00+08:00",
+    )
     return v2.build_v2_bundle(
         project_root=v1_path.parents[3],
         v1_bundle=v1_bundle,
         v1_json_path=v1_path,
         record_root=record_root,
-        generation_local_date=GENERATION_DATE,
-        generated_at="2026-08-18T10:00:00+08:00",
+        generation_local_date=generation_date,
+        generated_at=generated_at,
         publication_attempt_id="attempt-1",
         market_reader=reader,
         **kwargs,
     )
+
+
+def _configure_late_publication(
+    inputs: tuple[dict[str, Any], Path, Path, _Reader, dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    benchmark_date: str = "2026-08-21",
+    generation_date: date = date(2026, 8, 22),
+) -> tuple[dict[str, Any], Path, Path, _Reader]:
+    """Promote the fixture's active row into the 8/22 late-publication shape."""
+
+    v1_bundle, v1_path, record_root, reader, catalog = inputs
+    pointer_path = record_root / "_record_store/current.v1.json"
+    pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    predecessor_closure = dict(pointer["active_closure"])
+    old_predecessor_id = str(predecessor_closure["record_id"])
+    predecessor_id = "20260820_1321"
+    source_dir = record_root / predecessor_id
+    source_dir.mkdir()
+    old_dir = record_root / old_predecessor_id
+    for filename in (
+        "manifest.json",
+        "manual_execution_manifest.json",
+        "ledger_after_manual_switch.parquet",
+        "pnl_summary.csv",
+    ):
+        (source_dir / filename).write_bytes((old_dir / filename).read_bytes())
+    predecessor_closure["record_id"] = predecessor_id
+    predecessor_closure["relative_path"] = predecessor_id
+    for key in ("manifest_path", "manual_manifest_path", "ledger_path", "pnl_path"):
+        predecessor_closure[key] = str(predecessor_closure[key]).replace(
+            old_predecessor_id, predecessor_id
+        )
+    predecessor = dict(catalog["records"][0])
+    predecessor.update(predecessor_closure)
+    predecessor["sealed_at"] = "2026-08-21T01:00:00Z"
+    record_id = "20260822_0930"
+    record_dir = record_root / record_id
+    record_dir.mkdir()
+
+    ledger_raw = (source_dir / "ledger_after_manual_switch.parquet").read_bytes()
+    pnl_raw = (source_dir / "pnl_summary.csv").read_bytes()
+    ledger_path = record_dir / "ledger_after_manual_switch.parquet"
+    pnl_path = record_dir / "pnl_summary.csv"
+    ledger_path.write_bytes(ledger_raw)
+    pnl_path.write_bytes(pnl_raw)
+
+    receipt_id = "automation-20260821-daily-review-v1"
+    receipt_created_at = "2026-08-21T13:27:37Z"
+    receipt_sha = "e" * 64
+    checkpoint_digest = v2.store_content_sha256(predecessor_closure)
+    delay = {
+        "schema_id": "publication_delay.v1",
+        "publication_class": "LATE_OFFICIAL_VALUATION_PUBLICATION",
+        "expected_valuation_date": "2026-08-21",
+        "evidence_date": "2026-08-21",
+        "expected_publication_date": "2026-08-22",
+        "source_record": predecessor_id,
+        "continuity_receipt_id": receipt_id,
+        "continuity_receipt_sha256": receipt_sha,
+        "continuity_receipt_created_at": receipt_created_at,
+        "continuity_checkpoint_digest": checkpoint_digest,
+        "recorded_at_iso": "2026-08-22T09:30:47+08:00",
+        "publication_delay_reason": "SHARED_CHECKOUT_SAFETY_GATE_DELAY",
+        "historical_holdings_storage_authority": True,
+        "v17_mainline_authority": False,
+        "broker_order_trade_authority": False,
+        "delay_days": 1,
+    }
+    evidence = {
+        "schema_version": "cn_dashboard_strict_market_close_evidence.v1",
+        "market": "CN",
+        "trade_date": "20260821",
+        "latest_complete_trade_date": "20260821",
+    }
+    evidence_path = record_dir / "strict_market_close_evidence.json"
+    _write(evidence_path, (json.dumps(evidence, sort_keys=True) + "\n").encode())
+    evidence_sha = _sha(evidence_path.read_bytes())
+    manifest = {
+        "schema_version": "cn_aggressive_daily_transaction_record.v1",
+        "market": "CN",
+        "strategy": "aggressive_tech_manufacturing",
+        "timestamp": record_id,
+        "recorded_at_iso": delay["recorded_at_iso"],
+        "publication_class": "LATE_OFFICIAL_VALUATION_PUBLICATION",
+        "source_record": predecessor_id,
+        "files": {
+            "manual_execution_manifest": "manual_execution_manifest.json",
+            "ledger_after_manual_switch": "ledger_after_manual_switch.parquet",
+            "pnl_summary": "pnl_summary.csv",
+            "valuation_evidence": "strict_market_close_evidence.json",
+        },
+        "data_snapshot": {
+            "valuation_trade_date": "20260821",
+            "analysis_trade_date": "20260821",
+            "latest_complete_trade_date": "20260821",
+            "valuation_evidence_sha256": evidence_sha,
+        },
+        "publication_delay": delay,
+    }
+    manual = {
+        "schema_version": "cn_aggressive_manual_execution.v3",
+        "record_timestamp": record_id,
+        "recorded_at_iso": delay["recorded_at_iso"],
+        "publication_class": "LATE_OFFICIAL_VALUATION_PUBLICATION",
+        "source_record": predecessor_id,
+        "valuation_trade_date": "20260821",
+        "trade_date": "20260821",
+        "valuation_evidence_path": "strict_market_close_evidence.json",
+        "valuation_evidence_sha256": evidence_sha,
+        "publication_delay": delay,
+    }
+    manifest_path = record_dir / "manifest.json"
+    manual_path = record_dir / "manual_execution_manifest.json"
+    _write(manifest_path, (json.dumps(manifest, sort_keys=True) + "\n").encode())
+    _write(manual_path, (json.dumps(manual, sort_keys=True) + "\n").encode())
+    current_closure = {
+        "record_id": record_id,
+        "relative_path": record_id,
+        "inventory_sha256": "3" * 64,
+        "total_bytes": 1,
+        "file_count": 5,
+        "manifest_path": f"{record_id}/manifest.json",
+        "manifest_sha256": _sha(manifest_path.read_bytes()),
+        "manual_manifest_path": f"{record_id}/manual_execution_manifest.json",
+        "manual_manifest_sha256": _sha(manual_path.read_bytes()),
+        "ledger_path": f"{record_id}/ledger_after_manual_switch.parquet",
+        "ledger_sha256": _sha(ledger_path.read_bytes()),
+        "pnl_path": f"{record_id}/pnl_summary.csv",
+        "pnl_sha256": _sha(pnl_path.read_bytes()),
+        "financial_state_sha256": "4" * 64,
+    }
+    catalog_delay = {
+        "schema_id": "myquant.strategy_record_publication_delay.v1",
+        "publication_class": "LATE_OFFICIAL_VALUATION_PUBLICATION",
+        "expected_valuation_date": "2026-08-21",
+        "evidence_date": "2026-08-21",
+        "expected_publication_date": "2026-08-22",
+        "publication_delay_reason": "SHARED_CHECKOUT_SAFETY_GATE_DELAY",
+        "source_record": predecessor_id,
+        "actual_sealed_at": "2026-08-22T09:30:00Z",
+        "actual_published_at": "2026-08-22T09:30:00Z",
+        "actual_publication_local_date": "2026-08-22",
+        "candidate_recorded_at": delay["recorded_at_iso"],
+        "continuity_receipt_id": receipt_id,
+        "continuity_receipt_sha256": receipt_sha,
+        "continuity_receipt_created_at": receipt_created_at,
+        "continuity_checkpoint_digest": checkpoint_digest,
+        "delay_days": 1,
+        "historical_holdings_storage_authority": True,
+        "v17_mainline_authority": False,
+        "broker_order_trade_authority": False,
+    }
+    current = {
+        **current_closure,
+        "state": "ONLINE",
+        "storage_state": "ONLINE",
+        "sealed_at": "2026-08-22T09:30:00Z",
+        "publication_delay": catalog_delay,
+    }
+    receipt = {
+        "schema_id": "myquant.strategy_record_no_action_receipt.v1",
+        "receipt_id": receipt_id,
+        "created_at": receipt_created_at,
+        "status": "NO_ACTION",
+        "reason": "daily-review-no-change",
+        "active_record_id": predecessor_id,
+        "active_checkpoint": predecessor_closure,
+        "payload_copied": False,
+        "v17_mainline_authority": False,
+        "broker_order_trade_authority": False,
+    }
+    receipt["content_sha256"] = store_content_sha256(receipt)
+    delay["continuity_receipt_sha256"] = receipt["content_sha256"]
+    manifest["publication_delay"] = delay
+    manual["publication_delay"] = delay
+    _write(manifest_path, (json.dumps(manifest, sort_keys=True) + "\n").encode())
+    _write(manual_path, (json.dumps(manual, sort_keys=True) + "\n").encode())
+    current["manifest_sha256"] = _sha(manifest_path.read_bytes())
+    current["manual_manifest_sha256"] = _sha(manual_path.read_bytes())
+    current_closure["manifest_sha256"] = current["manifest_sha256"]
+    current_closure["manual_manifest_sha256"] = current["manual_manifest_sha256"]
+    catalog_delay["continuity_receipt_sha256"] = receipt["content_sha256"]
+    catalog["records"] = [predecessor, current]
+    catalog["lineage_index"] = [
+        {
+            "record_id": predecessor_id,
+            "publication_class": "OFFICIAL_FINANCIAL_STATE",
+            "valuation_date": "2026-08-14",
+        },
+        {
+            "record_id": record_id,
+            "source_record_id": predecessor_id,
+            "publication_class": "LATE_OFFICIAL_VALUATION_PUBLICATION",
+            "valuation_date": "2026-08-21",
+        },
+    ]
+    catalog["receipts"] = [receipt]
+    catalog_path = record_root / "_record_store/catalogs/g-fixture/catalog.v3.json"
+    catalog_raw = (json.dumps(catalog, sort_keys=True) + "\n").encode()
+    catalog_path.write_bytes(catalog_raw)
+    pointer.update(
+        {
+            "active_record_id": record_id,
+            "active_closure": current_closure,
+            "catalog_sha256": _sha(catalog_raw),
+        }
+    )
+    pointer_path.write_text(json.dumps(pointer, sort_keys=True) + "\n", encoding="utf-8")
+    v1_bundle["latest_valid_record"] = record_id
+    v1_bundle["latest_data_date"] = "2026-08-21"
+    v1_bundle["current_evidence"] = {
+        "manifest_sha256": current_closure["manifest_sha256"],
+        "manual_manifest_sha256": current_closure["manual_manifest_sha256"],
+        "ledger_sha256": current_closure["ledger_sha256"],
+        "pnl_sha256": current_closure["pnl_sha256"],
+        "financial_state_sha256": current_closure["financial_state_sha256"],
+    }
+    v1_bundle["portfolio"]["performance_end_date"] = "2026-08-21"
+    for benchmark in v1_bundle["benchmarks"]:
+        benchmark["end_date"] = benchmark_date
+    v1_bundle["content_sha256"] = v2.content_sha256(v1_bundle)
+    _write(v1_path, (json.dumps(v1_bundle, sort_keys=True) + "\n").encode())
+    monkeypatch.setattr(v2, "load_registered_catalog", lambda _: (pointer, catalog))
+    return v1_bundle, v1_path, record_root, reader
 
 
 def test_daily_receipt_builds_updated_view_only_mark(
@@ -471,6 +709,223 @@ def test_exact_financial_publication_can_refresh_without_receipt(
     assert continuity["receipt_id"] is None
     assert bundle["freshness"]["status"] == "UPDATED"
     assert bundle["freshness"]["reason"] == ("CURRENT_FINANCIAL_PUBLICATION_AND_LATEST_LOCAL_CLOSE")
+
+
+def test_late_official_publication_keeps_economic_date_and_private_delay_projection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inputs = _fixture(tmp_path, monkeypatch, latest_complete_trade_date="20260821")
+    late = _configure_late_publication(inputs, monkeypatch)
+    bundle = _build(*late, generation_local_date=date(2026, 8, 22))
+
+    assert bundle["publication_delay"]["schema_id"] == (
+        "myquant.strategy_record_publication_delay.v1"
+    )
+    assert bundle["publication_delay"]["delay_days"] == 1
+    assert bundle["publication_delay"]["expected_valuation_date"] == "2026-08-21"
+    assert bundle["publication_delay"]["expected_publication_date"] == "2026-08-22"
+    assert bundle["continuity_authority"] == {
+        "status": "FINANCIAL_STATE_PUBLICATION",
+        "anchor_record_id": "20260822_0930",
+        "anchor_data_date": "2026-08-21",
+        "anchor_financial_state_sha256": "4" * 64,
+        "active_ledger_sha256": bundle["continuity_authority"]["active_ledger_sha256"],
+        "holdings_valid_through": "2026-08-21",
+        "financial_state_changed": True,
+        "receipt_id": None,
+        "receipt_content_sha256": None,
+    }
+    assert bundle["freshness"]["status"] == "UPDATED"
+    assert bundle["freshness"]["mark_as_of"] == "2026-08-21"
+    assert bundle["freshness"]["reason"] == (
+        "LATE_OFFICIAL_FINANCIAL_PUBLICATION_FOR_LATEST_LOCAL_CLOSE"
+    )
+    assert bundle["research_mark"]["mark_date"] == "2026-08-21"
+    assert v2.validate_v2_shape(bundle) == []
+
+
+def test_late_publication_wrong_metadata_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inputs = _fixture(tmp_path, monkeypatch, latest_complete_trade_date="20260821")
+    late = _configure_late_publication(inputs, monkeypatch)
+    catalog = inputs[4]
+    # The fixture's catalog object is returned through the patched loader; the
+    # active row is the only place where Store publication metadata is allowed.
+    active = next(row for row in catalog["records"] if row["record_id"] == "20260822_0930")
+    active["publication_delay"]["delay_days"] = 2
+    record_root = inputs[2]
+    catalog_path = record_root / "_record_store/catalogs/g-fixture/catalog.v3.json"
+    catalog_raw = (json.dumps(catalog, sort_keys=True) + "\n").encode()
+    catalog_path.write_bytes(catalog_raw)
+    pointer_path = record_root / "_record_store/current.v1.json"
+    pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    pointer["catalog_sha256"] = _sha(catalog_raw)
+    pointer_path.write_text(json.dumps(pointer, sort_keys=True) + "\n", encoding="utf-8")
+    monkeypatch.setattr(v2, "load_registered_catalog", lambda _: (pointer, catalog))
+    with pytest.raises(
+        v2.DashboardV2Error, match="late_publication_catalog_delay_contract_invalid"
+    ):
+        _build(*late, generation_local_date=date(2026, 8, 22))
+
+
+def test_late_publication_on_later_required_date_is_stale_and_not_revalued(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inputs = _fixture(tmp_path, monkeypatch, latest_complete_trade_date="20260821")
+    late = _configure_late_publication(inputs, monkeypatch)
+    bundle = _build(*late, generation_local_date=date(2026, 8, 24))
+
+    assert bundle["freshness"]["status"] == "STALE"
+    assert bundle["freshness"]["mark_as_of"] == "2026-08-21"
+    assert bundle["freshness"]["reason"] == "DAILY_CONTINUITY_RECEIPT_MISSING"
+    assert bundle["continuity_authority"]["status"] == "UNCONFIRMED"
+    assert bundle["continuity_authority"]["holdings_valid_through"] == "2026-08-21"
+    assert bundle["research_mark"]["mark_date"] == "2026-08-21"
+    assert bundle["publication_delay"]["expected_publication_date"] == "2026-08-22"
+    assert v2.validate_v2_shape(bundle) == []
+
+
+def test_late_publication_does_not_accept_inferred_8_22_market_mark(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inputs = _fixture(tmp_path, monkeypatch, latest_complete_trade_date="20260822")
+    late = _configure_late_publication(inputs, monkeypatch)
+    with pytest.raises(v2.DashboardV2Error, match="late_publication_market_date_mismatch"):
+        _build(*late, generation_local_date=date(2026, 8, 22))
+
+
+def test_official_publication_supersedes_valid_inherited_predecessor_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inputs = _fixture(tmp_path, monkeypatch, include_receipt=True)
+    v1_bundle, v1_path, record_root, reader, catalog = inputs
+    pointer_path = record_root / "_record_store/current.v1.json"
+    pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    current = dict(catalog["records"][0])
+    current_id = current["record_id"]
+    current["sealed_at"] = "2026-08-18T01:00:00Z"
+    predecessor_id = "20260817_1200"
+    predecessor = {
+        **current,
+        "record_id": predecessor_id,
+        "relative_path": predecessor_id,
+        "manifest_path": f"{predecessor_id}/manifest.json",
+        "manual_manifest_path": f"{predecessor_id}/manual_execution_manifest.json",
+        "ledger_path": f"{predecessor_id}/ledger_after_manual_switch.parquet",
+        "pnl_path": f"{predecessor_id}/pnl_summary.csv",
+    }
+    for key in (
+        "inventory_sha256",
+        "total_bytes",
+        "file_count",
+        "manifest_sha256",
+        "manual_manifest_sha256",
+        "ledger_sha256",
+        "pnl_sha256",
+        "financial_state_sha256",
+    ):
+        predecessor[key] = pointer["active_closure"][key]
+    predecessor_closure = {
+        key: predecessor.get(key)
+        for key in (
+            "record_id",
+            "relative_path",
+            "inventory_sha256",
+            "total_bytes",
+            "file_count",
+            "manifest_path",
+            "manifest_sha256",
+            "manual_manifest_path",
+            "manual_manifest_sha256",
+            "ledger_path",
+            "ledger_sha256",
+            "pnl_path",
+            "pnl_sha256",
+            "financial_state_sha256",
+        )
+    }
+    receipt = dict(catalog["receipts"][0])
+    receipt["active_record_id"] = predecessor_id
+    receipt["active_checkpoint"] = predecessor_closure
+    receipt["content_sha256"] = store_content_sha256(receipt)
+    catalog["receipts"] = [receipt]
+    catalog["records"] = [predecessor, current]
+    catalog["lineage_index"] = [
+        {
+            "record_id": current_id,
+            "source_record_id": predecessor_id,
+            "publication_class": "OFFICIAL_FINANCIAL_STATE",
+            "valuation_date": GENERATION_DATE.isoformat(),
+        }
+    ]
+    catalog_path = record_root / "_record_store/catalogs/g-fixture/catalog.v3.json"
+    catalog_raw = (json.dumps(catalog, sort_keys=True) + "\n").encode("utf-8")
+    catalog_path.write_bytes(catalog_raw)
+    pointer["catalog_sha256"] = _sha(catalog_raw)
+    pointer_path.write_text(json.dumps(pointer, sort_keys=True) + "\n", encoding="utf-8")
+    monkeypatch.setattr(v2, "load_registered_catalog", lambda _: (pointer, catalog))
+
+    bundle = _build(*inputs[:4])
+    assert bundle["continuity_authority"]["status"] == "FINANCIAL_STATE_PUBLICATION"
+    assert bundle["continuity_authority"]["financial_state_changed"] is True
+    assert bundle["continuity_authority"]["receipt_id"] is None
+
+
+def test_official_publication_rejects_wrong_inherited_receipt_checkpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inputs = _fixture(tmp_path, monkeypatch, include_receipt=True)
+    v1_bundle, v1_path, record_root, reader, catalog = inputs
+    pointer_path = record_root / "_record_store/current.v1.json"
+    pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    current = dict(catalog["records"][0])
+    current_id = current["record_id"]
+    current["sealed_at"] = "2026-08-18T01:00:00Z"
+    predecessor_id = "20260817_1200"
+    predecessor = {
+        **current,
+        "record_id": predecessor_id,
+        "relative_path": predecessor_id,
+        "manifest_path": f"{predecessor_id}/manifest.json",
+        "manual_manifest_path": f"{predecessor_id}/manual_execution_manifest.json",
+        "ledger_path": f"{predecessor_id}/ledger_after_manual_switch.parquet",
+        "pnl_path": f"{predecessor_id}/pnl_summary.csv",
+    }
+    for key in (
+        "inventory_sha256",
+        "total_bytes",
+        "file_count",
+        "manifest_sha256",
+        "manual_manifest_sha256",
+        "ledger_sha256",
+        "pnl_sha256",
+        "financial_state_sha256",
+    ):
+        predecessor[key] = pointer["active_closure"][key]
+    catalog["records"] = [predecessor, current]
+    catalog["lineage_index"] = [
+        {
+            "record_id": current_id,
+            "source_record_id": predecessor_id,
+            "publication_class": "OFFICIAL_FINANCIAL_STATE",
+            "valuation_date": GENERATION_DATE.isoformat(),
+        }
+    ]
+    receipt = dict(catalog["receipts"][0])
+    receipt["active_record_id"] = predecessor_id
+    receipt["active_checkpoint"] = {**pointer["active_closure"], "record_id": predecessor_id}
+    receipt["content_sha256"] = store_content_sha256(receipt)
+    catalog["receipts"] = [receipt]
+    catalog_path = record_root / "_record_store/catalogs/g-fixture/catalog.v3.json"
+    catalog_raw = (json.dumps(catalog, sort_keys=True) + "\n").encode("utf-8")
+    catalog_path.write_bytes(catalog_raw)
+    pointer["catalog_sha256"] = _sha(catalog_raw)
+    pointer_path.write_text(json.dumps(pointer, sort_keys=True) + "\n", encoding="utf-8")
+    monkeypatch.setattr(v2, "load_registered_catalog", lambda _: (pointer, catalog))
+
+    with pytest.raises(v2.DashboardV2Error, match="daily_continuity_receipt_invalid"):
+        _build(*inputs[:4])
 
 
 def test_missing_non_suspended_close_fails_closed(
