@@ -7,8 +7,8 @@ from typing import Any, Final, Mapping
 
 from .contracts import (
     ArtifactRef,
+    IDENTITY_DECLARATION_PROTOCOL,
     IDENTITY_DECLARATION_SCHEMA_ID,
-    PROTOCOL,
     PortfolioCycleError,
     VerifiedStrategyIdentity,
     parse_canonical_json,
@@ -42,7 +42,7 @@ def validate_strategy_identity_declaration(
     document = require_exact_fields(value, _FIELDS, label="identity declaration", code=code)
     if (
         document.get("schema_id") != IDENTITY_DECLARATION_SCHEMA_ID
-        or document.get("protocol") != PROTOCOL
+        or document.get("protocol") != IDENTITY_DECLARATION_PROTOCOL
     ):
         raise PortfolioCycleError(code, "identity declaration schema/protocol mismatch")
     historical_label = require_text(

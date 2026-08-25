@@ -2320,8 +2320,8 @@ def _read_candidate_json(
 
 def command_declare_strategy_identity(args: argparse.Namespace) -> dict[str, Any]:
     from quant_investor.portfolio_cycle.contracts import (
+        IDENTITY_DECLARATION_PROTOCOL,
         IDENTITY_DECLARATION_SCHEMA_ID,
-        PROTOCOL,
         canonical_json_bytes as portfolio_canonical_json_bytes,
         seal_document,
     )
@@ -2342,7 +2342,7 @@ def command_declare_strategy_identity(args: argparse.Namespace) -> dict[str, Any
     declaration = seal_document(
         {
             "schema_id": IDENTITY_DECLARATION_SCHEMA_ID,
-            "protocol": PROTOCOL,
+            "protocol": IDENTITY_DECLARATION_PROTOCOL,
             "historical_label": "aggressive_tech_manufacturing",
             "canonical_strategy_id": "cn-aggressive-tech-manufacturing",
             "declared_by": "maxwell",

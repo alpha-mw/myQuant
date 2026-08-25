@@ -16,6 +16,7 @@ from quant_investor.portfolio_cycle import (
     HOLDINGS_MANIFEST_SCHEMA_ID,
     HOLDINGS_POINTER_SCHEMA_ID,
     HOLDINGS_PRICE_SOURCE_SCHEMA_ID,
+    IDENTITY_DECLARATION_PROTOCOL,
     IDENTITY_DECLARATION_SCHEMA_ID,
     PROTOCOL,
     PortfolioCycleError,
@@ -48,7 +49,7 @@ def _write_json(root: Path, relative_path: str, body: dict[str, Any]) -> tuple[s
 def _identity_body(**overrides: Any) -> dict[str, Any]:
     body = {
         "schema_id": IDENTITY_DECLARATION_SCHEMA_ID,
-        "protocol": PROTOCOL,
+        "protocol": IDENTITY_DECLARATION_PROTOCOL,
         "historical_label": HISTORICAL_LABEL,
         "canonical_strategy_id": STRATEGY,
         "declared_by": "maxwell",
@@ -273,6 +274,12 @@ def test_identity_requires_exact_sha_and_explicit_historical_ref(
     _assert_code(label_mismatch, "PORTFOLIO_CYCLE_IDENTITY_MISMATCH")
 
 
+def test_identity_keeps_owner_v17_contract_separate_from_portfolio_cycle() -> None:
+    assert IDENTITY_DECLARATION_SCHEMA_ID == ("myquant.v17.v4.strategy-identity-declaration.v1")
+    assert IDENTITY_DECLARATION_PROTOCOL == "myquant.v17.v4"
+    assert IDENTITY_DECLARATION_PROTOCOL != PROTOCOL
+
+
 @pytest.mark.parametrize(
     ("overrides", "expected_code"),
     [
@@ -290,6 +297,11 @@ def test_identity_requires_exact_sha_and_explicit_historical_ref(
         ),
         (
             {"declared_at": "2026-02-30T00:00:00Z"},
+            "PORTFOLIO_CYCLE_IDENTITY_INVALID",
+        ),
+        ({"protocol": PROTOCOL}, "PORTFOLIO_CYCLE_IDENTITY_INVALID"),
+        (
+            {"schema_id": "myquant.portfolio-cycle.strategy-identity-declaration"},
             "PORTFOLIO_CYCLE_IDENTITY_INVALID",
         ),
         ({"provenance": ""}, "PORTFOLIO_CYCLE_IDENTITY_INVALID"),

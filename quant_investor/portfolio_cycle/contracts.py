@@ -11,18 +11,15 @@ import re
 from typing import Any, Final, Literal, Mapping
 
 PROTOCOL: Final = "myquant.portfolio-cycle"
-IDENTITY_DECLARATION_SCHEMA_ID: Final = (
-    "myquant.portfolio-cycle.strategy-identity-declaration"
-)
+# Strategy identity remains the exact owner-approved V17 v4 declaration;
+# Portfolio Cycle owns only the downstream read-only holdings contracts.
+IDENTITY_DECLARATION_PROTOCOL: Final = "myquant.v17.v4"
+IDENTITY_DECLARATION_SCHEMA_ID: Final = "myquant.v17.v4.strategy-identity-declaration.v1"
 HOLDINGS_POINTER_SCHEMA_ID: Final = "myquant.portfolio-cycle.holdings-pointer"
 HOLDINGS_MANIFEST_SCHEMA_ID: Final = "myquant.portfolio-cycle.holdings-manifest"
 HOLDINGS_LEDGER_SCHEMA_ID: Final = "myquant.portfolio-cycle.current-holdings-ledger"
-HOLDINGS_ACCOUNTING_POLICY_SCHEMA_ID: Final = (
-    "myquant.portfolio-cycle.holdings-accounting-policy"
-)
-HOLDINGS_PRICE_SOURCE_SCHEMA_ID: Final = (
-    "myquant.portfolio-cycle.holdings-price-source"
-)
+HOLDINGS_ACCOUNTING_POLICY_SCHEMA_ID: Final = "myquant.portfolio-cycle.holdings-accounting-policy"
+HOLDINGS_PRICE_SOURCE_SCHEMA_ID: Final = "myquant.portfolio-cycle.holdings-price-source"
 
 _SHA256: Final = re.compile(r"^[0-9a-f]{64}$")
 _IDENTIFIER: Final = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
@@ -295,6 +292,7 @@ __all__ = [
     "HOLDINGS_POINTER_SCHEMA_ID",
     "HOLDINGS_PRICE_SOURCE_SCHEMA_ID",
     "HoldingPosition",
+    "IDENTITY_DECLARATION_PROTOCOL",
     "IDENTITY_DECLARATION_SCHEMA_ID",
     "MoneyTotals",
     "PROTOCOL",
