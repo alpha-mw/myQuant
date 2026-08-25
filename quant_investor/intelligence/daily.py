@@ -445,8 +445,12 @@ def build_factor_research_rank(
     observations: Sequence[Mapping[str, Any] | bytes],
     policy: Mapping[str, Any] | bytes,
     as_of: str,
+    created_at: str | None = None,
 ) -> dict[str, Any]:
     cutoff = timestamp(as_of, label="as_of")
+    sealed_at = cutoff if created_at is None else timestamp(created_at, label="created_at")
+    if sealed_at < cutoff:
+        raise IntelligenceError("daily rank cannot be sealed before its research cutoff")
     policy_artifact = validate_daily_research_policy(policy)
     policy_payload = policy_artifact["payload"]
     if not (
@@ -530,7 +534,7 @@ def build_factor_research_rank(
                 "policy_id": policy_artifact["artifact_id"],
             },
         ),
-        created_at=cutoff,
+        created_at=sealed_at,
         fields={
             "as_of": cutoff,
             "blocker_codes": [],

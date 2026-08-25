@@ -1383,6 +1383,16 @@ def research_publish_policy(*, workspace_root: str) -> dict[str, Any]:
     return publish_phase_a_policy(workspace_root)
 
 
+def _factor_signal_close_cutoff(signal_date: Any) -> str:
+    if type(signal_date) is not str:
+        raise CommandError("RESEARCH_POOL_SIGNAL_DATE_INVALID")
+    try:
+        parsed = datetime.strptime(signal_date, "%Y%m%d")
+    except ValueError as exc:
+        raise CommandError("RESEARCH_POOL_SIGNAL_DATE_INVALID") from exc
+    return parsed.replace(hour=7, tzinfo=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def research_publish_pool(
     *, workspace_root: str, request_path: str, expected_request_sha256: str
 ) -> dict[str, Any]:
@@ -1443,11 +1453,17 @@ def research_publish_pool(
         workspace_root,
         expected_pointer_sha256=expected_pointer,
     )
+    source_sealed_at = max(
+        str(snapshot["factor_generation"].get("created_at") or ""),
+        str(low.get("created_at") or ""),
+        str(w80.get("created_at") or ""),
+    )
     rank = build_factor_research_rank(
         snapshot=snapshot,
         observations=[low, w80],
         policy=policy,
-        as_of=snapshot["factor_generation"]["created_at"],
+        as_of=_factor_signal_close_cutoff(snapshot["signal_date"]),
+        created_at=source_sealed_at,
     )
     store = DailyResearchPoolStore(workspace_root)
     return store.publish(

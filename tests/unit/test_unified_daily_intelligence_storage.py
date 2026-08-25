@@ -10,6 +10,7 @@ import pytest
 import quant_investor.intelligence.daily as daily
 from quant_investor.contracts import canonical_json_bytes
 from quant_investor.cli.main import main
+from quant_investor.cli import unified as unified_cli
 from quant_investor.intelligence import IntelligenceError
 from quant_investor.intelligence._common import (
     artifact_ref,
@@ -150,6 +151,17 @@ def test_ineligible_20260821_signal_fails_before_store_creation(tmp_path: Path) 
     after = sorted(path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*"))
     assert before == after == []
     assert not (tmp_path / POOL_ROOT_RELATIVE_PATH).exists()
+
+
+def test_delayed_pool_recovery_keeps_signal_date_close_cutoff() -> None:
+    assert unified_cli._factor_signal_close_cutoff("20260824") == (
+        "2026-08-24T07:00:00Z"
+    )
+    with pytest.raises(
+        Exception,
+        match="RESEARCH_POOL_SIGNAL_DATE_INVALID",
+    ):
+        unified_cli._factor_signal_close_cutoff("2026-08-24")
 
 
 def test_unconfigured_policy_is_pool_only() -> None:
