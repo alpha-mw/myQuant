@@ -440,3 +440,63 @@ def test_publication_delay_metadata_rejects_recorded_minute_drift() -> None:
     record["publication_delay"]["candidate_recorded_at"] = "2026-08-22T09:31:00+08:00"
     with pytest.raises(StrategyRecordStoreError, match="record minute mismatch"):
         store_module._validate_publication_delay(record)
+
+
+def test_late_active_pointer_allows_later_bound_no_action_timestamp() -> None:
+    active = {
+        **_late_delay_record(),
+        "relative_path": "20260822_0930",
+        "state": "ONLINE",
+        "storage_state": "ONLINE",
+        "inventory_sha256": "a" * 64,
+        "total_bytes": 1,
+        "file_count": 1,
+    }
+    previous = {
+        "record_id": "20260820_1321",
+        "relative_path": "20260820_1321",
+        "state": "ONLINE",
+        "storage_state": "ONLINE",
+        "inventory_sha256": "b" * 64,
+        "total_bytes": 1,
+        "file_count": 1,
+    }
+    published_at = "2026-08-24T13:54:38Z"
+    active_checkpoint = store_module._active_closure(
+        [previous, active], active["record_id"]
+    )
+    receipt = {
+        "schema_id": "myquant.strategy_record_no_action_receipt.v1",
+        "receipt_id": "automation-20260824-daily-review-v1",
+        "created_at": published_at,
+        "status": "NO_ACTION",
+        "reason": "daily-review-no-verified-financial-state-change",
+        "active_record_id": active["record_id"],
+        "active_checkpoint": active_checkpoint,
+        "payload_copied": False,
+        "v17_mainline_authority": False,
+        "broker_order_trade_authority": False,
+    }
+    receipt["content_sha256"] = store_module.content_sha256(receipt)
+    catalog = {
+        "schema_id": store_module.CATALOG_SCHEMA_V3,
+        "active_record_id": active["record_id"],
+        "previous_record_id": previous["record_id"],
+        "published_at": published_at,
+        "records": [previous, active],
+        "receipts": [receipt],
+    }
+    pointer = {
+        "active_record_id": active["record_id"],
+        "previous_record_id": previous["record_id"],
+        "active_closure": active_checkpoint,
+        "published_at": published_at,
+    }
+
+    store_module._validate_pointer_catalog_closure(pointer, catalog)
+
+    receipt["reason"] = "tampered"
+    with pytest.raises(
+        StrategyRecordStoreError, match="pointer late publication timestamp mismatch"
+    ):
+        store_module._validate_pointer_catalog_closure(pointer, catalog)

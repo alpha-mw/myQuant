@@ -1065,6 +1065,19 @@ def test_no_action_receipt_references_checkpoint_without_copying_payload(
     assert receipt["active_checkpoint"] == result["pointer"]["active_closure"]
     assert receipt["payload_copied"] is False
     assert "inventory" not in receipt["active_checkpoint"]
+    replay = manager.command_no_action(
+        _args(
+            record_root=str(tmp_path),
+            receipt_id="no-action-1",
+            reason="readiness blocked",
+            expected_pointer_sha=result["pointer_sha256"],
+            generation_id="unused-replay",
+            published_at="2026-08-10T00:01:00Z",
+        )
+    )
+    assert replay["idempotent"] is True
+    assert replay["pointer_sha256"] == result["pointer_sha256"]
+    assert len(replay["catalog"]["receipts"]) == len(result["catalog"]["receipts"])
     monkeypatch.setattr(manager, "NO_ACTION_RECEIPT_MAX_BYTES", 200)
     with pytest.raises(StrategyRecordStoreError, match="receipt exceeds"):
         manager.command_no_action(

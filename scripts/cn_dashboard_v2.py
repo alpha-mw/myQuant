@@ -1066,7 +1066,11 @@ def build_v2_bundle(
             delay_semantics = _publication_delay_semantics(
                 publication_delay_projection, label="late_publication_catalog_delay"
             )
-            receipt_id = str(delay_semantics["continuity_receipt_id"])
+            receipt_id = (
+                str(delay_semantics["continuity_receipt_id"])
+                if late_publication_current
+                else f"automation-{generation_local_date.strftime('%Y%m%d')}-daily-review-v1"
+            )
         else:
             receipt_id = f"automation-{generation_local_date.strftime('%Y%m%d')}" "-daily-review-v1"
             financial_publication = (
@@ -1087,15 +1091,36 @@ def build_v2_bundle(
     if late_publication:
         # The late record carries its own inherited receipt binding.  It is a
         # financial publication only on its actual publication date (8/22).
-        # On a later required date the immutable 8/21 point remains useful as
-        # historical evidence, but it cannot silently extend today's freshness.
+        # On a later required date it needs that date's exact no-action receipt
+        # bound to the late record's active closure, just like any other active
+        # financial checkpoint.
         if late_publication_current:
             continuity_status = "FINANCIAL_STATE_PUBLICATION"
             financial_state_changed = True
             continuity_receipt_id = None
             receipt_sha = None
             freshness_reason = LATE_FRESHNESS_REASON
+        elif matching_receipts:
+            if len(matching_receipts) != 1:
+                raise DashboardV2Error("daily_continuity_receipt_duplicate")
+            receipt = matching_receipts[0]
+            _validate_continuity_receipt(
+                receipt,
+                expected_active_record_id=str(pointer.get("active_record_id") or ""),
+                expected_checkpoint=closure,
+                generation_local_date=generation_local_date,
+            )
+            continuity_status = "NO_ACTION_BOUND"
+            financial_state_changed = False
+            continuity_receipt_id = receipt_id
+            receipt_sha = str(receipt["content_sha256"])
+            freshness_reason = "CURRENT_DAILY_RECEIPT_AND_LATEST_LOCAL_CLOSE"
         else:
+            _reject_unrelated_same_day_receipts(
+                catalog.get("receipts"),
+                expected_receipt_id=receipt_id,
+                generation_local_date=generation_local_date,
+            )
             continuity_status = "UNCONFIRMED"
             financial_state_changed = False
             continuity_receipt_id = None
@@ -1521,7 +1546,7 @@ def validate_v2_shape(bundle: dict) -> list[str]:
             holdings_valid_through = ""
             errors.append("continuity_valid_through_invalid")
         expected_holdings_date = generation_date
-        if late_projection and status != "UNCONFIRMED":
+        if late_projection and status == "FINANCIAL_STATE_PUBLICATION":
             expected_holdings_date = late_valuation_date or ""
         if status != "UNCONFIRMED" and holdings_valid_through != expected_holdings_date:
             errors.append("continuity_valid_through_invalid")

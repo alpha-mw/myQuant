@@ -786,6 +786,49 @@ def test_late_publication_on_later_required_date_is_stale_and_not_revalued(
     assert v2.validate_v2_shape(bundle) == []
 
 
+def test_late_publication_accepts_later_bound_no_action_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inputs = _fixture(tmp_path, monkeypatch, latest_complete_trade_date="20260824")
+    late = _configure_late_publication(inputs, monkeypatch)
+    catalog = inputs[4]
+    pointer_path = inputs[2] / "_record_store/current.v1.json"
+    pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    receipt = {
+        "schema_id": "myquant.strategy_record_no_action_receipt.v1",
+        "receipt_id": "automation-20260824-daily-review-v1",
+        "created_at": "2026-08-24T13:54:38Z",
+        "status": "NO_ACTION",
+        "reason": "daily-review-no-verified-financial-state-change",
+        "active_record_id": pointer["active_record_id"],
+        "active_checkpoint": pointer["active_closure"],
+        "payload_copied": False,
+        "v17_mainline_authority": False,
+        "broker_order_trade_authority": False,
+    }
+    receipt["content_sha256"] = store_content_sha256(receipt)
+    catalog["receipts"].append(receipt)
+    catalog_path = inputs[2] / pointer["catalog_path"]
+    catalog_raw = (json.dumps(catalog, sort_keys=True) + "\n").encode()
+    catalog_path.write_bytes(catalog_raw)
+    pointer["catalog_sha256"] = _sha(catalog_raw)
+    pointer_path.write_text(json.dumps(pointer, sort_keys=True) + "\n", encoding="utf-8")
+    monkeypatch.setattr(v2, "load_registered_catalog", lambda _: (pointer, catalog))
+
+    bundle = _build(*late, generation_local_date=date(2026, 8, 24))
+
+    assert bundle["freshness"]["status"] == "UPDATED"
+    assert bundle["freshness"]["mark_as_of"] == "2026-08-24"
+    assert bundle["freshness"]["reason"] == "CURRENT_DAILY_RECEIPT_AND_LATEST_LOCAL_CLOSE"
+    assert bundle["continuity_authority"]["status"] == "NO_ACTION_BOUND"
+    assert bundle["continuity_authority"]["receipt_id"] == receipt["receipt_id"]
+    assert bundle["continuity_authority"]["receipt_content_sha256"] == (
+        receipt["content_sha256"]
+    )
+    assert bundle["continuity_authority"]["holdings_valid_through"] == "2026-08-24"
+    assert v2.validate_v2_shape(bundle) == []
+
+
 def test_late_publication_does_not_accept_inferred_8_22_market_mark(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

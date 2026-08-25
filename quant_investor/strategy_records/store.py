@@ -720,8 +720,41 @@ def _validate_pointer_catalog_closure(
     )
     if isinstance(active_delay, Mapping) and pointer.get("published_at") != active_delay.get(
         "actual_published_at"
+    ) and not _has_current_active_no_action_receipt(
+        catalog,
+        active_record_id=active,
+        published_at=pointer.get("published_at"),
     ):
         raise StrategyRecordStoreError("pointer late publication timestamp mismatch")
+
+
+def _has_current_active_no_action_receipt(
+    catalog: Mapping[str, Any],
+    *,
+    active_record_id: Any,
+    published_at: Any,
+) -> bool:
+    if not isinstance(active_record_id, str) or not isinstance(published_at, str):
+        return False
+    try:
+        active_checkpoint = _active_closure(catalog["records"], active_record_id)
+    except (KeyError, StrategyRecordStoreError):
+        return False
+    matches = [
+        receipt
+        for receipt in catalog.get("receipts", [])
+        if isinstance(receipt, Mapping)
+        and receipt.get("schema_id") == "myquant.strategy_record_no_action_receipt.v1"
+        and receipt.get("created_at") == published_at
+        and receipt.get("status") == "NO_ACTION"
+        and receipt.get("active_record_id") == active_record_id
+        and receipt.get("active_checkpoint") == active_checkpoint
+        and receipt.get("payload_copied") is False
+        and receipt.get("v17_mainline_authority") is False
+        and receipt.get("broker_order_trade_authority") is False
+        and receipt.get("content_sha256") == content_sha256(receipt)
+    ]
+    return len(matches) == 1
 
 
 def _late_document_declaration(document: Mapping[str, Any], *, label: str) -> dict[str, Any]:
@@ -828,7 +861,11 @@ def _validate_late_external_binding(
         )
     if catalog.get("active_record_id") == record.get("record_id") and catalog.get(
         "published_at"
-    ) != delay.get("actual_published_at"):
+    ) != delay.get("actual_published_at") and not _has_current_active_no_action_receipt(
+        catalog,
+        active_record_id=record.get("record_id"),
+        published_at=catalog.get("published_at"),
+    ):
         raise StrategyRecordStoreError("late publication catalog timestamp mismatch")
     manifest = _record_json(
         root,

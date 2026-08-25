@@ -2103,7 +2103,7 @@ def command_no_action(args: argparse.Namespace) -> dict[str, Any]:
     loaded = load_registered_catalog(root)
     if loaded is None:
         raise StrategyRecordStoreError("no-action requires a registered catalog")
-    pointer, _ = loaded
+    pointer, catalog = loaded
     observed_pointer_sha = _pointer_sha(root)
     if observed_pointer_sha != args.expected_pointer_sha:
         from quant_investor.strategy_records.store import (
@@ -2113,9 +2113,41 @@ def command_no_action(args: argparse.Namespace) -> dict[str, Any]:
         raise StrategyRecordCASMismatch(args.expected_pointer_sha, observed_pointer_sha)
     if not pointer.get("active_record_id") or not pointer.get("active_closure"):
         raise StrategyRecordStoreError("no-action requires an active checkpoint")
+    receipt_id = _record_id(args.receipt_id)
+    existing = [
+        row
+        for row in catalog.get("receipts", [])
+        if isinstance(row, dict) and row.get("receipt_id") == receipt_id
+    ]
+    if len(existing) > 1:
+        raise StrategyRecordConflict("no-action receipt identity is duplicated")
+    if existing:
+        receipt = existing[0]
+        if (
+            receipt.get("schema_id") != "myquant.strategy_record_no_action_receipt.v1"
+            or receipt.get("status") != "NO_ACTION"
+            or receipt.get("reason") != args.reason
+            or receipt.get("active_record_id") != pointer["active_record_id"]
+            or receipt.get("active_checkpoint") != pointer["active_closure"]
+            or receipt.get("payload_copied") is not False
+            or receipt.get("v17_mainline_authority") is not False
+            or receipt.get("broker_order_trade_authority") is not False
+            or receipt.get("content_sha256") != content_sha256(receipt)
+            or (
+                args.published_at is not None
+                and receipt.get("created_at") != _timestamp(args.published_at)
+            )
+        ):
+            raise StrategyRecordConflict("no-action receipt identity collision")
+        return {
+            "pointer": pointer,
+            "catalog": catalog,
+            "pointer_sha256": observed_pointer_sha,
+            "idempotent": True,
+        }
     receipt = {
         "schema_id": "myquant.strategy_record_no_action_receipt.v1",
-        "receipt_id": _record_id(args.receipt_id),
+        "receipt_id": receipt_id,
         "created_at": _timestamp(args.published_at),
         "status": "NO_ACTION",
         "reason": args.reason,
