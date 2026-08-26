@@ -1383,6 +1383,14 @@ def research_publish_policy(*, workspace_root: str) -> dict[str, Any]:
     return publish_phase_a_policy(workspace_root)
 
 
+def research_publish_theme_policy(*, workspace_root: str) -> dict[str, Any]:
+    """Publish the exact owner-approved ACTIVE Theme v2 policy bundle."""
+
+    from quant_investor.intelligence import publish_theme_policy_v2
+
+    return publish_theme_policy_v2(workspace_root)
+
+
 def _factor_signal_close_cutoff(signal_date: Any) -> str:
     if type(signal_date) is not str:
         raise CommandError("RESEARCH_POOL_SIGNAL_DATE_INVALID")
@@ -1403,12 +1411,12 @@ def research_publish_pool(
         read_factor_production_research_inputs,
     )
     from quant_investor.intelligence import (
-        approved_phase_a_policy,
+        IntelligenceError,
         build_factor_research_rank,
     )
     from quant_investor.intelligence.storage import (
         DailyResearchPoolStore,
-        PHASE_A_POLICY_RELATIVE_PATH,
+        approved_pool_policy,
     )
 
     _, document = _request(
@@ -1429,14 +1437,16 @@ def research_publish_pool(
         },
         code="RESEARCH_POOL_PUBLISH_REQUEST_INVALID",
     )
-    if values["policy_path"] != PHASE_A_POLICY_RELATIVE_PATH:
-        raise CommandError("RESEARCH_POOL_POLICY_PATH_INVALID")
+    try:
+        expected_policy = approved_pool_policy(values["policy_path"])
+    except IntelligenceError as exc:
+        raise CommandError("RESEARCH_POOL_POLICY_PATH_INVALID") from exc
     _, policy = _request(
         workspace_root=workspace_root,
         request_path=values["policy_path"],
         expected_request_sha256=values["expected_policy_sha256"],
     )
-    if policy != approved_phase_a_policy():
+    if policy != expected_policy:
         raise CommandError("RESEARCH_POOL_POLICY_BYTES_INVALID")
     _, low = _request(
         workspace_root=workspace_root,
@@ -1469,6 +1479,7 @@ def research_publish_pool(
     return store.publish(
         rank=rank,
         expected_policy_sha256=values["expected_policy_sha256"],
+        policy_path=values["policy_path"],
         before_publish=lambda: assert_factor_production_pointer(
             workspace_root,
             expected_pointer_sha256=expected_pointer,
@@ -1533,6 +1544,7 @@ __all__ = [
     "research_compile_evidence",
     "research_compile_daily",
     "research_publish_policy",
+    "research_publish_theme_policy",
     "research_publish_pool",
     "research_evaluate",
     "research_forward",

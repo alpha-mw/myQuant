@@ -22,13 +22,23 @@ from quant_investor.intelligence.storage import (
     DailyResearchPoolStore,
     PHASE_A_POLICY_RELATIVE_PATH,
     POOL_ROOT_RELATIVE_PATH,
+    THEME_GOVERNANCE_POLICY_RELATIVE_PATH,
+    THEME_POLICY_V2_RELATIVE_PATH,
     _publish_phase_a_policy,
     approved_phase_a_policy,
+    approved_theme_policy_v2,
     publish_phase_a_policy,
+    publish_theme_policy_v2,
 )
 from quant_investor.intelligence import (
+    build_unverified_economic_exposure_projection,
     compile_daily_intelligence,
     project_tushare_theme_source,
+)
+from quant_investor.intelligence.theme_governance import (
+    EFFECTIVE_SIGNAL_DATE,
+    TECHNOLOGY_THEME_IDS,
+    approved_theme_governance_policy,
 )
 
 
@@ -143,6 +153,52 @@ def test_policy_publish_cli_uses_only_code_owned_policy(
     assert first["policy_path"] == PHASE_A_POLICY_RELATIVE_PATH
 
 
+def test_owner_approved_theme_v2_bundle_is_prospective_and_idempotent(
+    tmp_path: Path,
+) -> None:
+    daily = approved_theme_policy_v2()
+    governance = approved_theme_governance_policy()
+    assert daily["payload"]["effective_signal_date"] == EFFECTIVE_SIGNAL_DATE == "20260827"
+    assert daily["payload"]["technology_policy_state"] == "ACTIVE"
+    assert daily["payload"]["technology_theme_ids"] == list(TECHNOLOGY_THEME_IDS)
+    assert governance["payload"]["primary_provider"] == "TUSHARE_DC"
+    assert governance["payload"]["fallback_provider"] == "TUSHARE_TDX"
+    assert governance["payload"]["fallback_rule"] == ("ONLY_REGISTERED_DC_FALLBACK_COMPANY_KEYSET")
+    assert governance["payload"]["membership_is_economic_exposure"] is False
+    assert governance["payload"]["exposure_levels"] == [
+        "HIGH",
+        "LOW",
+        "MEDIUM",
+        "UNVERIFIED",
+    ]
+
+    first = publish_theme_policy_v2(tmp_path)
+    second = publish_theme_policy_v2(tmp_path)
+    assert first["command_status"] == "PUBLISHED"
+    assert second["command_status"] == "NO_ACTION"
+    assert first["daily_policy_sha256"] == second["daily_policy_sha256"]
+    assert first["governance_policy_sha256"] == second["governance_policy_sha256"]
+    for relative in (
+        THEME_POLICY_V2_RELATIVE_PATH,
+        THEME_GOVERNANCE_POLICY_RELATIVE_PATH,
+    ):
+        path = tmp_path / relative
+        assert path.is_file()
+        assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_theme_policy_publish_cli_uses_only_code_owned_bundle(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    main(["research", "theme-policy-publish", "--workspace-root", str(tmp_path)])
+    first = json.loads(capsys.readouterr().out)
+    main(["research", "theme-policy-publish", "--workspace-root", str(tmp_path)])
+    second = json.loads(capsys.readouterr().out)
+    assert first["command_status"] == "PUBLISHED"
+    assert second["command_status"] == "NO_ACTION"
+    assert first["effective_signal_date"] == "20260827"
+
+
 def test_ineligible_20260821_signal_fails_before_store_creation(tmp_path: Path) -> None:
     policy = approved_phase_a_policy()
     before = sorted(path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*"))
@@ -154,9 +210,7 @@ def test_ineligible_20260821_signal_fails_before_store_creation(tmp_path: Path) 
 
 
 def test_delayed_pool_recovery_keeps_signal_date_close_cutoff() -> None:
-    assert unified_cli._factor_signal_close_cutoff("20260824") == (
-        "2026-08-24T07:00:00Z"
-    )
+    assert unified_cli._factor_signal_close_cutoff("20260824") == ("2026-08-24T07:00:00Z")
     with pytest.raises(
         Exception,
         match="RESEARCH_POOL_SIGNAL_DATE_INVALID",
@@ -241,6 +295,130 @@ def test_pool_publication_is_atomic_idempotent_and_conflicting(tmp_path: Path) -
             expected_policy_sha256=policy_result["policy_sha256"],
             before_publish=lambda: None,
         )
+
+
+def test_active_theme_v2_can_publish_factor_pool_without_executing_theme_gate(
+    tmp_path: Path,
+) -> None:
+    policy_result = publish_theme_policy_v2(tmp_path)
+    policy = approved_theme_policy_v2()
+    store = DailyResearchPoolStore(tmp_path)
+    result = store.publish(
+        rank=_rank(policy, signal_date="20260827"),
+        expected_policy_sha256=policy_result["daily_policy_sha256"],
+        policy_path=THEME_POLICY_V2_RELATIVE_PATH,
+        before_publish=lambda: None,
+    )
+    manifest = json.loads((tmp_path / result["pool_root"] / "manifest.json").read_bytes())
+    assert manifest["payload"]["policy_path"] == THEME_POLICY_V2_RELATIVE_PATH
+    assert manifest["payload"]["technology_gate"] == "PENDING_SOURCE_REPLAY"
+    assert manifest["payload"]["theme_gate_executed"] is False
+    assert manifest["payload"]["technology_shortlist"] is False
+
+
+def test_economic_exposure_producer_never_upgrades_membership_without_sources() -> None:
+    policy = approved_theme_policy_v2()
+    companies = ["000001.SZ", "000002.SZ"]
+    company_set_sha = hashlib.sha256(canonical_json_bytes(companies)).hexdigest()
+    theme = build_artifact(
+        kind="theme_membership_projection",
+        identity_field="projection_id",
+        identity="theme-owner-v2-projection",
+        created_at="2026-08-27T07:00:00Z",
+        fields={
+            "as_of": "2026-08-27T07:00:00Z",
+            "blocker_codes": [],
+            "company_rows": [
+                {
+                    "company_code": "000001.SZ",
+                    "provider": "TUSHARE_TDX",
+                    "status": "MEMBERSHIP_ONLY",
+                    "technology_theme_ids": ["TUSHARE_TDX:880948.TDX"],
+                    "theme_ids": ["TUSHARE_TDX:880948.TDX"],
+                },
+                {
+                    "company_code": "000002.SZ",
+                    "provider": "TUSHARE_DC",
+                    "status": "MEMBERSHIP_ONLY",
+                    "technology_theme_ids": [],
+                    "theme_ids": ["TUSHARE_DC:BK0001.DC"],
+                },
+            ],
+            "company_set_sha256": company_set_sha,
+            "fallback_company_keyset": ["000001.SZ"],
+            "policy_ref": artifact_ref(policy),
+            "source_refs": [],
+            "status": "READY",
+            "trade_date": "20260827",
+        },
+    )
+    projection = build_unverified_economic_exposure_projection(
+        as_of="2026-08-27T07:00:00Z",
+        daily_policy=policy,
+        theme_projection=theme,
+    )
+    rows = {row["company_code"]: row for row in projection["payload"]["company_rows"]}
+    assert projection["payload"]["status"] == "BLOCKED"
+    assert projection["payload"]["blocker_codes"] == ["ECONOMIC_EXPOSURE_UNVERIFIED:000001.SZ"]
+    assert rows["000001.SZ"]["technology_gate"] == "PASS"
+    assert rows["000001.SZ"]["economic_exposure_state"] == "UNVERIFIED"
+    assert rows["000001.SZ"]["evidence_refs"] == []
+    assert rows["000002.SZ"]["technology_gate"] == "REJECT_NON_TECH"
+
+
+def test_owner_theme_compile_emits_hard_gate_and_unverified_exposure() -> None:
+    policy = approved_theme_policy_v2()
+    rank = _rank(policy, signal_date="20260827")
+    companies = [row["symbol"] for row in rank["payload"]["pool_rows"]]
+    company_set_sha = hashlib.sha256(
+        canonical_json_bytes(sorted(companies, key=lambda value: value.encode("ascii")))
+    ).hexdigest()
+    company_rows = [
+        {
+            "company_code": company,
+            "provider": "TUSHARE_TDX" if index == 0 else "TUSHARE_DC",
+            "status": "MEMBERSHIP_ONLY",
+            "technology_theme_ids": (["TUSHARE_TDX:880948.TDX"] if index == 0 else []),
+            "theme_ids": (["TUSHARE_TDX:880948.TDX"] if index == 0 else ["TUSHARE_DC:BK0001.DC"]),
+        }
+        for index, company in enumerate(sorted(companies, key=lambda value: value.encode("ascii")))
+    ]
+    theme = build_artifact(
+        kind="theme_membership_projection",
+        identity_field="projection_id",
+        identity="theme-owner-compile-projection",
+        created_at=rank["payload"]["as_of"],
+        fields={
+            "as_of": rank["payload"]["as_of"],
+            "blocker_codes": [],
+            "company_rows": company_rows,
+            "company_set_sha256": company_set_sha,
+            "fallback_company_keyset": [company_rows[0]["company_code"]],
+            "policy_ref": artifact_ref(policy),
+            "source_refs": [],
+            "status": "READY",
+            "trade_date": "20260827",
+        },
+    )
+    result = compile_daily_intelligence(
+        as_of=rank["payload"]["as_of"],
+        strategy_id="aggressive_tech_manufacturing",
+        rank=rank,
+        policy=policy,
+        industry_projection=None,
+        theme_projection=theme,
+    )
+    decisions = {row["company_code"]: row for row in result["decisions"]}
+    exposure = next(
+        artifact
+        for artifact in result["artifacts"]
+        if artifact["kind"] == "theme_economic_exposure_projection"
+    )
+    tech_company = company_rows[0]["company_code"]
+    assert result["status"] == "PARTIAL"
+    assert decisions[tech_company]["technology_gate"] == "PASS"
+    assert decisions[tech_company]["economic_exposure_state"] == "UNVERIFIED"
+    assert exposure["payload"]["blocker_codes"] == [f"ECONOMIC_EXPOSURE_UNVERIFIED:{tech_company}"]
 
 
 def test_pre_rename_failure_leaves_no_final_pool(tmp_path: Path) -> None:

@@ -1157,6 +1157,42 @@ _INTELLIGENCE_SPECS: Final = {
             "theme_provider_precedence",
         },
     ),
+    "theme_governance_policy": (
+        "policy_id",
+        _RESEARCH_COMMON_FIELDS
+        | {
+            "domain_rows",
+            "effective_from",
+            "effective_signal_date",
+            "evidence_source_precedence",
+            "exposure_levels",
+            "fallback_alias_rows",
+            "fallback_provider",
+            "fallback_rule",
+            "membership_is_economic_exposure",
+            "owner_approved_at",
+            "primary_provider",
+            "primary_theme_ids",
+            "status",
+            "strategy_id",
+            "technology_theme_ids",
+        },
+    ),
+    "theme_economic_exposure_projection": (
+        "projection_id",
+        _RESEARCH_COMMON_FIELDS
+        | {
+            "as_of",
+            "blocker_codes",
+            "company_rows",
+            "company_set_sha256",
+            "daily_policy_ref",
+            "governance_policy_ref",
+            "status",
+            "strategy_id",
+            "theme_projection_ref",
+        },
+    ),
     "factor_research_rank": (
         "rank_id",
         _RESEARCH_COMMON_FIELDS

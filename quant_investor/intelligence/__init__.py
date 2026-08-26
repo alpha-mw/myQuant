@@ -40,8 +40,18 @@ from .runtime import (
     inspect,
     validate_readiness,
 )
-from .storage import approved_phase_a_policy, publish_phase_a_policy
+from .storage import (
+    approved_phase_a_policy,
+    approved_theme_policy_v2,
+    publish_phase_a_policy,
+    publish_theme_policy_v2,
+)
 from .theme import assess_theme, validate_theme_assessment
+from .theme_governance import (
+    approved_theme_governance_policy,
+    build_unverified_economic_exposure_projection,
+    validate_theme_governance_policy,
+)
 
 __all__ = [
     "DECISION_STATES",
@@ -53,9 +63,12 @@ __all__ = [
     "assess_readiness",
     "assess_theme",
     "approved_phase_a_policy",
+    "approved_theme_policy_v2",
+    "approved_theme_governance_policy",
     "build_decision_context",
     "build_daily_research_policy",
     "build_factor_research_rank",
+    "build_unverified_economic_exposure_projection",
     "compile_evidence",
     "compile_daily_intelligence",
     "construct_research_portfolio",
@@ -67,6 +80,7 @@ __all__ = [
     "project_tushare_industry_source",
     "project_tushare_theme_source",
     "publish_phase_a_policy",
+    "publish_theme_policy_v2",
     "rank_factor_signals",
     "replay_advisory",
     "review_advisory",
@@ -79,4 +93,5 @@ __all__ = [
     "validate_research_portfolio",
     "validate_readiness",
     "validate_theme_assessment",
+    "validate_theme_governance_policy",
 ]

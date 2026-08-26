@@ -33,6 +33,7 @@ from quant_investor.cli.unified import (
     research_inspect,
     research_publish_policy,
     research_publish_pool,
+    research_publish_theme_policy,
     research_readiness,
     system_activate,
     system_assemble,
@@ -737,6 +738,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "policy-publish", help="publish exact immutable Phase A research policy"
     )
     _add_workspace_argument(research_policy_publish)
+    research_theme_policy_publish = research_subparsers.add_parser(
+        "theme-policy-publish",
+        help="publish exact immutable owner-approved ACTIVE Theme policy",
+    )
+    _add_workspace_argument(research_theme_policy_publish)
 
     market_parser = subparsers.add_parser("market", help="全市场工作流")
     market_subparsers = market_parser.add_subparsers(
@@ -1431,6 +1437,9 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
 
     if args.command == "research" and args.research_command == "policy-publish":
         _print_json(research_publish_policy(workspace_root=args.workspace_root))
+        return
+    if args.command == "research" and args.research_command == "theme-policy-publish":
+        _print_json(research_publish_theme_policy(workspace_root=args.workspace_root))
         return
 
     if args.command == "market" and args.market_command == "maintain":

@@ -929,6 +929,20 @@ def compile_daily_intelligence(  # noqa: C901 - explicit cross-domain research c
         require_artifact_ref(
             theme_artifact["payload"]["policy_ref"], policy_artifact, label="theme.policy_ref"
         )
+    exposure_artifact = None
+    if strategy == "aggressive_tech_manufacturing":
+        from .storage import approved_theme_policy_v2
+        from .theme_governance import build_unverified_economic_exposure_projection
+
+        if policy_artifact != approved_theme_policy_v2():
+            raise IntelligenceError("aggressive Theme compiler requires approved v2 policy")
+        if theme_artifact is None:
+            raise IntelligenceError("aggressive Theme compiler requires source projection")
+        exposure_artifact = build_unverified_economic_exposure_projection(
+            as_of=cutoff,
+            daily_policy=policy_artifact,
+            theme_projection=theme_artifact,
+        )
     industry_rows = (
         {}
         if industry_artifact is None
@@ -944,6 +958,13 @@ def compile_daily_intelligence(  # noqa: C901 - explicit cross-domain research c
         artifacts.append(industry_artifact)
     if theme_artifact is not None:
         artifacts.append(theme_artifact)
+    if exposure_artifact is not None:
+        artifacts.append(exposure_artifact)
+    exposure_rows = (
+        {}
+        if exposure_artifact is None
+        else {row["company_code"]: row for row in exposure_artifact["payload"]["company_rows"]}
+    )
     decisions: list[dict[str, Any]] = []
     decision_blockers: list[str] = []
     per_company: list[dict[str, Any]] = []
@@ -976,6 +997,8 @@ def compile_daily_intelligence(  # noqa: C901 - explicit cross-domain research c
         for artifact in (industry_artifact, theme_artifact):
             if artifact is not None:
                 evidence_refs.append(artifact_ref(artifact))
+        if exposure_artifact is not None:
+            evidence_refs.append(artifact_ref(exposure_artifact))
         context = build_decision_context(
             company=company,
             as_of=cutoff,
@@ -1003,6 +1026,14 @@ def compile_daily_intelligence(  # noqa: C901 - explicit cross-domain research c
             {
                 "company_code": company,
                 "decision_ref": artifact_ref(decision),
+                "economic_exposure_ref": (
+                    None if exposure_artifact is None else artifact_ref(exposure_artifact)
+                ),
+                "economic_exposure_state": (
+                    None
+                    if company not in exposure_rows
+                    else exposure_rows[company]["economic_exposure_state"]
+                ),
                 "industry_ref": artifact_ref(industry),
                 "technology_gate": (
                     "PASS"
@@ -1036,8 +1067,17 @@ def compile_daily_intelligence(  # noqa: C901 - explicit cross-domain research c
         if industry.get("kind") == "industry_assessment"
     ]
     stage_results["theme_gate"]["output_refs"] = (
-        [] if theme_artifact is None else [artifact_ref(theme_artifact)]
+        []
+        if theme_artifact is None
+        else [artifact_ref(theme_artifact)]
+        + ([] if exposure_artifact is None else [artifact_ref(exposure_artifact)])
     )
+    if exposure_artifact is not None and exposure_artifact["payload"]["blocker_codes"]:
+        stage_results["theme_gate"] = {
+            "blocker_codes": exposure_artifact["payload"]["blocker_codes"],
+            "output_refs": stage_results["theme_gate"]["output_refs"],
+            "status": "BLOCKED",
+        }
     stage_results["fundamental"] = {
         "blocker_codes": ["FUNDAMENTAL_DETERMINISTIC_PRODUCER_UNAVAILABLE"],
         "output_refs": [],

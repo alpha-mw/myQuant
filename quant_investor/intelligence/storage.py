@@ -29,9 +29,22 @@ from .daily import (
     validate_daily_research_policy,
     validate_factor_research_rank,
 )
+from .theme_governance import (
+    EFFECTIVE_SIGNAL_DATE,
+    OWNER_APPROVED_AT,
+    TECHNOLOGY_THEME_IDS,
+    approved_theme_governance_policy,
+    validate_theme_governance_policy,
+)
 
 PHASE_A_POLICY_RELATIVE_PATH: Final = (
     "results/policies/research/aggressive_tech_manufacturing/v1.json"
+)
+THEME_POLICY_V2_RELATIVE_PATH: Final = (
+    "results/policies/research/aggressive_tech_manufacturing/v2.json"
+)
+THEME_GOVERNANCE_POLICY_RELATIVE_PATH: Final = (
+    "results/policies/research/aggressive_tech_manufacturing/theme-governance.v1.json"
 )
 POOL_ROOT_RELATIVE_PATH: Final = "results/intelligence/research_pool"
 POOL_STRATEGY_ID: Final = "aggressive_tech_manufacturing"
@@ -85,6 +98,49 @@ def approved_phase_a_policy() -> dict[str, Any]:
         theme_provider_precedence=["TUSHARE_DC", "TUSHARE_TDX"],
         fundamental_freshness={"policy": "ADVISORY_NO_FIXED_MAXIMUM"},
         created_at="2026-08-21T16:00:00Z",
+    )
+
+
+def approved_theme_policy_v2() -> dict[str, Any]:
+    """Return the later-effective ACTIVE Theme policy approved by Maxwell."""
+
+    return build_daily_research_policy(
+        strategy_id=POOL_STRATEGY_ID,
+        effective_from=OWNER_APPROVED_AT,
+        effective_signal_date=EFFECTIVE_SIGNAL_DATE,
+        effective_to=None,
+        factor_rows=[
+            {
+                "direction": "HIGHER_IS_BETTER",
+                "factor_alias": "LOW",
+                "factor_id": "pv_low_dollar_volume_5d",
+                "weight": "0.5",
+            },
+            {
+                "direction": "HIGHER_IS_BETTER",
+                "factor_alias": "W80",
+                "factor_id": "pv_blend_volstab19x2_mom90_amihud5_w80",
+                "weight": "0.5",
+            },
+        ],
+        pool_policy={
+            "minimum_cohort": 3000,
+            "missing_rule": "BLOCK_ON_ANY_MISSING_OR_NONFINITE",
+            "normalization": "AVERAGE_TIE_PERCENTILE_ASCENDING_ZERO_ONE",
+            "pool_boundary_rule": "EXACT_LIMIT_ASCII_SYMBOL_TIEBREAK",
+            "pool_size": 100,
+            "sort_key": "DESC_COMBINED_PERCENTILE_ASCII_SYMBOL",
+            "tie_rule": "AVERAGE_ORDINAL_PERCENTILE",
+        },
+        decision_thresholds={
+            "paper_candidate": "0.90",
+            "research_approved": "0.80",
+        },
+        technology_theme_ids=list(TECHNOLOGY_THEME_IDS),
+        technology_policy_state="ACTIVE",
+        theme_provider_precedence=["TUSHARE_DC", "TUSHARE_TDX"],
+        fundamental_freshness={"policy": "ADVISORY_NO_FIXED_MAXIMUM"},
+        created_at=OWNER_APPROVED_AT,
     )
 
 
@@ -225,6 +281,108 @@ def publish_phase_a_policy(workspace_root: str | os.PathLike[str]) -> dict[str, 
     return _publish_phase_a_policy(workspace_root, before_publish=lambda: None)
 
 
+def _publish_exact_policy_artifact(
+    *,
+    root: Path,
+    relative_path: str,
+    artifact: Mapping[str, Any],
+    validator: Callable[[Mapping[str, Any] | bytes], dict[str, Any]],
+) -> dict[str, Any]:
+    raw = canonical_json_bytes(artifact)
+    parent = _store_parent(root, ("policies", "research", POOL_STRATEGY_ID))
+    path = root / relative_path
+    if path.parent != parent:
+        raise IntelligenceError("research policy path is outside the governed parent")
+    if path.exists():
+        _verify_policy_file(path, raw)
+        created = False
+    else:
+        temporary = parent / f".{path.name}.publish-{os.getpid()}-{secrets.token_hex(8)}"
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+            0o600,
+        )
+        try:
+            os.fchmod(descriptor, 0o600)
+            _write_all(descriptor, raw)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        _verify_policy_file(temporary, raw)
+        try:
+            _atomic_no_replace(temporary, path)
+            parent_fd = os.open(parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(parent_fd)
+            finally:
+                os.close(parent_fd)
+            created = True
+        except FileExistsError:
+            _verify_policy_file(path, raw)
+            temporary.unlink()
+            created = False
+        _verify_policy_file(path, raw)
+    observed = read_stable_regular_file(path, label=f"research policy {path.name}")
+    if validator(observed) != artifact:
+        raise IntelligenceError("research policy readback differs")
+    return {
+        "created": created,
+        "path": relative_path,
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "ref": artifact_ref(artifact),
+    }
+
+
+def publish_theme_policy_v2(workspace_root: str | os.PathLike[str]) -> dict[str, Any]:
+    """Publish the approved governance artifact, then the ACTIVE daily v2 policy."""
+
+    root = _workspace(workspace_root)
+    governance = approved_theme_governance_policy()
+    daily = approved_theme_policy_v2()
+    if daily["payload"]["technology_theme_ids"] != governance["payload"]["technology_theme_ids"]:
+        raise IntelligenceError("daily and governance Theme IDs differ")
+    governance_result = _publish_exact_policy_artifact(
+        root=root,
+        relative_path=THEME_GOVERNANCE_POLICY_RELATIVE_PATH,
+        artifact=governance,
+        validator=validate_theme_governance_policy,
+    )
+    daily_result = _publish_exact_policy_artifact(
+        root=root,
+        relative_path=THEME_POLICY_V2_RELATIVE_PATH,
+        artifact=daily,
+        validator=validate_daily_research_policy,
+    )
+    return {
+        "command_status": (
+            "PUBLISHED" if governance_result["created"] or daily_result["created"] else "NO_ACTION"
+        ),
+        "daily_policy_path": daily_result["path"],
+        "daily_policy_sha256": daily_result["sha256"],
+        "daily_policy_ref": daily_result["ref"],
+        "effective_signal_date": EFFECTIVE_SIGNAL_DATE,
+        "governance_policy_path": governance_result["path"],
+        "governance_policy_sha256": governance_result["sha256"],
+        "governance_policy_ref": governance_result["ref"],
+        "research_only": True,
+        "production": False,
+        "grants_trading_authority": False,
+    }
+
+
+def approved_pool_policy(relative_path: str) -> dict[str, Any]:
+    if relative_path == PHASE_A_POLICY_RELATIVE_PATH:
+        return approved_phase_a_policy()
+    if relative_path == THEME_POLICY_V2_RELATIVE_PATH:
+        return approved_theme_policy_v2()
+    raise IntelligenceError("research pool policy path is not approved")
+
+
 def _selected_symbols(rank: Mapping[str, Any], *, created_at: str) -> dict[str, Any]:
     payload = rank["payload"]
     symbols = [row["symbol"] for row in payload["pool_rows"]]
@@ -262,13 +420,14 @@ def _pool_documents(
     rank_artifact = validate_factor_research_rank(rank, policy=policy)
     policy_artifact = validate_daily_research_policy(policy)
     if (
-        policy_path != PHASE_A_POLICY_RELATIVE_PATH
+        policy_path not in {PHASE_A_POLICY_RELATIVE_PATH, THEME_POLICY_V2_RELATIVE_PATH}
         or hashlib.sha256(canonical_json_bytes(policy_artifact)).hexdigest() != policy_sha256
+        or policy_artifact != approved_pool_policy(policy_path)
     ):
-        raise IntelligenceError("Phase A policy path or byte SHA is invalid")
+        raise IntelligenceError("research pool policy path or byte SHA is invalid")
     rank_payload = rank_artifact["payload"]
     if (
-        policy_artifact["payload"]["technology_policy_state"] != "UNCONFIGURED"
+        policy_artifact["payload"]["technology_policy_state"] not in {"ACTIVE", "UNCONFIGURED"}
         or rank_payload["strategy_id"] != POOL_STRATEGY_ID
         or len(rank_payload["pool_rows"]) != 100
         or rank_payload["common_symbol_count"] < 3000
@@ -312,7 +471,11 @@ def _pool_documents(
             "selected_symbol_set_sha256": selected["payload"]["symbol_set_sha256"],
             "signal_date": rank_payload["signal_date"],
             "strategy_id": POOL_STRATEGY_ID,
-            "technology_gate": "UNAVAILABLE",
+            "technology_gate": (
+                "UNAVAILABLE"
+                if policy_artifact["payload"]["technology_policy_state"] == "UNCONFIGURED"
+                else "PENDING_SOURCE_REPLAY"
+            ),
             "technology_shortlist": False,
             "theme_gate_executed": False,
         },
@@ -418,19 +581,21 @@ class DailyResearchPoolStore:
         rank: Mapping[str, Any],
         expected_policy_sha256: str,
         before_publish: Callable[[], None],
+        policy_path: str = PHASE_A_POLICY_RELATIVE_PATH,
     ) -> dict[str, Any]:
-        policy_path = self.workspace_root / PHASE_A_POLICY_RELATIVE_PATH
-        policy_raw = canonical_json_bytes(approved_phase_a_policy())
-        _verify_policy_file(policy_path, policy_raw)
+        approved = approved_pool_policy(policy_path)
+        policy_file = self.workspace_root / policy_path
+        policy_raw = canonical_json_bytes(approved)
+        _verify_policy_file(policy_file, policy_raw)
         if hashlib.sha256(policy_raw).hexdigest() != expected_policy_sha256:
-            raise IntelligenceError("Phase A published policy SHA differs")
+            raise IntelligenceError("published research policy SHA differs")
         policy = validate_daily_research_policy(policy_raw)
         if rank["payload"]["signal_date"] < policy["payload"]["effective_signal_date"]:
             raise IntelligenceError("Factor signal date predates daily research policy")
         documents = _pool_documents(
             rank=rank,
             policy=policy,
-            policy_path=PHASE_A_POLICY_RELATIVE_PATH,
+            policy_path=policy_path,
             policy_sha256=expected_policy_sha256,
         )
         raw_documents = {
@@ -512,8 +677,13 @@ class DailyResearchPoolStore:
 __all__ = [
     "DailyResearchPoolStore",
     "PHASE_A_POLICY_RELATIVE_PATH",
+    "THEME_GOVERNANCE_POLICY_RELATIVE_PATH",
+    "THEME_POLICY_V2_RELATIVE_PATH",
     "POOL_ROOT_RELATIVE_PATH",
     "POOL_STRATEGY_ID",
+    "approved_pool_policy",
     "approved_phase_a_policy",
+    "approved_theme_policy_v2",
     "publish_phase_a_policy",
+    "publish_theme_policy_v2",
 ]
