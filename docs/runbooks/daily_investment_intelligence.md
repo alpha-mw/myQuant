@@ -76,6 +76,26 @@ It may be used only to publish the Factor Top100 research pool. Theme projection
 and `compile-daily` reject it. A later ACTIVE allowlist must be a distinct,
 later-effective immutable policy revision; v1 is never rewritten.
 
+Maxwell approved the ACTIVE Theme seed after the 2026-08-26 close. The immutable
+v2 policy is therefore prospective from Factor signal date `20260827`; it never
+relabels the 20260824 pool:
+
+```text
+primary provider = TUSHARE_DC
+fallback provider = TUSHARE_TDX
+fallback rule = ONLY_REGISTERED_DC_FALLBACK_COMPANY_KEYSET
+technology policy state = ACTIVE
+primary DC IDs = 11 owner-approved seed themes
+TDX aliases = six exact-name mappings plus two explicit owner-approved aliases
+```
+
+The corresponding `theme_governance_policy` also fixes seven top-level domains
+and the economic-exposure states `HIGH / MEDIUM / LOW / UNVERIFIED`.
+Membership is explicitly not economic exposure. Until annual/interim reports,
+company announcements, IR records, revenue/product/customer, order/capacity or
+capex evidence is replayed, a Theme-pass company remains `UNVERIFIED` with
+`ECONOMIC_EXPOSURE_SOURCE_REQUIRED` and cannot become a formal Decision.
+
 The compiler does not infer the System strategy identity from a historical
 Strategy Record directory. A test or implementation-smoke policy is not an
 owner policy and cannot be used for an investment conclusion.
@@ -124,6 +144,17 @@ quant-investor research policy-publish \
   --workspace-root /Users/maxwell/mySpace/myQuant
 ```
 
+Publish the later-effective owner Theme v2 bundle:
+
+```bash
+quant-investor research theme-policy-publish \
+  --workspace-root /Users/maxwell/mySpace/myQuant
+```
+
+This publishes `theme-governance.v1.json` first and `v2.json` second. An
+interruption after the governance leaf is inert; exact replay completes or
+returns `NO_ACTION`. The v1 bytes are never modified.
+
 Publish one eligible immutable Factor Top100 pool:
 
 ```bash
@@ -137,6 +168,12 @@ quant-investor research pool-publish \
 LOW/W80 observation path/SHAs and the exact v1 policy path/SHA. It does not
 accept a rank, selected symbols, output path, manifest or receipt. A signal
 before `20260822` fails before any pool-store directory is created.
+
+For `signal_date >= 20260827`, the request must instead bind the exact v2
+policy path/SHA. The writer accepts only the code-owned v1 or v2 bytes. The v2
+pool remains Factor-only until same-date DC/registered-TDX-fallback source
+replay completes; its manifest says `PENDING_SOURCE_REPLAY`, never a fabricated
+technology shortlist.
 
 The immutable pool root is strategy-scoped:
 
