@@ -195,6 +195,32 @@ candidate publication, I6 portfolio construction, and Paper execution remain
 separate later phases. The policy and pool writers own only their exact
 research-only roots.
 
+### PROJECT_ENV Theme replay
+
+After one v2 Top100 is immutably published, the release-owned Theme replay
+entrypoint builds the exact ASCII-sorted DC plan from that pool, captures DC as
+primary, derives the registered fallback company keyset, and captures TDX only
+for that keyset:
+
+```bash
+<installed-python> -I <clean-release-repository>/scripts/operations/run_cn_theme_replay.py \
+  --workspace-root /Users/maxwell/mySpace/myQuant \
+  --expected-import-root <installed-root> \
+  --selected-symbols results/intelligence/research_pool/aggressive_tech_manufacturing/<YYYY-MM-DD>/selected_symbols.json \
+  --expected-selected-symbols-sha256 <exact-sha256> \
+  --policy results/policies/research/aggressive_tech_manufacturing/v2.json \
+  --expected-policy-sha256 <exact-sha256> \
+  --allow-live
+```
+
+The entrypoint reuses installed `read_project_env_token` and reads only the
+owner-controlled workspace `.env` key `TUSHARE_TOKEN`. It never sources the
+file, reads Keychain, logs/hashes/persists the token, retries a provider call,
+or creates a second membership path. Existing exact capture roots replay with
+zero network calls. A DC registry failure blocks before TDX; incomplete DC
+company partitions alone form the registered TDX fallback keyset. Capture
+completion remains membership-only and cannot upgrade economic exposure.
+
 ## 09:45 morning strategy
 
 `research morning-strategy` extends the same stable research lane; it does not
