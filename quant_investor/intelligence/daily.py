@@ -810,12 +810,10 @@ def project_tushare_theme_source(
         tdx_registry_ids = {
             f"TUSHARE_TDX:{row['ts_code']}" for row in tdx_projection["registry_rows"]
         }
-        if any(
-            f"TUSHARE_TDX:{row['ts_code']}" not in tdx_registry_ids
-            for capture in tdx_projection["membership_captures"].values()
-            for row in capture["rows"]
-        ):
-            raise IntelligenceError("Theme TDX member is outside replayed registry")
+        # ``tdx_member`` returns every TDX identity attached to one company,
+        # including industry and broad-index rows.  Theme v2 admits only IDs
+        # present in the exact same-date concept registry; all other rows stay
+        # sealed in raw capture evidence but cannot enter membership or voting.
     technologies = set(policy_artifact["payload"]["technology_theme_ids"])
     company_rows = []
     blockers: list[str] = []
@@ -836,6 +834,8 @@ def project_tushare_theme_source(
                 {prefix + row["ts_code"] for row in source["rows"]},
                 key=lambda item: item.encode("ascii"),
             )
+            if provider == "TUSHARE_TDX":
+                theme_ids = [theme_id for theme_id in theme_ids if theme_id in tdx_registry_ids]
             status = "NO_MEMBERSHIP" if not theme_ids else "MEMBERSHIP_ONLY"
         matched = sorted(set(theme_ids) & technologies, key=lambda item: item.encode("ascii"))
         if status == "UNMAPPED":

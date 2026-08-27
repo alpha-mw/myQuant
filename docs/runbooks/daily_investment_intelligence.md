@@ -219,7 +219,10 @@ file, reads Keychain, logs/hashes/persists the token, retries a provider call,
 or creates a second membership path. Existing exact capture roots replay with
 zero network calls. A DC registry failure blocks before TDX; incomplete DC
 company partitions alone form the registered TDX fallback keyset. Capture
-completion remains membership-only and cannot upgrade economic exposure.
+completion remains membership-only and cannot upgrade economic exposure. The
+TDX member endpoint may return industry or broad-index identities in addition
+to concepts; they remain sealed in raw partitions, while projection admits
+only IDs present in the exact same-date captured TDX concept registry.
 
 ## 09:45 morning strategy
 

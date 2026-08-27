@@ -540,3 +540,130 @@ def test_stable_tushare_source_projections_replay_exact_captures() -> None:
         }
     ]
     assert theme["payload"]["fallback_company_keyset"] == []
+
+
+def test_tdx_projection_admits_only_same_date_registered_concepts() -> None:
+    from quant_investor.intelligence import project_tushare_theme_source
+    from quant_investor.intelligence.storage import approved_theme_policy_v2
+    from quant_investor.market.tushare import (
+        build_theme_partition_capture,
+        build_theme_provider_capture,
+        build_theme_provider_execution_plan,
+    )
+
+    company = "000001.SZ"
+    dc_plan = build_theme_provider_execution_plan(
+        provider="TUSHARE_DC",
+        trade_date="20260827",
+        company_keyset=[company],
+        document_observed_at="2026-08-27T12:00:00Z",
+        created_at="2026-08-27T12:00:00Z",
+    )
+    dc_partitions = [
+        build_theme_partition_capture(
+            plan=dc_plan,
+            partition_ordinal=0,
+            provider_request_id="dc-registry",
+            reported_count=1,
+            rows=[
+                {
+                    "idx_type": "概念板块",
+                    "level": "1",
+                    "name": "机器人",
+                    "trade_date": "20260827",
+                    "ts_code": "BK1001.DC",
+                }
+            ],
+            blocker_codes=[],
+            captured_at="2026-08-27T12:01:00Z",
+        ),
+        build_theme_partition_capture(
+            plan=dc_plan,
+            partition_ordinal=1,
+            provider_request_id=None,
+            reported_count=0,
+            rows=[],
+            blocker_codes=["CONTENT_INCOMPLETE"],
+            captured_at="2026-08-27T12:01:00Z",
+        ),
+    ]
+    dc_capture = build_theme_provider_capture(
+        plan=dc_plan,
+        partition_documents=dc_partitions,
+        completed_at="2026-08-27T12:02:00Z",
+    )
+    tdx_plan = build_theme_provider_execution_plan(
+        provider="TUSHARE_TDX",
+        trade_date="20260827",
+        company_keyset=[company],
+        document_observed_at="2026-08-27T12:00:00Z",
+        created_at="2026-08-27T12:00:00Z",
+    )
+    tdx_partitions = [
+        build_theme_partition_capture(
+            plan=tdx_plan,
+            partition_ordinal=0,
+            provider_request_id="tdx-registry",
+            reported_count=1,
+            rows=[
+                {
+                    "idx_count": 10,
+                    "idx_type": "概念板块",
+                    "name": "英伟达概念",
+                    "trade_date": "20260827",
+                    "ts_code": "880948.TDX",
+                }
+            ],
+            blocker_codes=[],
+            captured_at="2026-08-27T12:03:00Z",
+        ),
+        build_theme_partition_capture(
+            plan=tdx_plan,
+            partition_ordinal=1,
+            provider_request_id="tdx-member",
+            reported_count=2,
+            rows=[
+                {
+                    "con_code": company,
+                    "con_name": "公司",
+                    "trade_date": "20260827",
+                    "ts_code": "880948.TDX",
+                },
+                {
+                    "con_code": company,
+                    "con_name": "公司",
+                    "trade_date": "20260827",
+                    "ts_code": "880202.TDX",
+                },
+            ],
+            blocker_codes=[],
+            captured_at="2026-08-27T12:03:00Z",
+        ),
+    ]
+    tdx_capture = build_theme_provider_capture(
+        plan=tdx_plan,
+        partition_documents=tdx_partitions,
+        completed_at="2026-08-27T12:04:00Z",
+    )
+
+    projection = project_tushare_theme_source(
+        dc_plan=dc_plan,
+        dc_capture=dc_capture,
+        dc_partitions=dc_partitions,
+        tdx_plan=tdx_plan,
+        tdx_capture=tdx_capture,
+        tdx_partitions=tdx_partitions,
+        policy=approved_theme_policy_v2(),
+        as_of="2026-08-27T12:05:00Z",
+    )
+
+    assert projection["payload"]["company_rows"] == [
+        {
+            "company_code": company,
+            "provider": "TUSHARE_TDX",
+            "status": "MEMBERSHIP_ONLY",
+            "technology_theme_ids": ["TUSHARE_TDX:880948.TDX"],
+            "theme_ids": ["TUSHARE_TDX:880948.TDX"],
+        }
+    ]
+    assert projection["payload"]["fallback_company_keyset"] == [company]
