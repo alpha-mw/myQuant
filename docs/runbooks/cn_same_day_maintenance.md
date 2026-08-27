@@ -66,10 +66,12 @@ PIT -> Market -> 100-session History
 ## Commands
 
 All four live slots use the same release-owned launcher. The launcher verifies
-the installed import origin before Keychain access, reads only service
-`com.maxwell.myquant.tushare` / account `maxwell`, records a non-secret access
+the installed import origin, then reads only `TUSHARE_TOKEN` from the
+workspace-root `.env` without sourcing or executing that file. The `.env` must
+be an owner-owned regular file with one link, mode `0600`, valid UTF-8, and
+exactly one valid `TUSHARE_TOKEN` key. The launcher records a non-secret access
 receipt, injects the token only into the maintenance child, and unsets it on
-every exit path:
+every exit path. It never calls macOS Keychain:
 
 ```bash
 scripts/operations/run_cn_daily_slot.sh \
@@ -80,10 +82,11 @@ scripts/operations/run_cn_daily_slot.sh \
   --attempt-slot <1620|1720|1820|2020>
 ```
 
-The credential receipt contains only source/service/account, slot, time,
+The credential receipt contains only source/env-file/env-key, slot, time,
 `READY|BLOCKED`, and explicit `token_material_recorded=false` /
-`token_hash_recorded=false`. A Keychain failure stops in the launcher before
-`daily-maintain`, so it cannot create a new coordinator veto.
+`token_hash_recorded=false`. A missing, unsafe, ambiguous, or invalid `.env`
+token stops in the launcher before `daily-maintain`, so it cannot create a new
+coordinator veto.
 
 Shadow or execute one scheduled attempt:
 

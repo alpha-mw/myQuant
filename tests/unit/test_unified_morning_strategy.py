@@ -241,11 +241,14 @@ def test_sina_capture_dry_run_and_live_fake(tmp_path: Path) -> None:
     assert (output / "capture.json").is_file()
 
 
-def test_launcher_is_one_keychain_path_without_secret_logging() -> None:
+def test_launcher_reads_only_project_env_without_secret_logging() -> None:
     source = LAUNCHER_PATH.read_text(encoding="utf-8")
-    assert source.count("find-generic-password") == 1
-    assert "com.maxwell.myquant.tushare" in source
-    assert "-a maxwell" in source
+    assert "/usr/bin/security" not in source
+    assert "find-generic-password" not in source
+    assert "Keychain" not in source
+    assert 'env_file="$workspace_root/.env"' in source
+    assert "read_project_env_token" in source
+    assert "CN_SLOT_LAUNCHER_ENV_UNAVAILABLE" in source
     assert "set +x" in source
     assert 'TUSHARE_URL="https://api.tushare.pro/dataapi"' in source
     assert "hash token" not in source.lower()

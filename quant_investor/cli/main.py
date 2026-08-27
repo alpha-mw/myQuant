@@ -889,7 +889,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     market_credential_preflight = market_subparsers.add_parser(
         "credential-preflight",
-        help="记录不含 secret/hash 的 Keychain access state",
+        help="记录不含 secret/hash 的项目 .env access state",
     )
     market_credential_preflight.add_argument(
         "--run-root", required=True, type=_canonical_absolute_path

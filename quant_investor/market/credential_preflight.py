@@ -1,4 +1,4 @@
-"""Non-secret evidence for the shared CN maintenance credential launcher."""
+"""Safe project-env access and non-secret CN credential evidence."""
 
 from __future__ import annotations
 
@@ -11,14 +11,96 @@ import re
 import stat
 from typing import Any, Final
 
-SERVICE: Final = "com.maxwell.myquant.tushare"
-ACCOUNT: Final = "maxwell"
-SOURCE: Final = "MACOS_KEYCHAIN"
+SCHEMA_VERSION: Final = "cn-maintenance-credential-preflight.v2"
+SOURCE: Final = "PROJECT_ENV"
+ENV_FILE: Final = ".env"
+ENV_KEY: Final = "TUSHARE_TOKEN"
+MAX_ENV_BYTES: Final = 1024 * 1024
 _ID_RE: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_TOKEN_RE: Final = re.compile(r"^[A-Za-z0-9._-]{20,256}$")
 
 
 class CredentialPreflightError(RuntimeError):
     """One controlled credential-preflight error."""
+
+
+def read_project_env_token(path: str | os.PathLike[str]) -> str:
+    """Read one token from an owner-only regular project ``.env`` file."""
+
+    env_path = Path(path)
+    if not env_path.is_absolute():
+        raise CredentialPreflightError("CREDENTIAL_ENV_PATH_NOT_ABSOLUTE")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(env_path, flags)
+    except OSError as exc:
+        raise CredentialPreflightError("CREDENTIAL_ENV_UNAVAILABLE") from exc
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_uid != os.geteuid()
+            or before.st_nlink != 1
+            or stat.S_IMODE(before.st_mode) != 0o600
+            or before.st_size > MAX_ENV_BYTES
+        ):
+            raise CredentialPreflightError("CREDENTIAL_ENV_UNSAFE")
+        chunks: list[bytes] = []
+        observed_size = 0
+        while True:
+            chunk = os.read(descriptor, min(65536, MAX_ENV_BYTES + 1 - observed_size))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            observed_size += len(chunk)
+            if observed_size > MAX_ENV_BYTES:
+                raise CredentialPreflightError("CREDENTIAL_ENV_TOO_LARGE")
+        after = os.fstat(descriptor)
+        identity_before = (
+            before.st_dev,
+            before.st_ino,
+            before.st_mode,
+            before.st_uid,
+            before.st_nlink,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        )
+        identity_after = (
+            after.st_dev,
+            after.st_ino,
+            after.st_mode,
+            after.st_uid,
+            after.st_nlink,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        )
+        if identity_before != identity_after:
+            raise CredentialPreflightError("CREDENTIAL_ENV_CHANGED_DURING_READ")
+    finally:
+        os.close(descriptor)
+    try:
+        text = b"".join(chunks).decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise CredentialPreflightError("CREDENTIAL_ENV_ENCODING_INVALID") from exc
+    values: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        key, _, raw_value = line.partition("=")
+        if key.strip() != ENV_KEY:
+            continue
+        value = raw_value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        values.append(value)
+    if len(values) != 1 or _TOKEN_RE.fullmatch(values[0]) is None:
+        raise CredentialPreflightError("CREDENTIAL_ENV_TOKEN_INVALID")
+    return values[0]
 
 
 def _canonical(payload: dict[str, Any]) -> bytes:
@@ -108,13 +190,13 @@ def write_credential_preflight(
     root = _directory(Path(run_root), create=True)
     receipts = _directory(root / "credential_preflight", create=True)
     payload = {
-        "schema_version": "cn-maintenance-credential-preflight.v1",
+        "schema_version": SCHEMA_VERSION,
         "receipt_id": receipt_id,
         "attempt_slot": attempt_slot,
         "checked_at": stamp,
         "credential_source": SOURCE,
-        "service": SERVICE,
-        "account": ACCOUNT,
+        "env_file": ENV_FILE,
+        "env_key": ENV_KEY,
         "access_state": access_state,
         "token_material_recorded": False,
         "token_hash_recorded": False,
@@ -158,10 +240,10 @@ def validate_credential_preflight(
     if _canonical(value) != first:
         raise CredentialPreflightError("CREDENTIAL_PREFLIGHT_RECEIPT_NOT_CANONICAL")
     if (
-        value.get("schema_version") != "cn-maintenance-credential-preflight.v1"
+        value.get("schema_version") != SCHEMA_VERSION
         or value.get("credential_source") != SOURCE
-        or value.get("service") != SERVICE
-        or value.get("account") != ACCOUNT
+        or value.get("env_file") != ENV_FILE
+        or value.get("env_key") != ENV_KEY
         or value.get("access_state") != "READY"
         or value.get("token_material_recorded") is not False
         or value.get("token_hash_recorded") is not False
@@ -171,10 +253,12 @@ def validate_credential_preflight(
 
 
 __all__ = [
-    "ACCOUNT",
     "CredentialPreflightError",
-    "SERVICE",
+    "ENV_FILE",
+    "ENV_KEY",
+    "SCHEMA_VERSION",
     "SOURCE",
+    "read_project_env_token",
     "validate_credential_preflight",
     "write_credential_preflight",
 ]

@@ -109,10 +109,12 @@ not consume them.
 
 The live CN maintenance automation uses the release-owned
 `scripts/operations/run_cn_daily_slot.sh` for all four slots. It records only a
-non-secret Keychain access receipt and may automatically recover only an exact
-zero-write `TUSHARE_TOKEN_MISSING` veto with unchanged Market/PIT/Factor/Store
-preimages. Security, schema, lineage, partial-write and pointer-drift vetoes
-remain operator-only.
+non-secret project `.env` access receipt, never reads macOS Keychain, and may
+automatically recover only an exact zero-write `TUSHARE_TOKEN_MISSING` veto with
+unchanged Market/PIT/Factor/Store preimages. The `.env` must be owner-only mode
+`0600` with exactly one valid `TUSHARE_TOKEN`; it is parsed as data and never
+sourced. Security, schema, lineage, partial-write and pointer-drift vetoes remain
+operator-only.
 
 Morning strategy is a separate research-only read lane over the prior close.
 `research morning-strategy` requires prior-date Factor READY, exact OPEN LOW/W80

@@ -181,10 +181,12 @@ scripts/operations/run_cn_daily_slot.sh \
   --attempt-slot <1620|1720|1820|2020>
 ```
 
-The launcher stops before maintenance when Keychain access fails. It may call
-`market recover-transient-write-veto` only for a hash-bound zero-write
-`TUSHARE_TOKEN_MISSING` veto and exact READY preflight receipt. Never use it for
-Macro, security, schema, lineage or pointer-drift vetoes.
+The launcher never reads macOS Keychain. It reads exactly one `TUSHARE_TOKEN`
+from the workspace-root `.env` after owner/mode/link/UTF-8 checks, without
+sourcing the file, and stops before maintenance when that input is missing or
+unsafe. It may call `market recover-transient-write-veto` only for a hash-bound
+zero-write `TUSHARE_TOKEN_MISSING` veto and exact READY preflight receipt. Never
+use it for Macro, security, schema, lineage or pointer-drift vetoes.
 
 At 09:45 the automation captures public quotes with
 `scripts/capture_sina_cn_quotes.py`, then runs `research morning-strategy`

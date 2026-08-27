@@ -25,7 +25,11 @@ from quant_investor.market.daily_maintenance import (
     resolve_attempt_slot,
     run_cn_daily_maintenance,
 )
-from quant_investor.market.credential_preflight import write_credential_preflight
+from quant_investor.market.credential_preflight import (
+    CredentialPreflightError,
+    read_project_env_token,
+    write_credential_preflight,
+)
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
@@ -498,8 +502,54 @@ def _ready_preflight(run_root):
     raw = Path(result["receipt_path"]).read_bytes()
     assert b"token" in raw
     assert b"secret" not in raw
+    assert b'"credential_source":"PROJECT_ENV"' in raw
+    assert b'"env_file":".env"' in raw
+    assert b'"env_key":"TUSHARE_TOKEN"' in raw
+    assert b"MACOS_KEYCHAIN" not in raw
     assert result["token_material_recorded"] is False
     return result
+
+
+def test_project_env_token_reader_accepts_one_owner_only_token(tmp_path):
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "OTHER=value\nTUSHARE_TOKEN=test-token-1234567890\n",
+        encoding="utf-8",
+    )
+    env_file.chmod(0o600)
+
+    assert read_project_env_token(env_file) == "test-token-1234567890"
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "OTHER=value\n",
+        "TUSHARE_TOKEN=short\n",
+        "TUSHARE_TOKEN=test-token-1234567890\nTUSHARE_TOKEN=duplicate-token-123456\n",
+    ],
+)
+def test_project_env_token_reader_rejects_missing_invalid_or_duplicate(tmp_path, content):
+    env_file = tmp_path / ".env"
+    env_file.write_text(content, encoding="utf-8")
+    env_file.chmod(0o600)
+
+    with pytest.raises(CredentialPreflightError, match="CREDENTIAL_ENV_TOKEN_INVALID"):
+        read_project_env_token(env_file)
+
+
+def test_project_env_token_reader_rejects_unsafe_mode_and_symlink(tmp_path):
+    env_file = tmp_path / ".env"
+    env_file.write_text("TUSHARE_TOKEN=test-token-1234567890\n", encoding="utf-8")
+    env_file.chmod(0o644)
+    with pytest.raises(CredentialPreflightError, match="CREDENTIAL_ENV_UNSAFE"):
+        read_project_env_token(env_file)
+
+    env_file.chmod(0o600)
+    link = tmp_path / "linked.env"
+    link.symlink_to(env_file)
+    with pytest.raises(CredentialPreflightError, match="CREDENTIAL_ENV_UNAVAILABLE"):
+        read_project_env_token(link)
 
 
 def test_token_veto_recovers_once_with_exact_zero_write_closure(tmp_path, monkeypatch):

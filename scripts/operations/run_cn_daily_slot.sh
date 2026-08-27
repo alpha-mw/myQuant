@@ -39,15 +39,23 @@ fi
 
 receipt_id="slot-${attempt_slot}-$(date -u +%Y%m%dT%H%M%SZ)"
 preflight_path="$run_root/credential_preflight/$receipt_id.json"
+env_file="$workspace_root/.env"
 
-slot_token="$(/usr/bin/security find-generic-password \
-  -s com.maxwell.myquant.tushare -a maxwell -w 2>/dev/null || true)"
+slot_token="$("$installed_python" -I -c '
+import sys
+from quant_investor.market.credential_preflight import read_project_env_token
+try:
+    token = read_project_env_token(sys.argv[1])
+except Exception:
+    raise SystemExit(3)
+sys.stdout.write(token)
+' "$env_file" 2>/dev/null || true)"
 if [[ -z "$slot_token" ]]; then
   "$installed_python" -I -m quant_investor market credential-preflight \
     --run-root "$run_root" --attempt-slot "$attempt_slot" \
     --receipt-id "$receipt_id" --access-state BLOCKED
   unset slot_token
-  print -u2 -- "CN_SLOT_LAUNCHER_KEYCHAIN_UNAVAILABLE"
+  print -u2 -- "CN_SLOT_LAUNCHER_ENV_UNAVAILABLE"
   exit 3
 fi
 
