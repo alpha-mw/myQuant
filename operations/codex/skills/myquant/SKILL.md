@@ -107,6 +107,23 @@ outcomes, maturity, or graduation evidence. Macro and Fundamental blockers
 remain visible but do not block LOW/W80 when the sealed active Factor set does
 not consume them.
 
+The live CN maintenance automation uses the release-owned
+`scripts/operations/run_cn_daily_slot.sh` for all four slots. It records only a
+non-secret Keychain access receipt and may automatically recover only an exact
+zero-write `TUSHARE_TOKEN_MISSING` veto with unchanged Market/PIT/Factor/Store
+preimages. Security, schema, lineage, partial-write and pointer-drift vetoes
+remain operator-only.
+
+Morning strategy is a separate research-only read lane over the prior close.
+`research morning-strategy` requires prior-date Factor READY, exact OPEN LOW/W80
+observations, verified Store holdings and a 09:30-09:46 credential-free Sina
+capture. Missing Macro, Fundamental, Theme economic exposure, Top100 or
+benchmark-relative evidence may make it PARTIAL; stale Factor, invalid Store or
+missing quote blocks it. Its immutable receipt never grants broker, order,
+execution or holdings authority. `research morning-cutover` seals the 20:20
+core/auxiliary scheduling decision; source code never writes Codex scheduler
+configuration directly.
+
 CN aggressive Dashboard reads only Store-v3 and pointer-selected
 `ledger_after_manual_switch.parquet`. A trailing benchmark gap may leave v1
 `PARTIAL` while v2 marks current holdings/absolute performance independently;

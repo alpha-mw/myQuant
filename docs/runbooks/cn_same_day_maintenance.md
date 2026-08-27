@@ -65,6 +65,26 @@ PIT -> Market -> 100-session History
 
 ## Commands
 
+All four live slots use the same release-owned launcher. The launcher verifies
+the installed import origin before Keychain access, reads only service
+`com.maxwell.myquant.tushare` / account `maxwell`, records a non-secret access
+receipt, injects the token only into the maintenance child, and unsets it on
+every exit path:
+
+```bash
+scripts/operations/run_cn_daily_slot.sh \
+  --python <exact-installed-python> \
+  --expected-import-root <exact-install-root> \
+  --workspace-root /Users/maxwell/mySpace/myQuant \
+  --run-root /Users/maxwell/mySpace/myQuant/data/private/cn_daily_maintenance \
+  --attempt-slot <1620|1720|1820|2020>
+```
+
+The credential receipt contains only source/service/account, slot, time,
+`READY|BLOCKED`, and explicit `token_material_recorded=false` /
+`token_hash_recorded=false`. A Keychain failure stops in the launcher before
+`daily-maintain`, so it cannot create a new coordinator veto.
+
 Shadow or execute one scheduled attempt:
 
 ```bash
@@ -91,6 +111,26 @@ veto with:
 Use `--lane macro` for `MACRO_WRITE_VETO.json`; the default `--lane global`
 retains legacy/global `WRITE_VETO.json` behavior. A Macro veto is never removed
 manually and does not authorize bypassing an unresolved Macro journal.
+
+One global veto class has an automatic governed recovery path: exact
+`TUSHARE_TOKEN_MISSING` from a zero-write attempt. Recovery additionally
+requires a fresh READY credential receipt, unchanged Market/PIT/Factor/Store
+pointer preimages, the original attempt's `canonical_unchanged=true` and empty
+stage set, the exact veto SHA, and a nonempty token only in process memory:
+
+```bash
+quant-investor market recover-transient-write-veto \
+  --workspace-root /Users/maxwell/mySpace/myQuant \
+  --run-root /Users/maxwell/mySpace/myQuant/data/private/cn_daily_maintenance \
+  --expected-veto-sha256 <exact-veto-sha> \
+  --credential-preflight-receipt <exact-absolute-path> \
+  --expected-credential-preflight-sha256 <exact-sha>
+```
+
+The veto is archived and an immutable recovery receipt is written. Replay is
+`NO_ACTION`. Pointer drift, partial writes, storage/security/schema/lineage
+failures, non-credential blockers, unsafe evidence, or receipt mismatch remain
+blocked. Macro vetoes are never eligible for this automatic path.
 
 Macro transaction modes are mutually exclusive:
 
@@ -139,5 +179,13 @@ No attempt or journal evidence is deleted automatically in v1. Every capture
 and promotion performs resource preflight and fails closed unless required
 space plus a 25% margin is available.
 
-This workflow never authorizes Factor/Mainline activation, Dashboard, Paper,
-holdings, broker, order, trade, or funds-transfer changes.
+After the 20:20 Factor/Store branches finish, the automation may call the exact
+`research morning-cutover` evaluator. Macro, Fundamental, Theme exposure,
+Paper, I6 and benchmark-relative gaps are auxiliary; they do not reverse a
+closed Market/PIT/History/Calendar/Factor/Store core. The evaluator writes one
+date-bound decision receipt and returns only a scheduler action. The Codex
+automation performs and reads back any scheduler change; repository code does
+not write `~/.codex`.
+
+This workflow never authorizes Mainline activation, portfolio mutation,
+holdings mutation, broker, order, trade, or funds-transfer changes.

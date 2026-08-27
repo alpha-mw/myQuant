@@ -21,9 +21,11 @@ from quant_investor.market.daily_maintenance import (
     DailyMaintenanceError,
     MaintenanceComponents,
     clear_cn_daily_write_veto,
+    recover_transient_cn_daily_write_veto,
     resolve_attempt_slot,
     run_cn_daily_maintenance,
 )
+from quant_investor.market.credential_preflight import write_credential_preflight
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
@@ -463,6 +465,120 @@ def test_macro_veto_has_registered_exact_sha_clear_path(tmp_path):
     assert cleared["lane"] == "macro"
     assert not veto_path.exists()
     assert Path(cleared["archived_veto_ref"]["path"]).is_file()
+
+
+def _token_missing_veto(tmp_path):
+    run_root = tmp_path / "private-runs"
+    run_root.mkdir(mode=0o700)
+
+    def missing(**_kwargs):
+        raise CloseSessionAuthorityError("TUSHARE_TOKEN_MISSING")
+
+    result = run_cn_daily_maintenance(
+        workspace_root=tmp_path,
+        run_root=run_root,
+        mode="execute",
+        attempt_slot="1820",
+        components=_components(),
+        now=datetime(2026, 8, 24, 18, 20, tzinfo=SHANGHAI),
+        close_authority=missing,
+    )
+    assert result["status"] == "BLOCKED"
+    return run_root, result
+
+
+def _ready_preflight(run_root):
+    result = write_credential_preflight(
+        run_root=run_root,
+        attempt_slot="2020",
+        receipt_id="slot-2020-test",
+        access_state="READY",
+        checked_at="2026-08-24T12:20:00Z",
+    )
+    raw = Path(result["receipt_path"]).read_bytes()
+    assert b"token" in raw
+    assert b"secret" not in raw
+    assert result["token_material_recorded"] is False
+    return result
+
+
+def test_token_veto_recovers_once_with_exact_zero_write_closure(tmp_path, monkeypatch):
+    run_root, blocked = _token_missing_veto(tmp_path)
+    preflight = _ready_preflight(run_root)
+    monkeypatch.setenv("TUSHARE_TOKEN", "test-only-not-recorded")
+
+    recovered = recover_transient_cn_daily_write_veto(
+        workspace_root=tmp_path,
+        run_root=run_root,
+        expected_veto_sha256=blocked["write_veto_ref"]["sha256"],
+        credential_preflight_receipt=preflight["receipt_path"],
+        expected_credential_preflight_sha256=preflight["receipt_sha256"],
+    )
+    replay = recover_transient_cn_daily_write_veto(
+        workspace_root=tmp_path,
+        run_root=run_root,
+        expected_veto_sha256=blocked["write_veto_ref"]["sha256"],
+        credential_preflight_receipt=preflight["receipt_path"],
+        expected_credential_preflight_sha256=preflight["receipt_sha256"],
+    )
+
+    assert recovered["status"] == "RECOVERED"
+    assert recovered["recovered"] is True
+    assert replay["status"] == "NO_ACTION"
+    assert replay["recovered"] is False
+    assert not (run_root / "WRITE_VETO.json").exists()
+    assert Path(recovered["original_veto_ref"]["path"]).is_file()
+    receipt_raw = Path(recovered["recovery_receipt_ref"]["path"]).read_bytes()
+    assert b"test-only-not-recorded" not in receipt_raw
+
+
+def test_token_veto_recovery_blocks_pointer_drift(tmp_path, monkeypatch):
+    run_root, blocked = _token_missing_veto(tmp_path)
+    preflight = _ready_preflight(run_root)
+    pointer = tmp_path / "results/factors/_active.json"
+    pointer.parent.mkdir(parents=True)
+    pointer.write_text("{}\n", encoding="ascii")
+    pointer.chmod(0o600)
+    monkeypatch.setenv("TUSHARE_TOKEN", "test-only-not-recorded")
+
+    with pytest.raises(DailyMaintenanceError, match="RECOVER_WRITE_VETO_POINTER_DRIFT"):
+        recover_transient_cn_daily_write_veto(
+            workspace_root=tmp_path,
+            run_root=run_root,
+            expected_veto_sha256=blocked["write_veto_ref"]["sha256"],
+            credential_preflight_receipt=preflight["receipt_path"],
+            expected_credential_preflight_sha256=preflight["receipt_sha256"],
+        )
+    assert (run_root / "WRITE_VETO.json").is_file()
+
+
+def test_noncredential_veto_cannot_auto_recover(tmp_path, monkeypatch):
+    run_root = tmp_path / "private-runs"
+    run_root.mkdir(mode=0o700)
+
+    def invalid(**_kwargs):
+        raise CloseSessionAuthorityError("CLOSE_CALENDAR_PRETRADE_CHAIN_INVALID")
+
+    blocked = run_cn_daily_maintenance(
+        workspace_root=tmp_path,
+        run_root=run_root,
+        mode="execute",
+        attempt_slot="1820",
+        components=_components(),
+        now=datetime(2026, 8, 24, 18, 20, tzinfo=SHANGHAI),
+        close_authority=invalid,
+    )
+    preflight = _ready_preflight(run_root)
+    monkeypatch.setenv("TUSHARE_TOKEN", "test-only-not-recorded")
+
+    with pytest.raises(DailyMaintenanceError, match="RECOVER_WRITE_VETO_NOT_TRANSIENT"):
+        recover_transient_cn_daily_write_veto(
+            workspace_root=tmp_path,
+            run_root=run_root,
+            expected_veto_sha256=blocked["write_veto_ref"]["sha256"],
+            credential_preflight_receipt=preflight["receipt_path"],
+            expected_credential_preflight_sha256=preflight["receipt_sha256"],
+        )
 
 
 def test_nonblocking_lock_truth_table(tmp_path):

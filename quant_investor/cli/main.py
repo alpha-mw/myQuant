@@ -31,6 +31,8 @@ from quant_investor.cli.unified import (
     research_evaluate,
     research_forward,
     research_inspect,
+    research_morning_cutover,
+    research_morning_strategy,
     research_publish_policy,
     research_publish_pool,
     research_publish_theme_policy,
@@ -273,6 +275,20 @@ def clear_cn_daily_write_veto(**kwargs):
     )
 
     return _clear_cn_daily_write_veto(**kwargs)
+
+
+def recover_transient_cn_daily_write_veto(**kwargs):
+    from quant_investor.market.daily_maintenance import (
+        recover_transient_cn_daily_write_veto as _recover_transient_cn_daily_write_veto,
+    )
+
+    return _recover_transient_cn_daily_write_veto(**kwargs)
+
+
+def write_cn_credential_preflight(**kwargs):
+    from quant_investor.market.credential_preflight import write_credential_preflight
+
+    return write_credential_preflight(**kwargs)
 
 
 def run_storage_validate(**kwargs):
@@ -729,6 +745,8 @@ def _build_parser() -> argparse.ArgumentParser:
         ("compile-evidence", "compile exact inactive evidence closure"),
         ("compile-daily", "compile exact inactive daily Investment Intelligence"),
         ("pool-publish", "publish exact immutable daily Factor research pool"),
+        ("morning-strategy", "validate or seal exact 09:45 strategy closure"),
+        ("morning-cutover", "seal exact 20:20 cutover or rollback decision"),
         ("readiness", "assess generation-compatible readiness"),
         ("inspect", "inspect one stable artifact without mutation"),
     ):
@@ -851,6 +869,38 @@ def _build_parser() -> argparse.ArgumentParser:
     market_clear_veto.add_argument("--expected-veto-sha256", required=True, type=_sha256_argument)
     market_clear_veto.add_argument("--reason", required=True)
     market_clear_veto.add_argument("--lane", choices=["global", "macro"], default="global")
+
+    market_recover_veto = market_subparsers.add_parser(
+        "recover-transient-write-veto",
+        help="受治理恢复 exact zero-write TUSHARE_TOKEN_MISSING veto",
+    )
+    _add_workspace_argument(market_recover_veto)
+    market_recover_veto.add_argument("--run-root", required=True, type=_canonical_absolute_path)
+    market_recover_veto.add_argument("--expected-veto-sha256", required=True, type=_sha256_argument)
+    market_recover_veto.add_argument(
+        "--credential-preflight-receipt",
+        required=True,
+        type=_canonical_absolute_path,
+    )
+    market_recover_veto.add_argument(
+        "--expected-credential-preflight-sha256",
+        required=True,
+        type=_sha256_argument,
+    )
+    market_credential_preflight = market_subparsers.add_parser(
+        "credential-preflight",
+        help="记录不含 secret/hash 的 Keychain access state",
+    )
+    market_credential_preflight.add_argument(
+        "--run-root", required=True, type=_canonical_absolute_path
+    )
+    market_credential_preflight.add_argument(
+        "--attempt-slot", required=True, choices=["1620", "1720", "1820", "2020"]
+    )
+    market_credential_preflight.add_argument("--receipt-id", required=True)
+    market_credential_preflight.add_argument(
+        "--access-state", required=True, choices=["READY", "BLOCKED"]
+    )
 
     market_download = market_subparsers.add_parser(
         "download",
@@ -1422,6 +1472,8 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
         "compile-evidence": research_compile_evidence,
         "compile-daily": research_compile_daily,
         "pool-publish": research_publish_pool,
+        "morning-strategy": research_morning_strategy,
+        "morning-cutover": research_morning_cutover,
         "readiness": research_readiness,
         "inspect": research_inspect,
     }
@@ -1491,6 +1543,29 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
                 expected_veto_sha256=args.expected_veto_sha256,
                 reason=args.reason,
                 lane=args.lane,
+            )
+        )
+        return
+
+    if args.command == "market" and args.market_command == "recover-transient-write-veto":
+        _print_json(
+            recover_transient_cn_daily_write_veto(
+                workspace_root=args.workspace_root,
+                run_root=args.run_root,
+                expected_veto_sha256=args.expected_veto_sha256,
+                credential_preflight_receipt=args.credential_preflight_receipt,
+                expected_credential_preflight_sha256=(args.expected_credential_preflight_sha256),
+            )
+        )
+        return
+
+    if args.command == "market" and args.market_command == "credential-preflight":
+        _print_json(
+            write_cn_credential_preflight(
+                run_root=args.run_root,
+                attempt_slot=args.attempt_slot,
+                receipt_id=args.receipt_id,
+                access_state=args.access_state,
             )
         )
         return

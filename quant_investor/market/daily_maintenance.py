@@ -49,6 +49,12 @@ _PROTECTED_SURFACES: Final = (
     "ORDERS",
     "TRADES",
 )
+_RECOVERY_POINTER_PATHS: Final = (
+    "data/parquet/cn/_latest.json",
+    "data/parquet/cn/reference/stock_basic_membership_latest.json",
+    "results/factors/_active.json",
+    "results/strategy_records/CN/aggressive_tech_manufacturing/_record_store/current.v1.json",
+)
 
 
 class DailyMaintenanceError(RuntimeError):
@@ -216,6 +222,81 @@ def _path_present(path: Path) -> bool:
     except OSError as exc:
         raise DailyMaintenanceError("EVIDENCE_PATH_UNREADABLE") from exc
     return True
+
+
+def _stable_pointer_sha(path: Path) -> str:
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise DailyMaintenanceError("RECOVERY_POINTER_UNAVAILABLE") from exc
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_uid != os.geteuid()
+            or before.st_nlink != 1
+            or stat.S_IMODE(before.st_mode) & 0o022
+        ):
+            raise DailyMaintenanceError("RECOVERY_POINTER_UNSAFE")
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        after = os.fstat(descriptor)
+        if (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        ) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        ):
+            raise DailyMaintenanceError("RECOVERY_POINTER_UNSTABLE")
+        return hashlib.sha256(b"".join(chunks)).hexdigest()
+    finally:
+        os.close(descriptor)
+
+
+def _recovery_pointer_preimages(workspace_root: Path) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    for relative in _RECOVERY_POINTER_PATHS:
+        path = workspace_root / relative
+        if _path_present(path):
+            result[relative] = {
+                "state": "PRESENT",
+                "sha256": _stable_pointer_sha(path),
+            }
+        else:
+            result[relative] = {"state": "ABSENT", "sha256": None}
+    return result
+
+
+def _transient_veto_payload(
+    *,
+    workspace_root: Path,
+    attempt_root: Path,
+    local_now: datetime,
+    slot: str,
+    blocker: str,
+) -> dict[str, Any]:
+    return {
+        "schema_version": "cn-daily-maintenance-write-veto.v1",
+        "created_at": local_now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "attempt_slot": slot,
+        "blockers": [blocker],
+        "attempt_root": str(attempt_root),
+        "canonical_unchanged": True,
+        "stage_results_empty": True,
+        "pointer_preimages": _recovery_pointer_preimages(workspace_root),
+    }
 
 
 def _owner_only_directory(path: Path, *, create: bool) -> Path:
@@ -594,14 +675,13 @@ def run_cn_daily_maintenance(
             if mode == "execute" and status == "BLOCKED":
                 veto_path, veto_sha = _write_veto(
                     root,
-                    {
-                        "schema_version": "cn-daily-maintenance-write-veto.v1",
-                        "created_at": local_now.astimezone(timezone.utc).strftime(
-                            "%Y-%m-%dT%H:%M:%SZ"
-                        ),
-                        "attempt_slot": slot,
-                        "blockers": [code],
-                    },
+                    _transient_veto_payload(
+                        workspace_root=Path(workspace_root).expanduser().resolve(),
+                        attempt_root=attempt,
+                        local_now=local_now,
+                        slot=slot,
+                        blocker=code,
+                    ),
                 )
                 payload["write_veto_ref"] = {"path": veto_path, "sha256": veto_sha}
             return _seal_attempt(attempt_root=attempt, payload=payload, state=payload)
@@ -625,14 +705,13 @@ def run_cn_daily_maintenance(
             if mode == "execute":
                 veto_path, veto_sha = _write_veto(
                     root,
-                    {
-                        "schema_version": "cn-daily-maintenance-write-veto.v1",
-                        "created_at": local_now.astimezone(timezone.utc).strftime(
-                            "%Y-%m-%dT%H:%M:%SZ"
-                        ),
-                        "attempt_slot": slot,
-                        "blockers": ["CLOSE_AUTHORITY_EXCEPTION"],
-                    },
+                    _transient_veto_payload(
+                        workspace_root=Path(workspace_root).expanduser().resolve(),
+                        attempt_root=attempt,
+                        local_now=local_now,
+                        slot=slot,
+                        blocker="CLOSE_AUTHORITY_EXCEPTION",
+                    ),
                 )
                 payload["write_veto_ref"] = {"path": veto_path, "sha256": veto_sha}
             return _seal_attempt(attempt_root=attempt, payload=payload, state=payload)
@@ -858,6 +937,182 @@ def run_cn_daily_maintenance(
         lock.__exit__(None, None, None)
 
 
+def _canonical_object(raw: bytes, *, code: str) -> dict[str, Any]:
+    try:
+        value = json.loads(raw)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise DailyMaintenanceError(code) from exc
+    if not isinstance(value, dict) or _canonical_json_bytes(value) != raw:
+        raise DailyMaintenanceError(code)
+    return value
+
+
+def recover_transient_cn_daily_write_veto(
+    *,
+    workspace_root: str | Path,
+    run_root: str | Path,
+    expected_veto_sha256: str,
+    credential_preflight_receipt: str | Path,
+    expected_credential_preflight_sha256: str,
+) -> dict[str, Any]:
+    """Recover only a hash-bound zero-write TUSHARE_TOKEN_MISSING veto."""
+
+    from .credential_preflight import (
+        CredentialPreflightError,
+        validate_credential_preflight,
+    )
+
+    for value in (expected_veto_sha256, expected_credential_preflight_sha256):
+        if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+            raise DailyMaintenanceError("RECOVER_WRITE_VETO_ARGUMENTS_INVALID")
+    if not os.environ.get("TUSHARE_TOKEN"):
+        raise DailyMaintenanceError("RECOVER_WRITE_VETO_CREDENTIAL_NOT_READY")
+    workspace = Path(workspace_root).expanduser().resolve()
+    root = _owner_only_directory(Path(run_root), create=False)
+    preflight_path = Path(credential_preflight_receipt).expanduser()
+    if not preflight_path.is_absolute():
+        raise DailyMaintenanceError("RECOVER_WRITE_VETO_PREFLIGHT_PATH_INVALID")
+    try:
+        expected_preflight_parent = (root / "credential_preflight").resolve(strict=True)
+        resolved_preflight = preflight_path.resolve(strict=True)
+    except OSError as exc:
+        raise DailyMaintenanceError("RECOVER_WRITE_VETO_PREFLIGHT_PATH_INVALID") from exc
+    if resolved_preflight.parent != expected_preflight_parent:
+        raise DailyMaintenanceError("RECOVER_WRITE_VETO_PREFLIGHT_PATH_INVALID")
+    try:
+        preflight = validate_credential_preflight(
+            resolved_preflight,
+            expected_sha256=expected_credential_preflight_sha256,
+        )
+    except CredentialPreflightError as exc:
+        raise DailyMaintenanceError("RECOVER_WRITE_VETO_PREFLIGHT_INVALID") from exc
+
+    with _RunLock(root / ".daily-maintenance.lock"):
+        archive = _child_directory(root, "veto_archive")
+        archived_path = archive / f"{expected_veto_sha256}.json"
+        receipt_path = archive / (
+            f"{expected_veto_sha256}.{expected_credential_preflight_sha256}.recover.json"
+        )
+        if _path_present(receipt_path):
+            raw = _read_owner_file(receipt_path, code="RECOVER_WRITE_VETO_RECEIPT_UNSAFE")
+            receipt = _canonical_object(raw, code="RECOVER_WRITE_VETO_RECEIPT_INVALID")
+            if (
+                receipt.get("schema_version") != "cn-daily-maintenance-transient-veto-recovery.v1"
+                or receipt.get("original_veto_ref", {}).get("sha256") != expected_veto_sha256
+                or receipt.get("credential_preflight_ref", {}).get("sha256")
+                != expected_credential_preflight_sha256
+            ):
+                raise DailyMaintenanceError("RECOVER_WRITE_VETO_RECEIPT_CONFLICT")
+            return {
+                **receipt,
+                "status": "NO_ACTION",
+                "recovered": False,
+                "recovery_receipt_ref": {
+                    "path": str(receipt_path),
+                    "sha256": hashlib.sha256(raw).hexdigest(),
+                },
+            }
+
+        veto = root / "WRITE_VETO.json"
+        if _path_present(veto):
+            veto_raw = _read_owner_file(veto, code="WRITE_VETO_UNSAFE")
+            if hashlib.sha256(veto_raw).hexdigest() != expected_veto_sha256:
+                raise DailyMaintenanceError("WRITE_VETO_SHA_MISMATCH")
+        elif _path_present(archived_path):
+            veto_raw = _read_owner_file(
+                archived_path,
+                code="RECOVER_WRITE_VETO_ARCHIVE_UNSAFE",
+            )
+            if hashlib.sha256(veto_raw).hexdigest() != expected_veto_sha256:
+                raise DailyMaintenanceError("RECOVER_WRITE_VETO_ARCHIVE_CONFLICT")
+        else:
+            return {
+                "schema_version": "cn-daily-maintenance-transient-veto-recovery.v1",
+                "status": "NO_ACTION",
+                "recovered": False,
+            }
+        veto_document = _canonical_object(veto_raw, code="RECOVER_WRITE_VETO_INVALID")
+        if (
+            veto_document.get("schema_version") != "cn-daily-maintenance-write-veto.v1"
+            or veto_document.get("blockers") != ["TUSHARE_TOKEN_MISSING"]
+            or veto_document.get("canonical_unchanged") is not True
+            or veto_document.get("stage_results_empty") is not True
+            or preflight.get("attempt_slot") not in {"1620", "1720", "1820", "2020"}
+        ):
+            raise DailyMaintenanceError("RECOVER_WRITE_VETO_NOT_TRANSIENT")
+        attempt_root = Path(str(veto_document.get("attempt_root") or ""))
+        try:
+            expected_attempts = (root / "attempts").resolve(strict=True)
+            resolved_attempt = attempt_root.resolve(strict=True)
+        except OSError as exc:
+            raise DailyMaintenanceError("RECOVER_WRITE_VETO_ATTEMPT_INVALID") from exc
+        if resolved_attempt.parent != expected_attempts:
+            raise DailyMaintenanceError("RECOVER_WRITE_VETO_ATTEMPT_INVALID")
+        attempt_path = resolved_attempt / "attempt.json"
+        attempt_raw = _read_owner_file(
+            attempt_path,
+            code="RECOVER_WRITE_VETO_ATTEMPT_UNSAFE",
+        )
+        attempt = _canonical_object(attempt_raw, code="RECOVER_WRITE_VETO_ATTEMPT_INVALID")
+        if (
+            attempt.get("canonical_unchanged") is not True
+            or attempt.get("stage_results") != []
+            or attempt.get("write_veto_ref")
+            != {"path": str(root / "WRITE_VETO.json"), "sha256": expected_veto_sha256}
+        ):
+            raise DailyMaintenanceError("RECOVER_WRITE_VETO_ATTEMPT_NOT_ZERO_WRITE")
+        expected_preimages = veto_document.get("pointer_preimages")
+        if (
+            not isinstance(expected_preimages, dict)
+            or _recovery_pointer_preimages(workspace) != expected_preimages
+        ):
+            raise DailyMaintenanceError("RECOVER_WRITE_VETO_POINTER_DRIFT")
+
+        if _path_present(veto):
+            if _path_present(archived_path):
+                archived_raw = _read_owner_file(
+                    archived_path,
+                    code="RECOVER_WRITE_VETO_ARCHIVE_CONFLICT",
+                )
+                if archived_raw != veto_raw:
+                    raise DailyMaintenanceError("RECOVER_WRITE_VETO_ARCHIVE_CONFLICT")
+                veto.unlink()
+            else:
+                os.replace(veto, archived_path)
+        recovered_at = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        receipt = {
+            "schema_version": "cn-daily-maintenance-transient-veto-recovery.v1",
+            "status": "RECOVERED",
+            "recovered": True,
+            "recovered_at": recovered_at,
+            "recovery_reason": "TUSHARE_TOKEN_RESTORED_ZERO_WRITE_ATTEMPT",
+            "original_veto_ref": {
+                "path": str(archived_path),
+                "sha256": expected_veto_sha256,
+            },
+            "original_attempt_ref": {
+                "path": str(attempt_path),
+                "sha256": hashlib.sha256(attempt_raw).hexdigest(),
+            },
+            "credential_preflight_ref": {
+                "path": str(resolved_preflight),
+                "sha256": expected_credential_preflight_sha256,
+            },
+            "pointer_preimages": expected_preimages,
+            "token_material_recorded": False,
+            "token_hash_recorded": False,
+        }
+        receipt_raw = _canonical_json_bytes(receipt)
+        receipt_sha = _write_once(receipt_path, receipt_raw)
+        return {
+            **receipt,
+            "recovery_receipt_ref": {
+                "path": str(receipt_path),
+                "sha256": receipt_sha,
+            },
+        }
+
+
 def clear_cn_daily_write_veto(
     *,
     run_root: str | Path,
@@ -936,6 +1191,7 @@ __all__ = [
     "MaintenanceContext",
     "clear_cn_daily_write_veto",
     "cli_exit_required",
+    "recover_transient_cn_daily_write_veto",
     "resolve_attempt_slot",
     "run_cn_daily_maintenance",
 ]

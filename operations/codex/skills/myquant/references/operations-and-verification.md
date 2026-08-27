@@ -168,6 +168,33 @@ Do not infer suspension from a missing bar. For explicit maintenance, inspect
 `market maintain --help` and obtain separate authority before provider calls,
 promotion, recovery writes, or materialization.
 
+## Credential and morning runtime
+
+All four CN slots use the same clean-release launcher:
+
+```bash
+scripts/operations/run_cn_daily_slot.sh \
+  --python <installed-python> \
+  --expected-import-root <install-root> \
+  --workspace-root /Users/maxwell/mySpace/myQuant \
+  --run-root /Users/maxwell/mySpace/myQuant/data/private/cn_daily_maintenance \
+  --attempt-slot <1620|1720|1820|2020>
+```
+
+The launcher stops before maintenance when Keychain access fails. It may call
+`market recover-transient-write-veto` only for a hash-bound zero-write
+`TUSHARE_TOKEN_MISSING` veto and exact READY preflight receipt. Never use it for
+Macro, security, schema, lineage or pointer-drift vetoes.
+
+At 09:45 the automation captures public quotes with
+`scripts/capture_sina_cn_quotes.py`, then runs `research morning-strategy`
+PREFLIGHT and SEAL using exact request SHAs. The only accepted receipt path is
+`results/operations/morning_strategy/CN/<date>/0945-run.v1.json`. At 20:20,
+`research morning-cutover` returns one scheduler action after direct receipt,
+Calendar, Factor, observation, Store and import-origin replay. Macro and other
+auxiliary blockers are disclosed but do not override a closed core. Scheduler
+updates remain Codex automation operations and require post-update readback.
+
 ## Verification
 
 Run the narrow stable tests for the changed responsibility from

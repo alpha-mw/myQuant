@@ -26,6 +26,7 @@ from .investment_decision import (
     make_investment_decision,
     validate_investment_decision,
 )
+from .morning import evaluate_morning_cutover, run_morning_strategy
 from .portfolio import (
     assess_graduation,
     construct_research_portfolio,
@@ -73,6 +74,7 @@ __all__ = [
     "compile_daily_intelligence",
     "construct_research_portfolio",
     "evaluate",
+    "evaluate_morning_cutover",
     "forward",
     "inspect",
     "make_investment_decision",
@@ -84,6 +86,7 @@ __all__ = [
     "rank_factor_signals",
     "replay_advisory",
     "review_advisory",
+    "run_morning_strategy",
     "validate_decision_context",
     "validate_daily_research_policy",
     "validate_factor_research_rank",

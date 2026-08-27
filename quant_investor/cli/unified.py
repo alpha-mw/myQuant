@@ -1383,6 +1383,36 @@ def research_publish_policy(*, workspace_root: str) -> dict[str, Any]:
     return publish_phase_a_policy(workspace_root)
 
 
+def research_morning_strategy(
+    *, workspace_root: str, request_path: str, expected_request_sha256: str
+) -> dict[str, Any]:
+    """Validate or seal one exact 09:45 morning-strategy closure."""
+
+    from quant_investor.intelligence import run_morning_strategy
+
+    _, document = _request(
+        workspace_root=workspace_root,
+        request_path=request_path,
+        expected_request_sha256=expected_request_sha256,
+    )
+    return run_morning_strategy(workspace_root=workspace_root, request=document)
+
+
+def research_morning_cutover(
+    *, workspace_root: str, request_path: str, expected_request_sha256: str
+) -> dict[str, Any]:
+    """Seal one exact 20:20 morning cutover/rollback decision."""
+
+    from quant_investor.intelligence import evaluate_morning_cutover
+
+    _, document = _request(
+        workspace_root=workspace_root,
+        request_path=request_path,
+        expected_request_sha256=expected_request_sha256,
+    )
+    return evaluate_morning_cutover(workspace_root=workspace_root, request=document)
+
+
 def research_publish_theme_policy(*, workspace_root: str) -> dict[str, Any]:
     """Publish the exact owner-approved ACTIVE Theme v2 policy bundle."""
 
@@ -1549,6 +1579,8 @@ __all__ = [
     "research_evaluate",
     "research_forward",
     "research_inspect",
+    "research_morning_cutover",
+    "research_morning_strategy",
     "research_readiness",
     "system_activate",
     "system_assemble",

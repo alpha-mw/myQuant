@@ -194,3 +194,66 @@ Provider capture, scheduled routing, System assembly/activation, Mainline
 candidate publication, I6 portfolio construction, and Paper execution remain
 separate later phases. The policy and pool writers own only their exact
 research-only roots.
+
+## 09:45 morning strategy
+
+`research morning-strategy` extends the same stable research lane; it does not
+create a second data or investment system. The automation first captures one
+credential-free Sina response with `scripts/capture_sina_cn_quotes.py`, then
+runs `PREFLIGHT`, produces the Codex research narrative, and runs `SEAL`.
+
+Required core closure:
+
+```text
+previous-trade-date Factor VERIFIED / ACTIVE / READY
+exact LOW/W80 OPEN observations
+Store-v3 registered pointer and active_closure
+09:30-09:46 Asia/Shanghai Sina capture with exact raw SHA
+installed/scheduler origin verified by the surrounding automation
+```
+
+An absent same-date Top100, Macro blocker, Fundamental partial state, Theme
+economic-exposure gap, or benchmark-relative tail is auxiliary and may produce
+`PARTIAL`; it cannot be silently filled. Stale Factor, invalid Store,
+unavailable quote, wrong time/date, unsafe output, SHA drift or authority drift
+is a core blocker.
+
+The deterministic output and machine receipt are:
+
+```text
+results/operations/morning_strategy/CN/<YYYYMMDD>/0945-strategy.md
+results/operations/morning_strategy/CN/<YYYYMMDD>/0945-run.v1.json
+```
+
+The receipt binds previous trade date, Factor pointer, observations, Store
+pointer, quote request/response/raw SHA, optional Top100 manifest, output SHA,
+core/auxiliary blockers and false broker/order/execution/holdings-mutation
+flags. Exact replay is `NO_ACTION`; different bytes conflict.
+
+The 20:20 `research morning-cutover` receipt separates
+`core_production_status`, `holdings_status`, and `auxiliary_status`. Its state
+machine is:
+
+```text
+EVENING_PRIMARY
+  -> eligible core -> DUAL_RUN
+     (primary automation 09:45 + temporary 21:00 fallback automation;
+      Dashboard 21:30 retained)
+
+DUAL_RUN
+  -> two successful real 09:45 receipts -> MORNING_PRIMARY
+
+MORNING_PRIMARY
+  -> missing/invalid current 09:45 receipt -> DUAL_RUN fallback resumed
+```
+
+The retired one-time 20:40 task is not part of this path. Scheduler updates
+must preserve the pre-update automation configs, use Codex `automation_update`,
+read back Shanghai slots, and roll back on any partial update. The source code
+only seals the deterministic eligibility/action receipt.
+
+A single RRULE cannot safely encode both 09:45 and 21:00 without creating a
+cross-product of hours and minutes. During `DUAL_RUN`, the existing `automation`
+ID is the 09:45 primary and a distinct temporary `cn-evening-review-fallback`
+retains the former 21:00 prompt. Promotion pauses that fallback; rollback
+resumes it. No duplicate data DAG is created.
