@@ -15,6 +15,7 @@ from typing import Any
 from quant_investor.cli.input import read_exact_request
 from quant_investor.cli.output import CommandError
 from quant_investor.contracts import canonical_json_bytes
+from quant_investor.migration.canonical import parse_json_bytes, read_stable_regular_file
 
 
 def _exact_fields(value: Any, fields: set[str], *, code: str) -> dict[str, Any]:
@@ -1195,22 +1196,25 @@ def research_compile_daily(
         request_path=request_path,
         expected_request_sha256=expected_request_sha256,
     )
-    values = _exact_fields(
-        document,
-        {
-            "as_of",
-            "expected_factor_pointer_sha256",
-            "industry_source",
-            "low_observation_path",
-            "low_observation_sha256",
-            "policy",
-            "strategy_id",
-            "theme_source",
-            "w80_observation_path",
-            "w80_observation_sha256",
-        },
-        code="RESEARCH_COMPILE_DAILY_REQUEST_INVALID",
-    )
+    base_fields = {
+        "as_of",
+        "expected_factor_pointer_sha256",
+        "industry_source",
+        "low_observation_path",
+        "low_observation_sha256",
+        "policy",
+        "strategy_id",
+        "theme_source",
+        "w80_observation_path",
+        "w80_observation_sha256",
+    }
+    if type(document) is not dict or frozenset(document) not in {
+        frozenset(base_fields),
+        frozenset(base_fields | {"company_evidence"}),
+    }:
+        raise CommandError("RESEARCH_COMPILE_DAILY_REQUEST_INVALID")
+    values = dict(document)
+    company_evidence = values.pop("company_evidence", None)
     _, low_observation = _request(
         workspace_root=workspace_root,
         request_path=values.pop("low_observation_path"),
@@ -1241,6 +1245,24 @@ def research_compile_daily(
             expected_request_sha256=row["sha256"],
         )
         return loaded
+
+    workspace = Path(workspace_root).resolve(strict=True)
+
+    def source_file(reference: Any, *, code: str) -> tuple[Path, bytes, dict[str, str]]:
+        row = _exact_fields(reference, {"path", "sha256"}, code=code)
+        relative = Path(str(row["path"]))
+        if relative.is_absolute():
+            raise CommandError(code)
+        try:
+            resolved = (workspace / relative).resolve(strict=True)
+            resolved.relative_to(workspace)
+            raw = read_stable_regular_file(resolved, label=code)
+        except (OSError, ValueError) as exc:
+            raise CommandError(code) from exc
+        observed = hashlib.sha256(raw).hexdigest()
+        if observed != row["sha256"]:
+            raise CommandError(code)
+        return resolved, raw, {"path": relative.as_posix(), "sha256": observed}
 
     companies = [row["symbol"] for row in rank["payload"]["pool_rows"]]
     industry_source = values.pop("industry_source")
@@ -1362,10 +1384,103 @@ def research_compile_daily(
             ).hexdigest()
         ):
             raise CommandError("RESEARCH_DAILY_THEME_COMPANY_SET_MISMATCH")
+    exposure_evidence: list[dict[str, Any]] = []
+    fundamental_frame = None
+    fundamental_source = None
+    if company_evidence is not None:
+        evidence_values = _exact_fields(
+            company_evidence,
+            {"exposure_rows", "fundamental_source"},
+            code="RESEARCH_DAILY_COMPANY_EVIDENCE_INVALID",
+        )
+        exposure_rows = evidence_values["exposure_rows"]
+        if type(exposure_rows) is not list:
+            raise CommandError("RESEARCH_DAILY_COMPANY_EVIDENCE_INVALID")
+        from quant_investor.intelligence.daily_evidence import (
+            build_company_source_evidence,
+        )
+
+        for row in exposure_rows:
+            exposure = _exact_fields(
+                row,
+                {
+                    "available_at",
+                    "company_code",
+                    "primary_theme_id",
+                    "source",
+                    "source_page",
+                    "source_type",
+                    "theme_revenue_share",
+                },
+                code="RESEARCH_DAILY_COMPANY_EVIDENCE_INVALID",
+            )
+            _resolved, _raw, source_ref = source_file(
+                exposure["source"],
+                code="RESEARCH_DAILY_COMPANY_EVIDENCE_INVALID",
+            )
+            exposure_evidence.append(
+                build_company_source_evidence(
+                    company=exposure["company_code"],
+                    source_type=exposure["source_type"],
+                    source_path=source_ref["path"],
+                    source_sha256=source_ref["sha256"],
+                    available_at=exposure["available_at"],
+                    metrics={
+                        "primary_theme_id": exposure["primary_theme_id"],
+                        "theme_revenue_share": exposure["theme_revenue_share"],
+                    },
+                    source_page=exposure["source_page"],
+                    created_at=values["as_of"],
+                )
+            )
+        fundamental_values = _exact_fields(
+            evidence_values["fundamental_source"],
+            {"available_at", "daily_parquet", "pointer"},
+            code="RESEARCH_DAILY_FUNDAMENTAL_SOURCE_INVALID",
+        )
+        _pointer_path, _pointer_raw, _pointer_ref = source_file(
+            fundamental_values["pointer"],
+            code="RESEARCH_DAILY_FUNDAMENTAL_SOURCE_INVALID",
+        )
+        try:
+            pointer = parse_json_bytes(
+                _pointer_raw,
+                label="registered Fundamental pointer",
+                require_canonical=False,
+            )
+        except Exception as exc:
+            raise CommandError("RESEARCH_DAILY_FUNDAMENTAL_SOURCE_INVALID") from exc
+        daily_path, _daily_raw, daily_ref = source_file(
+            fundamental_values["daily_parquet"],
+            code="RESEARCH_DAILY_FUNDAMENTAL_SOURCE_INVALID",
+        )
+        generation = pointer.get("generation_id")
+        metadata = pointer.get("metadata")
+        if (
+            pointer.get("status") != "OK"
+            or type(generation) is not str
+            or generation not in daily_ref["path"]
+            or type(metadata) is not dict
+            or metadata.get("binding_aware_research_ready") is not True
+            or metadata.get("gate2_passed") is not True
+        ):
+            raise CommandError("RESEARCH_DAILY_FUNDAMENTAL_SOURCE_INVALID")
+        import pandas as pd
+
+        fundamental_frame = pd.read_parquet(daily_path)
+        fundamental_source = {
+            "available_at": fundamental_values["available_at"],
+            "path": daily_ref["path"],
+            "sha256": daily_ref["sha256"],
+        }
+
     result = compile_daily_intelligence(
         rank=rank,
         industry_projection=industry_projection,
         theme_projection=theme_projection,
+        exposure_evidence=exposure_evidence,
+        fundamental_frame=fundamental_frame,
+        fundamental_source=fundamental_source,
         **values,
     )
     assert_factor_production_pointer(

@@ -1140,6 +1140,19 @@ _INTELLIGENCE_SPECS: Final = {
             "theme_assessment_ref",
         },
     ),
+    "company_source_evidence": (
+        "evidence_id",
+        _RESEARCH_COMMON_FIELDS
+        | {
+            "available_at",
+            "company_code",
+            "metrics",
+            "source_page",
+            "source_path",
+            "source_sha256",
+            "source_type",
+        },
+    ),
     "daily_research_policy": (
         "policy_id",
         _RESEARCH_COMMON_FIELDS

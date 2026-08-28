@@ -883,6 +883,9 @@ def compile_daily_intelligence(  # noqa: C901 - explicit cross-domain research c
     policy: Mapping[str, Any] | bytes,
     industry_projection: Mapping[str, Any] | bytes | None,
     theme_projection: Mapping[str, Any] | bytes | None,
+    exposure_evidence: Sequence[Mapping[str, Any] | bytes] = (),
+    fundamental_frame: Any | None = None,
+    fundamental_source: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     cutoff = timestamp(as_of, label="as_of")
     strategy = identifier(strategy_id, label="strategy_id")
@@ -930,19 +933,31 @@ def compile_daily_intelligence(  # noqa: C901 - explicit cross-domain research c
             theme_artifact["payload"]["policy_ref"], policy_artifact, label="theme.policy_ref"
         )
     exposure_artifact = None
+    exposure_evidence_by_company: dict[str, dict[str, Any]] = {}
     if strategy == "aggressive_tech_manufacturing":
         from .storage import approved_theme_policy_v2
+        from .daily_evidence import build_source_bound_economic_exposure_projection
         from .theme_governance import build_unverified_economic_exposure_projection
 
         if policy_artifact != approved_theme_policy_v2():
             raise IntelligenceError("aggressive Theme compiler requires approved v2 policy")
         if theme_artifact is None:
             raise IntelligenceError("aggressive Theme compiler requires source projection")
-        exposure_artifact = build_unverified_economic_exposure_projection(
-            as_of=cutoff,
-            daily_policy=policy_artifact,
-            theme_projection=theme_artifact,
-        )
+        if exposure_evidence:
+            exposure_artifact, exposure_evidence_by_company = (
+                build_source_bound_economic_exposure_projection(
+                    as_of=cutoff,
+                    daily_policy=policy_artifact,
+                    theme_projection=theme_artifact,
+                    evidence=exposure_evidence,
+                )
+            )
+        else:
+            exposure_artifact = build_unverified_economic_exposure_projection(
+                as_of=cutoff,
+                daily_policy=policy_artifact,
+                theme_projection=theme_artifact,
+            )
     industry_rows = (
         {}
         if industry_artifact is None
@@ -960,14 +975,13 @@ def compile_daily_intelligence(  # noqa: C901 - explicit cross-domain research c
         artifacts.append(theme_artifact)
     if exposure_artifact is not None:
         artifacts.append(exposure_artifact)
+    artifacts.extend(exposure_evidence_by_company.values())
     exposure_rows = (
         {}
         if exposure_artifact is None
         else {row["company_code"]: row for row in exposure_artifact["payload"]["company_rows"]}
     )
-    decisions: list[dict[str, Any]] = []
-    decision_blockers: list[str] = []
-    per_company: list[dict[str, Any]] = []
+    industry_assessments: dict[str, dict[str, Any]] = {}
     for pool_row in pool_rows:
         company = pool_row["symbol"]
         industry_row = industry_rows.get(company)
@@ -990,6 +1004,56 @@ def compile_daily_intelligence(  # noqa: C901 - explicit cross-domain research c
             as_of=cutoff,
         )
         artifacts.append(industry)
+        industry_assessments[company] = industry
+
+    theme_assessments: dict[str, dict[str, Any]] = {}
+    if exposure_artifact is not None:
+        from .daily_evidence import theme_assessment_from_exposure
+
+        for company, row in exposure_rows.items():
+            evidence_artifact = exposure_evidence_by_company.get(company)
+            if row["economic_exposure_state"] == "UNVERIFIED" or evidence_artifact is None:
+                continue
+            assessment = theme_assessment_from_exposure(
+                row=row,
+                evidence=evidence_artifact,
+                as_of=cutoff,
+            )
+            theme_assessments[company] = assessment
+            artifacts.append(assessment)
+
+    fundamental_assessments: dict[str, dict[str, Any]] = {}
+    fundamental_source_artifacts: list[dict[str, Any]] = []
+    if fundamental_frame is not None:
+        from .daily_evidence import build_fundamental_assessments_from_frame
+
+        if type(fundamental_source) is not dict or set(fundamental_source) != {
+            "available_at",
+            "path",
+            "sha256",
+        }:
+            raise IntelligenceError("Fundamental source binding is invalid")
+        fundamental_assessments, fundamental_source_artifacts = (
+            build_fundamental_assessments_from_frame(
+                frame=fundamental_frame,
+                companies=companies,
+                source_path=fundamental_source["path"],
+                source_sha256=fundamental_source["sha256"],
+                source_available_at=fundamental_source["available_at"],
+                as_of=cutoff,
+                industry_assessments=industry_assessments,
+                theme_assessments=theme_assessments,
+            )
+        )
+        artifacts.extend(fundamental_source_artifacts)
+        artifacts.extend(fundamental_assessments.values())
+
+    decisions: list[dict[str, Any]] = []
+    decision_blockers: list[str] = []
+    per_company: list[dict[str, Any]] = []
+    for pool_row in pool_rows:
+        company = pool_row["symbol"]
+        industry = industry_assessments[company]
         theme_row = theme_rows.get(company)
         tech_match = bool(theme_row and theme_row["technology_theme_ids"])
         theme_source_available = theme_row is not None and theme_row["status"] != "UNMAPPED"
@@ -999,6 +1063,15 @@ def compile_daily_intelligence(  # noqa: C901 - explicit cross-domain research c
                 evidence_refs.append(artifact_ref(artifact))
         if exposure_artifact is not None:
             evidence_refs.append(artifact_ref(exposure_artifact))
+        theme_assessment = theme_assessments.get(company)
+        fundamental_assessment = fundamental_assessments.get(company)
+        if theme_assessment is not None:
+            evidence_refs.append(artifact_ref(theme_assessment))
+        if fundamental_assessment is not None:
+            evidence_refs.append(artifact_ref(fundamental_assessment))
+        risk_codes = (
+            [] if theme_assessment is None else theme_assessment["payload"]["hard_veto_codes"]
+        )
         context = build_decision_context(
             company=company,
             as_of=cutoff,
@@ -1006,10 +1079,10 @@ def compile_daily_intelligence(  # noqa: C901 - explicit cross-domain research c
             risk_status="UNAVAILABLE",
             evidence_refs=evidence_refs,
             industry_assessment=industry,
-            theme_assessment=None,
-            fundamental_assessment=None,
+            theme_assessment=theme_assessment,
+            fundamental_assessment=fundamental_assessment,
             quant_ref=artifact_ref(rank_artifact),
-            risk_codes=(),
+            risk_codes=risk_codes,
         )
         decision = make_investment_decision(
             context=context,
@@ -1040,8 +1113,12 @@ def compile_daily_intelligence(  # noqa: C901 - explicit cross-domain research c
                     if tech_match
                     else "REJECT_NON_TECH" if theme_source_available else "UNAVAILABLE"
                 ),
-                "theme_assessment_ref": None,
-                "fundamental_assessment_ref": None,
+                "theme_assessment_ref": (
+                    None if theme_assessment is None else artifact_ref(theme_assessment)
+                ),
+                "fundamental_assessment_ref": (
+                    None if fundamental_assessment is None else artifact_ref(fundamental_assessment)
+                ),
                 "state": state,
             }
         )
@@ -1078,11 +1155,20 @@ def compile_daily_intelligence(  # noqa: C901 - explicit cross-domain research c
             "output_refs": stage_results["theme_gate"]["output_refs"],
             "status": "BLOCKED",
         }
-    stage_results["fundamental"] = {
-        "blocker_codes": ["FUNDAMENTAL_DETERMINISTIC_PRODUCER_UNAVAILABLE"],
-        "output_refs": [],
-        "status": "NOT_RUN",
-    }
+    if fundamental_frame is None:
+        stage_results["fundamental"] = {
+            "blocker_codes": ["FUNDAMENTAL_DETERMINISTIC_PRODUCER_UNAVAILABLE"],
+            "output_refs": [],
+            "status": "NOT_RUN",
+        }
+    else:
+        stage_results["fundamental"] = {
+            "blocker_codes": [],
+            "output_refs": [
+                artifact_ref(assessment) for assessment in fundamental_assessments.values()
+            ],
+            "status": "COMPLETE",
+        }
     stage_results["decision"]["output_refs"] = [artifact_ref(decision) for decision in decisions]
     if decision_blockers:
         stage_results["decision"] = {

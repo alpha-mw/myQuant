@@ -19,6 +19,13 @@ from .daily import (
     validate_daily_research_policy,
     validate_factor_research_rank,
 )
+from .daily_evidence import (
+    build_company_source_evidence,
+    build_fundamental_assessments_from_frame,
+    build_source_bound_economic_exposure_projection,
+    theme_assessment_from_exposure,
+    validate_company_source_evidence,
+)
 from .fundamental import assess_fundamental, validate_fundamental_assessment
 from .industry import assess_industry, validate_industry_assessment
 from .investment_decision import (
@@ -67,8 +74,11 @@ __all__ = [
     "approved_theme_policy_v2",
     "approved_theme_governance_policy",
     "build_decision_context",
+    "build_company_source_evidence",
     "build_daily_research_policy",
     "build_factor_research_rank",
+    "build_fundamental_assessments_from_frame",
+    "build_source_bound_economic_exposure_projection",
     "build_unverified_economic_exposure_projection",
     "compile_evidence",
     "compile_daily_intelligence",
@@ -87,6 +97,8 @@ __all__ = [
     "replay_advisory",
     "review_advisory",
     "run_morning_strategy",
+    "theme_assessment_from_exposure",
+    "validate_company_source_evidence",
     "validate_decision_context",
     "validate_daily_research_policy",
     "validate_factor_research_rank",

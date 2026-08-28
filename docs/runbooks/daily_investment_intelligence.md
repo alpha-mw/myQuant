@@ -100,6 +100,34 @@ The compiler does not infer the System strategy identity from a historical
 Strategy Record directory. A test or implementation-smoke policy is not an
 owner policy and cannot be used for an investment conclusion.
 
+### Source-bound exposure and Fundamental MVP
+
+Maxwell approved the first research-only producer policy on 2026-08-28. Theme
+membership never supplies an exposure level. A company can receive one only
+from an exact annual report, interim report, company announcement, IR record or
+revenue-structure file that quantifies Theme-related revenue share:
+
+```text
+HIGH       revenue share >= 30%
+MEDIUM     10% <= revenue share < 30%
+LOW        0% < revenue share < 10%
+UNVERIFIED no positive quantitative revenue share
+```
+
+Product, customer, order, capacity and capex evidence may support the research
+narrative but cannot alone upgrade the level. `LOW` is a hard research veto and
+cannot become `PAPER_CANDIDATE`. Every evidence artifact binds a workspace-
+relative source path, source SHA, availability time and exact page when
+applicable.
+
+The Fundamental MVP reads one exact registered, binding-aware and Gate-2-passed
+`fundamental_daily.parquet`. It computes full-cohort average-tie zero-to-one
+percentiles for ROE, ROA, inverse debt/assets, OCF/profit, FCF/profit, net-profit
+growth, forecast revision and FCF/price. The five components are equal-weighted
+at 20%; minimum coverage is 60%; `industry_cycle` remains explicitly missing.
+The registered snapshot cutoff is disclosed but is not mechanically required
+to equal the Factor signal date. Missing metrics are never imputed.
+
 ## Source projections
 
 `project_tushare_industry_source` replays the exact stable SW2021 taxonomy and
