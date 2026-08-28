@@ -204,6 +204,12 @@ def _tree_digest(root: Path) -> str:
     return _sha(_json_bytes({"entries": entries}))
 
 
+def generation_tree_sha256(path: str | Path) -> str:
+    """Return the transaction's exact immutable generation-tree digest."""
+
+    return _tree_digest(Path(path).expanduser().resolve(strict=True))
+
+
 def _fsync_directory(path: Path) -> None:
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
@@ -592,6 +598,27 @@ def seal_prepared_macro_transaction(
     observations_source = observations_candidate / _GENERATIONS / observations_generation
     release_tree_sha = _tree_digest(release_source)
     observations_tree_sha = _tree_digest(observations_source)
+    dependency_generations: list[dict[str, str]] = []
+    observations_generations = observations_candidate / _GENERATIONS
+    canonical_observations_generations = observations_root / _GENERATIONS
+    for dependency in sorted(observations_generations.iterdir(), key=lambda item: item.name):
+        if dependency.name == observations_generation:
+            continue
+        _safe_id(dependency.name, "macro_transaction_dependency_generation_id_invalid")
+        canonical_dependency = canonical_observations_generations / dependency.name
+        dependency_sha = _tree_digest(dependency)
+        if canonical_dependency.exists():
+            if _tree_digest(canonical_dependency) != dependency_sha:
+                raise MacroMaintenanceTransactionError(
+                    "macro_transaction_dependency_generation_conflict"
+                )
+            continue
+        dependency_generations.append(
+            {
+                "generation_id": dependency.name,
+                "generation_tree_sha256": dependency_sha,
+            }
+        )
 
     bindings: dict[str, dict[str, str]] = {}
     for name, raw_binding in sorted((input_bindings or {}).items()):
@@ -675,6 +702,7 @@ def seal_prepared_macro_transaction(
                 else ""
             ),
             "new_pointer_artifact": "artifacts/observations_new_pointer.json",
+            "dependency_generations": dependency_generations,
         },
         "input_bindings": bindings,
         "authorities": {
@@ -784,6 +812,43 @@ def _prepared_component(
     if _tree_digest(source) != component["generation_tree_sha256"]:
         raise MacroMaintenanceTransactionError("macro_transaction_candidate_generation_drift")
     component["generation_source"] = source
+    dependencies = component.get("dependency_generations", [])
+    if not isinstance(dependencies, list):
+        raise MacroMaintenanceTransactionError("macro_transaction_dependency_generations_invalid")
+    normalized_dependencies: list[dict[str, Any]] = []
+    seen_dependencies: set[str] = set()
+    for raw_dependency in dependencies:
+        if not isinstance(raw_dependency, Mapping) or set(raw_dependency) != {
+            "generation_id",
+            "generation_tree_sha256",
+        }:
+            raise MacroMaintenanceTransactionError(
+                "macro_transaction_dependency_generation_invalid"
+            )
+        dependency_id = _safe_id(
+            str(raw_dependency["generation_id"]),
+            "macro_transaction_dependency_generation_id_invalid",
+        )
+        if dependency_id == component["generation_id"] or dependency_id in seen_dependencies:
+            raise MacroMaintenanceTransactionError(
+                "macro_transaction_dependency_generation_invalid"
+            )
+        seen_dependencies.add(dependency_id)
+        dependency_sha = _required_sha(
+            raw_dependency["generation_tree_sha256"],
+            "macro_transaction_dependency_generation_sha_invalid",
+        )
+        dependency_source = component["candidate_root"] / _GENERATIONS / dependency_id
+        if _tree_digest(dependency_source) != dependency_sha:
+            raise MacroMaintenanceTransactionError("macro_transaction_dependency_generation_drift")
+        normalized_dependencies.append(
+            {
+                "generation_id": dependency_id,
+                "generation_tree_sha256": dependency_sha,
+                "generation_source": dependency_source,
+            }
+        )
+    component["dependency_generations"] = normalized_dependencies
     return component
 
 
@@ -950,6 +1015,12 @@ def _execute_forward(
                 release["canonical_root"] / _GENERATIONS / release["generation_id"],
                 release["generation_tree_sha256"],
             )
+            for dependency in observations["dependency_generations"]:
+                _copy_generation(
+                    dependency["generation_source"],
+                    observations["canonical_root"] / _GENERATIONS / dependency["generation_id"],
+                    dependency["generation_tree_sha256"],
+                )
             _copy_generation(
                 observations["generation_source"],
                 observations["canonical_root"] / _GENERATIONS / observations["generation_id"],
@@ -1378,6 +1449,7 @@ __all__ = [
     "MacroMaintenanceTransactionError",
     "PHASES",
     "commit_prepared_macro_transaction",
+    "generation_tree_sha256",
     "recover_macro_transaction",
     "rollback_macro_transaction",
     "seal_prepared_macro_transaction",

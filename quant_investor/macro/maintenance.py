@@ -19,6 +19,7 @@ from quant_investor.macro.contracts import normalize_source_url
 from quant_investor.macro.maintenance_transaction import (
     MacroMaintenanceTransactionError,
     commit_prepared_macro_transaction,
+    generation_tree_sha256,
     recover_macro_transaction,
     rollback_macro_transaction,
     seal_prepared_macro_transaction,
@@ -92,6 +93,43 @@ def _copy_canonical_parent(source: Path, destination: Path) -> None:
     for item in destination.rglob("*"):
         os.chmod(item, 0o700 if item.is_dir() else 0o600)
     os.chmod(destination, 0o700)
+
+
+def _merge_observation_lineage(
+    *, destination: Path, inventory: Mapping[str, Any], expected_pointer_sha256: str
+) -> None:
+    """Copy an exact inventory-bound missing lineage into a private candidate."""
+
+    source = _private_preparation_root(str(inventory.get("source_root") or ""))
+    pointer = source / "_latest.json"
+    if _sha256_bytes(pointer.read_bytes()) != expected_pointer_sha256:
+        raise MacroMaintenanceError("macro_lineage_source_pointer_mismatch")
+    rows = inventory.get("generations")
+    source_generations = source / "_generations"
+    if not isinstance(rows, list) or [row.get("generation_id") for row in rows] != sorted(
+        item.name for item in source_generations.iterdir()
+    ):
+        raise MacroMaintenanceError("macro_lineage_inventory_generation_set_invalid")
+    destination_generations = destination / "_generations"
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != {
+            "generation_id",
+            "generation_tree_sha256",
+        }:
+            raise MacroMaintenanceError("macro_lineage_inventory_generation_invalid")
+        generation_id = str(row["generation_id"])
+        source_generation = source_generations / generation_id
+        if generation_tree_sha256(source_generation) != row["generation_tree_sha256"]:
+            raise MacroMaintenanceError("macro_lineage_inventory_generation_drift")
+        destination_generation = destination_generations / generation_id
+        if destination_generation.exists():
+            if generation_tree_sha256(destination_generation) != row["generation_tree_sha256"]:
+                raise MacroMaintenanceError("macro_lineage_inventory_generation_conflict")
+            continue
+        shutil.copytree(source_generation, destination_generation, symlinks=False)
+        for item in destination_generation.rglob("*"):
+            os.chmod(item, 0o700 if item.is_dir() else 0o600)
+        os.chmod(destination_generation, 0o700)
 
 
 def _sha256_bytes(value: bytes) -> str:
@@ -512,6 +550,7 @@ def prepare_cn_macro_maintenance_transaction(
     try:
         retrospective_contract: dict[str, Any] | None = None
         retrospective_coverage_by_target: dict[str, dict[str, str]] | None = None
+        observations_lineage_inventory: dict[str, Any] | None = None
         retrospective_input_bindings: dict[str, dict[str, str]] = {}
         if retrospective_recovery_contract_path is not None:
             if expected_retrospective_recovery_contract_sha256 is None:
@@ -525,28 +564,38 @@ def prepare_cn_macro_maintenance_transaction(
                 retrospective_contract = json.loads(contract_raw)
             except (UnicodeDecodeError, json.JSONDecodeError) as exc:
                 raise MacroMaintenanceError("macro_retrospective_contract_invalid") from exc
+            contract_schema = (
+                retrospective_contract.get("schema_version")
+                if isinstance(retrospective_contract, dict)
+                else None
+            )
+            expected_contract_keys = {
+                "schema_version",
+                "status",
+                "classification",
+                "target_date",
+                "attempt_receipt",
+                "candidate_manifest",
+                "source_market_manifest",
+                "canonical_market_pointer_sha256",
+                "canonical_pit_pointer_sha256",
+                "expected_macro_observations_pointer_sha256",
+                "expected_macro_release_pointer_sha256",
+                "macro_veto",
+                "retrospective_coverage_manifests",
+                "canonical_final_coverage_manifest",
+                "content_sha256",
+            }
+            if contract_schema == "macro-retrospective-canonical-transaction.v2":
+                expected_contract_keys.add("observations_lineage_inventory")
             if (
                 not isinstance(retrospective_contract, dict)
-                or set(retrospective_contract)
-                != {
-                    "schema_version",
-                    "status",
-                    "classification",
-                    "target_date",
-                    "attempt_receipt",
-                    "candidate_manifest",
-                    "source_market_manifest",
-                    "canonical_market_pointer_sha256",
-                    "canonical_pit_pointer_sha256",
-                    "expected_macro_observations_pointer_sha256",
-                    "expected_macro_release_pointer_sha256",
-                    "macro_veto",
-                    "retrospective_coverage_manifests",
-                    "canonical_final_coverage_manifest",
-                    "content_sha256",
+                or contract_schema
+                not in {
+                    "macro-retrospective-canonical-transaction.v1",
+                    "macro-retrospective-canonical-transaction.v2",
                 }
-                or retrospective_contract.get("schema_version")
-                != "macro-retrospective-canonical-transaction.v1"
+                or set(retrospective_contract) != expected_contract_keys
                 or retrospective_contract.get("classification")
                 != "MIXED_RETROSPECTIVE_AND_CANONICAL"
                 or retrospective_contract.get("target_date") != str(target_date).replace("-", "")
@@ -598,12 +647,55 @@ def prepare_cn_macro_maintenance_transaction(
                 "source_market_manifest",
                 "macro_veto",
                 "canonical_final_coverage_manifest",
+                *(
+                    ("observations_lineage_inventory",)
+                    if contract_schema == "macro-retrospective-canonical-transaction.v2"
+                    else ()
+                ),
             ):
                 ref = retrospective_contract[name]
                 if not isinstance(ref, dict) or set(ref) != {"path", "sha256"}:
                     raise MacroMaintenanceError("macro_retrospective_contract_ref_invalid")
                 _file_bytes(ref["path"], ref["sha256"], "macro_retrospective_contract_ref_invalid")
                 retrospective_input_bindings[name] = dict(ref)
+            if contract_schema == "macro-retrospective-canonical-transaction.v2":
+                lineage_ref = retrospective_contract["observations_lineage_inventory"]
+                lineage_raw = _file_bytes(
+                    lineage_ref["path"],
+                    lineage_ref["sha256"],
+                    "macro_lineage_inventory_invalid",
+                )
+                try:
+                    observations_lineage_inventory = json.loads(lineage_raw)
+                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    raise MacroMaintenanceError("macro_lineage_inventory_invalid") from exc
+                if (
+                    not isinstance(observations_lineage_inventory, dict)
+                    or set(observations_lineage_inventory)
+                    != {
+                        "schema_version",
+                        "source_root",
+                        "active_pointer_sha256",
+                        "generations",
+                        "content_sha256",
+                    }
+                    or observations_lineage_inventory.get("schema_version")
+                    != "cn-macro-observation-lineage-inventory.v1"
+                    or observations_lineage_inventory.get("active_pointer_sha256")
+                    != expected_observations_pointer_sha256
+                ):
+                    raise MacroMaintenanceError("macro_lineage_inventory_invalid")
+                lineage_body = dict(observations_lineage_inventory)
+                lineage_content_sha = lineage_body.pop("content_sha256")
+                if lineage_content_sha != _sha256_bytes(
+                    json.dumps(
+                        lineage_body,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ):
+                    raise MacroMaintenanceError("macro_lineage_inventory_hash_invalid")
             if retrospective_contract["source_market_manifest"] != {
                 "path": str(Path(snapshot_manifest_path).expanduser().resolve()),
                 "sha256": expected_snapshot_manifest_sha256,
@@ -629,6 +721,12 @@ def prepare_cn_macro_maintenance_transaction(
         )
         _copy_canonical_parent(release_canonical, release_candidate)
         _copy_canonical_parent(observations_canonical, observations_candidate)
+        if observations_lineage_inventory is not None:
+            _merge_observation_lineage(
+                destination=observations_candidate,
+                inventory=observations_lineage_inventory,
+                expected_pointer_sha256=expected_observations_pointer_sha256,
+            )
         prepared_root.mkdir(mode=0o700)
         legacy_result = run_cn_macro_maintenance(
             market=market,

@@ -88,6 +88,33 @@ def test_retrospective_targets_reject_non_open_final_target(tmp_path: Path, monk
         )
 
 
+def test_lineage_inventory_merges_only_into_private_candidate(tmp_path: Path) -> None:
+    source = _private(tmp_path / "lineage-source")
+    source_pointer, source_sha = _store(source, "lineage-active")
+    del source_pointer
+    missing = _private(source / "_generations" / "lineage-missing")
+    missing_manifest = _raw({"generation_id": "lineage-missing", "status": "OK"})
+    (missing / "manifest.json").write_bytes(missing_manifest)
+    os.chmod(missing / "manifest.json", 0o600)
+    destination = _private(tmp_path / "candidate")
+    _store(destination, "lineage-active")
+    rows = [
+        {
+            "generation_id": item.name,
+            "generation_tree_sha256": transaction.generation_tree_sha256(item),
+        }
+        for item in sorted((source / "_generations").iterdir())
+    ]
+
+    maintenance._merge_observation_lineage(
+        destination=destination,
+        inventory={"source_root": str(source), "generations": rows},
+        expected_pointer_sha256=source_sha,
+    )
+
+    assert (destination / "_generations" / "lineage-missing" / "manifest.json").is_file()
+
+
 def _raw(payload: dict) -> bytes:
     return (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode()
 
@@ -114,7 +141,12 @@ def _store(root: Path, generation_id: str) -> tuple[bytes, str]:
     return pointer, _sha(pointer)
 
 
-def _fixture(tmp_path: Path, *, authority_mode: str = "canonical"):
+def _fixture(
+    tmp_path: Path,
+    *,
+    authority_mode: str = "canonical",
+    observation_dependency: bool = False,
+):
     market = _private(tmp_path / "market")
     market_pointer = market / "_latest.json"
     market_raw = _raw({"generation_id": "market-active", "status": "OK"})
@@ -136,6 +168,13 @@ def _fixture(tmp_path: Path, *, authority_mode: str = "canonical"):
     release_new_raw, release_new = _store(candidate_release, "release-child")
     observations_new_raw, observations_new = _store(candidate_observations, "observations-child")
     del release_new_raw, observations_new_raw
+    if observation_dependency:
+        dependency = _private(
+            candidate_observations / "_generations" / "observations-missing-parent"
+        )
+        dependency_manifest = _raw({"generation_id": "observations-missing-parent", "status": "OK"})
+        (dependency / "manifest.json").write_bytes(dependency_manifest)
+        os.chmod(dependency / "manifest.json", 0o600)
 
     prepared = _private(tmp_path / "prepared")
     sealed = transaction.seal_prepared_macro_transaction(
@@ -232,6 +271,28 @@ def test_commit_has_exact_phase_order_and_is_strictly_read_back(
         == fixture["market_pointer"].read_bytes()
     )
     assert intent["details"]["pit_authority"]["pointer_sha256"] == fixture["pit_sha"]
+
+
+def test_commit_installs_sealed_observation_dependency_closure(tmp_path: Path, monkeypatch) -> None:
+    fixture = _fixture(tmp_path, observation_dependency=True)
+    monkeypatch.setattr(transaction, "_postcheck", _valid_postcheck)
+    prepared_payload = json.loads(Path(fixture["prepared_path"]).read_text())
+    assert [
+        row["generation_id"] for row in prepared_payload["observations"]["dependency_generations"]
+    ] == ["observations-missing-parent"]
+
+    result = transaction.commit_prepared_macro_transaction(
+        prepared_path=fixture["prepared_path"],
+        expected_prepared_sha256=fixture["prepared_sha"],
+        journal_root=fixture["journal"],
+        journal_run_id="run-1",
+        **_authority_args(fixture),
+    )
+
+    assert result["status"] == "SUCCESS"
+    assert (
+        fixture["observations"] / "_generations" / "observations-missing-parent" / "manifest.json"
+    ).is_file()
 
 
 def test_commit_acquires_market_pit_release_observations_lock_order(
