@@ -275,6 +275,21 @@ economic-exposure gap, or benchmark-relative tail is auxiliary and may produce
 unavailable quote, wrong time/date, unsafe output, SHA drift or authority drift
 is a core blocker.
 
+`compile-daily` may remove the Macro pipeline-data veto only from one exact
+`cn-macro-readiness-closure.v1` source. The closure is content-addressed,
+research-only, and binds the complete successful dual-pointer journal, prepared
+transaction, frozen Market/PIT/Release/Observations pointer bytes, installed
+generation trees, original inputs, and any archived Macro-veto clear receipt.
+Intrinsic validation remains replayable after later normal pointer advances;
+current readiness additionally requires the four current pointers to equal the
+closure and no live Macro veto. `available_at` must be no later than the
+decision cutoff. A repair completed after a historical cutoff cannot
+retroactively rewrite that decision's `PIPELINE_DATA_VETO` state.
+
+`CANONICAL_MACRO_READY` means only that the Macro data pipeline closure is
+healthy. It does not classify the economic regime as low risk, create company
+alpha, loosen owner limits, activate System, or authorize Paper/trading.
+
 The deterministic output and machine receipt are:
 
 ```text

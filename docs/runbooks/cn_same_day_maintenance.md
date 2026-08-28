@@ -148,6 +148,15 @@ Macro transaction modes are mutually exclusive:
 Read-only recovery is the default. Daily automation can use forward completion
 only; it never calls rollback or the legacy sequential `--commit` route.
 
+After a canonical transaction reaches the exact seven-record terminal SUCCESS
+chain and any bound Macro veto has been archived through its registered clear
+receipt, an operator may call `market macro-readiness-seal` with one exact
+workspace-relative terminal path/SHA request. It writes only a deterministic,
+content-addressed `cn-macro-readiness-closure.v1`; replay is `NO_ACTION` and a
+conflict fails closed. The closure records its true `available_at`. It cannot
+be consumed by an earlier decision cutoff and never grants System, portfolio,
+Paper, broker, order, or trade authority.
+
 ## Machine states
 
 The attempt receipt reports `same_day_status`,

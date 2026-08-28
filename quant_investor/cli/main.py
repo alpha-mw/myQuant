@@ -26,6 +26,7 @@ from quant_investor.cli.unified import (
     factor_production_status,
     factor_production_verify,
     factor_status,
+    market_macro_readiness_seal,
     research_compile_evidence,
     research_compile_daily,
     research_evaluate,
@@ -1135,6 +1136,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--new-observations-pointer-sha256", default=None, type=_sha256_argument
     )
 
+    market_macro_readiness = market_subparsers.add_parser(
+        "macro-readiness-seal",
+        help="seal one exact inactive Macro pipeline readiness closure",
+    )
+    _add_exact_request_arguments(market_macro_readiness)
+
     market_storage_validate = market_subparsers.add_parser(
         "storage-validate",
         help="校验本地 Parquet canonical snapshot 健康状态",
@@ -1995,6 +2002,16 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
             "PROMOTION_UNCERTAIN",
         }:
             raise SystemExit(2)
+        return
+
+    if args.command == "market" and args.market_command == "macro-readiness-seal":
+        _print_json(
+            market_macro_readiness_seal(
+                workspace_root=args.workspace_root,
+                request_path=args.request,
+                expected_request_sha256=args.expected_request_sha256,
+            )
+        )
         return
 
     if args.command == "market" and args.market_command == "storage-validate":

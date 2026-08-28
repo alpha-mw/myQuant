@@ -6,6 +6,7 @@ from collections.abc import Mapping, Sequence
 from decimal import Decimal
 import hashlib
 import math
+from pathlib import PurePosixPath
 from typing import Any, Final
 
 import pandas as pd
@@ -70,10 +71,10 @@ def build_market_risk_evidence(
     classification: str,
     as_of: str,
 ) -> dict[str, Any]:
-    """Seal the approved Macro pipeline-veto classification as research risk."""
+    """Seal approved Macro pipeline-closure state as research risk."""
 
     cutoff = timestamp(as_of, label="as_of")
-    if classification != "PIPELINE_DATA_VETO":
+    if classification not in {"PIPELINE_DATA_VETO", "CANONICAL_MACRO_READY"}:
         raise IntelligenceError("market risk classification is not approved")
     if type(source_path) is not str or not source_path or source_path.startswith("/"):
         raise IntelligenceError("market risk source path is invalid")
@@ -82,8 +83,23 @@ def build_market_risk_evidence(
         {identifier(code, label="market risk blocker") for code in blocker_codes},
         key=lambda value: value.encode("ascii"),
     )
-    if normalized != ["MACRO_RELEASE_CONTRACT_BLOCKED"]:
-        raise IntelligenceError("market risk blocker closure differs")
+    if classification == "PIPELINE_DATA_VETO":
+        if normalized != ["MACRO_RELEASE_CONTRACT_BLOCKED"]:
+            raise IntelligenceError("market risk blocker closure differs")
+        hard_risk_codes = ["MACRO_DATA_VETO_ACTIVE"]
+    else:
+        if normalized:
+            raise IntelligenceError("ready market risk cannot carry blockers")
+        source = PurePosixPath(source_path)
+        if (
+            len(source.parts) != 5
+            or source.parts[:3] != ("results", "intelligence", "macro_readiness")
+            or source.parts[3].isdigit() is False
+            or len(source.parts[3]) != 8
+            or source.parts[4] != f"{digest}.json"
+        ):
+            raise IntelligenceError("ready market risk source path is invalid")
+        hard_risk_codes = []
     return build_artifact(
         kind=MARKET_RISK_KIND,
         identity_field="evidence_id",
@@ -99,7 +115,7 @@ def build_market_risk_evidence(
         fields={
             "blocker_codes": normalized,
             "classification": classification,
-            "hard_risk_codes": ["MACRO_DATA_VETO_ACTIVE"],
+            "hard_risk_codes": hard_risk_codes,
             "source_path": source_path,
             "source_sha256": digest,
             "status": "AVAILABLE",

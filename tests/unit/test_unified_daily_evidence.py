@@ -174,3 +174,22 @@ def test_macro_pipeline_veto_builds_available_hard_risk_evidence() -> None:
     assert validate_market_risk_evidence(evidence) == evidence
     assert evidence["payload"]["status"] == "AVAILABLE"
     assert evidence["payload"]["hard_risk_codes"] == ["MACRO_DATA_VETO_ACTIVE"]
+    assert hashlib.sha256(canonical_json_bytes(evidence)).hexdigest() == (
+        "84c26b333af21c3f011c4ab011467007269c9f2ce4be10faf983a5f125571e34"
+    )
+
+
+def test_canonical_macro_ready_removes_only_pipeline_data_veto() -> None:
+    evidence = build_market_risk_evidence(
+        source_path=f"results/intelligence/macro_readiness/20260827/{'d' * 64}.json",
+        source_sha256="d" * 64,
+        blocker_codes=[],
+        classification="CANONICAL_MACRO_READY",
+        as_of=NOW,
+    )
+
+    assert validate_market_risk_evidence(evidence) == evidence
+    assert evidence["payload"]["status"] == "AVAILABLE"
+    assert evidence["payload"]["blocker_codes"] == []
+    assert evidence["payload"]["hard_risk_codes"] == []
+    assert evidence["payload"]["authority"]["portfolio_activation"] is False

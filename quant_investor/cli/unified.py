@@ -1388,6 +1388,8 @@ def research_compile_daily(
     fundamental_frame = None
     fundamental_source = None
     market_risk_artifact = None
+    macro_ready_ref: dict[str, str] | None = None
+    macro_ready_projection: dict[str, Any] | None = None
     if company_evidence is not None:
         if type(company_evidence) is not dict or frozenset(company_evidence) not in {
             frozenset({"exposure_rows", "fundamental_source"}),
@@ -1489,17 +1491,40 @@ def research_compile_daily(
             try:
                 macro_document = parse_json_bytes(
                     macro_raw,
-                    label="registered Macro veto",
+                    label="registered Macro risk source",
                     require_canonical=False,
                 )
             except Exception as exc:
                 raise CommandError("RESEARCH_DAILY_MACRO_RISK_INVALID") from exc
-            if (
-                type(macro_document) is not dict
-                or macro_document.get("schema_version")
-                != "cn-daily-maintenance-macro-write-veto.v1"
-                or macro_document.get("blockers") != ["MACRO_RELEASE_CONTRACT_BLOCKED"]
-            ):
+            classification = macro_values["classification"]
+            blocker_codes: list[str]
+            if classification == "PIPELINE_DATA_VETO":
+                if (
+                    type(macro_document) is not dict
+                    or macro_document.get("schema_version")
+                    != "cn-daily-maintenance-macro-write-veto.v1"
+                    or macro_document.get("blockers") != ["MACRO_RELEASE_CONTRACT_BLOCKED"]
+                ):
+                    raise CommandError("RESEARCH_DAILY_MACRO_RISK_INVALID")
+                blocker_codes = list(macro_document["blockers"])
+            elif classification == "CANONICAL_MACRO_READY":
+                from quant_investor.macro.readiness_closure import (
+                    MacroReadinessClosureError,
+                    verify_current_macro_readiness_closure,
+                )
+
+                try:
+                    macro_ready_projection = verify_current_macro_readiness_closure(
+                        workspace_root=workspace,
+                        closure=macro_document,
+                        expected_target_date=rank["payload"]["signal_date"],
+                        decision_as_of=values["as_of"],
+                    )
+                except MacroReadinessClosureError as exc:
+                    raise CommandError("RESEARCH_DAILY_MACRO_RISK_INVALID") from exc
+                macro_ready_ref = dict(macro_ref)
+                blocker_codes = []
+            else:
                 raise CommandError("RESEARCH_DAILY_MACRO_RISK_INVALID")
             from quant_investor.intelligence.daily_evidence import (
                 build_market_risk_evidence,
@@ -1508,8 +1533,8 @@ def research_compile_daily(
             market_risk_artifact = build_market_risk_evidence(
                 source_path=macro_ref["path"],
                 source_sha256=macro_ref["sha256"],
-                blocker_codes=macro_document["blockers"],
-                classification=macro_values["classification"],
+                blocker_codes=blocker_codes,
+                classification=classification,
                 as_of=values["as_of"],
             )
 
@@ -1523,11 +1548,61 @@ def research_compile_daily(
         market_risk_evidence=market_risk_artifact,
         **values,
     )
+    if macro_ready_ref is not None:
+        from quant_investor.macro.readiness_closure import (
+            MacroReadinessClosureError,
+            verify_current_macro_readiness_closure,
+        )
+
+        _macro_path, macro_raw, observed_ref = source_file(
+            macro_ready_ref,
+            code="RESEARCH_DAILY_MACRO_RISK_INVALID",
+        )
+        try:
+            macro_document = parse_json_bytes(
+                macro_raw,
+                label="registered Macro readiness closure",
+                require_canonical=True,
+            )
+            rechecked = verify_current_macro_readiness_closure(
+                workspace_root=workspace,
+                closure=macro_document,
+                expected_target_date=rank["payload"]["signal_date"],
+                decision_as_of=values["as_of"],
+            )
+        except Exception as exc:
+            raise CommandError("RESEARCH_DAILY_MACRO_RISK_INVALID") from exc
+        if observed_ref != macro_ready_ref or rechecked != macro_ready_projection:
+            raise CommandError("RESEARCH_DAILY_MACRO_RISK_DRIFT")
     assert_factor_production_pointer(
         workspace_root,
         expected_pointer_sha256=expected_pointer,
     )
     return result
+
+
+def market_macro_readiness_seal(
+    *, workspace_root: str, request_path: str, expected_request_sha256: str
+) -> dict[str, Any]:
+    """Seal one deterministic Macro readiness closure from an exact terminal."""
+
+    from quant_investor.macro.readiness_closure import seal_macro_readiness_closure
+
+    _, document = _request(
+        workspace_root=workspace_root,
+        request_path=request_path,
+        expected_request_sha256=expected_request_sha256,
+    )
+    values = _exact_fields(
+        document,
+        {"terminal_path", "terminal_sha256"},
+        code="MACRO_READINESS_SEAL_REQUEST_INVALID",
+    )
+    return seal_macro_readiness_closure(
+        workspace_root=workspace_root,
+        terminal_path=values["terminal_path"],
+        terminal_sha256=values["terminal_sha256"],
+    )
 
 
 def research_publish_policy(*, workspace_root: str) -> dict[str, Any]:

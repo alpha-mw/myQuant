@@ -303,10 +303,21 @@ def test_cli_registers_morning_and_veto_recovery_commands() -> None:
             "b" * 64,
         ]
     )
+    macro_ready_args = parser.parse_args(
+        [
+            "market",
+            "macro-readiness-seal",
+            "--request",
+            "request.json",
+            "--expected-request-sha256",
+            "f" * 64,
+        ]
+    )
     assert morning_args.research_command == "morning-strategy"
     assert cutover_args.research_command == "morning-cutover"
     assert evaluate_args.research_command == "morning-evaluate"
     assert recover_args.market_command == "recover-transient-write-veto"
+    assert macro_ready_args.market_command == "macro-readiness-seal"
 
 
 def _cutover_request(tmp_path: Path, store_sha: str, calendar_path: Path) -> dict:
