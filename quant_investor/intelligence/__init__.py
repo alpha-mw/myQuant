@@ -22,9 +22,11 @@ from .daily import (
 from .daily_evidence import (
     build_company_source_evidence,
     build_fundamental_assessments_from_frame,
+    build_market_risk_evidence,
     build_source_bound_economic_exposure_projection,
     theme_assessment_from_exposure,
     validate_company_source_evidence,
+    validate_market_risk_evidence,
 )
 from .fundamental import assess_fundamental, validate_fundamental_assessment
 from .industry import assess_industry, validate_industry_assessment
@@ -78,6 +80,7 @@ __all__ = [
     "build_daily_research_policy",
     "build_factor_research_rank",
     "build_fundamental_assessments_from_frame",
+    "build_market_risk_evidence",
     "build_source_bound_economic_exposure_projection",
     "build_unverified_economic_exposure_projection",
     "compile_evidence",
@@ -99,6 +102,7 @@ __all__ = [
     "run_morning_strategy",
     "theme_assessment_from_exposure",
     "validate_company_source_evidence",
+    "validate_market_risk_evidence",
     "validate_decision_context",
     "validate_daily_research_policy",
     "validate_factor_research_rank",

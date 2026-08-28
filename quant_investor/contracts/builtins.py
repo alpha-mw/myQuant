@@ -1153,6 +1153,18 @@ _INTELLIGENCE_SPECS: Final = {
             "source_type",
         },
     ),
+    "market_risk_evidence": (
+        "evidence_id",
+        _RESEARCH_COMMON_FIELDS
+        | {
+            "blocker_codes",
+            "classification",
+            "hard_risk_codes",
+            "source_path",
+            "source_sha256",
+            "status",
+        },
+    ),
     "daily_research_policy": (
         "policy_id",
         _RESEARCH_COMMON_FIELDS

@@ -1387,12 +1387,15 @@ def research_compile_daily(
     exposure_evidence: list[dict[str, Any]] = []
     fundamental_frame = None
     fundamental_source = None
+    market_risk_artifact = None
     if company_evidence is not None:
-        evidence_values = _exact_fields(
-            company_evidence,
-            {"exposure_rows", "fundamental_source"},
-            code="RESEARCH_DAILY_COMPANY_EVIDENCE_INVALID",
-        )
+        if type(company_evidence) is not dict or frozenset(company_evidence) not in {
+            frozenset({"exposure_rows", "fundamental_source"}),
+            frozenset({"exposure_rows", "fundamental_source", "macro_risk"}),
+        }:
+            raise CommandError("RESEARCH_DAILY_COMPANY_EVIDENCE_INVALID")
+        evidence_values = dict(company_evidence)
+        macro_risk = evidence_values.pop("macro_risk", None)
         exposure_rows = evidence_values["exposure_rows"]
         if type(exposure_rows) is not list:
             raise CommandError("RESEARCH_DAILY_COMPANY_EVIDENCE_INVALID")
@@ -1473,6 +1476,42 @@ def research_compile_daily(
             "path": daily_ref["path"],
             "sha256": daily_ref["sha256"],
         }
+        if macro_risk is not None:
+            macro_values = _exact_fields(
+                macro_risk,
+                {"classification", "source"},
+                code="RESEARCH_DAILY_MACRO_RISK_INVALID",
+            )
+            _macro_path, macro_raw, macro_ref = source_file(
+                macro_values["source"],
+                code="RESEARCH_DAILY_MACRO_RISK_INVALID",
+            )
+            try:
+                macro_document = parse_json_bytes(
+                    macro_raw,
+                    label="registered Macro veto",
+                    require_canonical=False,
+                )
+            except Exception as exc:
+                raise CommandError("RESEARCH_DAILY_MACRO_RISK_INVALID") from exc
+            if (
+                type(macro_document) is not dict
+                or macro_document.get("schema_version")
+                != "cn-daily-maintenance-macro-write-veto.v1"
+                or macro_document.get("blockers") != ["MACRO_RELEASE_CONTRACT_BLOCKED"]
+            ):
+                raise CommandError("RESEARCH_DAILY_MACRO_RISK_INVALID")
+            from quant_investor.intelligence.daily_evidence import (
+                build_market_risk_evidence,
+            )
+
+            market_risk_artifact = build_market_risk_evidence(
+                source_path=macro_ref["path"],
+                source_sha256=macro_ref["sha256"],
+                blocker_codes=macro_document["blockers"],
+                classification=macro_values["classification"],
+                as_of=values["as_of"],
+            )
 
     result = compile_daily_intelligence(
         rank=rank,
@@ -1481,6 +1520,7 @@ def research_compile_daily(
         exposure_evidence=exposure_evidence,
         fundamental_frame=fundamental_frame,
         fundamental_source=fundamental_source,
+        market_risk_evidence=market_risk_artifact,
         **values,
     )
     assert_factor_production_pointer(

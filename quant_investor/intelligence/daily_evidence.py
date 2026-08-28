@@ -37,6 +37,7 @@ from .theme_governance import (
 )
 
 SOURCE_KIND: Final = "company_source_evidence"
+MARKET_RISK_KIND: Final = "market_risk_evidence"
 EXPOSURE_SOURCE_TYPES: Final = frozenset(
     {
         "ANNUAL_REPORT",
@@ -59,6 +60,65 @@ FUNDAMENTAL_METRICS: Final = (
 )
 FUNDAMENTAL_WEIGHTS: Final = {component: "0.2" for component in FUNDAMENTAL_COMPONENTS}
 FUNDAMENTAL_MINIMUM_COVERAGE: Final = "0.6"
+
+
+def build_market_risk_evidence(
+    *,
+    source_path: str,
+    source_sha256: str,
+    blocker_codes: Sequence[str],
+    classification: str,
+    as_of: str,
+) -> dict[str, Any]:
+    """Seal the approved Macro pipeline-veto classification as research risk."""
+
+    cutoff = timestamp(as_of, label="as_of")
+    if classification != "PIPELINE_DATA_VETO":
+        raise IntelligenceError("market risk classification is not approved")
+    if type(source_path) is not str or not source_path or source_path.startswith("/"):
+        raise IntelligenceError("market risk source path is invalid")
+    digest = sha256(source_sha256, label="source_sha256")
+    normalized = sorted(
+        {identifier(code, label="market risk blocker") for code in blocker_codes},
+        key=lambda value: value.encode("ascii"),
+    )
+    if normalized != ["MACRO_RELEASE_CONTRACT_BLOCKED"]:
+        raise IntelligenceError("market risk blocker closure differs")
+    return build_artifact(
+        kind=MARKET_RISK_KIND,
+        identity_field="evidence_id",
+        identity=business_identity(
+            kind=MARKET_RISK_KIND,
+            identity_inputs={
+                "classification": classification,
+                "source_path": source_path,
+                "source_sha256": digest,
+            },
+        ),
+        created_at=cutoff,
+        fields={
+            "blocker_codes": normalized,
+            "classification": classification,
+            "hard_risk_codes": ["MACRO_DATA_VETO_ACTIVE"],
+            "source_path": source_path,
+            "source_sha256": digest,
+            "status": "AVAILABLE",
+        },
+    )
+
+
+def validate_market_risk_evidence(value: Mapping[str, Any] | bytes) -> dict[str, Any]:
+    artifact, payload = artifact_payload(value, expected_kind=MARKET_RISK_KIND)
+    replay = build_market_risk_evidence(
+        source_path=payload["source_path"],
+        source_sha256=payload["source_sha256"],
+        blocker_codes=payload["blocker_codes"],
+        classification=payload["classification"],
+        as_of=artifact["created_at"],
+    )
+    if replay != artifact:
+        raise IntelligenceError("market risk evidence does not replay")
+    return artifact
 
 
 def _metric_value(value: Any, *, label: str) -> str | None:
@@ -446,10 +506,13 @@ __all__ = [
     "FUNDAMENTAL_MINIMUM_COVERAGE",
     "FUNDAMENTAL_SOURCE_TYPE",
     "FUNDAMENTAL_WEIGHTS",
+    "MARKET_RISK_KIND",
     "SOURCE_KIND",
     "build_company_source_evidence",
     "build_fundamental_assessments_from_frame",
+    "build_market_risk_evidence",
     "build_source_bound_economic_exposure_projection",
     "theme_assessment_from_exposure",
     "validate_company_source_evidence",
+    "validate_market_risk_evidence",
 ]

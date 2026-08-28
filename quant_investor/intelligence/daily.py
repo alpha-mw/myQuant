@@ -886,6 +886,7 @@ def compile_daily_intelligence(  # noqa: C901 - explicit cross-domain research c
     exposure_evidence: Sequence[Mapping[str, Any] | bytes] = (),
     fundamental_frame: Any | None = None,
     fundamental_source: Mapping[str, Any] | None = None,
+    market_risk_evidence: Mapping[str, Any] | bytes | None = None,
 ) -> dict[str, Any]:
     cutoff = timestamp(as_of, label="as_of")
     strategy = identifier(strategy_id, label="strategy_id")
@@ -976,6 +977,13 @@ def compile_daily_intelligence(  # noqa: C901 - explicit cross-domain research c
     if exposure_artifact is not None:
         artifacts.append(exposure_artifact)
     artifacts.extend(exposure_evidence_by_company.values())
+    market_risk_artifact = None
+    if market_risk_evidence is not None:
+        from .daily_evidence import validate_market_risk_evidence
+
+        market_risk_artifact = validate_market_risk_evidence(market_risk_evidence)
+        require_no_future(market_risk_artifact, as_of=cutoff, label="market risk evidence")
+        artifacts.append(market_risk_artifact)
     exposure_rows = (
         {}
         if exposure_artifact is None
@@ -1069,20 +1077,31 @@ def compile_daily_intelligence(  # noqa: C901 - explicit cross-domain research c
             evidence_refs.append(artifact_ref(theme_assessment))
         if fundamental_assessment is not None:
             evidence_refs.append(artifact_ref(fundamental_assessment))
-        risk_codes = (
+        if market_risk_artifact is not None:
+            evidence_refs.append(artifact_ref(market_risk_artifact))
+        risk_codes = set(
             [] if theme_assessment is None else theme_assessment["payload"]["hard_veto_codes"]
+        )
+        if market_risk_artifact is not None:
+            risk_codes.update(market_risk_artifact["payload"]["hard_risk_codes"])
+        hypothesis_status = (
+            "VALID"
+            if theme_assessment is not None
+            and fundamental_assessment is not None
+            and fundamental_assessment["payload"]["status"] in {"COMPLETE", "PARTIAL"}
+            else "UNTESTED"
         )
         context = build_decision_context(
             company=company,
             as_of=cutoff,
-            hypothesis_status="UNTESTED",
-            risk_status="UNAVAILABLE",
+            hypothesis_status=hypothesis_status,
+            risk_status="AVAILABLE" if market_risk_artifact is not None else "UNAVAILABLE",
             evidence_refs=evidence_refs,
             industry_assessment=industry,
             theme_assessment=theme_assessment,
             fundamental_assessment=fundamental_assessment,
             quant_ref=artifact_ref(rank_artifact),
-            risk_codes=risk_codes,
+            risk_codes=sorted(risk_codes, key=lambda value: value.encode("ascii")),
         )
         decision = make_investment_decision(
             context=context,
@@ -1122,6 +1141,33 @@ def compile_daily_intelligence(  # noqa: C901 - explicit cross-domain research c
                 "state": state,
             }
         )
+    research_portfolio = None
+    if market_risk_artifact is not None:
+        from .portfolio import construct_research_portfolio
+
+        research_portfolio = construct_research_portfolio(
+            strategy_id=strategy,
+            decisions=decisions,
+            candidate_data={},
+            policy={
+                "cash_floor": "1",
+                "minimum_adv_cny": "0",
+                "per_security_cap": "0",
+                "target_gross": "0",
+                "target_positions": 5,
+                "turnover_cap": "0",
+            },
+            as_of=cutoff,
+            market_risk={
+                "blocker_codes": [],
+                "effective_cash_floor": "1",
+                "effective_gross_cap": "0",
+                "effective_security_cap": "0",
+                "hard_veto_codes": market_risk_artifact["payload"]["hard_risk_codes"],
+                "status": "AVAILABLE",
+            },
+        )
+        artifacts.append(research_portfolio)
     request = forward(
         {
             "as_of": cutoff,
@@ -1193,6 +1239,7 @@ def compile_daily_intelligence(  # noqa: C901 - explicit cross-domain research c
         "evidence_bundle": bundle,
         "evaluation": evaluation,
         "production": False,
+        "research_portfolio": research_portfolio,
         "research_only": True,
         "run_state": "INACTIVE",
         "status": "COMPLETE" if not decision_blockers else "PARTIAL",

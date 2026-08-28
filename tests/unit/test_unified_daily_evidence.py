@@ -9,8 +9,10 @@ from quant_investor.intelligence._common import artifact_ref, build_artifact, bu
 from quant_investor.intelligence.daily_evidence import (
     build_company_source_evidence,
     build_fundamental_assessments_from_frame,
+    build_market_risk_evidence,
     build_source_bound_economic_exposure_projection,
     theme_assessment_from_exposure,
+    validate_market_risk_evidence,
 )
 from quant_investor.intelligence.storage import approved_theme_policy_v2
 
@@ -158,3 +160,17 @@ def test_fundamental_snapshot_builds_equal_weight_partial_assessment() -> None:
     assert assessment["minimum_coverage"] == "0.600000000000"
     assert len(assessment["source_refs"]) == 1
     assert sources[0]["payload"]["source_type"] == "FUNDAMENTAL_SNAPSHOT"
+
+
+def test_macro_pipeline_veto_builds_available_hard_risk_evidence() -> None:
+    evidence = build_market_risk_evidence(
+        source_path="data/private/cn_daily_maintenance/MACRO_WRITE_VETO.json",
+        source_sha256="c" * 64,
+        blocker_codes=["MACRO_RELEASE_CONTRACT_BLOCKED"],
+        classification="PIPELINE_DATA_VETO",
+        as_of=NOW,
+    )
+
+    assert validate_market_risk_evidence(evidence) == evidence
+    assert evidence["payload"]["status"] == "AVAILABLE"
+    assert evidence["payload"]["hard_risk_codes"] == ["MACRO_DATA_VETO_ACTIVE"]
