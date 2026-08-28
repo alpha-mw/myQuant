@@ -35,7 +35,11 @@ from .investment_decision import (
     make_investment_decision,
     validate_investment_decision,
 )
-from .morning import evaluate_morning_cutover, run_morning_strategy
+from .morning import (
+    evaluate_morning_cutover,
+    evaluate_morning_strategy_eod,
+    run_morning_strategy,
+)
 from .portfolio import (
     assess_graduation,
     construct_research_portfolio,
@@ -88,6 +92,7 @@ __all__ = [
     "construct_research_portfolio",
     "evaluate",
     "evaluate_morning_cutover",
+    "evaluate_morning_strategy_eod",
     "forward",
     "inspect",
     "make_investment_decision",

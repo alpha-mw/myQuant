@@ -190,5 +190,17 @@ date-bound decision receipt and returns only a scheduler action. The Codex
 automation performs and reads back any scheduler change; repository code does
 not write `~/.codex`.
 
+Once a real 09:45 run exists for the same session, the 20:20 workflow may also
+call `research morning-evaluate` after the strict Market close is complete. The
+exact request binds the immutable `0945-run.v1.json`, the associated Sina quote
+capture, and the expected Market pointer SHA. `PREFLIGHT` computes deterministic
+09:45-to-close outcomes without writing. After Codex writes the bounded
+`eod-evaluation.md` with the fixed research-only authority declarations, `SEAL`
+publishes the immutable `eod-evaluation.v1.json`. The receipt reports
+`operational_success` independently from `decision_quality`; missing benchmark
+or individual close observations are auxiliary and cannot rewrite a successful
+09:45 operational result. The evaluator never creates Paper fills, orders,
+portfolio state, or holdings changes.
+
 This workflow never authorizes Mainline activation, portfolio mutation,
 holdings mutation, broker, order, trade, or funds-transfer changes.

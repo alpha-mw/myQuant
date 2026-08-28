@@ -10,6 +10,7 @@ import sys
 from zoneinfo import ZoneInfo
 
 import pytest
+import pandas as pd
 
 import quant_investor
 from quant_investor.cli.main import _build_parser
@@ -278,6 +279,16 @@ def test_cli_registers_morning_and_veto_recovery_commands() -> None:
             "a" * 64,
         ]
     )
+    evaluate_args = parser.parse_args(
+        [
+            "research",
+            "morning-evaluate",
+            "--request",
+            "request.json",
+            "--expected-request-sha256",
+            "a" * 64,
+        ]
+    )
     recover_args = parser.parse_args(
         [
             "market",
@@ -294,6 +305,7 @@ def test_cli_registers_morning_and_veto_recovery_commands() -> None:
     )
     assert morning_args.research_command == "morning-strategy"
     assert cutover_args.research_command == "morning-cutover"
+    assert evaluate_args.research_command == "morning-evaluate"
     assert recover_args.market_command == "recover-transient-write-veto"
 
 
@@ -374,12 +386,112 @@ def _successful_morning_receipt(run_date: str, previous_trade_date: str) -> dict
         "status": "PARTIAL",
         "core_blockers": [],
         "quote_provider": "SINA",
+        "quote_capture_ref": {"path": "quote.json", "sha256": "e" * 64},
         "quote_raw_sha256": "d" * 64,
         "broker": False,
         "live_order": False,
         "live_execution": False,
         "actual_holdings_mutation": False,
     }
+
+
+def test_morning_eod_separates_operational_success_from_auxiliary_quality(
+    tmp_path: Path, monkeypatch
+) -> None:
+    quote_path, quote_sha = _quote_capture(tmp_path)
+    quote = json.loads((tmp_path / quote_path).read_bytes())
+    morning_receipt = _successful_morning_receipt("20260827", "20260826")
+    morning_receipt["quote_raw_sha256"] = quote["raw_ref"]["sha256"]
+    morning_receipt["quote_capture_ref"] = {"path": quote_path, "sha256": quote_sha}
+    receipt_path = tmp_path / "results/operations/morning_strategy/CN/20260827/0945-run.v1.json"
+    receipt_sha = _write(receipt_path, morning_receipt)
+    market_pointer_path = tmp_path / morning.MARKET_POINTER_RELATIVE
+    market_pointer_sha = _write(
+        market_pointer_path,
+        {"snapshot_id": "20260827T080000Z", "status": "OK"},
+    )
+
+    class FakeReader:
+        def __init__(self, **_kwargs):
+            pass
+
+        def clean_snapshot_gate(self, *, refresh=False):
+            assert refresh is True
+            return {"healthy": True, "latest_complete_trade_date": "20260827"}
+
+        def read_cross_section(self, trade_date, *, columns):
+            assert trade_date == "20260827"
+            assert "close" in columns
+            return pd.DataFrame([{"symbol": "002463.SZ", "trade_date": "20260827", "close": 50}])
+
+    import quant_investor.market.market_data_reader as reader_module
+
+    monkeypatch.setattr(reader_module, "MarketDataReader", FakeReader)
+    request = {
+        "action": "PREFLIGHT",
+        "run_date": "20260827",
+        "morning_receipt_path": receipt_path.relative_to(tmp_path).as_posix(),
+        "morning_receipt_sha256": receipt_sha,
+        "quote_capture_path": quote_path,
+        "quote_capture_sha256": quote_sha,
+        "expected_market_pointer_sha256": market_pointer_sha,
+        "benchmark_symbol": None,
+        "output_path": None,
+        "output_sha256": None,
+    }
+    preflight = morning.evaluate_morning_strategy_eod(
+        workspace_root=tmp_path,
+        request=request,
+    )
+    assert preflight["command_status"] == "PREFLIGHT_COMPLETE"
+    assert preflight["operational_success"] is True
+    assert preflight["decision_quality"] == "PARTIAL_AUXILIARY"
+    assert preflight["auxiliary_blockers"] == ["BENCHMARK_UNAVAILABLE"]
+    assert preflight["instrument_outcomes"][0]["return_0945_to_close"] == ("0.010101010101")
+
+    output_path = tmp_path / "results/operations/morning_strategy/CN/20260827/eod-evaluation.md"
+    output_path.write_text(
+        "research_only=true\nbroker=false\nlive_order=false\n" "actual_holdings_mutation=false\n",
+        encoding="utf-8",
+    )
+    output_path.chmod(0o600)
+    request["action"] = "SEAL"
+    request["output_path"] = output_path.relative_to(tmp_path).as_posix()
+    request["output_sha256"] = hashlib.sha256(output_path.read_bytes()).hexdigest()
+    sealed = morning.evaluate_morning_strategy_eod(
+        workspace_root=tmp_path,
+        request=request,
+    )
+    repeated = morning.evaluate_morning_strategy_eod(
+        workspace_root=tmp_path,
+        request=request,
+    )
+    assert sealed["command_status"] == "PUBLISHED"
+    assert repeated["command_status"] == "NO_ACTION"
+    assert sealed["paper_fill"] is False
+    assert sealed["actual_holdings_mutation"] is False
+
+
+def test_morning_eod_rejects_quote_binding_drift(tmp_path: Path) -> None:
+    quote_path, quote_sha = _quote_capture(tmp_path)
+    receipt = _successful_morning_receipt("20260827", "20260826")
+    receipt_path = tmp_path / "results/operations/morning_strategy/CN/20260827/0945-run.v1.json"
+    receipt_sha = _write(receipt_path, receipt)
+    market_sha = _write(tmp_path / morning.MARKET_POINTER_RELATIVE, {"status": "OK"})
+    request = {
+        "action": "PREFLIGHT",
+        "run_date": "20260827",
+        "morning_receipt_path": receipt_path.relative_to(tmp_path).as_posix(),
+        "morning_receipt_sha256": receipt_sha,
+        "quote_capture_path": quote_path,
+        "quote_capture_sha256": quote_sha,
+        "expected_market_pointer_sha256": market_sha,
+        "benchmark_symbol": None,
+        "output_path": None,
+        "output_sha256": None,
+    }
+    with pytest.raises(morning.IntelligenceError, match="binding differs"):
+        morning.evaluate_morning_strategy_eod(workspace_root=tmp_path, request=request)
 
 
 def test_two_successful_mornings_promote_and_pause_dashboard(tmp_path: Path, monkeypatch) -> None:

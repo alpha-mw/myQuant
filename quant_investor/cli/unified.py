@@ -1568,6 +1568,21 @@ def research_morning_cutover(
     return evaluate_morning_cutover(workspace_root=workspace_root, request=document)
 
 
+def research_morning_evaluate(
+    *, workspace_root: str, request_path: str, expected_request_sha256: str
+) -> dict[str, Any]:
+    """Evaluate one successful 09:45 strategy against the strict same-day close."""
+
+    from quant_investor.intelligence import evaluate_morning_strategy_eod
+
+    _, document = _request(
+        workspace_root=workspace_root,
+        request_path=request_path,
+        expected_request_sha256=expected_request_sha256,
+    )
+    return evaluate_morning_strategy_eod(workspace_root=workspace_root, request=document)
+
+
 def research_publish_theme_policy(*, workspace_root: str) -> dict[str, Any]:
     """Publish the exact owner-approved ACTIVE Theme v2 policy bundle."""
 

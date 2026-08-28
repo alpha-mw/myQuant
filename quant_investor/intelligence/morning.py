@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 import hashlib
 import json
 import os
@@ -24,11 +25,13 @@ from ._common import IntelligenceError, validate_stable_artifact
 
 MORNING_RECEIPT_SCHEMA: Final = "morning-strategy-run.v1"
 CUTOVER_RECEIPT_SCHEMA: Final = "morning-strategy-cutover.v1"
+EOD_EVALUATION_SCHEMA: Final = "morning-strategy-eod-evaluation.v1"
 SINA_CAPTURE_SCHEMA: Final = "cn-public-quote-capture.v1"
 STORE_POINTER_RELATIVE: Final = (
     "results/strategy_records/CN/aggressive_tech_manufacturing/" "_record_store/current.v1.json"
 )
 STORE_ROOT_RELATIVE: Final = "results/strategy_records/CN/aggressive_tech_manufacturing"
+MARKET_POINTER_RELATIVE: Final = "data/parquet/cn/_latest.json"
 _DATE_RE: Final = re.compile(r"^[0-9]{8}$")
 _SHA_RE: Final = re.compile(r"^[0-9a-f]{64}$")
 _COMPANY_RE: Final = re.compile(r"^[0-9]{6}\.(?:SH|SZ|BJ)$")
@@ -437,6 +440,10 @@ def _morning_input_state(
         "store_pointer": store_pointer,
         "store_pointer_sha256": expected_store_sha,
         "quote": quote,
+        "quote_capture_ref": {
+            "path": values["quote_capture_path"],
+            "sha256": values["quote_capture_sha256"],
+        },
         "pool_ref": pool_ref,
         "core_blockers": sorted(set(core_blockers)),
         "auxiliary_blockers": sorted(set(auxiliary_blockers)),
@@ -566,6 +573,7 @@ def run_morning_strategy(
         "w80_observation_sha256": state["w80_observation_sha256"],
         "store_pointer_sha256": state["store_pointer_sha256"],
         "quote_provider": "SINA",
+        "quote_capture_ref": state["quote_capture_ref"],
         "quote_request_time": quote["request_time"],
         "quote_response_time": quote["response_time"],
         "quote_raw_sha256": quote["raw_ref"]["sha256"],
@@ -609,6 +617,11 @@ def _morning_receipt_success(value: Mapping[str, Any]) -> bool:
         and value.get("status") in {"COMPLETE", "PARTIAL"}
         and value.get("core_blockers") == []
         and value.get("quote_provider") == "SINA"
+        and type(value.get("quote_capture_ref")) is dict
+        and set(value["quote_capture_ref"]) == {"path", "sha256"}
+        and type(value["quote_capture_ref"].get("path")) is str
+        and isinstance(value["quote_capture_ref"].get("sha256"), str)
+        and _SHA_RE.fullmatch(value["quote_capture_ref"]["sha256"]) is not None
         and isinstance(value.get("quote_raw_sha256"), str)
         and _SHA_RE.fullmatch(value["quote_raw_sha256"]) is not None
         and value.get("broker") is False
@@ -616,6 +629,261 @@ def _morning_receipt_success(value: Mapping[str, Any]) -> bool:
         and value.get("live_execution") is False
         and value.get("actual_holdings_mutation") is False
     )
+
+
+def _return_text(close: Any, reference: Any, *, label: str) -> str:
+    try:
+        close_value = Decimal(str(close))
+        reference_value = Decimal(str(reference))
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise IntelligenceError(f"{label} price is invalid") from exc
+    if not close_value.is_finite() or not reference_value.is_finite():
+        raise IntelligenceError(f"{label} price is invalid")
+    if close_value <= 0 or reference_value <= 0:
+        raise IntelligenceError(f"{label} price must be positive")
+    value = (close_value / reference_value - Decimal("1")).quantize(Decimal("0.000000000001"))
+    return format(value, "f")
+
+
+def evaluate_morning_strategy_eod(
+    *,
+    workspace_root: str | os.PathLike[str],
+    request: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Evaluate one successful 09:45 run against the same-day strict close.
+
+    This inactive research evaluator creates no portfolio, order, fill or
+    holdings state.  It binds the exact morning receipt, public quote capture,
+    and canonical Market pointer before sealing one date-bound outcome.
+    """
+
+    required = {
+        "action",
+        "run_date",
+        "morning_receipt_path",
+        "morning_receipt_sha256",
+        "quote_capture_path",
+        "quote_capture_sha256",
+        "expected_market_pointer_sha256",
+        "benchmark_symbol",
+        "output_path",
+        "output_sha256",
+    }
+    values = dict(request)
+    if set(values) != required:
+        raise IntelligenceError("morning EOD evaluation request shape is invalid")
+    action = values["action"]
+    if action not in {"PREFLIGHT", "SEAL"}:
+        raise IntelligenceError("morning EOD evaluation action is invalid")
+    root = _workspace(workspace_root)
+    run_date = _date(values["run_date"], label="run_date")
+    morning = _json_ref(
+        root,
+        values["morning_receipt_path"],
+        values["morning_receipt_sha256"],
+        label="morning receipt",
+    )
+    if not _morning_receipt_success(morning) or morning.get("run_date") != run_date:
+        raise IntelligenceError("morning receipt is not a successful same-day run")
+
+    quote_raw = _stable_raw(
+        root,
+        values["quote_capture_path"],
+        values["quote_capture_sha256"],
+        label="quote capture",
+    )
+    try:
+        quote_document = json.loads(quote_raw)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise IntelligenceError("quote capture is invalid JSON") from exc
+    if type(quote_document) is not dict:
+        raise IntelligenceError("quote capture must be an object")
+    raw_ref = quote_document.get("raw_ref")
+    if type(raw_ref) is not dict:
+        raise IntelligenceError("quote capture raw ref is invalid")
+    provider_raw = _stable_raw(
+        root,
+        raw_ref.get("path"),
+        raw_ref.get("sha256"),
+        label="raw quote response",
+    )
+    quote = validate_sina_quote_capture(quote_document, raw=provider_raw, run_date=run_date)
+    if morning.get("quote_raw_sha256") != raw_ref.get("sha256"):
+        raise IntelligenceError("morning receipt quote binding differs")
+    if morning.get("quote_capture_ref") != {
+        "path": values["quote_capture_path"],
+        "sha256": values["quote_capture_sha256"],
+    }:
+        raise IntelligenceError("morning receipt quote capture binding differs")
+
+    expected_market_sha = _sha(
+        values["expected_market_pointer_sha256"],
+        label="expected Market pointer",
+    )
+    _stable_raw(root, MARKET_POINTER_RELATIVE, expected_market_sha, label="Market pointer")
+    from quant_investor.market.market_data_reader import MarketDataReader
+
+    reader = MarketDataReader(market="CN", data_root=root / "data", mode_policy="strict")
+    gate = reader.clean_snapshot_gate(refresh=True)
+    if gate.get("healthy") is not True or gate.get("latest_complete_trade_date") != run_date:
+        raise IntelligenceError("strict Market close is not healthy for run_date")
+    quote_rows = quote["quote_rows"]
+    symbols = [row["symbol"] for row in quote_rows]
+    close_frame = reader.read_cross_section(
+        run_date,
+        columns=["ts_code", "trade_date", "close"],
+    )
+    if "symbol" not in close_frame.columns or "close" not in close_frame.columns:
+        raise IntelligenceError("strict Market close columns are unavailable")
+    close_by_symbol = {
+        str(row.symbol): row.close
+        for row in close_frame.loc[close_frame["symbol"].isin(symbols)].itertuples()
+    }
+    _stable_raw(root, MARKET_POINTER_RELATIVE, expected_market_sha, label="Market pointer")
+
+    outcomes: list[dict[str, Any]] = []
+    unavailable: list[str] = []
+    for quote_row in quote_rows:
+        symbol = quote_row["symbol"]
+        close = close_by_symbol.get(symbol)
+        if close is None:
+            unavailable.append(symbol)
+            outcomes.append(
+                {
+                    "symbol": symbol,
+                    "state": "CLOSE_UNAVAILABLE",
+                    "quote_0945": str(quote_row["price"]),
+                    "close": None,
+                    "return_0945_to_close": None,
+                }
+            )
+            continue
+        try:
+            observed_return = _return_text(
+                close,
+                quote_row["price"],
+                label=symbol,
+            )
+        except IntelligenceError:
+            unavailable.append(symbol)
+            outcomes.append(
+                {
+                    "symbol": symbol,
+                    "state": "RETURN_UNAVAILABLE",
+                    "quote_0945": str(quote_row["price"]),
+                    "close": str(close),
+                    "return_0945_to_close": None,
+                }
+            )
+            continue
+        outcomes.append(
+            {
+                "symbol": symbol,
+                "state": "OBSERVED",
+                "quote_0945": str(quote_row["price"]),
+                "close": str(close),
+                "return_0945_to_close": observed_return,
+            }
+        )
+
+    benchmark_symbol = values["benchmark_symbol"]
+    if benchmark_symbol is not None and (
+        type(benchmark_symbol) is not str or _COMPANY_RE.fullmatch(benchmark_symbol) is None
+    ):
+        raise IntelligenceError("benchmark_symbol is invalid")
+    benchmark_row = next(
+        (row for row in outcomes if row["symbol"] == benchmark_symbol),
+        None,
+    )
+    benchmark_return = (
+        None
+        if benchmark_row is None or benchmark_row["state"] != "OBSERVED"
+        else benchmark_row["return_0945_to_close"]
+    )
+    relative_rows = []
+    if benchmark_return is not None:
+        benchmark_value = Decimal(benchmark_return)
+        relative_rows = [
+            {
+                **row,
+                "benchmark_relative_return": (
+                    None
+                    if row["return_0945_to_close"] is None
+                    else format(
+                        (Decimal(row["return_0945_to_close"]) - benchmark_value).quantize(
+                            Decimal("0.000000000001")
+                        ),
+                        "f",
+                    )
+                ),
+            }
+            for row in outcomes
+        ]
+    unavailable_states = {
+        row["symbol"]: row["state"] for row in outcomes if row["symbol"] in unavailable
+    }
+    auxiliary_blockers = [f"{unavailable_states[symbol]}:{symbol}" for symbol in unavailable]
+    if benchmark_return is None:
+        auxiliary_blockers.append("BENCHMARK_UNAVAILABLE")
+    decision_quality = (
+        "PARTIAL_AUXILIARY" if morning.get("status") == "PARTIAL" or auxiliary_blockers else "READY"
+    )
+    status = "PARTIAL" if decision_quality == "PARTIAL_AUXILIARY" else "COMPLETE"
+    result = {
+        "schema_version": EOD_EVALUATION_SCHEMA,
+        "run_date": run_date,
+        "strategy_run_id": values["morning_receipt_sha256"],
+        "operational_success": True,
+        "decision_quality": decision_quality,
+        "status": status,
+        "morning_receipt_ref": {
+            "path": values["morning_receipt_path"],
+            "sha256": values["morning_receipt_sha256"],
+        },
+        "quote_capture_ref": {
+            "path": values["quote_capture_path"],
+            "sha256": values["quote_capture_sha256"],
+        },
+        "market_pointer_sha256": expected_market_sha,
+        "benchmark_symbol": benchmark_symbol,
+        "benchmark_return_0945_to_close": benchmark_return,
+        "instrument_outcomes": relative_rows or outcomes,
+        "auxiliary_blockers": sorted(set(auxiliary_blockers)),
+        "broker": False,
+        "live_order": False,
+        "live_execution": False,
+        "paper_fill": False,
+        "actual_holdings_mutation": False,
+    }
+    if action == "PREFLIGHT":
+        if values["output_path"] is not None or values["output_sha256"] is not None:
+            raise IntelligenceError("PREFLIGHT must not bind an output")
+        return {"command_status": "PREFLIGHT_COMPLETE", **result}
+
+    expected_output = f"results/operations/morning_strategy/CN/{run_date}/eod-evaluation.md"
+    if values["output_path"] != expected_output:
+        raise IntelligenceError("morning EOD output path is not deterministic")
+    output_sha = _sha(values["output_sha256"], label="morning EOD output SHA")
+    output_raw = _stable_raw(root, expected_output, output_sha, label="morning EOD output")
+    for declaration in (
+        b"research_only=true",
+        b"broker=false",
+        b"live_order=false",
+        b"actual_holdings_mutation=false",
+    ):
+        if declaration not in output_raw:
+            raise IntelligenceError("morning EOD authority declaration is missing")
+    result["output_path"] = expected_output
+    result["output_sha256"] = output_sha
+    receipt_root = _owner_directory(root / f"results/operations/morning_strategy/CN/{run_date}")
+    receipt_path = receipt_root / "eod-evaluation.v1.json"
+    digest, created = _write_exact(receipt_path, canonical_json_bytes(result))
+    return {
+        "command_status": "PUBLISHED" if created else "NO_ACTION",
+        **result,
+        "receipt_path": str(receipt_path.relative_to(root)),
+        "receipt_sha256": digest,
+    }
 
 
 def evaluate_morning_cutover(
@@ -853,8 +1121,10 @@ def evaluate_morning_cutover(
 
 __all__ = [
     "CUTOVER_RECEIPT_SCHEMA",
+    "EOD_EVALUATION_SCHEMA",
     "MORNING_RECEIPT_SCHEMA",
     "SINA_CAPTURE_SCHEMA",
+    "evaluate_morning_strategy_eod",
     "run_morning_strategy",
     "evaluate_morning_cutover",
     "validate_sina_quote_capture",

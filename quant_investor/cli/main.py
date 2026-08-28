@@ -32,6 +32,7 @@ from quant_investor.cli.unified import (
     research_forward,
     research_inspect,
     research_morning_cutover,
+    research_morning_evaluate,
     research_morning_strategy,
     research_publish_policy,
     research_publish_pool,
@@ -755,6 +756,7 @@ def _build_parser() -> argparse.ArgumentParser:
         ("pool-publish", "publish exact immutable daily Factor research pool"),
         ("morning-strategy", "validate or seal exact 09:45 strategy closure"),
         ("morning-cutover", "seal exact 20:20 cutover or rollback decision"),
+        ("morning-evaluate", "evaluate exact 09:45 strategy at same-day close"),
         ("readiness", "assess generation-compatible readiness"),
         ("inspect", "inspect one stable artifact without mutation"),
     ):
@@ -1492,6 +1494,7 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
         "pool-publish": research_publish_pool,
         "morning-strategy": research_morning_strategy,
         "morning-cutover": research_morning_cutover,
+        "morning-evaluate": research_morning_evaluate,
         "readiness": research_readiness,
         "inspect": research_inspect,
     }
