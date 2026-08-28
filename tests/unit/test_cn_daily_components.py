@@ -371,9 +371,7 @@ def test_same_target_market_rebind_recaptures_under_exact_cas(tmp_path):
 
 
 @pytest.mark.parametrize("release_open_date", ["20260819", "2026-08-19"])
-def test_macro_no_action_requires_semantic_market_manifest_binding(
-    tmp_path, release_open_date
-):
+def test_macro_no_action_requires_semantic_market_manifest_binding(tmp_path, release_open_date):
     _json(
         tmp_path / "data/parquet/cn/macro_release_calendar/_latest.json",
         {"generation_id": "opaque-release-id"},
@@ -570,6 +568,8 @@ def test_macro_wrapper_passes_authority_to_prepare(monkeypatch, tmp_path):
         market="CN",
         target_date="20260819",
         allow_live=True,
+        retrospective_recovery_contract_path="/private/contract.json",
+        expected_retrospective_recovery_contract_sha256="c" * 64,
     )
 
     assert result["status"] == "PREPARED"
@@ -578,6 +578,8 @@ def test_macro_wrapper_passes_authority_to_prepare(monkeypatch, tmp_path):
     assert observed["expected_market_pointer_sha256"] == "a" * 64
     assert observed["pit_pointer_path"] == "/private/pit.json"
     assert observed["expected_pit_pointer_sha256"] == "b" * 64
+    assert observed["retrospective_recovery_contract_path"] == "/private/contract.json"
+    assert observed["expected_retrospective_recovery_contract_sha256"] == "c" * 64
 
 
 @pytest.mark.parametrize(

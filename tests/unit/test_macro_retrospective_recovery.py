@@ -20,12 +20,15 @@ def _write(path: Path, value: object) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-def _fixture(tmp_path: Path):
+def _fixture(
+    tmp_path: Path,
+    targets: tuple[str, ...] = ("20260818", "20260819", "20260820"),
+):
     attempt = tmp_path / "attempt"
     scope = attempt / "scope.json"
     scope_sha = _write(scope, {"full_a": ["000001.SZ", "000002.SZ", "000003.SZ"]})
     sessions = []
-    for target in ("20260818", "20260819", "20260820"):
+    for target in targets:
         evidence = {
             "schema_version": "cn-daily-pit-classification-evidence.v1",
             "target_trade_date": target,
@@ -56,7 +59,7 @@ def _fixture(tmp_path: Path):
         )
     capture_path = attempt / "market_capture/manifest.json"
     capture = {
-        "target_trade_dates": ["20260818", "20260819", "20260820"],
+        "target_trade_dates": list(targets),
         "sessions": sessions,
     }
     capture_sha = _write(capture_path, capture)
@@ -65,6 +68,7 @@ def _fixture(tmp_path: Path):
         "snapshot_id": "20260820T180000Z",
         "market": "CN",
         "status": "OK",
+        "latest_complete_trade_date": targets[-1],
         "readback_validated": True,
         "blockers": [],
         "manifest_path": str(source_path),
@@ -130,6 +134,26 @@ def test_retrospective_projection_rejects_source_sha_mismatch(tmp_path: Path) ->
             reconstructed_at=datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
             output_root=tmp_path / "candidates",
         )
+
+
+def test_retrospective_projection_accepts_exact_recent_capture_targets(tmp_path: Path) -> None:
+    attempt, source_path, source_sha, capture_path, capture_sha = _fixture(
+        tmp_path, ("20260825", "20260826")
+    )
+    result = build_retrospective_market_projections(
+        source_snapshot_manifest_path=source_path,
+        expected_source_snapshot_sha256=source_sha,
+        capture_manifest_path=capture_path,
+        expected_capture_manifest_sha256=capture_sha,
+        attempt_root=attempt,
+        reconstructed_at=datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        output_root=tmp_path / "candidates",
+    )
+
+    assert [row["target_trade_date"] for row in result["projections"]] == [
+        "20260825",
+        "20260826",
+    ]
 
 
 def test_retrospective_projection_rejects_backdated_reconstruction(tmp_path: Path) -> None:

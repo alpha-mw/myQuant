@@ -142,7 +142,15 @@ def build_retrospective_market_projections(
         raise MacroRetrospectiveRecoveryError("source_capture_binding_mismatch")
     sessions = capture.get("sessions")
     targets = capture.get("target_trade_dates")
-    if not isinstance(sessions, list) or targets != ["20260818", "20260819", "20260820"]:
+    if (
+        not isinstance(sessions, list)
+        or not isinstance(targets, list)
+        or not 1 <= len(targets) <= 5
+        or any(not isinstance(value, str) for value in targets)
+        or targets != sorted(set(str(value) for value in targets))
+        or any(len(value) != 8 or not value.isdigit() for value in targets)
+        or source.get("latest_complete_trade_date") != targets[-1]
+    ):
         raise MacroRetrospectiveRecoveryError("capture_target_set_invalid")
     by_target = {str(row.get("trade_date")): row for row in sessions}
     if set(by_target) != set(targets):

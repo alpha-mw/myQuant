@@ -115,6 +115,46 @@ def _json_bytes(payload: Mapping[str, Any]) -> bytes:
     return (json.dumps(dict(payload), ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode()
 
 
+def _expected_retrospective_coverage_targets(
+    *,
+    release_root: Path,
+    expected_release_pointer_sha256: str,
+    observations_root: Path,
+    expected_observations_pointer_sha256: str,
+    target_date: str,
+) -> list[str]:
+    """Derive exact historical catch-up dates from frozen canonical parents."""
+
+    release = load_release_calendar(
+        canonical_root=release_root,
+        expected_pointer_sha256=expected_release_pointer_sha256,
+    )
+    if observation_pointer_sha256(observations_root) != expected_observations_pointer_sha256:
+        raise MacroMaintenanceError("macro_observations_pointer_cas_mismatch")
+    _rows, projection = load_observations(observations_root)
+    manifest = dict(projection.get("generation_manifest") or {})
+    metadata = dict(manifest.get("metadata") or projection.get("metadata") or {})
+    parent_target = str(metadata.get("local_target_trade_date") or "")
+    target = str(target_date).replace("-", "")
+    open_days_path = Path(release.identity.generation_path) / "market_open_days.json"
+    try:
+        pinned_open_dates = tuple(
+            json.loads(open_days_path.read_text(encoding="utf-8"))["open_dates"]
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise MacroMaintenanceError("macro_release_open_days_invalid") from exc
+    catch_up_targets = [value for value in pinned_open_dates if parent_target < value <= target]
+    if (
+        len(parent_target) != 8
+        or not parent_target.isdigit()
+        or not catch_up_targets
+        or len(catch_up_targets) > 5
+        or catch_up_targets[-1] != target
+    ):
+        raise MacroMaintenanceError("macro_observation_catch_up_window_invalid")
+    return catch_up_targets[:-1]
+
+
 def _default_fetch(url: str, issuer: str) -> tuple[bytes, str]:
     normalized = normalize_source_url(url, source_system=issuer)
     session = requests.Session()
@@ -536,10 +576,12 @@ def prepare_cn_macro_maintenance_transaction(
             ):
                 raise MacroMaintenanceError("macro_retrospective_contract_preimage_mismatch")
             rows = retrospective_contract.get("retrospective_coverage_manifests")
-            expected_historical_targets = (
-                ["20260818", "20260819", "20260820"]
-                if str(target_date).replace("-", "") == "20260821"
-                else ["20260818", "20260819"]
+            expected_historical_targets = _expected_retrospective_coverage_targets(
+                release_root=release_canonical,
+                expected_release_pointer_sha256=expected_release_pointer_sha256,
+                observations_root=observations_canonical,
+                expected_observations_pointer_sha256=expected_observations_pointer_sha256,
+                target_date=target_date,
             )
             if (
                 not isinstance(rows, list)

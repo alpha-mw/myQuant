@@ -38,8 +38,15 @@ def main() -> int:
     if hashlib.sha256(receipt_raw).hexdigest() != args.expected_attempt_receipt_sha256:
         raise ValueError("attempt_receipt_sha_mismatch")
     receipt = json.loads(receipt_raw)
-    if receipt.get("target_date") != "20260820" or receipt.get("mode") != "execute":
-        raise ValueError("attempt_receipt_not_exact_20260820_execute")
+    capture_payload = json.loads(args.capture_manifest.read_bytes())
+    targets = capture_payload.get("target_trade_dates")
+    if (
+        not isinstance(targets, list)
+        or not targets
+        or receipt.get("target_date") != targets[-1]
+        or receipt.get("mode") != "execute"
+    ):
+        raise ValueError("attempt_receipt_not_exact_capture_execute")
     candidate = build_retrospective_market_projections(
         source_snapshot_manifest_path=args.source_snapshot_manifest,
         expected_source_snapshot_sha256=args.expected_source_snapshot_sha256,

@@ -198,6 +198,10 @@ def run_macro_maintenance(**kwargs):
     expected_market_pointer_sha256 = values.pop("expected_market_pointer_sha256", "")
     pit_pointer_path = values.pop("pit_pointer_path", "")
     expected_pit_pointer_sha256 = values.pop("expected_pit_pointer_sha256", "")
+    retrospective_recovery_contract_path = values.pop("retrospective_recovery_contract_path", None)
+    expected_retrospective_recovery_contract_sha256 = values.pop(
+        "expected_retrospective_recovery_contract_sha256", None
+    )
     rollback_shas = {
         name: values.pop(name, "")
         for name in (
@@ -223,6 +227,10 @@ def run_macro_maintenance(**kwargs):
             pit_pointer_path=pit_pointer_path,
             expected_pit_pointer_sha256=expected_pit_pointer_sha256,
             authority_mode=authority_mode,
+            retrospective_recovery_contract_path=(retrospective_recovery_contract_path),
+            expected_retrospective_recovery_contract_sha256=(
+                expected_retrospective_recovery_contract_sha256
+            ),
         )
     if commit_prepared:
         journal_base = Path(journal_root).expanduser()
@@ -1101,6 +1109,16 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     market_macro.add_argument("--pit-pointer-path", default=None, type=_canonical_absolute_path)
     market_macro.add_argument("--expected-pit-pointer-sha256", default=None, type=_sha256_argument)
+    market_macro.add_argument(
+        "--retrospective-recovery-contract-path",
+        default=None,
+        type=_canonical_absolute_path,
+    )
+    market_macro.add_argument(
+        "--expected-retrospective-recovery-contract-sha256",
+        default=None,
+        type=_sha256_argument,
+    )
     market_macro.add_argument("--recover", action="store_true")
     market_macro.add_argument("--execute-forward", action="store_true")
     market_macro.add_argument("--execute-rollback", action="store_true")
@@ -1882,6 +1900,14 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
             )
         if args.authority_mode and not args.prepare_transaction:
             parser.error("--authority-mode requires --prepare-transaction")
+        retrospective_values = (
+            args.retrospective_recovery_contract_path,
+            args.expected_retrospective_recovery_contract_sha256,
+        )
+        if any(retrospective_values) and not all(retrospective_values):
+            parser.error("retrospective recovery requires exact contract path+SHA pair")
+        if any(retrospective_values) and not args.prepare_transaction:
+            parser.error("retrospective recovery contract requires --prepare-transaction")
         if args.commit_prepared and (
             not args.prepared_path
             or not args.expected_prepared_sha256
@@ -1947,6 +1973,10 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
             expected_market_pointer_sha256=(args.expected_market_pointer_sha256),
             pit_pointer_path=args.pit_pointer_path,
             expected_pit_pointer_sha256=args.expected_pit_pointer_sha256,
+            retrospective_recovery_contract_path=(args.retrospective_recovery_contract_path),
+            expected_retrospective_recovery_contract_sha256=(
+                args.expected_retrospective_recovery_contract_sha256
+            ),
             recover=args.recover,
             execute_forward=args.execute_forward,
             execute_rollback=args.execute_rollback,

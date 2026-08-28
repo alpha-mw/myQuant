@@ -5,11 +5,87 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from quant_investor.macro import maintenance_transaction as transaction
 from quant_investor.macro import maintenance
+
+
+def test_retrospective_targets_derive_from_frozen_parents(tmp_path: Path, monkeypatch) -> None:
+    generation = tmp_path / "release-generation"
+    generation.mkdir()
+    (generation / "market_open_days.json").write_text(
+        json.dumps(
+            {
+                "open_dates": [
+                    "20260821",
+                    "20260824",
+                    "20260825",
+                    "20260826",
+                    "20260827",
+                ]
+            }
+        )
+    )
+    monkeypatch.setattr(
+        maintenance,
+        "load_release_calendar",
+        lambda **_kwargs: SimpleNamespace(
+            identity=SimpleNamespace(generation_path=str(generation))
+        ),
+    )
+    monkeypatch.setattr(maintenance, "observation_pointer_sha256", lambda _root: "o" * 64)
+    monkeypatch.setattr(
+        maintenance,
+        "load_observations",
+        lambda _root: (
+            [],
+            {"generation_manifest": {"metadata": {"local_target_trade_date": "20260821"}}},
+        ),
+    )
+
+    assert maintenance._expected_retrospective_coverage_targets(
+        release_root=tmp_path / "release",
+        expected_release_pointer_sha256="r" * 64,
+        observations_root=tmp_path / "observations",
+        expected_observations_pointer_sha256="o" * 64,
+        target_date="20260827",
+    ) == ["20260824", "20260825", "20260826"]
+
+
+def test_retrospective_targets_reject_non_open_final_target(tmp_path: Path, monkeypatch) -> None:
+    generation = tmp_path / "release-generation"
+    generation.mkdir()
+    (generation / "market_open_days.json").write_text(
+        json.dumps({"open_dates": ["20260821", "20260824", "20260825"]})
+    )
+    monkeypatch.setattr(
+        maintenance,
+        "load_release_calendar",
+        lambda **_kwargs: SimpleNamespace(
+            identity=SimpleNamespace(generation_path=str(generation))
+        ),
+    )
+    monkeypatch.setattr(maintenance, "observation_pointer_sha256", lambda _root: "o" * 64)
+    monkeypatch.setattr(
+        maintenance,
+        "load_observations",
+        lambda _root: (
+            [],
+            {"generation_manifest": {"metadata": {"local_target_trade_date": "20260821"}}},
+        ),
+    )
+
+    with pytest.raises(maintenance.MacroMaintenanceError, match="catch_up_window_invalid"):
+        maintenance._expected_retrospective_coverage_targets(
+            release_root=tmp_path / "release",
+            expected_release_pointer_sha256="r" * 64,
+            observations_root=tmp_path / "observations",
+            expected_observations_pointer_sha256="o" * 64,
+            target_date="20260827",
+        )
 
 
 def _raw(payload: dict) -> bytes:
