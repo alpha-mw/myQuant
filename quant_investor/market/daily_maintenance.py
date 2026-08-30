@@ -20,6 +20,8 @@ import stat
 from typing import Any, Final
 from zoneinfo import ZoneInfo
 
+from quant_investor.contracts import CanonicalJSONError, canonical_json_bytes
+
 from .close_session_authority import (
     CloseSessionAuthorityError,
     CloseSessionAuthorityResult,
@@ -148,6 +150,15 @@ class _RunLock:
 
 
 def _canonical_json_bytes(payload: Mapping[str, Any]) -> bytes:
+    try:
+        return canonical_json_bytes(dict(payload))
+    except (CanonicalJSONError, TypeError, ValueError, UnicodeError) as exc:
+        raise DailyMaintenanceError("ATTEMPT_EVIDENCE_NOT_CANONICAL") from exc
+
+
+def _legacy_canonical_json_bytes(payload: Mapping[str, Any]) -> bytes:
+    """Return the exact pre-cutover format for recovery-only compatibility."""
+
     try:
         return (
             json.dumps(
@@ -938,11 +949,16 @@ def run_cn_daily_maintenance(
 
 
 def _canonical_object(raw: bytes, *, code: str) -> dict[str, Any]:
+    """Parse only current or exact pre-cutover bytes for transient recovery."""
+
     try:
         value = json.loads(raw)
     except (UnicodeError, json.JSONDecodeError) as exc:
         raise DailyMaintenanceError(code) from exc
-    if not isinstance(value, dict) or _canonical_json_bytes(value) != raw:
+    if not isinstance(value, dict) or raw not in {
+        _canonical_json_bytes(value),
+        _legacy_canonical_json_bytes(value),
+    }:
         raise DailyMaintenanceError(code)
     return value
 

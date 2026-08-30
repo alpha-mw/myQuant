@@ -12,6 +12,9 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from quant_investor.cli import main as cli_main
+from quant_investor.cli.input import read_exact_request
+from quant_investor.cli.output import CommandError
+from quant_investor.contracts import canonical_json_bytes
 from quant_investor.market.close_session_authority import (
     CloseSessionAuthorityError,
     CloseSessionAuthorityResult,
@@ -32,6 +35,27 @@ from quant_investor.market.credential_preflight import (
 )
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
+
+
+def _assert_shared_canonical(path: Path) -> dict:
+    raw = path.read_bytes()
+    parsed = json.loads(raw)
+    assert raw == canonical_json_bytes(parsed)
+    assert not raw.endswith(b"\n")
+    return parsed
+
+
+def _legacy_maintenance_bytes(value: dict) -> bytes:
+    return (
+        json.dumps(
+            value,
+            allow_nan=False,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("ascii")
 
 
 class _CalendarClient:
@@ -240,6 +264,9 @@ def test_shadow_seals_immutable_receipts_and_rejects_no_writes(tmp_path):
         hashlib.sha256(receipt_path.read_bytes()).hexdigest()
         == result["attempt_receipt_ref"]["sha256"]
     )
+    _assert_shared_canonical(receipt_path)
+    _assert_shared_canonical(state_path)
+    _assert_shared_canonical(Path(result["close_session_receipt_ref"]["path"]))
 
 
 def test_retry_is_quiet_early_and_sla_failure_in_final_slot(tmp_path):
@@ -428,6 +455,7 @@ def test_blocked_execute_sets_exact_veto_and_clear_archives_it(tmp_path):
     veto_ref = result["write_veto_ref"]
     veto_path = Path(veto_ref["path"])
     assert hashlib.sha256(veto_path.read_bytes()).hexdigest() == veto_ref["sha256"]
+    _assert_shared_canonical(veto_path)
     blocked_again = run_cn_daily_maintenance(
         workspace_root=tmp_path,
         run_root=run_root,
@@ -447,6 +475,7 @@ def test_blocked_execute_sets_exact_veto_and_clear_archives_it(tmp_path):
     assert cleared["status"] == "CLEARED"
     assert not veto_path.exists()
     assert Path(cleared["archived_veto_ref"]["path"]).is_file()
+    _assert_shared_canonical(Path(cleared["clear_receipt_ref"]["path"]))
 
 
 def test_macro_veto_has_registered_exact_sha_clear_path(tmp_path):
@@ -580,6 +609,58 @@ def test_token_veto_recovers_once_with_exact_zero_write_closure(tmp_path, monkey
     assert Path(recovered["original_veto_ref"]["path"]).is_file()
     receipt_raw = Path(recovered["recovery_receipt_ref"]["path"]).read_bytes()
     assert b"test-only-not-recorded" not in receipt_raw
+    _assert_shared_canonical(Path(recovered["recovery_receipt_ref"]["path"]))
+
+
+def test_legacy_token_veto_and_attempt_recover_without_broadening_reader(tmp_path, monkeypatch):
+    run_root, blocked = _token_missing_veto(tmp_path)
+    veto_path = Path(blocked["write_veto_ref"]["path"])
+    veto = json.loads(veto_path.read_bytes())
+    veto_path.write_bytes(_legacy_maintenance_bytes(veto))
+    legacy_veto_sha = hashlib.sha256(veto_path.read_bytes()).hexdigest()
+
+    attempt_path = Path(blocked["attempt_receipt_ref"]["path"])
+    attempt = json.loads(attempt_path.read_bytes())
+    attempt["write_veto_ref"]["sha256"] = legacy_veto_sha
+    attempt_path.write_bytes(_legacy_maintenance_bytes(attempt))
+    legacy_attempt_raw = attempt_path.read_bytes()
+
+    with pytest.raises(CommandError, match="REQUEST_NOT_CANONICAL"):
+        read_exact_request(
+            tmp_path,
+            attempt_path.relative_to(tmp_path).as_posix(),
+            hashlib.sha256(legacy_attempt_raw).hexdigest(),
+        )
+
+    preflight = _ready_preflight(run_root)
+    monkeypatch.setenv("TUSHARE_TOKEN", "test-only-not-recorded")
+    recovered = recover_transient_cn_daily_write_veto(
+        workspace_root=tmp_path,
+        run_root=run_root,
+        expected_veto_sha256=legacy_veto_sha,
+        credential_preflight_receipt=preflight["receipt_path"],
+        expected_credential_preflight_sha256=preflight["receipt_sha256"],
+    )
+    assert recovered["status"] == "RECOVERED"
+    assert attempt_path.read_bytes() == legacy_attempt_raw
+    recovery_path = Path(recovered["recovery_receipt_ref"]["path"])
+    recovery = _assert_shared_canonical(recovery_path)
+
+    recovery_path.write_bytes(_legacy_maintenance_bytes(recovery))
+    replay = recover_transient_cn_daily_write_veto(
+        workspace_root=tmp_path,
+        run_root=run_root,
+        expected_veto_sha256=legacy_veto_sha,
+        credential_preflight_receipt=preflight["receipt_path"],
+        expected_credential_preflight_sha256=preflight["receipt_sha256"],
+    )
+    assert replay["schema_version"] == "cn-daily-maintenance-transient-veto-recovery.v1"
+    assert replay["status"] == "NO_ACTION"
+    assert replay["recovered"] is False
+    assert (
+        replay["recovery_receipt_ref"]["sha256"]
+        == hashlib.sha256(recovery_path.read_bytes()).hexdigest()
+    )
 
 
 def test_token_veto_recovery_blocks_pointer_drift(tmp_path, monkeypatch):
@@ -712,9 +793,22 @@ def test_attempt_receipt_is_canonical_json(tmp_path):
     )
     raw = Path(result["attempt_receipt_ref"]["path"]).read_bytes()
     parsed = json.loads(raw)
-    assert raw == (
-        json.dumps(
-            parsed, allow_nan=False, ensure_ascii=True, separators=(",", ":"), sort_keys=True
+    assert raw == canonical_json_bytes(parsed)
+    assert not raw.endswith(b"\n")
+    relative = Path(result["attempt_receipt_ref"]["path"]).relative_to(tmp_path)
+    loaded_raw, loaded = read_exact_request(
+        tmp_path,
+        relative.as_posix(),
+        result["attempt_receipt_ref"]["sha256"],
+    )
+    assert loaded_raw == raw
+    assert loaded == parsed
+
+    newline_path = tmp_path / "attempt-with-terminal-lf.json"
+    newline_path.write_bytes(raw + b"\n")
+    with pytest.raises(CommandError, match="REQUEST_NOT_CANONICAL"):
+        read_exact_request(
+            tmp_path,
+            newline_path.relative_to(tmp_path).as_posix(),
+            hashlib.sha256(newline_path.read_bytes()).hexdigest(),
         )
-        + "\n"
-    ).encode("ascii")
