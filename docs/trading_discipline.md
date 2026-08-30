@@ -241,3 +241,61 @@ timestamped strategy record and `raw_exports/`:
 
 The full operational mirror is:
 `results/strategy_records/CN/aggressive_tech_manufacturing/trading_discipline.md`.
+# 每日研究风险监测合同
+
+本节是稳定的监测政策，放在交易纪律而不是交易笔记中。它不随每周数据更新而改写；只有
+监测项、来源优先级、状态语法、阈值或 authority 合同本身变化时，才升级本节和 automation
+prompt。普通日度/周度数据变化只生成本轮观察，不修改纪律或调度配置。
+
+交易笔记和 automation task 只记录当天观察和结果。每日 automation 每轮必须重新读取本节，
+并从 exact Store、Factor、官方发布或明确绑定的公开行情证据计算当日状态。周度 automation
+聚合本周 observation，并在当期报告中生成下一周事件清单；它不把临时事件日期写回本节。
+缺数据时保持 `MISSING`，不得用旧值、聊天记忆或网页摘要补齐。
+
+每日输出固定监测矩阵：
+
+```text
+monitor | cadence | as_of | observed_at | value | prior_value | state |
+trigger_state | evidence_ref | investment_authority
+```
+
+`state` 只允许 `UPDATED | NO_NEW_OFFICIAL_RELEASE | MISSING | CONFLICT`；
+`trigger_state` 只允许 `CLEAR | WATCH | BREACH | NOT_CONFIGURED`。监测结果本身没有
+broker、order、execution、trade、持仓或正式个股动作 authority。
+
+## 宏观与政策
+
+- 美国就业：非农新增、失业率、平均时薪；只消费 BLS 官方 release，月度或发布日更新。
+- 美国劳动力成本：生产率、单位劳动力成本；只消费 BLS 官方 release，季度更新。
+- 美国长端利率：10 年和 30 年期国债收益率；只使用带 source/date 的官方或受信公开证据，
+  每日记录；无法闭合时为 `MISSING`。
+- 中国稳投资：政策性金融工具实际投放、专项债支付、重大项目开工、设备订单、民间投资
+  参与度；只消费国务院、国家发改委、财政部、人民银行、国家统计局等官方发布。没有新
+  发布时为 `NO_NEW_OFFICIAL_RELEASE`，不得把计划额度当实际投放。
+
+宏观 trigger 仅能收紧或提示研究风险方向；没有 owner-approved numeric threshold 时统一
+为 `NOT_CONFIGURED`，不得由 automation 临时发明阈值。
+
+## AI 硬件与现金流兑现
+
+- 分开记录订单/收入可见度、毛利率、自由现金流、资本开支、融资与收入兑现时间。
+- 只接受公司公告、交易所文件、财报及其他 source-bound official evidence。
+- “订单强但现金流更晚、资本需求更高或毛利率下降”标记为 `WATCH`，只影响研究估值风险，
+  不自动映射到任何 A 股公司或持仓动作。
+
+## 组合与纪律
+
+- 每日从 pointer-selected Store-v3 与 strict Market 证据报告 cash、gross、Top1、Top3、
+  equity HHI、PCB/AI 硬件权益占比、60-session 相关性、流动性和 turnover。
+- 正式 Store valuation 相对最新注册交易日落后超过一个交易日时，freshness 标记 `WATCH`；
+  缺 continuity 或 pointer/catalog closure 时为 `BREACH`，并阻断持仓结论。
+- Owner stop 只读取 exact owner policy；仅 `STRICT_CN_DAILY_CLOSE <= stop` 为 `BREACH`。
+  盘中触碰保持 `WATCH`，不得自动创建订单或成交。
+- Formal action freshness 只来自 unified System/Mainline 的 exact active decision closure；
+  缺失时为 `NOT_CONFIGURED`，Decision Log 为 `NOT_APPLICABLE`，不得写伪 no-action。
+
+每日 automation 必须在固定输出中单列该矩阵，并在 automation memory 只保存本轮 receipt、
+日期和 blocker 摘要；memory 不得成为下一轮数值或 authority 的 fallback。
+
+因此，同一版本的监测合同只需同步一次。后续数据发布触发 observation 更新，不要求再次
+更新日度或周度 automation；只有合同版本升级时，才同时更新两个 consumer 并做配置 readback。

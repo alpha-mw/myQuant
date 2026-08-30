@@ -242,18 +242,18 @@ def _check_formal_boundaries(bundle: dict[str, Any]) -> None:
     decision_log = bundle.get("decision_log")
     if not isinstance(formal, dict) or not isinstance(decision_log, dict):
         raise WeeklyEvidenceCheckError("formal advisory boundary is absent")
-    if bundle["domains"]["FORMAL_V17_ADVISORY"]["status"] != "FRESH":
+    if bundle["domains"]["FORMAL_ADVISORY"]["status"] != "FRESH":
         if (
             formal.get("status") != "FORMAL_ADVISORY_BLOCKED"
             or formal.get("actions") != []
             or formal.get("executable") is not False
             or decision_log.get("write_performed") is not False
+            or decision_log.get("status") != "NOT_APPLICABLE"
+            or decision_log.get("reason") != "NO_FORMAL_ADVISORY_TO_LOG"
         ):
             raise WeeklyEvidenceCheckError("blocked formal advisory leaked actions or log writes")
     else:
-        raise WeeklyEvidenceCheckError(
-            "retired legacy formal advisory cannot become FRESH"
-        )
+        raise WeeklyEvidenceCheckError("weekly exporter does not produce formal advice")
     permissions = bundle.get("permissions")
     required_false = {
         "repository_source_write",
@@ -261,8 +261,8 @@ def _check_formal_boundaries(bundle: dict[str, Any]) -> None:
         "decision_log_write",
         "automation_memory_write",
         "market_data_provider_api_calls",
-        "v17_activation",
-        "v17_mainline_authority",
+        "system_activation",
+        "mainline_authority",
         "new_risk_authorized",
         "broker_calls",
         "order_calls",

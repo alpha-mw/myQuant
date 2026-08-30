@@ -227,12 +227,105 @@ def test_web_research_requires_bounded_https_official_sources() -> None:
         )
 
 
-def test_legacy_formal_advisory_is_permanently_inert() -> None:
-    assert weekly._reject_legacy_formal_advisory() == {
+def test_formal_advisory_is_inert_without_unified_mainline() -> None:
+    assert weekly._blocked_formal_advisory() == {
         "status": "FORMAL_ADVISORY_BLOCKED",
         "actions": [],
         "executable": False,
     }
+
+
+def test_registered_receipts_supplement_but_do_not_invent_daily_coverage() -> None:
+    receipts = weekly._registered_daily_review_receipts(
+        {
+            "receipts": [
+                {
+                    "receipt_id": "automation-20260824-daily-review-v1",
+                    "schema_id": "myquant.strategy_record_no_action_receipt.v1",
+                    "status": "NO_ACTION",
+                    "created_at": "2026-08-24T13:54:38Z",
+                    "reason": "daily-review-no-verified-financial-state-change",
+                    "content_sha256": "a" * 64,
+                    "payload_copied": False,
+                    "broker_order_trade_authority": False,
+                    "active_checkpoint": {"record_id": "record-a"},
+                }
+            ]
+        },
+        expected_trade_dates=["2026-08-24", "2026-08-25"],
+    )
+    merged = weekly._merge_daily_review_coverage(
+        weekly._domain(
+            "PARTIAL",
+            evidence={
+                "source_ref": {"path": "/private/tmp/daily.json"},
+                "covered_trade_dates": [],
+            },
+        ),
+        registered_receipts=receipts,
+        retrospective_reviews=[],
+        expected_trade_dates=["2026-08-24", "2026-08-25"],
+    )
+    assert merged["status"] == "PARTIAL"
+    assert merged["evidence"]["registered_receipt_dates"] == ["2026-08-24"]
+    assert merged["warnings"] == ["missing_trade_dates:2026-08-25"]
+
+
+def test_retrospective_review_closes_date_but_keeps_coverage_partial(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    trade_date = "2026-08-25"
+    path = (
+        tmp_path
+        / weekly.RETROSPECTIVE_DAILY_REVIEW_ROOT
+        / "20260825"
+        / "retrospective-review.v1.json"
+    )
+    value = {
+        "schema_id": "myquant.research.daily-review-retrospective.v1",
+        "review_id": "retrospective-daily-review-20260825-v1",
+        "strategy_id": "cn-aggressive-tech-manufacturing",
+        "trade_date": trade_date,
+        "generated_at": "2026-08-30T14:00:00Z",
+        "mode": "RETROSPECTIVE_RECONSTRUCTION",
+        "scheduled_execution_status": "MISSING",
+        "review_status": "COMPLETED_RETROSPECTIVE",
+        "evidence_quality": "PARTIAL",
+        "research_state": "INSUFFICIENT_EVIDENCE",
+        "formal_advisory_status": "FORMAL_ADVISORY_BLOCKED",
+        "decision_log_status": "NOT_APPLICABLE",
+        "actions": [],
+        "blockers": ["SCHEDULED_DAILY_REVIEW_TASK_MISSING"],
+        "missing_expected_paths": [],
+        "evidence_refs": [],
+        "authority": {
+            "portfolio": False,
+            "holdings": False,
+            "decision_log": False,
+            "broker": False,
+            "order": False,
+            "execution": False,
+            "trade": False,
+        },
+    }
+    value["content_sha256"] = weekly._content_sha(value)
+    _write_json(path, value)
+    monkeypatch.setattr(weekly, "PROJECT_ROOT", tmp_path)
+    reviews = weekly._registered_retrospective_daily_reviews(
+        expected_trade_dates=[trade_date]
+    )
+    merged = weekly._merge_daily_review_coverage(
+        weekly._domain(
+            "PARTIAL",
+            evidence={"source_ref": None, "covered_trade_dates": []},
+        ),
+        registered_receipts=[],
+        retrospective_reviews=reviews,
+        expected_trade_dates=[trade_date],
+    )
+    assert merged["status"] == "PARTIAL"
+    assert merged["blockers"] == []
+    assert merged["warnings"] == ["retrospective_review_dates:2026-08-25"]
 
 
 def _write_json(path: Path, value: dict) -> None:

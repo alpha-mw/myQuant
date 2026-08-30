@@ -859,7 +859,7 @@ def _percent_to_ratio(value: object) -> float:
     number = _num(value)
     if not np.isfinite(number):
         return float("nan")
-    return number / 100.0 if abs(number) > 2.0 else number
+    return number / 100.0
 
 
 def _availability(row: Mapping[str, Any]) -> str:

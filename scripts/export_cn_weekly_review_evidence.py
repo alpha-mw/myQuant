@@ -5,7 +5,8 @@ The exporter is offline and deterministic.  It writes only beneath an explicit
 ``/private/tmp/myquant-cn/<run-id>`` directory, never mutates the Strategy
 Record Store, and never appends the decision log.  Thread, briefing, and web
 research results arrive as bounded untrusted JSON inputs; they cannot provide
-holdings, fills, NAV, benchmark, V17 authority, or executable actions.
+holdings, fills, NAV, benchmark, formal-decision authority, or executable
+actions.
 """
 
 from __future__ import annotations
@@ -64,6 +65,7 @@ RISK_FREE_PATH = Path("portfolio_dashboard/inputs/cn_govt_bond_yield.csv")
 MARKET_CALENDAR_ROOT = Path("data/parquet/cn/macro_release_calendar")
 MARKET_CALENDAR_POINTER = MARKET_CALENDAR_ROOT / "_latest.json"
 DECISION_LOG_PATH = Path("results/decision_log/decision_log.jsonl")
+RETROSPECTIVE_DAILY_REVIEW_ROOT = Path("results/operations/daily_reviews/CN")
 DOMAIN_NAMES = (
     "STORE_HOLDINGS",
     "WEEKLY_OPERATIONS",
@@ -71,7 +73,7 @@ DOMAIN_NAMES = (
     "DAILY_REVIEW_COVERAGE",
     "MARKET_BRIEFING_COVERAGE",
     "PUBLIC_WEB_RESEARCH",
-    "FORMAL_V17_ADVISORY",
+    "FORMAL_ADVISORY",
     "DECISION_LOG",
     "QA",
 )
@@ -455,14 +457,6 @@ def _read_exact_json(path: Path, expected_sha: str, *, label: str) -> dict[str, 
     return value
 
 
-def _v17_ref_key(value: dict[str, str]) -> tuple[str, str, str]:
-    return (
-        value["schema_id"],
-        value["relative_path"],
-        value["byte_sha256"],
-    )
-
-
 def _bounded_text(value: Any, *, label: str, maximum: int = 4000) -> str:
     if (
         not isinstance(value, str)
@@ -475,12 +469,12 @@ def _bounded_text(value: Any, *, label: str, maximum: int = 4000) -> str:
     return value
 
 
-def _reject_legacy_formal_advisory() -> dict[str, Any]:
-    """Keep the retired advisory lane inert after the unified cutover.
+def _blocked_formal_advisory() -> dict[str, Any]:
+    """Keep formal advice inert until the unified mainline is active.
 
     Weekly review remains a read-only Store-v3 evidence export.  It must not
-    obtain authority from a legacy pointer, produce executable actions, or
-    prepare a decision-log mutation.
+    infer authority from Factor production, Store history, or narrative inputs,
+    produce executable actions, or prepare a decision-log mutation.
     """
 
     return {
@@ -488,6 +482,154 @@ def _reject_legacy_formal_advisory() -> dict[str, Any]:
         "actions": [],
         "executable": False,
     }
+
+
+def _registered_daily_review_receipts(
+    catalog: dict[str, Any] | None,
+    *,
+    expected_trade_dates: list[str],
+) -> list[dict[str, Any]]:
+    """Resolve exact daily-review continuity receipts from the selected catalog."""
+
+    if catalog is None:
+        return []
+    receipts = catalog.get("receipts")
+    if not isinstance(receipts, list):
+        raise WeeklyEvidenceError("registered Store receipts are invalid")
+    expected = set(expected_trade_dates)
+    selected: dict[str, dict[str, Any]] = {}
+    for receipt in receipts:
+        if not isinstance(receipt, dict):
+            raise WeeklyEvidenceError("registered Store receipt is invalid")
+        receipt_id = receipt.get("receipt_id")
+        if not isinstance(receipt_id, str):
+            continue
+        match = re.fullmatch(
+            r"automation-(\d{4})(\d{2})(\d{2})-daily-review-v1",
+            receipt_id,
+        )
+        if match is None:
+            continue
+        trade_date = "-".join(match.groups())
+        if trade_date not in expected:
+            continue
+        if (
+            receipt.get("schema_id") != "myquant.strategy_record_no_action_receipt.v1"
+            or receipt.get("status") != "NO_ACTION"
+            or receipt.get("payload_copied") is not False
+            or receipt.get("broker_order_trade_authority") is not False
+            or not isinstance(receipt.get("active_checkpoint"), dict)
+            or not isinstance(receipt.get("created_at"), str)
+            or not isinstance(receipt.get("reason"), str)
+            or not isinstance(receipt.get("content_sha256"), str)
+            or _SHA256.fullmatch(receipt["content_sha256"]) is None
+        ):
+            raise WeeklyEvidenceError("registered daily-review receipt is invalid")
+        selected[trade_date] = {
+            "trade_date": trade_date,
+            "evidence_kind": "REGISTERED_STORE_NO_ACTION_RECEIPT",
+            "receipt_id": receipt_id,
+            "created_at": receipt["created_at"],
+            "reason": receipt["reason"],
+            "content_sha256": receipt["content_sha256"],
+            "payload_copied": False,
+            "broker_order_trade_authority": False,
+        }
+    return [selected[key] for key in sorted(selected)]
+
+
+def _merge_daily_review_coverage(
+    domain: dict[str, Any],
+    *,
+    registered_receipts: list[dict[str, Any]],
+    retrospective_reviews: list[dict[str, Any]],
+    expected_trade_dates: list[str],
+) -> dict[str, Any]:
+    task_dates = set(domain.get("evidence", {}).get("covered_trade_dates", []))
+    receipt_dates = {row["trade_date"] for row in registered_receipts}
+    retrospective_dates = {row["trade_date"] for row in retrospective_reviews}
+    covered = task_dates | receipt_dates | retrospective_dates
+    missing = sorted(set(expected_trade_dates) - covered)
+    source_ref = domain.get("evidence", {}).get("source_ref")
+    return _domain(
+        "FRESH" if not missing and not retrospective_dates else "PARTIAL",
+        blockers=["DAILY_REVIEW_EXPECTED_TRADING_DAY_MISSING"] if missing else [],
+        warnings=(
+            (["missing_trade_dates:" + ",".join(missing)] if missing else [])
+            + (
+                ["retrospective_review_dates:" + ",".join(sorted(retrospective_dates))]
+                if retrospective_dates
+                else []
+            )
+        ),
+        evidence={
+            "source_ref": source_ref,
+            "covered_trade_dates": sorted(covered),
+            "task_review_dates": sorted(task_dates),
+            "registered_receipt_dates": sorted(receipt_dates),
+            "retrospective_review_dates": sorted(retrospective_dates),
+        },
+    )
+
+
+def _registered_retrospective_daily_reviews(
+    *,
+    expected_trade_dates: list[str],
+) -> list[dict[str, Any]]:
+    """Read deterministic-path retrospective reviews without scanning for latest."""
+
+    selected: list[dict[str, Any]] = []
+    for trade_date in expected_trade_dates:
+        compact = trade_date.replace("-", "")
+        path = (
+            PROJECT_ROOT
+            / RETROSPECTIVE_DAILY_REVIEW_ROOT
+            / compact
+            / "retrospective-review.v1.json"
+        )
+        if not path.exists():
+            continue
+        digest, size = regular_file_sha256(path, label="retrospective daily review")
+        value = _read_exact_json(path, digest, label="retrospective daily review")
+        authority = value.get("authority")
+        expected_authority = {
+            "portfolio": False,
+            "holdings": False,
+            "decision_log": False,
+            "broker": False,
+            "order": False,
+            "execution": False,
+            "trade": False,
+        }
+        if (
+            value.get("schema_id") != "myquant.research.daily-review-retrospective.v1"
+            or value.get("trade_date") != trade_date
+            or value.get("mode") != "RETROSPECTIVE_RECONSTRUCTION"
+            or value.get("scheduled_execution_status") != "MISSING"
+            or value.get("review_status") != "COMPLETED_RETROSPECTIVE"
+            or value.get("research_state") != "INSUFFICIENT_EVIDENCE"
+            or value.get("formal_advisory_status") != "FORMAL_ADVISORY_BLOCKED"
+            or value.get("decision_log_status") != "NOT_APPLICABLE"
+            or value.get("actions") != []
+            or authority != expected_authority
+            or value.get("content_sha256") != _content_sha(value)
+        ):
+            raise WeeklyEvidenceError("retrospective daily review is invalid")
+        selected.append(
+            {
+                "trade_date": trade_date,
+                "evidence_kind": "RETROSPECTIVE_RECONSTRUCTION",
+                "path": path.relative_to(PROJECT_ROOT).as_posix(),
+                "byte_sha256": digest,
+                "bytes": size,
+                "content_sha256": value["content_sha256"],
+                "generated_at": value["generated_at"],
+                "scheduled_execution_status": "MISSING",
+                "research_state": "INSUFFICIENT_EVIDENCE",
+                "blockers": value.get("blockers", []),
+            }
+        )
+    return selected
 
 
 def _operations(
@@ -693,12 +835,10 @@ def export(args: argparse.Namespace) -> dict[str, Any]:
         "DAILY_REVIEW_COVERAGE": daily_domain,
         "MARKET_BRIEFING_COVERAGE": briefing_domain,
         "PUBLIC_WEB_RESEARCH": web_domain,
-        "FORMAL_V17_ADVISORY": _domain(
+        "FORMAL_ADVISORY": _domain(
             "BLOCKED", blockers=["FORMAL_ADVISORY_BLOCKED"]
         ),
-        "DECISION_LOG": _domain(
-            "DEPENDENCY_BLOCKED", blockers=["FORMAL_ADVISORY_BLOCKED"]
-        ),
+        "DECISION_LOG": _domain("NOT_APPLICABLE"),
         "QA": _domain("FRESH"),
     }
     store_evidence: dict[str, Any] | None = None
@@ -840,34 +980,53 @@ def export(args: argparse.Namespace) -> dict[str, Any]:
             operations = []
             non_trade_events = []
 
+    registered_daily_receipts: list[dict[str, Any]] = []
+    retrospective_daily_reviews: list[dict[str, Any]] = []
+    if market_calendar_error is None:
+        registered_daily_receipts = _registered_daily_review_receipts(
+            catalog,
+            expected_trade_dates=registered_trade_dates,
+        )
+        retrospective_daily_reviews = _registered_retrospective_daily_reviews(
+            expected_trade_dates=registered_trade_dates,
+        )
+        domains["DAILY_REVIEW_COVERAGE"] = _merge_daily_review_coverage(
+            domains["DAILY_REVIEW_COVERAGE"],
+            registered_receipts=registered_daily_receipts,
+            retrospective_reviews=retrospective_daily_reviews,
+            expected_trade_dates=registered_trade_dates,
+        )
+
     mainline_status = MainlineStore(PROJECT_ROOT).status(
         strategy_id=CANONICAL_STRATEGY_ID
     )
-    v17_evidence: dict[str, Any] = {
-        "derived_state": "RETIRED",
-        "blocker": "LEGACY_MAINLINE_RETIRED",
+    formal_decision_evidence: dict[str, Any] = {
+        "state": "UNAVAILABLE",
+        "blocker": "UNIFIED_MAINLINE_NOT_ACTIVE",
         "public_run": None,
         "unified_mainline_state": mainline_status["mainline_state"],
     }
-    formal_payload = _reject_legacy_formal_advisory()
+    formal_payload = _blocked_formal_advisory()
     decision_payload: dict[str, Any] = {
-        "status": "DEPENDENCY_BLOCKED",
+        "status": "NOT_APPLICABLE",
+        "reason": "NO_FORMAL_ADVISORY_TO_LOG",
         "write_performed": False,
         "path": DECISION_LOG_PATH.as_posix(),
         "envelope_path": None,
         "envelope_sha256": None,
         "already_recorded": False,
     }
-    domains["FORMAL_V17_ADVISORY"] = _domain(
+    domains["FORMAL_ADVISORY"] = _domain(
         "BLOCKED",
         blockers=[
             "FORMAL_ADVISORY_BLOCKED",
-            "LEGACY_MAINLINE_RETIRED",
-            mainline_status["mainline_state"],
+            "UNIFIED_MAINLINE_NOT_ACTIVE",
+            "UNIFIED_MAINLINE_" + mainline_status["mainline_state"],
         ],
     )
     domains["DECISION_LOG"] = _domain(
-        "DEPENDENCY_BLOCKED", blockers=["FORMAL_ADVISORY_BLOCKED"]
+        "NOT_APPLICABLE",
+        evidence={"reason": "NO_FORMAL_ADVISORY_TO_LOG"},
     )
 
     bundle: dict[str, Any] = {
@@ -924,6 +1083,8 @@ def export(args: argparse.Namespace) -> dict[str, Any]:
         "daily_reviews": {
             "trust": "UNTRUSTED_NARRATIVE_NOT_PORTFOLIO_AUTHORITY",
             "items": daily_rows,
+            "registered_store_no_action_receipts": registered_daily_receipts,
+            "retrospective_reviews": retrospective_daily_reviews,
         },
         "market_briefings": {
             "conversation_id": "6a394ef0-585c-83ec-863c-98e6bb6aec49",
@@ -931,10 +1092,10 @@ def export(args: argparse.Namespace) -> dict[str, Any]:
             "items": briefing_rows,
         },
         "public_web_research": {
-            "trust": "RESEARCH_ONLY_NOT_LEDGER_BENCHMARK_OR_V17_AUTHORITY",
+            "trust": "RESEARCH_ONLY_NOT_LEDGER_BENCHMARK_OR_FORMAL_AUTHORITY",
             "payload": web_payload,
         },
-        "v17": v17_evidence,
+        "formal_decision": formal_decision_evidence,
         "formal_advisory": formal_payload,
         "decision_log": decision_payload,
         "source_refs": source_refs,
@@ -947,8 +1108,8 @@ def export(args: argparse.Namespace) -> dict[str, Any]:
             "automation_memory_write": False,
             "public_web_research": True,
             "market_data_provider_api_calls": False,
-            "v17_activation": False,
-            "v17_mainline_authority": False,
+            "system_activation": False,
+            "mainline_authority": False,
             "new_risk_authorized": False,
             "broker_calls": False,
             "order_calls": False,
