@@ -389,6 +389,43 @@ def test_unverified_scheduler_keeps_evening_fallback(tmp_path: Path, monkeypatch
     assert result["core_blockers"] == ["SCHEDULER_ORIGIN_UNVERIFIED"]
 
 
+def test_factor_contract_repair_publishes_narrow_cutover_recovery(
+    tmp_path: Path, monkeypatch
+) -> None:
+    pointer, store_sha = _store(tmp_path)
+    _patch_inputs(monkeypatch, pointer)
+    request = _cutover_request(tmp_path, store_sha, tmp_path / "calendar.json")
+    original_factor = {
+        "factor_authority": "ACTIVE",
+        "factor_readiness": "READY",
+        "blockers": [],
+        "as_of": "20260825",
+        "factor_pointer_byte_sha256": "a" * 64,
+    }
+    monkeypatch.setattr(morning, "verify_factor_production", lambda _root: original_factor)
+
+    blocked = morning.evaluate_morning_cutover(workspace_root=tmp_path, request=request)
+    blocked_path = tmp_path / blocked["receipt_path"]
+    blocked_raw = blocked_path.read_bytes()
+    assert blocked["core_blockers"] == ["FACTOR_VERIFY_NOT_TARGET_READY"]
+    assert blocked["schedule_action"] == "KEEP_FALLBACK"
+
+    repaired_factor = {**original_factor, "as_of": "20260826"}
+    monkeypatch.setattr(morning, "verify_factor_production", lambda _root: repaired_factor)
+    recovered = morning.evaluate_morning_cutover(workspace_root=tmp_path, request=request)
+
+    assert blocked_path.read_bytes() == blocked_raw
+    assert recovered["schema_version"] == morning.CUTOVER_RECOVERY_RECEIPT_SCHEMA
+    assert recovered["recovery_reason"] == "FACTOR_STORE_VERIFICATION_CONTRACT_REPAIR"
+    assert recovered["supersedes_cutover_receipt_ref"] == {
+        "path": blocked["receipt_path"],
+        "sha256": hashlib.sha256(blocked_raw).hexdigest(),
+    }
+    assert recovered["morning_strategy_cutover_eligible"] is True
+    assert recovered["schedule_action"] == "ENABLE_0945_CREATE_2100_FALLBACK_KEEP_2130"
+    assert "2020-cutover-recovery-" in recovered["receipt_path"]
+
+
 def _successful_morning_receipt(run_date: str, previous_trade_date: str) -> dict:
     return {
         "schema_version": morning.MORNING_RECEIPT_SCHEMA,

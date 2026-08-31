@@ -25,6 +25,7 @@ from ._common import IntelligenceError, validate_stable_artifact
 
 MORNING_RECEIPT_SCHEMA: Final = "morning-strategy-run.v1"
 CUTOVER_RECEIPT_SCHEMA: Final = "morning-strategy-cutover.v1"
+CUTOVER_RECOVERY_RECEIPT_SCHEMA: Final = "morning-strategy-cutover-recovery.v1"
 EOD_EVALUATION_SCHEMA: Final = "morning-strategy-eod-evaluation.v1"
 SINA_CAPTURE_SCHEMA: Final = "cn-public-quote-capture.v1"
 STORE_POINTER_RELATIVE: Final = (
@@ -514,6 +515,72 @@ def _write_exact(path: Path, raw: bytes) -> tuple[str, bool]:
     finally:
         os.close(descriptor)
     return hashlib.sha256(raw).hexdigest(), True
+
+
+def _publish_cutover_receipt(
+    *, root: Path, receipt_root: Path, receipt: Mapping[str, Any]
+) -> tuple[dict[str, Any], Path, str, bool]:
+    """Publish the primary cutover receipt or one narrow immutable recovery.
+
+    The recovery exists solely for a receipt blocked by the historical
+    CLI-only ``verified`` field mismatch.  It preserves the original bytes and
+    accepts no other blocker, ref drift, or authority expansion.
+    """
+
+    primary_path = receipt_root / "2020-cutover.v1.json"
+    primary_raw = canonical_json_bytes(receipt)
+    try:
+        digest, created = _write_exact(primary_path, primary_raw)
+        return dict(receipt), primary_path, digest, created
+    except IntelligenceError as exc:
+        if str(exc) != "morning strategy immutable conflict":
+            raise
+
+    existing_raw = primary_path.read_bytes()
+    try:
+        existing = json.loads(existing_raw)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise IntelligenceError("cutover recovery predecessor is invalid") from exc
+    if (
+        type(existing) is not dict
+        or existing_raw != canonical_json_bytes(existing)
+        or existing.get("schema_version") != CUTOVER_RECEIPT_SCHEMA
+        or existing.get("overall_status") != "BLOCKED"
+        or existing.get("core_blockers") != ["FACTOR_VERIFY_NOT_TARGET_READY"]
+        or existing.get("schedule_action") != "KEEP_FALLBACK"
+        or existing.get("morning_strategy_cutover_eligible") is not False
+        or any(
+            existing.get(key) != receipt.get(key)
+            for key in (
+                "target_date",
+                "current_schedule_state",
+                "maintenance_receipt_ref",
+                "calendar_success_ref",
+                "factor_pointer_sha256",
+                "store_pointer_sha256",
+            )
+        )
+        or any(
+            existing.get(key) is not False
+            for key in ("broker", "live_order", "live_execution", "actual_holdings_mutation")
+        )
+    ):
+        raise IntelligenceError("cutover recovery predecessor is not eligible")
+
+    predecessor_sha = hashlib.sha256(existing_raw).hexdigest()
+    recovered = {
+        **dict(receipt),
+        "schema_version": CUTOVER_RECOVERY_RECEIPT_SCHEMA,
+        "recovery_reason": "FACTOR_STORE_VERIFICATION_CONTRACT_REPAIR",
+        "supersedes_cutover_receipt_ref": {
+            "path": str(primary_path.relative_to(root)),
+            "sha256": predecessor_sha,
+        },
+    }
+    recovery_path = receipt_root / f"2020-cutover-recovery-{predecessor_sha[:12]}.v1.json"
+    recovery_raw = canonical_json_bytes(recovered)
+    digest, created = _write_exact(recovery_path, recovery_raw)
+    return recovered, recovery_path, digest, created
 
 
 def run_morning_strategy(
@@ -1123,12 +1190,14 @@ def evaluate_morning_cutover(
         "actual_holdings_mutation": False,
     }
     receipt_root = _owner_directory(root / f"results/operations/morning_strategy/CN/{target}")
-    receipt_path = receipt_root / "2020-cutover.v1.json"
-    raw = canonical_json_bytes(receipt)
-    digest, created = _write_exact(receipt_path, raw)
+    published_receipt, receipt_path, digest, created = _publish_cutover_receipt(
+        root=root,
+        receipt_root=receipt_root,
+        receipt=receipt,
+    )
     return {
         "command_status": "PUBLISHED" if created else "NO_ACTION",
-        **receipt,
+        **published_receipt,
         "receipt_path": str(receipt_path.relative_to(root)),
         "receipt_sha256": digest,
     }
@@ -1136,6 +1205,7 @@ def evaluate_morning_cutover(
 
 __all__ = [
     "CUTOVER_RECEIPT_SCHEMA",
+    "CUTOVER_RECOVERY_RECEIPT_SCHEMA",
     "EOD_EVALUATION_SCHEMA",
     "MORNING_RECEIPT_SCHEMA",
     "SINA_CAPTURE_SCHEMA",
