@@ -65,6 +65,25 @@ def _workspace(value: str | os.PathLike[str]) -> Path:
     return root
 
 
+def _factor_closure_ready(
+    factor: Mapping[str, Any], *, expected_date: str, expected_pointer_sha256: str
+) -> bool:
+    """Apply the direct Factor-store verification contract.
+
+    ``verify_factor_production`` returns the verified store projection itself.
+    The public CLI adds its own ``verified`` convenience field later, so the
+    intelligence layer must not require that CLI-only projection key.
+    """
+
+    return (
+        factor.get("factor_authority") == "ACTIVE"
+        and factor.get("factor_readiness") == "READY"
+        and factor.get("blockers") == []
+        and factor.get("as_of") == expected_date
+        and factor.get("factor_pointer_byte_sha256") == expected_pointer_sha256
+    )
+
+
 def _relative(value: Any, *, label: str) -> PurePosixPath:
     if type(value) is not str:
         raise IntelligenceError(f"{label} path is invalid")
@@ -344,12 +363,10 @@ def _morning_input_state(
     factor = verify_factor_production(root)
     core_blockers: list[str] = []
     auxiliary_blockers: list[str] = []
-    if (
-        factor.get("verified") is not True
-        or factor.get("factor_authority") != "ACTIVE"
-        or factor.get("factor_readiness") != "READY"
-        or factor.get("as_of") != previous
-        or factor.get("factor_pointer_byte_sha256") != factor_pointer_sha
+    if not _factor_closure_ready(
+        factor,
+        expected_date=previous,
+        expected_pointer_sha256=factor_pointer_sha,
     ):
         core_blockers.append("FACTOR_NOT_READY_FOR_PREVIOUS_TRADE_DATE")
     low = _observation(
@@ -971,12 +988,10 @@ def evaluate_morning_cutover(
         label="expected Factor pointer",
     )
     factor = verify_factor_production(root)
-    if (
-        factor.get("verified") is not True
-        or factor.get("factor_authority") != "ACTIVE"
-        or factor.get("factor_readiness") != "READY"
-        or factor.get("as_of") != target
-        or factor.get("factor_pointer_byte_sha256") != expected_factor_sha
+    if not _factor_closure_ready(
+        factor,
+        expected_date=target,
+        expected_pointer_sha256=expected_factor_sha,
     ):
         core_blockers.append("FACTOR_VERIFY_NOT_TARGET_READY")
     _observation(

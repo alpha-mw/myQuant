@@ -120,9 +120,9 @@ def _patch_inputs(monkeypatch, pointer):
         morning,
         "verify_factor_production",
         lambda _root: {
-            "verified": True,
             "factor_authority": "ACTIVE",
             "factor_readiness": "READY",
+            "blockers": [],
             "as_of": "20260826",
             "factor_pointer_byte_sha256": "a" * 64,
         },
