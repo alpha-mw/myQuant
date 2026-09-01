@@ -591,6 +591,88 @@ def validate_genesis(document: Mapping[str, Any]) -> dict[str, Any]:
     return value
 
 
+def load_accounting_generation(record_root: Path) -> dict[str, Any]:
+    """Load one exact accounting pointer/genesis/audit and report Store drift."""
+
+    root = record_root.resolve(strict=True)
+    pointer_path = root / "_accounting_store/current.v1.json"
+    if not pointer_path.is_file() or pointer_path.is_symlink():
+        raise StrategyAccountingError("accounting pointer is unavailable")
+    pointer_raw = pointer_path.read_bytes()
+    if pointer_raw != pointer_path.read_bytes():
+        raise StrategyAccountingError("accounting pointer is unstable")
+    try:
+        pointer = json.loads(pointer_raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise StrategyAccountingError("accounting pointer is invalid JSON") from exc
+    if (
+        not isinstance(pointer, dict)
+        or pointer.get("schema_id") != ACCOUNTING_POINTER_SCHEMA
+        or pointer.get("content_sha256") != _content_sha(pointer)
+        or pointer.get("derived_only") is not True
+        or pointer.get("store_mutation_authority") is not False
+        or pointer.get("holdings_mutation_authority") is not False
+        or pointer.get("broker_order_trade_authority") is not False
+    ):
+        raise StrategyAccountingError("accounting pointer contract is invalid")
+    relative = pointer.get("genesis_path")
+    if not isinstance(relative, str) or relative.startswith("/") or ".." in Path(relative).parts:
+        raise StrategyAccountingError("accounting genesis path is invalid")
+    genesis_path = root / relative
+    if not genesis_path.is_file() or genesis_path.is_symlink():
+        raise StrategyAccountingError("accounting genesis is unavailable")
+    genesis_raw = genesis_path.read_bytes()
+    if genesis_raw != genesis_path.read_bytes() or _sha256(genesis_raw) != pointer.get(
+        "genesis_sha256"
+    ):
+        raise StrategyAccountingError("accounting genesis bytes differ")
+    try:
+        genesis = validate_genesis(json.loads(genesis_raw))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise StrategyAccountingError("accounting genesis is invalid JSON") from exc
+    audit_ref = genesis["historical_gap_audit_ref"]
+    audit_path = root / str(audit_ref["path"])
+    if not audit_path.is_file() or audit_path.is_symlink():
+        raise StrategyAccountingError("historical audit is unavailable")
+    audit_raw = audit_path.read_bytes()
+    if (
+        audit_raw != audit_path.read_bytes()
+        or _sha256(audit_raw) != audit_ref["sha256"]
+        or audit_ref["sha256"] != pointer.get("historical_audit_sha256")
+    ):
+        raise StrategyAccountingError("historical audit bytes differ")
+    try:
+        audit = json.loads(audit_raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise StrategyAccountingError("historical audit is invalid JSON") from exc
+    if (
+        not isinstance(audit, dict)
+        or audit.get("schema_id") != HISTORICAL_GAP_AUDIT_SCHEMA
+        or audit.get("content_sha256") != _content_sha(audit)
+        or audit.get("status") != "HISTORICAL_PARTIAL"
+        or audit.get("prospective_lot_authority") is not False
+    ):
+        raise StrategyAccountingError("historical audit contract is invalid")
+    store_pointer_path = root / "_record_store/current.v1.json"
+    if not store_pointer_path.is_file() or store_pointer_path.is_symlink():
+        raise StrategyAccountingError("source Store pointer is unavailable")
+    store_raw = store_pointer_path.read_bytes()
+    if store_raw != store_pointer_path.read_bytes():
+        raise StrategyAccountingError("source Store pointer is unstable")
+    current_store_sha = _sha256(store_raw)
+    source_store_sha = pointer["source_store_pointer_sha256"]
+    state = "VERIFIED" if current_store_sha == source_store_sha else "SOURCE_STORE_ADVANCED"
+    return {
+        "state": state,
+        "pointer": pointer,
+        "pointer_sha256": _sha256(pointer_raw),
+        "genesis": genesis,
+        "audit": audit,
+        "current_store_pointer_sha256": current_store_sha,
+        "source_store_pointer_sha256": source_store_sha,
+    }
+
+
 def immutable_write(path: Path, raw: bytes, *, max_bytes: int = 8 * 1024 * 1024) -> str:
     if not raw or len(raw) > max_bytes:
         raise StrategyAccountingError("accounting artifact exceeds byte bound")
@@ -625,6 +707,7 @@ __all__ = [
     "build_genesis",
     "effective_fills",
     "immutable_write",
+    "load_accounting_generation",
     "money_text",
     "seal_document",
     "validate_genesis",

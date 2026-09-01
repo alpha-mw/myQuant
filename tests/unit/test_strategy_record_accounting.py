@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from quant_investor.strategy_records.store import canonical_json_bytes
 from quant_investor.strategy_records.accounting import (
     PROSPECTIVE_OPENING_BALANCE,
     StrategyAccountingError,
@@ -277,3 +278,23 @@ def test_immutable_write_is_exact_replay_and_conflict(tmp_path: Path) -> None:
     assert immutable_write(target, b"one\n") == immutable_write(target, b"one\n")
     with pytest.raises(StrategyAccountingError, match="conflicts"):
         immutable_write(target, b"two\n")
+
+
+def test_accounting_pointer_cas_retains_history_and_rejects_stale_writer(
+    tmp_path: Path,
+) -> None:
+    from quant_investor.strategy_records.accounting import seal_document
+    from scripts.prepare_cn_strategy_accounting import _publish_pointer
+
+    pointer = tmp_path / "_accounting_store" / "current.v1.json"
+    first = seal_document({"schema_id": "test", "generation_id": "one"})
+    second = seal_document({"schema_id": "test", "generation_id": "two"})
+    first_sha = _publish_pointer(pointer, first, expected=None)
+    assert _publish_pointer(pointer, first, expected=first_sha) == first_sha
+    second_sha = _publish_pointer(pointer, second, expected=first_sha)
+    assert second_sha != first_sha
+    assert (
+        pointer.parent / "pointer_history" / f"{first_sha}.json"
+    ).read_bytes() == canonical_json_bytes(first)
+    with pytest.raises(StrategyAccountingError, match="preimage"):
+        _publish_pointer(pointer, first, expected=first_sha)

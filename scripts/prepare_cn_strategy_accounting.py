@@ -14,12 +14,14 @@ import argparse
 import csv
 from datetime import datetime, timezone
 from decimal import Decimal
+import fcntl
 import hashlib
 import io
 import json
 import os
 from pathlib import Path
 import subprocess
+import secrets
 import sys
 import tarfile
 from typing import Any, Mapping
@@ -36,6 +38,7 @@ from quant_investor.strategy_records.accounting import (  # noqa: E402
     StrategyAccountingError,
     build_genesis,
     immutable_write,
+    load_accounting_generation,
     seal_document,
     validate_genesis,
 )
@@ -450,15 +453,52 @@ def _pointer_sha(path: Path) -> str | None:
 
 
 def _publish_pointer(path: Path, document: dict[str, Any], *, expected: str | None) -> str:
-    observed = _pointer_sha(path)
-    if observed != expected:
-        raise StrategyAccountingError("accounting pointer preimage mismatch")
     raw = canonical_json_bytes(document)
-    if path.exists():
-        if _sha(path.read_bytes()) == _sha(raw):
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    lock_path = path.parent / ".current.v1.lock"
+    lock_fd = os.open(
+        lock_path,
+        os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    try:
+        if os.fstat(lock_fd).st_nlink != 1:
+            raise StrategyAccountingError("accounting pointer lock is unsafe")
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        current_raw = _read(path, label="accounting pointer") if path.exists() else None
+        observed = _sha(current_raw) if current_raw is not None else None
+        if observed != expected:
+            raise StrategyAccountingError("accounting pointer preimage mismatch")
+        if current_raw == raw:
             return observed or _sha(raw)
-        raise StrategyAccountingError("accounting pointer conflicts")
-    return immutable_write(path, raw, max_bytes=1024 * 1024)
+        if current_raw is not None:
+            immutable_write(
+                path.parent / "pointer_history" / f"{observed}.json",
+                current_raw,
+                max_bytes=1024 * 1024,
+            )
+        temporary = path.parent / (f".current.v1.cas-{os.getpid()}-{secrets.token_hex(6)}")
+        fd = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        try:
+            os.write(fd, raw)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(temporary, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+        if _read(path, label="accounting pointer readback") != raw:
+            raise StrategyAccountingError("accounting pointer readback differs")
+        return _sha(raw)
+    finally:
+        os.close(lock_fd)
 
 
 def prepare(args: argparse.Namespace) -> dict[str, Any]:
@@ -688,7 +728,7 @@ def parser() -> argparse.ArgumentParser:
         "--record-root",
         default=str(ROOT / "results/strategy_records/CN/aggressive_tech_manufacturing"),
     )
-    result.add_argument("--expected-store-pointer-sha", required=True)
+    result.add_argument("--expected-store-pointer-sha")
     result.add_argument(
         "--industry-capture",
         default=(
@@ -696,15 +736,35 @@ def parser() -> argparse.ArgumentParser:
             "sw2021-industry-20260822-563a6794c22c/membership-capture/capture.json"
         ),
     )
-    result.add_argument("--industry-capture-sha", required=True)
+    result.add_argument("--industry-capture-sha")
     result.add_argument("--expected-accounting-pointer-sha", default="ABSENT")
     result.add_argument("--execute", action="store_true")
+    result.add_argument("--verify", action="store_true")
     return result
 
 
 def main() -> int:
+    args = parser().parse_args()
     try:
-        output = prepare(parser().parse_args())
+        if args.verify:
+            verified = load_accounting_generation(Path(args.record_root))
+            output = {
+                "status": verified["state"],
+                "generation_id": verified["pointer"]["generation_id"],
+                "pointer_sha256": verified["pointer_sha256"],
+                "source_store_pointer_sha256": verified["source_store_pointer_sha256"],
+                "current_store_pointer_sha256": verified["current_store_pointer_sha256"],
+                "coverage": verified["genesis"]["coverage"],
+                "accounting_status": verified["genesis"]["status"],
+                "reported_fill_count": verified["audit"]["reported_fill_count"],
+                "unexplained_share_delta_count": len(verified["audit"]["unexplained_share_deltas"]),
+                "provider_calls": False,
+                "broker_calls": False,
+                "order_calls": False,
+                "trade_calls": False,
+            }
+        else:
+            output = prepare(args)
     except (StrategyAccountingError, OSError, ValueError) as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
         return 2
