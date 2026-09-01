@@ -22,8 +22,10 @@ if str(PROJECT_ROOT) not in sys.path:
 from quant_investor.credential_utils import create_tushare_pro
 from quant_investor.config import Config
 from quant_investor.market.cn_benchmark_store import (
+    EMPTY_POINTER_SHA256,
     REQUIRED_CODES,
     canonical_json_bytes,
+    load_generation,
     pointer_sha256,
     publish_generation,
 )
@@ -102,18 +104,15 @@ def _provider_rows(
     return sorted(result, key=lambda row: (row["date"], row["ts_code"]))
 
 
-def _write_compatibility_csv(path: Path, new_rows: list[dict[str, Any]]) -> None:
+def _write_compatibility_csv(path: Path, rows: list[dict[str, Any]]) -> None:
     fields = ["date", "ts_code", "close", "source_system", "value_date", "coverage"]
-    existing: dict[tuple[str, str], dict[str, str]] = {}
-    if path.exists():
-        with path.open(encoding="utf-8-sig", newline="") as handle:
-            for row in csv.DictReader(handle):
-                key = (str(row.get("date") or ""), str(row.get("ts_code") or ""))
-                if all(key):
-                    existing[key] = {field: str(row.get(field) or "") for field in fields}
-    for row in new_rows:
-        existing[(row["date"], row["ts_code"])] = {field: str(row[field]) for field in fields}
-    ordered = [existing[key] for key in sorted(existing)]
+    ordered = []
+    for row in sorted(rows, key=lambda value: (str(value["date"]), value["ts_code"])):
+        output: dict[str, str] = {}
+        for field in fields:
+            value = row[field]
+            output[field] = value.isoformat() if hasattr(value, "isoformat") else str(value)
+        ordered.append(output)
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
         mode="w", encoding="utf-8", newline="", dir=path.parent, delete=False
@@ -168,6 +167,20 @@ def main() -> int:
     expected_days = {row["date"] for row in rows if args.start_date <= row["date"] <= args.end_date}
     if not expected_days:
         raise RuntimeError("benchmark capture returned no trade dates")
+    if observed == EMPTY_POINTER_SHA256:
+        if args.start_date != "2026-03-17":
+            raise RuntimeError(
+                "initial benchmark generation must capture the full performance history"
+            )
+        generation_rows = rows
+    else:
+        existing = load_generation(benchmark_root)
+        if existing["pointer_sha256"] != observed:
+            raise RuntimeError("benchmark pointer drifted before incremental merge")
+        merged = {(row["date"].isoformat(), row["ts_code"]): row for row in existing["rows"]}
+        for row in rows:
+            merged[(row["date"], row["ts_code"])] = row
+        generation_rows = [merged[key] for key in sorted(merged)]
     captured_at = (
         datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     )
@@ -194,13 +207,16 @@ def main() -> int:
     _write_exact(receipt_path, receipt_raw)
     published = publish_generation(
         benchmark_root,
-        rows=rows,
+        rows=generation_rows,
         generation_id=args.generation_id,
         captured_at=captured_at,
         expected_pointer_sha256=observed,
         acquisition_receipt_ref={"path": receipt_relative, "sha256": _sha(receipt_raw)},
     )
-    _write_compatibility_csv(workspace / "portfolio_dashboard/inputs/cn_index_benchmark.csv", rows)
+    _write_compatibility_csv(
+        workspace / "portfolio_dashboard/inputs/cn_index_benchmark.csv",
+        published["rows"],
+    )
     print(
         json.dumps(
             {

@@ -202,6 +202,15 @@ ALLOW_RULES: tuple[AllowRule, ...] = (
             "provides no source-record delete or copy fallback."
         ),
     ),
+    AllowRule(
+        path="scripts/cn_official_close_batch.py",
+        operations=("iterdir", "mkdir"),
+        reason=(
+            "The manager-invoked offline batch writer prepares immutable transaction and "
+            "record directories, then delegates the sole pointer CAS to publish_catalog; "
+            "it has no delete, legacy scan, broker, order, or trade path."
+        ),
+    ),
 )
 
 
