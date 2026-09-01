@@ -711,6 +711,44 @@ def test_exact_financial_publication_can_refresh_without_receipt(
     assert bundle["freshness"]["reason"] == ("CURRENT_FINANCIAL_PUBLICATION_AND_LATEST_LOCAL_CLOSE")
 
 
+def test_financial_publication_accepts_registered_close_batch_receipts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inputs = _fixture(tmp_path, monkeypatch, include_receipt=False)
+    catalog = inputs[4]
+    catalog["lineage_index"][0]["valuation_date"] = "2026-08-18"
+    catalog["records"][0]["sealed_at"] = "2026-08-18T01:00:00Z"
+    batch_receipt = {
+        "schema_id": "myquant.strategy_daily_close_receipt.v1",
+        "receipt_id": "daily-close/2026-08-18/" + "a" * 16,
+        "transaction_id": "daily-close-20260818-" + "b" * 16,
+        "input_fingerprint": "b" * 64,
+        "trade_date": "2026-08-18",
+        "event_closure_sha256": "a" * 64,
+        "record_id": catalog["records"][0]["record_id"],
+        "status": "OFFICIAL_CLOSE_PREPARED",
+        "effective_at": "2026-08-18T01:00:00Z",
+        "payload_copied": False,
+        "actual_holdings_mutation_authority": False,
+        "cash_mutation_authority": False,
+        "broker_order_trade_authority": False,
+    }
+    batch_receipt["content_sha256"] = store_content_sha256(batch_receipt)
+    catalog["receipts"] = [batch_receipt]
+    record_root = inputs[2]
+    catalog_path = record_root / "_record_store/catalogs/g-fixture/catalog.v3.json"
+    catalog_path.write_text(json.dumps(catalog, sort_keys=True) + "\n", encoding="utf-8")
+    pointer_path = record_root / "_record_store/current.v1.json"
+    pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    pointer["catalog_sha256"] = _sha(catalog_path.read_bytes())
+    pointer_path.write_text(json.dumps(pointer, sort_keys=True) + "\n", encoding="utf-8")
+    monkeypatch.setattr(v2, "load_registered_catalog", lambda _: (pointer, catalog))
+
+    bundle = _build(*inputs[:4])
+    assert bundle["continuity_authority"]["status"] == "FINANCIAL_STATE_PUBLICATION"
+    assert bundle["freshness"]["status"] == "UPDATED"
+
+
 def test_late_official_publication_keeps_economic_date_and_private_delay_projection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

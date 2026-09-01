@@ -40,6 +40,7 @@ VIEW_ONLY_AUTHORITY = "VIEW_ONLY_NO_STORE_OR_PERFORMANCE_AUTHORITY"
 MARK_SOURCE_KIND = "STRICT_CN_EOD_CLOSE"
 DAILY_SCOPE = "DAILY_SYNC_LATEST_VERIFIED_LOCAL_CLOSE"
 NO_ACTION_RECEIPT_SCHEMA = "myquant.strategy_record_no_action_receipt.v1"
+OFFICIAL_CLOSE_BATCH_RECEIPT_SCHEMA = "myquant.strategy_daily_close_receipt.v1"
 LATE_PUBLICATION_CLASS = "LATE_OFFICIAL_VALUATION_PUBLICATION"
 LATE_PUBLICATION_SCHEMA = "publication_delay.v1"
 LATE_CATALOG_PUBLICATION_SCHEMA = "myquant.strategy_record_publication_delay.v1"
@@ -278,6 +279,17 @@ def _reject_unrelated_same_day_receipts(
         raise DashboardV2Error("daily_continuity_receipts_invalid")
     for candidate in receipts:
         if not isinstance(candidate, dict) or candidate.get("receipt_id") == expected_receipt_id:
+            continue
+        if candidate.get("schema_id") == OFFICIAL_CLOSE_BATCH_RECEIPT_SCHEMA:
+            if (
+                candidate.get("status") != "OFFICIAL_CLOSE_PREPARED"
+                or candidate.get("payload_copied") is not False
+                or candidate.get("actual_holdings_mutation_authority") is not False
+                or candidate.get("cash_mutation_authority") is not False
+                or candidate.get("broker_order_trade_authority") is not False
+                or candidate.get("content_sha256") != store_content_sha256(candidate)
+            ):
+                raise DashboardV2Error("daily_continuity_receipt_unrelated")
             continue
         try:
             candidate_date = _local_date_from_timestamp(
