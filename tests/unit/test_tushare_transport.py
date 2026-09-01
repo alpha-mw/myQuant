@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from quant_investor.config import Config
 from quant_investor.market import tushare_transport
 from quant_investor.market.tushare_transport import (
     MAX_RESPONSE_BYTES,
@@ -190,6 +191,7 @@ def test_official_https_request_uses_default_tls_and_exact_root(
     )
 
     assert OFFICIAL_TUSHARE_URL == "https://api.tushare.pro/"
+    assert Config.TUSHARE_URL == "https://api.tushare.pro"
     assert result.fields == FIELDS
     assert result.rows == (("000001.SZ", "20260727", 10.5),)
     assert result.reported_count == 0

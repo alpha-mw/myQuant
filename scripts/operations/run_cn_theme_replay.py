@@ -192,7 +192,6 @@ def run(
     if args.allow_live and transport is None:
         token = token_reader(workspace / ".env")
         os.environ["TUSHARE_TOKEN"] = token
-        os.environ["TUSHARE_URL"] = "https://api.tushare.pro/dataapi"
         transport = OfficialTushareHttpsClient(strict_decimal_decode=True)
     try:
         dc_summary = capture_theme_plan(
@@ -313,7 +312,6 @@ def run(
         if token is not None:
             token = None
             os.environ.pop("TUSHARE_TOKEN", None)
-            os.environ.pop("TUSHARE_URL", None)
 
 
 def parse_args() -> argparse.Namespace:

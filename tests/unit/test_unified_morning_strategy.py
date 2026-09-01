@@ -352,7 +352,7 @@ def test_launcher_reads_only_project_env_without_secret_logging() -> None:
     assert "read_project_env_token" in source
     assert "CN_SLOT_LAUNCHER_ENV_UNAVAILABLE" in source
     assert "set +x" in source
-    assert 'TUSHARE_URL="https://api.tushare.pro/dataapi"' in source
+    assert "TUSHARE_URL=" not in source
     assert "hash token" not in source.lower()
     assert "echo $slot_token" not in source
     assert "print -- $slot_token" not in source

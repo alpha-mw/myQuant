@@ -7,7 +7,6 @@ from quant_investor.env_loading import load_env_file
 
 MAINLINE_ENV_DEFAULTS: dict[str, str] = {
     "TUSHARE_TOKEN": "",
-    "TUSHARE_URL": "http://lianghua.nanyangqiankun.top",
     "TUSHARE_RATE_LIMIT_PER_MIN": "500",
     "MYQUANT_TUSHARE_AUTO_CLEAN": "1",
     "MYQUANT_TUSHARE_FACTOR_READINESS": "1",
@@ -52,6 +51,8 @@ MAINLINE_ENV_DEFAULTS: dict[str, str] = {
     "SLIPPAGE": "0.001",
     "EXECUTION_COST_MODEL_ENABLED": "0",
 }
+
+TUSHARE_OFFICIAL_URL = "https://api.tushare.pro"
 
 RETIRED_ENV_KEYS: tuple[str, ...] = (
     "DECISION_ENGINE",
@@ -156,10 +157,7 @@ class Config:
 
     # Tushare配置
     TUSHARE_TOKEN: str = get_secret("TUSHARE_TOKEN")
-    TUSHARE_URL: str = _env_str(
-        "TUSHARE_URL",
-        MAINLINE_ENV_DEFAULTS["TUSHARE_URL"],
-    )
+    TUSHARE_URL: str = TUSHARE_OFFICIAL_URL
     TUSHARE_RATE_LIMIT_PER_MIN: int = _env_int(
         "TUSHARE_RATE_LIMIT_PER_MIN",
         int(MAINLINE_ENV_DEFAULTS["TUSHARE_RATE_LIMIT_PER_MIN"]),

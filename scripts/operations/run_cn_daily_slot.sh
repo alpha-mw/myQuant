@@ -1,7 +1,7 @@
 #!/bin/zsh
 set -eu
 set +x
-trap 'unset slot_token TUSHARE_TOKEN TUSHARE_URL 2>/dev/null || true' EXIT
+trap 'unset slot_token TUSHARE_TOKEN 2>/dev/null || true' EXIT
 
 installed_python=""
 workspace_root=""
@@ -76,7 +76,6 @@ if [[ -f "$veto_path" ]]; then
 fi
 
 env TUSHARE_TOKEN="$slot_token" \
-  TUSHARE_URL="https://api.tushare.pro/dataapi" \
   PYTHONPATH="" \
   "$installed_python" -I -m quant_investor market daily-maintain \
     --market CN --workspace-root "$workspace_root" --run-root "$run_root" \
