@@ -212,6 +212,12 @@ function makeV2(canonicalV1 = makeCanonicalV1()) {
   };
 }
 
+const batchAnchor = makeV2();
+batchAnchor.canonical_v1.latest_valid_record = "20990104_154500-b02";
+batchAnchor.continuity_authority.anchor_record_id = "20990104_154500-b02";
+batchAnchor.research_mark.anchor_record_id = "20990104_154500-b02";
+assert.deepStrictEqual(Contract.validateBundle(batchAnchor), { valid: true, errors: [] });
+
 function makeSelector(status = "UPDATED") {
   const value = {
     schema_version: "cn_aggressive_dashboard_selector.v2",

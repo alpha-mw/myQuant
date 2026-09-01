@@ -184,6 +184,16 @@ const drawdownAnalysis = Analysis.buildAnalysis(drawdownSample);
 assert.ok(Math.abs(drawdownAnalysis.deepest_portfolio_drawdown.value + 0.1) < 1e-12);
 
 assert.deepStrictEqual(Contract.validateBundle(sample), { valid: true, errors: [] });
+const batchRecordIds = structuredClone(sample);
+batchRecordIds.latest_valid_record = "20990104_154500-b02";
+batchRecordIds.previous_valid_record = "20990104_154500-b01";
+assert.deepStrictEqual(Contract.validateBundle(batchRecordIds), { valid: true, errors: [] });
+const malformedBatchRecordId = structuredClone(batchRecordIds);
+malformedBatchRecordId.latest_valid_record = "20990104_1545-b02";
+assert.match(
+  Contract.validateBundle(malformedBatchRecordId).errors.join("; "),
+  /latest_valid_record is invalid/
+);
 const missingChangeMarketValue = structuredClone(sample);
 delete missingChangeMarketValue.changes[0].current_market_value;
 assert.strictEqual(Contract.validateBundle(missingChangeMarketValue).valid, false);

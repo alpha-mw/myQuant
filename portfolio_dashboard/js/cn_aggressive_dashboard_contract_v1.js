@@ -8,7 +8,7 @@
 
   var SCHEMA_VERSION = "cn_aggressive_dashboard.v1";
   var SHA256_RE = /^[0-9a-f]{64}$/;
-  var RECORD_RE = /^[0-9]{8}_[0-9]{4}$/;
+  var RECORD_RE = /^(?:[0-9]{8}_[0-9]{4}|[0-9]{8}_[0-9]{6}-b[0-9]{2})$/;
   var SYMBOL_RE = /^[0-9]{6}\.(?:SH|SZ|BJ)$/;
   var LEGACY_RETURN_METHOD = "initial_capital_return_excluding_external_flows";
   var CANONICAL_RETURN_METHOD = "flow_neutral_unitization_v1";

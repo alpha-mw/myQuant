@@ -16,7 +16,7 @@
   var SELECTOR_SCHEMA_VERSION = "cn_aggressive_dashboard_selector.v2";
   var SHA256_RE = /^[0-9a-f]{64}$/;
   var DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-  var RECORD_RE = /^\d{8}_\d{4}$/;
+  var RECORD_RE = /^(?:\d{8}_\d{4}|\d{8}_\d{6}-b\d{2})$/;
   var SYMBOL_RE = /^[0-9]{6}\.(?:SH|SZ|BJ)$/;
   var ATTEMPT_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
   var VIEW_AUTHORITY = "VIEW_ONLY_NO_STORE_OR_PERFORMANCE_AUTHORITY";
