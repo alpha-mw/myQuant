@@ -3876,6 +3876,111 @@ def command_publish_event_closures(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def command_publish_daily_event_closure(args: argparse.Namespace) -> dict[str, Any]:
+    """Seal one standing-policy CLOSED_EMPTY day after the owner cutoff."""
+
+    from quant_investor.strategy_records.event_store import (
+        EMPTY_POINTER_SHA256,
+        build_empty_closure,
+        load_generation,
+        publish_generation,
+    )
+
+    project = Path(args.project_root).resolve(strict=True)
+    root = Path(args.record_root).resolve(strict=True)
+    day = date.fromisoformat(args.trade_date).isoformat()
+    policy_path = project / _safe_relative(args.policy_path)
+    if not policy_path.is_file() or policy_path.is_symlink():
+        raise StrategyRecordStoreError("daily event policy is not a regular file")
+    policy_raw = policy_path.read_bytes()
+    if policy_raw != policy_path.read_bytes():
+        raise StrategyRecordStoreError("daily event policy was unstable")
+    if _sha(policy_raw) != args.policy_sha256:
+        raise StrategyRecordStoreError("daily event policy SHA mismatch")
+    policy = json.loads(policy_raw)
+    if (
+        policy.get("schema_id") != "myquant.cn_daily_official_close_policy.v1"
+        or policy.get("revoked_at") is not None
+        or policy.get("event_inbox", {}).get("sealed_empty_inventory_is_owner_authorized_closure")
+        is not True
+    ):
+        raise StrategyRecordStoreError("daily event standing policy is unavailable")
+    now = _manager_utc_now()
+    cutoff = datetime.combine(date.fromisoformat(day), time(15, 30), tzinfo=_SHANGHAI).astimezone(
+        timezone.utc
+    )
+    if now < cutoff:
+        raise StrategyRecordStoreError("daily event closure is before the owner cutoff")
+    receipt_path = Path(args.maintenance_receipt).resolve(strict=True)
+    if not receipt_path.is_file() or receipt_path.is_symlink():
+        raise StrategyRecordStoreError("daily maintenance receipt is not a regular file")
+    receipt_raw = receipt_path.read_bytes()
+    if receipt_raw != receipt_path.read_bytes():
+        raise StrategyRecordStoreError("daily maintenance receipt was unstable")
+    if _sha(receipt_raw) != args.maintenance_receipt_sha256:
+        raise StrategyRecordStoreError("daily maintenance receipt SHA mismatch")
+    receipt = json.loads(receipt_raw)
+    target = str(
+        receipt.get("target_trade_date")
+        or receipt.get("target_date")
+        or receipt.get("maintenance_target_date")
+        or ""
+    ).replace("-", "")
+    if target != day.replace("-", ""):
+        raise StrategyRecordStoreError("daily maintenance receipt target mismatch")
+    event_root = root / "_event_store"
+    if args.expected_event_pointer_sha256 == EMPTY_POINTER_SHA256:
+        existing: list[dict[str, Any]] = []
+    else:
+        loaded = load_generation(event_root)
+        if loaded["pointer_sha256"] != args.expected_event_pointer_sha256:
+            raise StrategyRecordStoreError("daily event pointer preimage mismatch")
+        existing = list(loaded["closures"])
+    matches = [row for row in existing if row.get("trade_date") == day]
+    if matches:
+        if len(matches) != 1:
+            raise StrategyRecordStoreError("daily event closure is duplicated")
+        return {
+            "status": "NO_ACTION",
+            "trade_date": day,
+            "pointer_sha256": args.expected_event_pointer_sha256,
+            "closure_sha256": matches[0]["content_sha256"],
+            "broker_calls": False,
+            "order_calls": False,
+            "trade_calls": False,
+        }
+    policy_ref = {"path": args.policy_path, "sha256": args.policy_sha256}
+    closure = build_empty_closure(
+        trade_date=day,
+        sealed_at=_utc_timestamp(now),
+        cutoff_at=_utc_timestamp(cutoff),
+        policy_ref=policy_ref,
+        owner_declaration_ref=policy_ref,
+        source_receipt_ref={
+            "path": receipt_path.relative_to(project).as_posix(),
+            "sha256": args.maintenance_receipt_sha256,
+        },
+    )
+    published = publish_generation(
+        event_root,
+        generation_id=args.generation_id,
+        generated_at=_utc_timestamp(now),
+        expected_pointer_sha256=args.expected_event_pointer_sha256,
+        closures=[*existing, closure],
+        policy_ref=policy_ref,
+    )
+    return {
+        "status": "PUBLISHED",
+        "trade_date": day,
+        "generation_id": args.generation_id,
+        "pointer_sha256": published["pointer_sha256"],
+        "closure_sha256": closure["content_sha256"],
+        "broker_calls": False,
+        "order_calls": False,
+        "trade_calls": False,
+    }
+
+
 def command_close_through_latest(args: argparse.Namespace) -> dict[str, Any]:
     """Plan or execute one offline all-or-nothing official-close batch."""
 
@@ -4029,6 +4134,18 @@ def build_parser() -> argparse.ArgumentParser:
     event_close.add_argument("--generation-id", required=True)
     event_close.add_argument("--published-at")
     event_close.set_defaults(handler=command_publish_event_closures, mutating=True)
+
+    daily_event = subparsers.add_parser("publish-daily-event-closure")
+    _common_record_root(daily_event)
+    daily_event.add_argument("--project-root", required=True)
+    daily_event.add_argument("--trade-date", required=True)
+    daily_event.add_argument("--policy-path", required=True)
+    daily_event.add_argument("--policy-sha256", required=True)
+    daily_event.add_argument("--maintenance-receipt", required=True)
+    daily_event.add_argument("--maintenance-receipt-sha256", required=True)
+    daily_event.add_argument("--expected-event-pointer-sha256", required=True)
+    daily_event.add_argument("--generation-id", required=True)
+    daily_event.set_defaults(handler=command_publish_daily_event_closure, mutating=True)
 
     close_latest = subparsers.add_parser("close-through-latest")
     _common_record_root(close_latest)
