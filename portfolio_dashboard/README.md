@@ -129,6 +129,13 @@ bytes 中删除内部持仓、变化、绝对资产、资金流金额、路径�
 - `BLOCKED`：Store/pointer/catalog/performance closure、active-row reconciliation 或
   bundle checker 失败。exporter 返回非零，不能把磁盘旧 bundle 当成本轮结果。
 
+周末只读刷新允许一个窄的 `NON_TRADING_DAY_NO_ACTION` 投影：strict Market 必须仍精确
+停在紧邻周五，catalog 必须有该周五绑定当前 active closure 的注册 no-action receipt，
+且 Store pointer、Parquet ledger 与 financial-state SHA 均未漂移。该投影只把持仓
+continuity 延伸到周六/周日，mark 仍显示周五日期；它不创建新 Store receipt、估值、
+performance point、订单或交易。工作日节假日在接入 exact exchange Calendar 前继续
+fail-closed。
+
 真实 bundle 只原子刷新 Git ignored 的 private artifact set：
 
 ```text

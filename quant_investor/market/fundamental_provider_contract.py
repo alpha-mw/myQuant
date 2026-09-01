@@ -22,7 +22,11 @@ import pandas as pd
 
 FUNDAMENTAL_PROVIDER_MANIFEST_SCHEMA = "myquant-fundamental-provider-manifest.v3"
 FUNDAMENTAL_REQUEST_OUTCOME_SCHEMA = "myquant-fundamental-request-outcome.v3"
-FUNDAMENTAL_FETCH_PIT_CONTRACT = "myquant-fundamental-fetch-pit.v3"
+# v4 (2026-08-31): one report period may now carry several vintages — the
+# statement as first filed plus any later restatement fetched from Tushare
+# report_type "4", each dated by its own announcement. v3 generations were
+# built without restatements and are not evidence-comparable with v4 ones.
+FUNDAMENTAL_FETCH_PIT_CONTRACT = "myquant-fundamental-fetch-pit.v4"
 FUNDAMENTAL_ENDPOINT_AUDIT_SCHEMA = "myquant-fundamental-endpoint-audit.v3"
 FUNDAMENTAL_FETCH_CHECKPOINT_SCHEMA = "myquant-fundamental-fetch-checkpoint.v3"
 FUNDAMENTAL_FETCH_CHECKPOINT_POINTER_SCHEMA = (

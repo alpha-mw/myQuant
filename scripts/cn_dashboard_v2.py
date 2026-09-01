@@ -50,6 +50,7 @@ LATE_VALUATION_DATE = date(2026, 8, 21)
 LATE_PUBLICATION_DATE = date(2026, 8, 22)
 LATE_SOURCE_RECORD = "20260820_1321"
 LATE_FRESHNESS_REASON = "LATE_OFFICIAL_FINANCIAL_PUBLICATION_FOR_LATEST_LOCAL_CLOSE"
+NON_TRADING_FRESHNESS_REASON = "NON_TRADING_DAY_NO_ACTION"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _SYMBOL_RE = re.compile(r"^[0-9]{6}\.(?:SH|SZ|BJ)$")
 _ATTEMPT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
@@ -302,6 +303,21 @@ def _reject_unrelated_same_day_receipts(
             raise DashboardV2Error("daily_continuity_receipt_unrelated") from exc
         if candidate_date == generation_local_date:
             raise DashboardV2Error("daily_continuity_receipt_unrelated")
+
+
+def _weekend_carry_allowed(*, generation_date: date, mark_date: date) -> bool:
+    """Return whether one Friday close can govern the current weekend.
+
+    Weekday holidays still require an exchange-calendar contract and remain
+    fail-closed.  This narrow rule only covers Saturday/Sunday, and only when
+    the strict Market head is the immediately preceding Friday.
+    """
+
+    gap = (generation_date - mark_date).days
+    return mark_date.weekday() == 4 and (
+        (generation_date.weekday() == 5 and gap == 1)
+        or (generation_date.weekday() == 6 and gap == 2)
+    )
 
 
 def _publication_delay_semantics(value: Any, *, label: str) -> dict[str, Any]:
@@ -1277,6 +1293,33 @@ def build_v2_bundle(
         raise DashboardV2Error("late_publication_market_date_mismatch")
     if coverage.get("latest_complete_trade_date") != mark_compact:
         raise DashboardV2Error("market_coverage_trade_date_mismatch")
+    mark_day = date.fromisoformat(mark_date)
+    if continuity_status == "UNCONFIRMED" and _weekend_carry_allowed(
+        generation_date=generation_local_date,
+        mark_date=mark_day,
+    ):
+        weekend_receipt_id = f"automation-{mark_compact}-daily-review-v1"
+        weekend_receipts = [
+            receipt
+            for receipt in catalog.get("receipts", [])
+            if isinstance(receipt, dict) and receipt.get("receipt_id") == weekend_receipt_id
+        ]
+        if weekend_receipts:
+            if len(weekend_receipts) != 1:
+                raise DashboardV2Error("daily_continuity_receipt_duplicate")
+            weekend_receipt = weekend_receipts[0]
+            _validate_continuity_receipt(
+                weekend_receipt,
+                expected_active_record_id=str(pointer.get("active_record_id") or ""),
+                expected_checkpoint=closure,
+                generation_local_date=generation_local_date,
+                expected_created_local_date=mark_day,
+            )
+            continuity_status = "NO_ACTION_BOUND"
+            financial_state_changed = False
+            continuity_receipt_id = weekend_receipt_id
+            receipt_sha = str(weekend_receipt["content_sha256"])
+            freshness_reason = NON_TRADING_FRESHNESS_REASON
     suspended = coverage.get("suspended_symbols")
     if not isinstance(suspended, list) or any(not isinstance(item, str) for item in suspended):
         raise DashboardV2Error("market_suspended_set_invalid")
@@ -1651,6 +1694,7 @@ def validate_v2_shape(bundle: dict) -> list[str]:
             "CURRENT_DAILY_RECEIPT_AND_LATEST_LOCAL_CLOSE",
             "CURRENT_FINANCIAL_PUBLICATION_AND_LATEST_LOCAL_CLOSE",
             LATE_FRESHNESS_REASON,
+            NON_TRADING_FRESHNESS_REASON,
             "DAILY_CONTINUITY_RECEIPT_MISSING",
         }:
             errors.append("freshness_reason_invalid")
@@ -1671,6 +1715,26 @@ def validate_v2_shape(bundle: dict) -> list[str]:
             )
         ):
             errors.append("late_publication_freshness_binding_invalid")
+        if (
+            freshness.get("status") == "UPDATED"
+            and freshness.get("reason") == NON_TRADING_FRESHNESS_REASON
+        ):
+            try:
+                weekend_mark = date.fromisoformat(str(freshness.get("mark_as_of")))
+                weekend_generation = date.fromisoformat(generation_date)
+            except ValueError:
+                errors.append("non_trading_freshness_date_invalid")
+            else:
+                if (
+                    not isinstance(continuity, dict)
+                    or continuity.get("status") != "NO_ACTION_BOUND"
+                    or continuity.get("holdings_valid_through") != generation_date
+                    or not _weekend_carry_allowed(
+                        generation_date=weekend_generation,
+                        mark_date=weekend_mark,
+                    )
+                ):
+                    errors.append("non_trading_freshness_binding_invalid")
         if (
             freshness.get("status") == "STALE"
             and freshness.get("reason") != "DAILY_CONTINUITY_RECEIPT_MISSING"

@@ -277,7 +277,8 @@ def test_batch_one_crash_resume_persists_coverage_and_replaces_failed_rows(
         **fetch_kwargs,
     )
 
-    assert replacement_provider.calls == [("income", SYMBOL)]
+    # income is restatable, so its refetch also spends a restated probe.
+    assert replacement_provider.calls == [("income", SYMBOL)] * 2
     assert manifest["checkpoint"]["resumed_valid_request_count"] == 5
     assert manifest["checkpoint"]["requests_fetched_this_run"] == 1
     assert len(tables["income"]) == 20

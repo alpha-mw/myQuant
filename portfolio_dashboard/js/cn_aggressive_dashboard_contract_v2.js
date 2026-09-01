@@ -32,6 +32,7 @@
     "CURRENT_DAILY_RECEIPT_AND_LATEST_LOCAL_CLOSE",
     "CURRENT_FINANCIAL_PUBLICATION_AND_LATEST_LOCAL_CLOSE",
     "LATE_OFFICIAL_FINANCIAL_PUBLICATION_FOR_LATEST_LOCAL_CLOSE",
+    "NON_TRADING_DAY_NO_ACTION",
     "DAILY_CONTINUITY_RECEIPT_MISSING"
   ];
   var POSITION_PRICE_EVIDENCE = [
@@ -69,6 +70,16 @@
     var date = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2]));
     return date.getUTCFullYear() === parts[0] &&
       date.getUTCMonth() === parts[1] - 1 && date.getUTCDate() === parts[2];
+  }
+
+  function weekendCarryAllowed(generationLocalDate, markDate) {
+    if (!validDate(generationLocalDate) || !validDate(markDate)) return false;
+    var generation = new Date(generationLocalDate + "T00:00:00Z");
+    var mark = new Date(markDate + "T00:00:00Z");
+    var gap = Math.round((generation.getTime() - mark.getTime()) / 86400000);
+    return mark.getUTCDay() === 5 &&
+      ((generation.getUTCDay() === 6 && gap === 1) ||
+       (generation.getUTCDay() === 0 && gap === 2));
   }
 
   function validShanghaiDateTime(value) {
@@ -208,11 +219,18 @@
     }
     if (value.status === "UPDATED") {
       var late = value.reason === "LATE_OFFICIAL_FINANCIAL_PUBLICATION_FOR_LATEST_LOCAL_CLOSE";
+      var nonTrading = value.reason === "NON_TRADING_DAY_NO_ACTION";
       if (late) {
         if (continuity.status !== "FINANCIAL_STATE_PUBLICATION" ||
             continuity.holdings_valid_through !== value.mark_as_of ||
             value.mark_as_of >= generationLocalDate) {
           errors.push("late UPDATED freshness is inconsistent");
+        }
+      } else if (nonTrading) {
+        if (continuity.status !== "NO_ACTION_BOUND" ||
+            continuity.holdings_valid_through !== generationLocalDate ||
+            !weekendCarryAllowed(generationLocalDate, value.mark_as_of)) {
+          errors.push("non-trading UPDATED freshness is inconsistent");
         }
       } else if (continuity.holdings_valid_through !== generationLocalDate) {
         errors.push("UPDATED holdings continuity must reach the generation date");
@@ -220,7 +238,7 @@
       var expectedReason = continuity.status === "NO_ACTION_BOUND"
         ? "CURRENT_DAILY_RECEIPT_AND_LATEST_LOCAL_CLOSE"
         : "CURRENT_FINANCIAL_PUBLICATION_AND_LATEST_LOCAL_CLOSE";
-      if (!late && value.reason !== expectedReason) errors.push("UPDATED freshness reason is inconsistent");
+      if (!late && !nonTrading && value.reason !== expectedReason) errors.push("UPDATED freshness reason is inconsistent");
       if (continuity.status === "UNCONFIRMED") errors.push("unconfirmed continuity cannot be UPDATED");
     } else if (value.reason !== "DAILY_CONTINUITY_RECEIPT_MISSING") {
       errors.push("STALE freshness reason is inconsistent");

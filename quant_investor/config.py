@@ -52,7 +52,20 @@ MAINLINE_ENV_DEFAULTS: dict[str, str] = {
     "EXECUTION_COST_MODEL_ENABLED": "0",
 }
 
-TUSHARE_OFFICIAL_URL = "https://api.tushare.pro"
+# The tushare SDK posts to f"{http_url}/{api_name}", so this value must be the
+# base that still resolves once the endpoint name is appended. Tushare reads the
+# endpoint from the request body and serves it at
+# https://api.tushare.pro/dataapi/<api_name>; the bare domain leaves
+# https://api.tushare.pro/<api_name>, which answers with a non-JSON body the SDK
+# turns into an empty frame. That failure is silent — every fetch returns zero
+# rows and nothing raises — and on 2026-09-01 it was returning nothing for
+# income, cashflow, balancesheet, fina_indicator and daily_basic alike.
+#
+# This differs deliberately from market/tushare_transport.py's
+# OFFICIAL_TUSHARE_URL, which posts to the root and pins
+# "https://api.tushare.pro/". Only the SDK appends a path, so only this constant
+# needs the /dataapi segment.
+TUSHARE_OFFICIAL_URL = "https://api.tushare.pro/dataapi"
 
 RETIRED_ENV_KEYS: tuple[str, ...] = (
     "DECISION_ENGINE",

@@ -396,6 +396,34 @@ assert.strictEqual(staleSnapshot.bundle, staleBundle);
 assert.doesNotMatch(staleSnapshot.holdings_label, /UPDATED/);
 assert.doesNotMatch(staleSnapshot.absolute_performance_label, /UPDATED/);
 
+const weekendCanonical = makeCanonicalV1();
+weekendCanonical.latest_data_date = "2099-01-02";
+weekendCanonical.positions.forEach((row) => { row.price_date = "2099-01-02"; });
+weekendCanonical.portfolio.performance_end_date = "2099-01-02";
+weekendCanonical.portfolio.performance_points[1].date = "2099-01-02";
+weekendCanonical.history.latest_performance_date = "2099-01-02";
+weekendCanonical.benchmarks.forEach((row) => { row.end_date = "2099-01-02"; });
+const weekendBundle = makeV2(weekendCanonical);
+weekendBundle.continuity_authority.anchor_data_date = "2099-01-02";
+weekendBundle.continuity_authority.receipt_id = "automation-20990102-daily-review-v1";
+weekendBundle.freshness.mark_as_of = "2099-01-02";
+weekendBundle.freshness.reason = "NON_TRADING_DAY_NO_ACTION";
+weekendBundle.completeness.benchmark_as_of = "2099-01-02";
+weekendBundle.completeness.benchmark_relative = "COMPLETE";
+weekendBundle.research_mark.mark_date = "2099-01-02";
+weekendBundle.research_mark.positions.forEach((row) => { row.price_date = "2099-01-02"; });
+weekendBundle.research_mark.current_absolute_performance.point_date = "2099-01-02";
+weekendBundle.research_mark.current_absolute_performance.anchor_date = "2099-01-02";
+assert.deepStrictEqual(Contract.validateBundle(weekendBundle), { valid: true, errors: [] });
+
+const invalidWeekendBundle = structuredClone(weekendBundle);
+invalidWeekendBundle.freshness.mark_as_of = "2099-01-01";
+invalidWeekendBundle.research_mark.mark_date = "2099-01-01";
+invalidWeekendBundle.research_mark.positions.forEach((row) => { row.price_date = "2099-01-01"; });
+invalidWeekendBundle.research_mark.current_absolute_performance.point_date = "2099-01-01";
+assert.strictEqual(Contract.validateBundle(invalidWeekendBundle).valid, false);
+assert.match(Contract.validateBundle(invalidWeekendBundle).errors.join("; "), /non-trading UPDATED freshness/);
+
 const publishedCanonical = makeCanonicalV1();
 publishedCanonical.latest_valid_record = "20990104_1200";
 publishedCanonical.latest_data_date = "2099-01-04";

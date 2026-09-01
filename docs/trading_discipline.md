@@ -312,6 +312,11 @@ broker、order、execution、trade、持仓或正式个股动作 authority。
   `NON_EXECUTABLE`，不得从历史峰值、成本、聊天记忆或通用百分比临时推导。
 - 正式 Store valuation 相对最新注册交易日落后超过一个交易日时，freshness 标记 `WATCH`；
   缺 continuity 或 pointer/catalog closure 时为 `BREACH`，并阻断持仓结论。
+- 周六或周日若 strict Market 最新完整日期精确为紧邻的周五，且该周五已有注册
+  `payload_copied=false` no-action receipt、active Store closure 与 ledger SHA 均未漂移，
+  Dashboard 可只读投影 `NON_TRADING_DAY_NO_ACTION`，把持仓 continuity 延伸到当前周末日。
+  这不是新估值、新 receipt、交易日补写或正式持仓变更；工作日节假日没有 exchange-
+  calendar 合同时仍保持 `MISSING/BREACH`。
 - Owner stop 只读取 exact owner policy；仅 `STRICT_CN_DAILY_CLOSE <= stop` 为 `BREACH`。
   盘中触碰保持 `WATCH`，不得自动创建订单或成交。
 - Owner stop strict-close breach 后，automation 自动生成 evidence-bound EXIT_REVIEW card，

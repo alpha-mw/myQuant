@@ -190,8 +190,14 @@ def test_official_https_request_uses_default_tls_and_exact_root(
         expected_fields=FIELDS,
     )
 
+    # The two constants are deliberately different, and pinning both here is
+    # what stops them from being "unified" back into a silent outage. This
+    # transport posts to the root, so it wants the bare root. The tushare SDK
+    # appends f"/{api_name}", so Config.TUSHARE_URL must carry the /dataapi
+    # segment; without it every SDK fetch lands on a route that answers with a
+    # non-JSON body and becomes an empty frame without raising (2026-09-01).
     assert OFFICIAL_TUSHARE_URL == "https://api.tushare.pro/"
-    assert Config.TUSHARE_URL == "https://api.tushare.pro"
+    assert Config.TUSHARE_URL == "https://api.tushare.pro/dataapi"
     assert result.fields == FIELDS
     assert result.rows == (("000001.SZ", "20260727", 10.5),)
     assert result.reported_count == 0

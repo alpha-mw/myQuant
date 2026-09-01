@@ -39,6 +39,7 @@ from quant_investor.market.fundamental_generation import (
     publish_fundamental_generation,
     resolve_fundamental_table_path,
 )
+from quant_investor.logger import get_logger
 from quant_investor.market.market_data_reader import MarketDataReader
 from quant_investor.market.fundamental_provider_contract import (
     FUNDAMENTAL_DERIVATION_CONTRACT,
@@ -148,6 +149,17 @@ SOURCE_REQUEST_FIELDS = {
     "forecast": "ts_code,ann_date,end_date,type,p_change_min,p_change_max,net_profit_min,net_profit_max,last_parent_net,summary,change_reason,update_flag",
 }
 CRITICAL_BASE_TABLES = tuple(table for table in SOURCE_TABLES if table != "forecast")
+
+#: Tushare files the statement as first disclosed under report_type "1" and its
+#: later restatement under "4" (调整合并报表). The default call returns "1" only,
+#: so a restatement is invisible unless asked for by name — and the restated row
+#: carries the restatement's own ann_date, which is what a point-in-time panel
+#: needs. Only the three statements restate; fina_indicator, daily_basic and
+#: forecast have no such vintage.
+_logger = get_logger("fundamental_mart", verbose=False)
+
+RESTATED_REPORT_TYPE = "4"
+RESTATABLE_TABLES = ("income", "balancesheet", "cashflow")
 
 
 @dataclass(frozen=True)
@@ -903,6 +915,201 @@ def _load_sector_map(metadata_root: Path | None = None) -> dict[str, str]:
     return sector_map
 
 
+
+
+
+def _drop_superseded_period_vintages(period_work: pd.DataFrame) -> pd.DataFrame:
+    """Keep only rows that are the newest report period known at their own date.
+
+    The daily projection joins with ``merge_asof(direction="backward")`` on
+    ``availability_date`` alone, with no regard for ``end_date``. That is safe
+    while every period is disclosed once, because periods and their disclosure
+    dates advance together. It stops being safe the moment restated vintages
+    exist: a restatement of 2023Q1 announced 2024-04-30 carries a later
+    availability_date than the first filing of 2023Q2, 2023Q3 and 2024Q1, so the
+    as-of join would hand every trade date after it a year-old report period —
+    the panel would travel backwards in time.
+
+    Filtering to rows whose ``end_date`` equals the running maximum ``end_date``
+    seen for that symbol keeps both halves of the intent:
+
+      * a restatement of the period that is still current survives, so the daily
+        panel picks up the correction from the date it was announced
+      * a restatement of a period a newer filing has already superseded is
+        dropped from the daily stream, so it cannot displace that newer filing
+
+    The period table itself keeps every vintage; only this daily projection
+    collapses them.
+    """
+    if period_work.empty or "end_date" not in period_work.columns:
+        return period_work
+    ordered = period_work.sort_values(
+        ["ts_code", "availability_date", "end_date"], kind="mergesort"
+    )
+    # ``end_date`` is YYYYMMDD, so its numeric form orders identically and is
+    # the form cummax accepts. A row whose period cannot be read is kept: it
+    # cannot be shown to be superseded, and dropping it would lose data on a
+    # guess.
+    periods = pd.to_numeric(ordered["end_date"], errors="coerce")
+    running_max = periods.groupby(ordered["ts_code"], sort=False).cummax()
+    keep = periods.isna() | running_max.isna() | periods.ge(running_max)
+    return ordered.loc[keep].reset_index(drop=True)
+
+
+def _restatement_is_new(restated: pd.DataFrame, primary: pd.DataFrame) -> pd.DataFrame:
+    """Keep restated rows that say something the primary vintage does not.
+
+    A restated row is a new vintage only when it was announced later than the
+    statement it restates. Three cases, and the difference matters:
+
+      * the period has no primary row at all -> keep, it is the only vintage
+      * the primary exists and was announced earlier -> keep
+      * the primary exists but carries no ann_date -> drop, because the ordering
+        cannot be established and an unordered second vintage would duplicate
+        the period rather than date it
+
+    This mirrors A_quant's ``_fetch_restated_vintage`` so the two pipelines
+    cannot drift on what counts as a vintage.
+    """
+    if restated.empty or "ann_date" not in restated.columns:
+        return restated.iloc[0:0] if not restated.empty else restated
+    if primary.empty or "ann_date" not in primary.columns or "end_date" not in primary.columns:
+        return restated
+    first = (
+        primary.dropna(subset=["end_date"])
+        .drop_duplicates("end_date")
+        .set_index("end_date")["ann_date"]
+    )
+    primary_ann = restated["end_date"].map(first).astype("string")
+    restated_ann = restated["ann_date"].astype("string")
+    unseen_period = ~restated["end_date"].isin(set(first.index))
+    return restated.loc[unseen_period | (primary_ann.notna() & restated_ann.gt(primary_ann))]
+
+
+def _fetch_restated_rows(
+    method: Any,
+    *,
+    symbol: str,
+    table: str,
+    table_start_text: str,
+    end_text: str,
+    primary: pd.DataFrame,
+    limiter: "_RequestRateLimiter",
+    attempt_limit: int,
+    initial_backoff: float,
+    maximum_backoff: float,
+) -> tuple[pd.DataFrame, int, dict[str, int]]:
+    """Fetch the restated vintage of one statement, or nothing.
+
+    A restatement that cannot be fetched must never fail the table: the figures
+    as filed are already in hand and are the more important half. The failure is
+    logged and the primary rows stand on their own.
+
+    Returns the accepted restated rows, the number of provider calls spent, and
+    the PIT-cutoff accounting for those rows so the caller can fold both into
+    the request outcome it reports.
+    """
+    zero = _zero_request_outcome_accounting()
+    # The primary call retries with backoff; so must this one. A transient TLS
+    # drop is a property of the network, not of the company, and letting one
+    # decide whether a symbol keeps its restated vintage would scatter gaps
+    # through the mart for no reason the data can explain.
+    calls = 0
+    response = None
+    last_error = ""
+    for attempt in range(1, max(int(attempt_limit), 1) + 1):
+        try:
+            limiter.wait()
+            calls += 1
+            response = method(
+                ts_code=symbol,
+                start_date=table_start_text,
+                end_date=end_text,
+                report_type=RESTATED_REPORT_TYPE,
+                fields=SOURCE_REQUEST_FIELDS[table],
+            )
+            break
+        except TypeError:
+            # A provider that takes neither the date range nor report_type has
+            # no restated vintage to offer; the primary rows are the whole story.
+            return pd.DataFrame(), calls, zero
+        except Exception as exc:  # noqa: BLE001 - retried, then recorded
+            last_error = str(exc).strip().replace("\n", " ")[:200]
+            if attempt < max(int(attempt_limit), 1) and initial_backoff > 0:
+                delay = initial_backoff * (2 ** (attempt - 1))
+                if maximum_backoff > 0:
+                    delay = min(delay, maximum_backoff)
+                sleep(delay)
+    if response is None:
+        _logger.warning(
+            "restated %s vintage unavailable for %s after %d attempts: %s",
+            table,
+            symbol,
+            calls,
+            last_error,
+        )
+        return pd.DataFrame(), calls, zero
+    if not isinstance(response, pd.DataFrame) or response.empty:
+        return pd.DataFrame(), calls, zero
+
+    accepted, stats, malformed = _strict_pit_cutoff(
+        response, table=table, symbol=symbol, as_of=end_text
+    )
+    if malformed:
+        _logger.warning(
+            "restated %s vintage rejected for %s: %s", table, symbol, malformed
+        )
+        return pd.DataFrame(), calls, zero
+
+    kept = _restatement_is_new(accepted, primary)
+    # ``_strict_pit_cutoff`` counted every row it accepted, but a restatement
+    # that says nothing new never reaches the table. Move those from ``rows`` to
+    # ``rows_deduplicated`` — they are duplicate vintages — so the outcome keeps
+    # reconciling under validate_outcome_accounting_v3:
+    #   rows_received == rows + filtered_* + rows_deduplicated
+    # and so the checkpoint's outcome/table row-count check still matches.
+    superseded = int(len(accepted) - len(kept))
+    if superseded:
+        stats["rows"] = int(stats.get("rows", 0)) - superseded
+        stats["rows_deduplicated"] = int(stats.get("rows_deduplicated", 0)) + superseded
+    return kept, calls, stats
+
+
+def _keep_first_disclosure(frame: pd.DataFrame) -> pd.DataFrame:
+    """Drop revised statement rows, keeping the figures as first disclosed.
+
+    Tushare marks the statement as originally filed with ``update_flag`` "0"
+    and its later revision with "1", and both carry the same ``ann_date`` — so
+    the revision is indistinguishable by date and only the flag separates them.
+    Keeping the revision would apply a correction to the date the original was
+    published, which is lookahead; the point-in-time reading keeps what was
+    filed. A_quant reached the same conclusion independently (see its
+    docs/assumptions.md A1d), and the two pipelines must not disagree on it.
+
+    A report whose only row is a revision is kept rather than dropped: the
+    original is simply not on offer, and losing the period entirely would be
+    worse than carrying a figure whose vintage is known.
+    """
+    if frame.empty or "update_flag" not in frame.columns:
+        return frame
+    flag = frame["update_flag"].astype("string").str.strip()
+    original = frame.loc[flag.eq("0") | flag.isna()]
+    if original.empty:
+        return frame
+    keys = [
+        column
+        for column in ("ts_code", "end_date", "availability_date", "raw_table")
+        if column in frame.columns
+    ]
+    if not keys:
+        return original
+    seen = original.set_index(keys).index
+    revision_only = frame.loc[~frame.set_index(keys).index.isin(seen)]
+    if revision_only.empty:
+        return original
+    return pd.concat([original, revision_only], ignore_index=True)
+
+
 def _normalize_table(
     frame: pd.DataFrame | None,
     *,
@@ -942,7 +1149,19 @@ def _normalize_table(
     if not quarantine.empty:
         quarantine["quarantine_reason"] = "missing_ts_code_end_date_or_announcement_date"
     clean = working.loc[~missing].copy()
-    clean = clean.sort_values(["ts_code", "end_date", "availability_date", "fetched_at"]).drop_duplicates(
+    clean = _keep_first_disclosure(clean)
+    # ``update_flag`` joins the sort so the surviving row is decided by the
+    # data rather than by incoming order: without it the key group holds both
+    # the filed and the revised statement, ``fetched_at`` ties within one run,
+    # and ``keep="last"`` picks whichever row happened to arrive last.
+    clean = clean.sort_values(
+        [
+            column
+            for column in ("ts_code", "end_date", "availability_date", "fetched_at", "update_flag")
+            if column in clean.columns
+        ],
+        kind="mergesort",
+    ).drop_duplicates(
         subset=["ts_code", "end_date", "availability_date", "raw_table"],
         keep="last",
     )
@@ -992,7 +1211,35 @@ def _outer_period_frame(
         if frame.empty:
             continue
         base = frame if base.empty else base.merge(frame, on=keys, how="outer")
-    return base.sort_values(keys).reset_index(drop=True) if not base.empty else base
+    if base.empty:
+        return base
+    base = base.sort_values(keys).reset_index(drop=True)
+    return _carry_unrevised_statements(base, keys)
+
+
+def _carry_unrevised_statements(base: pd.DataFrame, keys: Sequence[str]) -> pd.DataFrame:
+    """Carry statements a later disclosure did not repeat into that vintage.
+
+    The join above is keyed on ``availability_date``, so when one report period
+    is disclosed twice and only some statements are refiled, the second vintage
+    lands with the refiled columns populated and the rest NULL — and every
+    ratio spanning two statements, ``fin_roe`` above all, becomes NaN. Measured
+    on the shipped mart before this fix: 81.58% of later vintages had a NaN
+    ``fin_roe`` against 5.91% of first vintages.
+
+    A statement the company did not refile keeps the figures it filed earlier,
+    so the fill is forward only, and strictly within one ``(ts_code, end_date)``:
+    no value ever moves to a period it does not belong to, and no value ever
+    moves backwards to a date before it was disclosed.
+    """
+    source_columns = [column for column in base.columns if column not in set(keys)]
+    if not source_columns:
+        return base
+    filled = base.sort_values(list(keys)).copy()
+    filled[source_columns] = (
+        filled.groupby(["ts_code", "end_date"], sort=False)[source_columns].ffill()
+    )
+    return filled.reset_index(drop=True)
 
 
 def derive_fundamental_period(
@@ -1266,6 +1513,7 @@ def build_fundamental_daily(
     # tables with the legacy ordering before the global vectorized join; this
     # preserves prior values without rebuilding millions of per-symbol daily
     # frames.
+    period_work = _drop_superseded_period_vintages(period_work)
     period_work = _legacy_asof_tie_winners(period_work)
     daily = daily.sort_values(
         ["trade_date", "ts_code"],
@@ -4878,6 +5126,32 @@ def _fetch_tushare_tables(
                                     cutoff=end_text,
                                 ),
                             }
+                        if table in RESTATABLE_TABLES:
+                            (
+                                restated,
+                                restated_calls,
+                                restated_stats,
+                            ) = _fetch_restated_rows(
+                                method,
+                                symbol=symbol,
+                                table=table,
+                                table_start_text=table_start_text,
+                                end_text=end_text,
+                                primary=accepted,
+                                limiter=limiter,
+                                attempt_limit=attempt_limit,
+                                initial_backoff=initial_backoff,
+                                maximum_backoff=maximum_backoff,
+                            )
+                            provider_calls += restated_calls
+                            if not restated.empty:
+                                accepted = pd.concat(
+                                    [accepted, restated], ignore_index=True
+                                )
+                                status = "success"
+                            for key, value in restated_stats.items():
+                                if key in cutoff_stats:
+                                    cutoff_stats[key] = int(cutoff_stats[key]) + int(value)
                         outcome = {
                             "schema_version": FUNDAMENTAL_REQUEST_OUTCOME_SCHEMA,
                             "symbol": symbol,

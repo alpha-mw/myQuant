@@ -64,6 +64,12 @@ class _Provider:
         def fetch(**kwargs):
             symbol = kwargs["ts_code"]
             self.calls.append((table, symbol))
+            # Tushare answers report_type="4" with the restated vintage, which
+            # most symbols do not have. These stubs model that common case so
+            # the restated probe contributes nothing; restatement behaviour has
+            # its own coverage in test_fundamental_first_disclosure.py.
+            if kwargs.get("report_type") == fundamental_mart.RESTATED_REPORT_TYPE:
+                return pd.DataFrame()
             if table == "fina_indicator" and self.retry_fina > 0:
                 self.retry_fina -= 1
                 raise RuntimeError("transient quota")
@@ -134,6 +140,12 @@ class _CoverageProvider:
         def fetch(**kwargs):
             symbol = kwargs["ts_code"]
             self.calls.append((table, symbol))
+            # Tushare answers report_type="4" with the restated vintage, which
+            # most symbols do not have. These stubs model that common case so
+            # the restated probe contributes nothing; restatement behaviour has
+            # its own coverage in test_fundamental_first_disclosure.py.
+            if kwargs.get("report_type") == fundamental_mart.RESTATED_REPORT_TYPE:
+                return pd.DataFrame()
             if table == "forecast":
                 return pd.DataFrame()
             if table == "daily_basic":
@@ -642,7 +654,9 @@ def test_full_rebuild_checkpoint_resumes_without_refetch(tmp_path: Path) -> None
         retry_backoff_seconds=0,
     )
 
-    assert len(first_provider.calls) == 6
+    # Six tables, plus a restated-vintage probe on each of income,
+    # balancesheet and cashflow (fundamental_mart.RESTATABLE_TABLES).
+    assert len(first_provider.calls) == 6 + len(fundamental_mart.RESTATABLE_TABLES)
     assert second_provider.calls == []
     assert second_manifest["checkpoint"]["resumed_valid_request_count"] == 6
     assert second_manifest["checkpoint"]["requests_fetched_this_run"] == 0
@@ -1123,7 +1137,11 @@ def test_resume_preserves_prior_failed_provider_call_accounting(tmp_path: Path) 
     assert second_provider.calls == [("fina_indicator", "000001.SZ")]
     assert manifest["checkpoint"]["resumed_valid_request_count"] == 5
     assert manifest["checkpoint"]["requests_fetched_this_run"] == 1
-    assert manifest["provider_calls_attempted"] == 7
+    # Carried over from the failed run plus this one: the earlier attempt now
+    # also spent a restated-vintage probe on each of the three statements.
+    assert manifest["provider_calls_attempted"] == 7 + len(
+        fundamental_mart.RESTATABLE_TABLES
+    )
     assert manifest["requests_retried"] == 1
 
 
@@ -1169,7 +1187,8 @@ def test_resume_refetches_only_malformed_key(tmp_path: Path) -> None:
         **kwargs,
     )
 
-    assert second_provider.calls == [("income", "000001.SZ")]
+    # income is restatable, so its refetch spends a restated probe too.
+    assert second_provider.calls == [("income", "000001.SZ")] * 2
     assert manifest["checkpoint"]["resumed_valid_request_count"] == 5
     assert manifest["checkpoint"]["requests_fetched_this_run"] == 1
 
@@ -1214,7 +1233,8 @@ def test_resume_refetches_failed_financial_coverage_and_replaces_rows(
     )
 
     income = tables["income"]
-    assert second_provider.calls == [("income", "000001.SZ")]
+    # income is restatable, so its refetch spends a restated probe too.
+    assert second_provider.calls == [("income", "000001.SZ")] * 2
     assert manifest["checkpoint"]["resumed_valid_request_count"] == 5
     assert manifest["checkpoint"]["requests_fetched_this_run"] == 1
     assert len(income) == 16
