@@ -13,7 +13,11 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import close_cn_dashboard_official_valuation as valuation  # noqa: E402
-from cn_dashboard_common import canonical_json_bytes, validate_record  # noqa: E402
+from cn_dashboard_common import (  # noqa: E402
+    DashboardInputError,
+    canonical_json_bytes,
+    validate_record,
+)
 
 STOCKS = (
     "002008.SZ",
@@ -329,6 +333,34 @@ def test_built_record_passes_dashboard_record_validation(tmp_path: Path) -> None
     assert closed["official_valuation"] is True
     assert closed["data_date"] == "2026-08-21"
     assert len(closed["positions"]) == 7
+
+
+def test_batch_validation_can_resolve_an_immutable_staged_source(tmp_path: Path) -> None:
+    project, staging_dir, _summary, _evidence = _build(tmp_path)
+    record_root = project / "results" / "records"
+    source_record = "20260820_1321"
+    staged_source = project / "transaction" / source_record
+    staged_source.parent.mkdir()
+    (record_root / source_record).rename(staged_source)
+
+    with pytest.raises(DashboardInputError, match="manifest_source_record_missing"):
+        validate_record(staging_dir, record_root, project)
+
+    closed = validate_record(
+        staging_dir,
+        record_root,
+        project,
+        source_record_dirs={source_record: staged_source},
+    )
+    assert closed["data_date"] == "2026-08-21"
+
+    with pytest.raises(DashboardInputError, match="manifest_source_record_invalid"):
+        validate_record(
+            staging_dir,
+            record_root,
+            project,
+            source_record_dirs={source_record: staged_source.parent},
+        )
 
 
 def test_late_publication_contract_is_identical_and_historical_only(

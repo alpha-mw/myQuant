@@ -619,6 +619,9 @@ def close_through_latest(
     staging_root.mkdir(parents=True, exist_ok=True)
     source_dir = active_dir
     source_closure = dict(pointer["active_closure"])
+    source_record_dirs: dict[str, Path] = {
+        str(pointer["active_record_id"]): active_dir,
+    }
     built_dirs: list[Path] = []
     strict_rows: list[dict[str, Any]] = []
     daily_receipts: list[dict[str, Any]] = []
@@ -654,11 +657,17 @@ def close_through_latest(
                 expected_publication_date=plan["effective_at"][:10],
                 publication_delay_reason=BATCH_PUBLICATION_REASON,
             )
-        strict = validate_record(stage, root, project)
+        strict = validate_record(
+            stage,
+            root,
+            project,
+            source_record_dirs=source_record_dirs,
+        )
         if strict["data_date"] != day:
             raise StrategyRecordStoreError("batch record valuation date drifted")
         built_dirs.append(stage)
         strict_rows.append(strict)
+        source_record_dirs[record_id] = stage
         source_dir = stage
         source_closure = _record_closure(root, stage)
         receipt = {

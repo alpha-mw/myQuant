@@ -718,7 +718,13 @@ def _validate_funding_correction(manual: dict[str, Any], record_dir: Path) -> di
     }
 
 
-def validate_record(record_dir: Path, record_root: Path, project_root: Path) -> dict[str, Any]:
+def validate_record(
+    record_dir: Path,
+    record_root: Path,
+    project_root: Path,
+    *,
+    source_record_dirs: Mapping[str, Path] | None = None,
+) -> dict[str, Any]:
     """Validate one timestamped record and return its closed snapshot."""
 
     if not RECORD_NAME_RE.fullmatch(record_dir.name):
@@ -738,7 +744,9 @@ def validate_record(record_dir: Path, record_root: Path, project_root: Path) -> 
     if source_record:
         if not isinstance(source_record, str) or not RECORD_NAME_RE.fullmatch(source_record):
             raise DashboardInputError("manifest_source_record_invalid")
-        source_dir = record_root / source_record
+        source_dir = (source_record_dirs or {}).get(source_record, record_root / source_record)
+        if source_dir.name != source_record:
+            raise DashboardInputError("manifest_source_record_invalid")
         if not source_dir.is_dir() or source_dir.is_symlink():
             raise DashboardInputError("manifest_source_record_missing")
 
@@ -1082,7 +1090,6 @@ def validate_record(record_dir: Path, record_root: Path, project_root: Path) -> 
                 if benchmark_artifact.sha256 != benchmark_sha:
                     raise DashboardInputError("official_valuation_benchmark_source_sha_mismatch")
         if source_record:
-            source_dir = record_root / source_record
             source_manifest = stable_read(source_dir / "manifest.json", project_root)
             source_manual = stable_read(source_dir / "manual_execution_manifest.json", project_root)
             source_manual_value = load_json(source_manual)
