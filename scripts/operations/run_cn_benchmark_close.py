@@ -51,7 +51,7 @@ def _provider_rows(
     source: str,
 ) -> list[dict[str, Any]]:
     if source == "eastmoney":
-        from backfill_cn_dashboard_benchmark import pull_eastmoney_kline_rows
+        from scripts.backfill_cn_dashboard_benchmark import pull_eastmoney_kline_rows
 
         rows = pull_eastmoney_kline_rows(
             start_date=start_date,
