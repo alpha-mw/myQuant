@@ -20,7 +20,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-TUSHARE_REQUEST_INTERVAL_SECONDS = 13.0
+TUSHARE_REQUEST_INTERVAL_SECONDS = 21.0
 TUSHARE_OFFICIAL_URL = "https://api.tushare.pro"
 
 from quant_investor.credential_utils import create_tushare_pro
@@ -100,7 +100,10 @@ def _provider_rows(
                 end_date=chunk_end.strftime("%Y%m%d"),
             )
             if frame is None or not {"ts_code", "trade_date", "close"}.issubset(frame.columns):
-                raise RuntimeError(f"benchmark provider response incomplete: {code}")
+                raise RuntimeError(
+                    "benchmark provider response incomplete:"
+                    f"{code}:{chunk_start.isoformat()}:{chunk_end.isoformat()}"
+                )
             for row in frame.loc[:, ["ts_code", "trade_date", "close"]].to_dict("records"):
                 if str(row["ts_code"]) != code:
                     raise RuntimeError("benchmark provider symbol drift")
