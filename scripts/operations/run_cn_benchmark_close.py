@@ -12,12 +12,15 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import time as time_module
 from typing import Any
 from zoneinfo import ZoneInfo
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+TUSHARE_REQUEST_INTERVAL_SECONDS = 13.0
 
 from quant_investor.credential_utils import create_tushare_pro
 from quant_investor.config import Config
@@ -89,6 +92,8 @@ def _provider_rows(
         cursor = chunk_end + timedelta(days=1)
     for code in REQUIRED_CODES:
         for chunk_start, chunk_end in ranges:
+            if result:
+                time_module.sleep(TUSHARE_REQUEST_INTERVAL_SECONDS)
             frame = pro.index_daily(
                 ts_code=code,
                 start_date=chunk_start.strftime("%Y%m%d"),

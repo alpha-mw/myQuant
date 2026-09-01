@@ -90,6 +90,7 @@ def test_tushare_capture_uses_monthly_chunks(monkeypatch: pytest.MonkeyPatch) ->
             return pd.DataFrame([{"ts_code": ts_code, "trade_date": start_date, "close": 1000.0}])
 
     monkeypatch.setattr(producer, "create_tushare_pro", lambda *_args: FakePro())
+    monkeypatch.setattr(producer, "TUSHARE_REQUEST_INTERVAL_SECONDS", 0.0)
 
     rows = producer._provider_rows(
         "token-value-is-never-recorded",
