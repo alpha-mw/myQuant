@@ -287,12 +287,57 @@ broker、order、execution、trade、持仓或正式个股动作 authority。
 
 - 每日从 pointer-selected Store-v3 与 strict Market 证据报告 cash、gross、Top1、Top3、
   equity HHI、PCB/AI 硬件权益占比、60-session 相关性、流动性和 turnover。
+- 每只当前持仓固定报告 `stage_target_price`、`moving_take_profit_review_price`、
+  `moving_take_profit_reduce_price`、`stage_stop_price`、`moving_stop_price`、
+  `owner_stop_price`、`threshold_state` 和 exact `evidence_ref`。缺少正式阈值时必须写
+  `NOT_CONFIGURED`；`unconfirmed`、缺 entry anchor 或 retired 阈值必须保留原状态并标明
+  `NON_EXECUTABLE`，不得从历史峰值、成本、聊天记忆或通用百分比临时推导。
 - 正式 Store valuation 相对最新注册交易日落后超过一个交易日时，freshness 标记 `WATCH`；
   缺 continuity 或 pointer/catalog closure 时为 `BREACH`，并阻断持仓结论。
 - Owner stop 只读取 exact owner policy；仅 `STRICT_CN_DAILY_CLOSE <= stop` 为 `BREACH`。
   盘中触碰保持 `WATCH`，不得自动创建订单或成交。
 - Formal action freshness 只来自 unified System/Mainline 的 exact active decision closure；
   缺失时为 `NOT_CONFIGURED`，Decision Log 为 `NOT_APPLICABLE`，不得写伪 no-action。
+
+## 中国市场因子与条件
+
+每日矩阵增加以下中国市场域；只消费 strict CN Market/PIT、registered Factor、Store、交易所、
+人民银行、国家统计局或其他明确 source-bound 官方证据：
+
+- **数据与交易日闭环**：latest complete Market、PIT membership、Calendar、Factor head 必须
+  对齐目标前一交易日。日期不一致、coverage/lineage blocker、LOW/W80 observation 缺失或
+  非 `OPEN/NON_AUTHORIZING` 时为 `BREACH`，阻断当日新风险和 Top100/Decision 结论。
+- **Factor 生产链**：分别报告 LOW、W80 active signal，W75 control-only 状态、Factor pointer、
+  generation、as-of、LOW/W80 observations、Top100、Theme replay 与 Decision closure。不得把
+  W75、旧 observation 或旧 Top100 当作当前候选。
+- **指数趋势条件**：在 exact index close 可用时，分别报告沪深300、中证500、中证1000、
+  创业板指、科创50的 close/MA20/MA60，并分类
+  `TREND_SUPPORTIVE (close >= MA20 >= MA60)`、
+  `TREND_DEFENSIVE (close < MA20 < MA60)` 或 `TREND_MIXED`。该分类只影响研究风险预算，
+  不直接生成个股动作。
+- **市场广度**：报告上涨/下跌家数、advance ratio、全市场高于 MA20/MA60 比例、涨跌停家数、
+  新高/新低数量及中位数收益。没有 owner-approved numeric threshold 时只报原值，
+  `trigger_state=NOT_CONFIGURED`。
+- **流动性与拥挤**：报告全市场成交额、5日/20日成交额比、主要指数换手、持仓成交额占比、
+  PCB/AI 硬件权益占比与60-session相关性。缺 exact evidence 为 `MISSING`；无 owner 阈值
+  不得自动把高换手、缩量或高相关性升级为交易指令。
+- **波动与尾部风险**：报告主要指数20日实现波动率、20/60日回撤、当日高低振幅、跌停数量、
+  停牌/不可交易覆盖。Market/PIT/可交易性 closure 失败为 `BREACH`；其余阈值未配置时为
+  `NOT_CONFIGURED`。
+- **风格、行业与估值**：报告大/小盘、成长/价值、科技制造/非科技相对强弱，SW2021 Industry、
+  Theme membership 与 source-bound economic exposure；指数 PE/PB、盈利预测修正仅在 exact
+  registered source 存在时报告，否则为 `MISSING`。
+- **中国宏观流动性条件**：报告人民币汇率、中国10年期国债收益率、人民银行公开市场操作与
+  政策利率、社会融资/信贷及官方政策实际落地；没有当日/最新官方 release 时按证据状态写
+  `NO_NEW_OFFICIAL_RELEASE` 或 `MISSING`，不得用网页摘要补值。
+
+Factor 解阻顺序固定为：registered maintenance 完成 Market/PIT/History/Calendar closure
+→ `factor production-rollover` 以 expected pointer 推进到前一交易日
+→ `factor production-observe` 注册同日 LOW/W80 OPEN observations
+→ `research pool-publish` 生成同日 Top100
+→ DC primary / registered TDX fallback Theme replay
+→ Fundamental/Macro/Decision compile。任一上游未闭合时，下游保持 `MISSING/BLOCKED`，
+不得运行 maintenance fallback、复用旧结果或跳级生成策略。
 
 每日 automation 必须在固定输出中单列该矩阵，并在 automation memory 只保存本轮 receipt、
 日期和 blocker 摘要；memory 不得成为下一轮数值或 authority 的 fallback。
