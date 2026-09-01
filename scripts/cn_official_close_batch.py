@@ -453,12 +453,27 @@ def close_through_latest(
             )
             if plan_path.exists() and execute:
                 plan = json.loads(_read(plan_path, label="daily-close frozen plan"))
-                recovered = _write_completion(
-                    record_root=root,
-                    plan=plan,
-                    pointer_sha=expected_store_pointer_sha,
-                    status="RECOVERED_AFTER_CAS",
-                )
+                completion_path = _completion_path(root, transaction_id)
+                if completion_path.exists():
+                    recovered = json.loads(
+                        _read(completion_path, label="daily-close completion")
+                    )
+                    if (
+                        recovered.get("schema_id") != BATCH_COMPLETION_SCHEMA
+                        or recovered.get("transaction_id") != transaction_id
+                        or recovered.get("input_fingerprint") != plan.get("input_fingerprint")
+                        or recovered.get("pointer_sha256") != expected_store_pointer_sha
+                        or recovered.get("status") not in {"COMMITTED", "RECOVERED_AFTER_CAS"}
+                        or recovered.get("content_sha256") != content_sha256(recovered)
+                    ):
+                        raise StrategyRecordConflict("daily-close completion readback differs")
+                else:
+                    recovered = _write_completion(
+                        record_root=root,
+                        plan=plan,
+                        pointer_sha=expected_store_pointer_sha,
+                        status="RECOVERED_AFTER_CAS",
+                    )
         return {
             "status": "NO_ACTION",
             "last_official_date": official_date,
