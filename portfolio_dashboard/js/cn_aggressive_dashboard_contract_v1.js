@@ -54,6 +54,21 @@
       });
     }
     if (!SHA256_RE.test(value.content_sha256 || "")) errors.push("content_sha256 is invalid");
+    if (value.assurance !== undefined) {
+      var assuranceStatuses = ["VERIFIED", "PARTIAL", "UNAVAILABLE", "BLOCKED"];
+      if (!isObject(value.assurance) || ["data", "accounting", "attribution", "evidence"].some(function (key) {
+        return !isObject(value.assurance[key]) || assuranceStatuses.indexOf(value.assurance[key].status) < 0;
+      }) || ["PARTIAL", "COMPLETE", "UNAVAILABLE"].indexOf(value.assurance.historical_coverage) < 0 ||
+          ["READY", "BLOCKED", "UNAVAILABLE"].indexOf(value.assurance.prospective_coverage) < 0 ||
+          !Array.isArray(value.assurance.blockers)) {
+        errors.push("assurance is invalid");
+      } else if (value.assurance.historical_coverage !== "COMPLETE" &&
+          ["accounting", "attribution", "evidence"].some(function (key) {
+            return value.assurance[key].status === "VERIFIED";
+          })) {
+        errors.push("assurance overclaims historical completeness");
+      }
+    }
     if (value.public_redacted && (
       !Array.isArray(value.positions) || value.positions.length !== 0 ||
       !Array.isArray(value.changes) || value.changes.length !== 0 ||

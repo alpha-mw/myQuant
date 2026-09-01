@@ -23,6 +23,7 @@
     "strategy_id_kind": {"const": "HISTORICAL_DISPLAY_LABEL_NOT_V17_CANONICAL_ID"},
     "read_only": {"const": true},
     "authority_flags": {"$ref": "#/$defs/authorityFlags"},
+    "assurance": {"$ref": "#/$defs/assurance"},
     "latest_record_seen": {"$ref": "#/$defs/record"},
     "latest_valid_record": {"$ref": "#/$defs/record"},
     "previous_valid_record": {"$ref": "#/$defs/record"},
@@ -77,6 +78,31 @@
         "provider_calls": {"const": false}, "strategy_record_writes": {"const": false},
         "trade_calls": {"const": false}, "v17_pointer_mutation": {"const": false}
       }
+    },
+    "assurance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "data", "accounting", "attribution", "evidence", "historical_coverage",
+        "prospective_coverage", "prospective_effective_date", "blockers",
+        "reported_fill_count", "unexplained_share_delta_count"
+      ],
+      "properties": {
+        "data": {"$ref": "#/$defs/assuranceDimension"},
+        "accounting": {"$ref": "#/$defs/assuranceDimension"},
+        "attribution": {"$ref": "#/$defs/assuranceDimension"},
+        "evidence": {"$ref": "#/$defs/assuranceDimension"},
+        "historical_coverage": {"enum": ["PARTIAL", "COMPLETE", "UNAVAILABLE"]},
+        "prospective_coverage": {"enum": ["READY", "BLOCKED", "UNAVAILABLE"]},
+        "prospective_effective_date": {"type": ["string", "null"]},
+        "blockers": {"type": "array", "items": {"type": "string"}},
+        "reported_fill_count": {"type": ["integer", "null"], "minimum": 0},
+        "unexplained_share_delta_count": {"type": ["integer", "null"], "minimum": 0}
+      }
+    },
+    "assuranceDimension": {
+      "type": "object", "additionalProperties": false, "required": ["status"],
+      "properties": {"status": {"enum": ["VERIFIED", "PARTIAL", "UNAVAILABLE", "BLOCKED"]}}
     },
     "evidence": {
       "type": "object", "additionalProperties": false,

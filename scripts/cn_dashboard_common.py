@@ -26,6 +26,10 @@ from quant_investor.strategy_records.store import (
     load_registered_catalog,
 )
 from quant_investor.strategy_records.performance import load_performance_history
+from quant_investor.strategy_records.accounting import (
+    StrategyAccountingError,
+    load_accounting_generation,
+)
 
 SCHEMA_VERSION = "cn_aggressive_dashboard.v1"
 HISTORY_INTEGRITY_SCHEMA_VERSION = "cn_aggressive_dashboard_history_integrity.v2"
@@ -3355,6 +3359,68 @@ def build_bundle(
         for spec in BENCHMARK_SPECS
     ]
 
+    try:
+        accounting = load_accounting_generation(record_root)
+    except StrategyAccountingError:
+        assurance = {
+            "data": {"status": "UNAVAILABLE"},
+            "accounting": {"status": "UNAVAILABLE"},
+            "attribution": {"status": "UNAVAILABLE"},
+            "evidence": {"status": "UNAVAILABLE"},
+            "historical_coverage": "UNAVAILABLE",
+            "prospective_coverage": "UNAVAILABLE",
+            "prospective_effective_date": None,
+            "blockers": ["ACCOUNTING_GENERATION_UNAVAILABLE"],
+            "reported_fill_count": None,
+            "unexplained_share_delta_count": None,
+        }
+        accounting_refs: list[dict[str, str]] = []
+    else:
+        genesis = accounting["genesis"]
+        audit = accounting["audit"]
+        source_aligned = (
+            accounting["state"] == "VERIFIED"
+            and genesis["effective_date"] == unitized[-1]["date"]
+        )
+        assurance = {
+            "data": {"status": "VERIFIED" if source_aligned else "BLOCKED"},
+            "accounting": {"status": genesis["status"]["accounting"]},
+            "attribution": {"status": genesis["status"]["attribution"]},
+            "evidence": {"status": genesis["status"]["evidence"]},
+            "historical_coverage": genesis["coverage"]["historical"],
+            "prospective_coverage": genesis["coverage"]["prospective"],
+            "prospective_effective_date": genesis["coverage"][
+                "prospective_effective_date"
+            ],
+            "blockers": (
+                list(genesis["blockers"])
+                + ([] if source_aligned else ["SOURCE_STORE_ADVANCED"])
+            ),
+            "reported_fill_count": audit["reported_fill_count"],
+            "unexplained_share_delta_count": len(audit["unexplained_share_deltas"]),
+        }
+        accounting_pointer = accounting["pointer"]
+        accounting_refs = [
+            {
+                "path": (
+                    record_root / "_accounting_store/current.v1.json"
+                ).relative_to(project_root).as_posix(),
+                "sha256": accounting["pointer_sha256"],
+            },
+            {
+                "path": (record_root / accounting_pointer["genesis_path"])
+                .relative_to(project_root)
+                .as_posix(),
+                "sha256": accounting_pointer["genesis_sha256"],
+            },
+            {
+                "path": (record_root / genesis["historical_gap_audit_ref"]["path"])
+                .relative_to(project_root)
+                .as_posix(),
+                "sha256": genesis["historical_gap_audit_ref"]["sha256"],
+            },
+        ]
+
     source_refs: list[dict[str, str]] = []
     seen_refs: set[tuple[str, str]] = set()
     for record in valid:
@@ -3387,6 +3453,7 @@ def build_bundle(
             "sha256": benchmark_artifact.sha256,
         }
     )
+    source_refs.extend(accounting_refs)
     source_refs.append(
         {
             "path": risk_free_artifact.relative_path,
@@ -3406,6 +3473,7 @@ def build_bundle(
         "strategy_id_kind": "HISTORICAL_DISPLAY_LABEL_NOT_V17_CANONICAL_ID",
         "read_only": True,
         "authority_flags": dict(AUTHORITY_FLAGS),
+        "assurance": assurance,
         "latest_record_seen": latest_seen,
         "latest_valid_record": latest["record"],
         "previous_valid_record": previous["record"],
@@ -3636,6 +3704,28 @@ def validate_bundle_shape(bundle: Any) -> list[str]:
     flags = bundle.get("authority_flags")
     if flags != AUTHORITY_FLAGS:
         errors.append("authority_flags_invalid")
+    assurance = bundle.get("assurance")
+    assurance_statuses = {"VERIFIED", "PARTIAL", "UNAVAILABLE", "BLOCKED"}
+    if assurance is not None and (
+        not isinstance(assurance, dict)
+        or any(
+            not isinstance(assurance.get(dimension), dict)
+            or assurance[dimension].get("status") not in assurance_statuses
+            for dimension in ("data", "accounting", "attribution", "evidence")
+        )
+        or assurance.get("historical_coverage")
+        not in {"PARTIAL", "COMPLETE", "UNAVAILABLE"}
+        or assurance.get("prospective_coverage")
+        not in {"READY", "BLOCKED", "UNAVAILABLE"}
+        or not isinstance(assurance.get("blockers"), list)
+    ):
+        errors.append("assurance_status_invalid")
+    elif assurance is not None and (
+        assurance["accounting"]["status"] == "VERIFIED"
+        or assurance["attribution"]["status"] == "VERIFIED"
+        or assurance["evidence"]["status"] == "VERIFIED"
+    ) and assurance.get("historical_coverage") != "COMPLETE":
+        errors.append("assurance_historical_overclaim")
     public_redacted = bundle.get("public_redacted") is True
     if public_redacted and (
         bundle.get("positions") != []

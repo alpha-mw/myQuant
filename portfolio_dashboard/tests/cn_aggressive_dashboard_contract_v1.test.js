@@ -30,6 +30,9 @@ assert.match(html, /id="monthlyPerformanceRows"/);
 assert.match(html, /id="historyInsightList"/);
 assert.match(html, /id="quantMetricGrid"/);
 assert.match(publicHtml, /id="quantMetricGrid"/);
+assert.match(publicHtml, /id="accountingAssuranceStatus"/);
+assert.match(publicHtml, /id="attributionAssuranceStatus"/);
+assert.match(app, /assurance\.historical_coverage/);
 assert.match(app, /预计年化收益/);
 assert.match(publicHtml, /Sharpe 使用中国1年期国债收益率/);
 assert.match(html, /id="historySummary"/);
@@ -191,6 +194,26 @@ const drawdownAnalysis = Analysis.buildAnalysis(drawdownSample);
 assert.ok(Math.abs(drawdownAnalysis.deepest_portfolio_drawdown.value + 0.1) < 1e-12);
 
 assert.deepStrictEqual(Contract.validateBundle(sample), { valid: true, errors: [] });
+const assured = structuredClone(sample);
+assured.assurance = {
+  data: { status: "VERIFIED" },
+  accounting: { status: "PARTIAL" },
+  attribution: { status: "PARTIAL" },
+  evidence: { status: "PARTIAL" },
+  historical_coverage: "PARTIAL",
+  prospective_coverage: "READY",
+  prospective_effective_date: "2099-01-03",
+  blockers: ["LEGACY_GAP"],
+  reported_fill_count: 1,
+  unexplained_share_delta_count: 1
+};
+assert.deepStrictEqual(Contract.validateBundle(assured), { valid: true, errors: [] });
+const assuranceOverclaim = structuredClone(assured);
+assuranceOverclaim.assurance.accounting.status = "VERIFIED";
+assert.match(
+  Contract.validateBundle(assuranceOverclaim).errors.join("; "),
+  /assurance overclaims historical completeness/
+);
 const batchRecordIds = structuredClone(sample);
 batchRecordIds.latest_valid_record = "20990104_154500-b02";
 batchRecordIds.previous_valid_record = "20990104_154500-b01";
