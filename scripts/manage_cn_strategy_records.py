@@ -108,6 +108,7 @@ _V3_OFFICIAL_RECORD_FILES = {
 LATE_OFFICIAL_VALUATION_PUBLICATION = "LATE_OFFICIAL_VALUATION_PUBLICATION"
 LATE_PUBLICATION_REASON = "SHARED_CHECKOUT_SAFETY_GATE_DELAY"
 PUBLICATION_DELAY_SCHEMA = "myquant.strategy_record_publication_delay.v1"
+CONTROL_DIRECTORIES = frozenset({STORE_DIRECTORY, "_event_store"})
 
 
 def _manager_utc_now() -> datetime:
@@ -373,7 +374,7 @@ def _live_catalog_entries(root: Path, *, sealed_at: str) -> list[dict[str, Any]]
 
     records: list[dict[str, Any]] = []
     for child in sorted(root.iterdir(), key=lambda value: value.name):
-        if child.name == STORE_DIRECTORY:
+        if child.name in CONTROL_DIRECTORIES:
             continue
         metadata = os.lstat(child)
         if stat.S_ISLNK(metadata.st_mode):
@@ -526,7 +527,7 @@ def _legacy_record_paths(root: Path, requested: list[str]) -> list[str]:
         return [_safe_relative(value) for value in requested]
     result: list[str] = []
     for child in sorted(root.iterdir(), key=lambda path: path.name):
-        if child.name == STORE_DIRECTORY or child.name.startswith("."):
+        if child.name in CONTROL_DIRECTORIES or child.name.startswith("."):
             continue
         metadata = os.lstat(child)
         if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
@@ -554,7 +555,7 @@ def _orphans(root: Path, catalog: dict[str, Any] | None) -> list[str]:
     return [
         child.name
         for child in sorted(root.iterdir(), key=lambda path: path.name)
-        if child.name != STORE_DIRECTORY
+        if child.name not in CONTROL_DIRECTORIES
         and not child.name.startswith(".")
         and stat.S_ISDIR(os.lstat(child).st_mode)
         and child.name not in registered

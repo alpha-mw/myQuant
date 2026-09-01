@@ -89,6 +89,15 @@ def test_inventory_reports_unregistered_legacy_and_registered_orphans(
     assert after["orphans_preserved"] is True
 
 
+def test_event_store_is_a_reserved_control_directory_not_an_orphan(tmp_path: Path) -> None:
+    _bootstrap(tmp_path)
+    (tmp_path / "_event_store").mkdir()
+
+    result = manager.command_inventory(_args(record_root=str(tmp_path)))
+
+    assert "_event_store" not in result["orphan_record_dirs"]
+
+
 def test_batch_record_identity_is_versioned_without_changing_legacy_identity() -> None:
     assert manager._strict_run_id("20260821_1200") == "20260821_1200"
     assert manager._strict_run_id("20260901_090000-b01") == "20260901_090000-b01"
