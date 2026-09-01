@@ -325,6 +325,8 @@ def test_latest_required_close_is_independent_of_event_closure(tmp_path: Path) -
     )
 
     assert checker.latest_required_close_date(tmp_path) == "2026-08-28"
+    assert checker.latest_market_close_date(tmp_path) == "2026-08-28"
+    assert checker.latest_benchmark_close_date(tmp_path) == "2026-08-28"
 
 
 def test_attempt_receipt_is_immutable_and_does_not_touch_selector(tmp_path: Path) -> None:

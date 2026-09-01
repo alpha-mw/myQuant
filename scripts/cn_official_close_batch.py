@@ -434,10 +434,7 @@ def close_through_latest(
     market_end = date.fromisoformat(
         f"{str(market_pointer['latest_complete_trade_date'])[:4]}-{str(market_pointer['latest_complete_trade_date'])[4:6]}-{str(market_pointer['latest_complete_trade_date'])[6:]}"
     ).isoformat()
-    benchmark_end = str(benchmark["pointer"]["end_date"])
-    required_candidates = [
-        day for day in open_dates if official_date < day <= min(market_end, benchmark_end)
-    ]
+    required_candidates = [day for day in open_dates if official_date < day <= market_end]
     max_backlog = int(policy["max_backlog_open_days"])
     if len(required_candidates) > max_backlog:
         raise StrategyRecordStoreError("official-close backlog exceeds policy limit")
@@ -467,7 +464,7 @@ def close_through_latest(
         return {
             "status": "NO_ACTION",
             "last_official_date": official_date,
-            "latest_required_close_date": min(market_end, benchmark_end),
+            "latest_required_close_date": market_end,
             "missing_dates": [],
             "pointer_sha256": expected_store_pointer_sha,
             "completion": recovered,

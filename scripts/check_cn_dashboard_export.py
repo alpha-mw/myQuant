@@ -26,6 +26,7 @@ DEFAULT_SELECTOR = DEFAULT_BUNDLE.with_name("cn_aggressive_dashboard_selector.v2
 DEFAULT_SELECTOR_JS = DEFAULT_SELECTOR.with_suffix(".js")
 OFFICIAL_VALUATION_PUBLICATION_REQUIRED = "OFFICIAL_VALUATION_PUBLICATION_REQUIRED"
 OFFICIAL_CLOSE_NOT_CAUGHT_UP = "OFFICIAL_CLOSE_NOT_CAUGHT_UP"
+BENCHMARK_SOURCE_UNAVAILABLE = "BENCHMARK_SOURCE_UNAVAILABLE"
 
 
 def _read_js_wrapper(path: Path, variable: str) -> dict:
@@ -65,27 +66,35 @@ def official_valuation_publication_requirement(bundle: dict, v2_bundle: dict | N
 
 
 def latest_required_close_date(project_root: Path) -> str | None:
-    """Return the Market/benchmark required close, independent of event readiness."""
+    """Return the latest completed Market date, independent of event readiness."""
 
+    return latest_market_close_date(project_root)
+
+
+def latest_benchmark_close_date(project_root: Path) -> str | None:
     try:
-        market = json.loads(
-            (project_root / "data/parquet/cn/_latest.json").read_text(encoding="utf-8")
-        )
         from quant_investor.market.cn_benchmark_store import (
             CNBenchmarkStoreError,
             load_generation,
         )
 
         benchmark = load_generation(project_root / "data/parquet/cn/benchmarks")
-    except (OSError, ValueError, json.JSONDecodeError, CNBenchmarkStoreError):
+    except (OSError, ValueError, CNBenchmarkStoreError):
+        return None
+    return str(benchmark.get("pointer", {}).get("end_date") or "") or None
+
+
+def latest_market_close_date(project_root: Path) -> str | None:
+    try:
+        market = json.loads(
+            (project_root / "data/parquet/cn/_latest.json").read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError):
         return None
     market_date = str(market.get("latest_complete_trade_date") or "")
     if len(market_date) == 8 and market_date.isdigit():
-        market_date = f"{market_date[:4]}-{market_date[4:6]}-{market_date[6:]}"
-    benchmark_date = str(benchmark.get("pointer", {}).get("end_date") or "")
-    if not market_date or not benchmark_date:
-        return None
-    return min(market_date, benchmark_date)
+        return f"{market_date[:4]}-{market_date[4:6]}-{market_date[6:]}"
+    return market_date or None
 
 
 def parse_args() -> argparse.Namespace:
@@ -226,9 +235,15 @@ def main() -> int:
         print(json.dumps({"ok": False, "errors": errors}, ensure_ascii=False))
         return 2
     required_close = latest_required_close_date(args.project_root.resolve())
+    market_close = latest_market_close_date(args.project_root.resolve())
+    benchmark_close = latest_benchmark_close_date(args.project_root.resolve())
     publication_requirement = official_valuation_publication_requirement(bundle, v2_bundle)
     performance_end = bundle.get("portfolio", {}).get("performance_end_date")
-    if (
+    if isinstance(market_close, str) and (
+        not isinstance(benchmark_close, str) or benchmark_close < market_close
+    ):
+        publication_requirement = BENCHMARK_SOURCE_UNAVAILABLE
+    elif (
         isinstance(required_close, str)
         and isinstance(performance_end, str)
         and performance_end < required_close
@@ -255,6 +270,8 @@ def main() -> int:
                     else None
                 ),
                 "latest_required_close_date": required_close,
+                "latest_market_close_date": market_close,
+                "latest_benchmark_close_date": benchmark_close,
                 "publication_requirement": publication_requirement,
             },
             ensure_ascii=False,
