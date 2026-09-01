@@ -21,9 +21,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 TUSHARE_REQUEST_INTERVAL_SECONDS = 21.0
-TUSHARE_OFFICIAL_URL = "https://api.tushare.pro"
 
-from quant_investor.credential_utils import create_tushare_pro
 from quant_investor.market.cn_benchmark_store import (
     EMPTY_POINTER_SHA256,
     REQUIRED_CODES,
@@ -33,6 +31,7 @@ from quant_investor.market.cn_benchmark_store import (
     publish_generation,
 )
 from quant_investor.market.credential_preflight import read_project_env_token
+from quant_investor.market.tushare_transport import OfficialTushareHttpsClient
 
 
 def _sha(raw: bytes) -> str:
@@ -69,13 +68,10 @@ def _provider_rows(
             ts_codes=REQUIRED_CODES,
         )
         return sorted(rows, key=lambda row: (row["date"], row["ts_code"]))
-    import tushare as ts  # type: ignore[import-not-found]
-
     if token is None:
         raise RuntimeError("PROJECT_ENV token is required for Tushare benchmark capture")
-    pro = create_tushare_pro(ts, token, TUSHARE_OFFICIAL_URL)
-    if pro is None:
-        raise RuntimeError("benchmark provider initialization failed")
+    os.environ["TUSHARE_TOKEN"] = token
+    client = OfficialTushareHttpsClient(strict_decimal_decode=True)
     result: list[dict[str, Any]] = []
     start_day = date.fromisoformat(start_date)
     end_day = date.fromisoformat(end_date)
@@ -90,35 +86,38 @@ def _provider_rows(
         chunk_end = min(end_day, next_month - timedelta(days=1))
         ranges.append((cursor, chunk_end))
         cursor = chunk_end + timedelta(days=1)
-    for code in REQUIRED_CODES:
-        for chunk_start, chunk_end in ranges:
-            if result:
-                time_module.sleep(TUSHARE_REQUEST_INTERVAL_SECONDS)
-            frame = pro.index_daily(
-                ts_code=code,
-                start_date=chunk_start.strftime("%Y%m%d"),
-                end_date=chunk_end.strftime("%Y%m%d"),
-            )
-            if frame is None or not {"ts_code", "trade_date", "close"}.issubset(frame.columns):
-                raise RuntimeError(
-                    "benchmark provider response incomplete:"
-                    f"{code}:{chunk_start.isoformat()}:{chunk_end.isoformat()}"
-                )
-            for row in frame.loc[:, ["ts_code", "trade_date", "close"]].to_dict("records"):
-                if str(row["ts_code"]) != code:
-                    raise RuntimeError("benchmark provider symbol drift")
-                compact = str(row["trade_date"])
-                day = f"{compact[:4]}-{compact[4:6]}-{compact[6:]}"
-                result.append(
-                    {
-                        "date": day,
+    try:
+        for code in REQUIRED_CODES:
+            for chunk_start, chunk_end in ranges:
+                if result:
+                    time_module.sleep(TUSHARE_REQUEST_INTERVAL_SECONDS)
+                response = client.request(
+                    api_name="index_daily",
+                    params={
                         "ts_code": code,
-                        "close": float(row["close"]),
-                        "source_system": "tushare.index_daily",
-                        "coverage": "exact_close",
-                        "value_date": day,
-                    }
+                        "start_date": chunk_start.strftime("%Y%m%d"),
+                        "end_date": chunk_end.strftime("%Y%m%d"),
+                    },
+                    expected_fields=("ts_code", "trade_date", "close"),
                 )
+                for values in response.rows:
+                    row = dict(zip(response.fields, values))
+                    if str(row["ts_code"]) != code:
+                        raise RuntimeError("benchmark provider symbol drift")
+                    compact = str(row["trade_date"])
+                    day = f"{compact[:4]}-{compact[4:6]}-{compact[6:]}"
+                    result.append(
+                        {
+                            "date": day,
+                            "ts_code": code,
+                            "close": float(row["close"]),
+                            "source_system": "tushare.index_daily",
+                            "coverage": "exact_close",
+                            "value_date": day,
+                        }
+                    )
+    finally:
+        os.environ.pop("TUSHARE_TOKEN", None)
     by_key: dict[tuple[str, str], dict[str, Any]] = {}
     for row in result:
         key = (row["date"], row["ts_code"])

@@ -80,22 +80,22 @@ def test_benchmark_pointer_cas_conflict(tmp_path: Path) -> None:
 
 
 def test_tushare_capture_uses_monthly_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
-    import pandas as pd
-
     calls: list[tuple[str, str, str]] = []
 
-    class FakePro:
-        def index_daily(self, *, ts_code: str, start_date: str, end_date: str):
-            calls.append((ts_code, start_date, end_date))
-            return pd.DataFrame([{"ts_code": ts_code, "trade_date": start_date, "close": 1000.0}])
+    class FakeResponse:
+        fields = ("ts_code", "trade_date", "close")
 
-    connection_args: list[tuple[object, ...]] = []
+        def __init__(self, code: str, trade_date: str) -> None:
+            self.rows = ((code, trade_date, 1000.0),)
 
-    def fake_create(*args: object):
-        connection_args.append(args)
-        return FakePro()
+    class FakeClient:
+        def request(self, *, api_name: str, params: dict, expected_fields: tuple):
+            assert api_name == "index_daily"
+            assert expected_fields == FakeResponse.fields
+            calls.append((params["ts_code"], params["start_date"], params["end_date"]))
+            return FakeResponse(params["ts_code"], params["start_date"])
 
-    monkeypatch.setattr(producer, "create_tushare_pro", fake_create)
+    monkeypatch.setattr(producer, "OfficialTushareHttpsClient", lambda **_kwargs: FakeClient())
     monkeypatch.setattr(producer, "TUSHARE_REQUEST_INTERVAL_SECONDS", 0.0)
 
     rows = producer._provider_rows(
@@ -106,7 +106,7 @@ def test_tushare_capture_uses_monthly_chunks(monkeypatch: pytest.MonkeyPatch) ->
     )
 
     assert len(calls) == 18
-    assert connection_args[0][2] == "https://api.tushare.pro"
     assert calls[0][1:] == ("20260317", "20260331")
     assert calls[-1][1:] == ("20260801", "20260831")
     assert len(rows) == 18
+    assert "TUSHARE_TOKEN" not in producer.os.environ
