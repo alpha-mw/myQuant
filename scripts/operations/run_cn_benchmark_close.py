@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import hashlib
 import json
 import os
@@ -74,34 +74,51 @@ def _provider_rows(
     if pro is None:
         raise RuntimeError("benchmark provider initialization failed")
     result: list[dict[str, Any]] = []
-    for code in REQUIRED_CODES:
-        frame = pro.index_daily(
-            ts_code=code,
-            start_date=start_date.replace("-", ""),
-            end_date=end_date.replace("-", ""),
+    start_day = date.fromisoformat(start_date)
+    end_day = date.fromisoformat(end_date)
+    ranges: list[tuple[date, date]] = []
+    cursor = start_day
+    while cursor <= end_day:
+        next_month = (
+            cursor.replace(year=cursor.year + 1, month=1, day=1)
+            if cursor.month == 12
+            else cursor.replace(month=cursor.month + 1, day=1)
         )
-        if (
-            frame is None
-            or frame.empty
-            or not {"ts_code", "trade_date", "close"}.issubset(frame.columns)
-        ):
-            raise RuntimeError(f"benchmark provider response incomplete: {code}")
-        for row in frame.loc[:, ["ts_code", "trade_date", "close"]].to_dict("records"):
-            if str(row["ts_code"]) != code:
-                raise RuntimeError("benchmark provider symbol drift")
-            compact = str(row["trade_date"])
-            day = f"{compact[:4]}-{compact[4:6]}-{compact[6:]}"
-            result.append(
-                {
-                    "date": day,
-                    "ts_code": code,
-                    "close": float(row["close"]),
-                    "source_system": "tushare.index_daily",
-                    "coverage": "exact_close",
-                    "value_date": day,
-                }
+        chunk_end = min(end_day, next_month - timedelta(days=1))
+        ranges.append((cursor, chunk_end))
+        cursor = chunk_end + timedelta(days=1)
+    for code in REQUIRED_CODES:
+        for chunk_start, chunk_end in ranges:
+            frame = pro.index_daily(
+                ts_code=code,
+                start_date=chunk_start.strftime("%Y%m%d"),
+                end_date=chunk_end.strftime("%Y%m%d"),
             )
-    return sorted(result, key=lambda row: (row["date"], row["ts_code"]))
+            if frame is None or not {"ts_code", "trade_date", "close"}.issubset(frame.columns):
+                raise RuntimeError(f"benchmark provider response incomplete: {code}")
+            for row in frame.loc[:, ["ts_code", "trade_date", "close"]].to_dict("records"):
+                if str(row["ts_code"]) != code:
+                    raise RuntimeError("benchmark provider symbol drift")
+                compact = str(row["trade_date"])
+                day = f"{compact[:4]}-{compact[4:6]}-{compact[6:]}"
+                result.append(
+                    {
+                        "date": day,
+                        "ts_code": code,
+                        "close": float(row["close"]),
+                        "source_system": "tushare.index_daily",
+                        "coverage": "exact_close",
+                        "value_date": day,
+                    }
+                )
+    by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in result:
+        key = (row["date"], row["ts_code"])
+        previous = by_key.get(key)
+        if previous is not None and previous != row:
+            raise RuntimeError("benchmark provider chunk overlap conflict")
+        by_key[key] = row
+    return [by_key[key] for key in sorted(by_key)]
 
 
 def _write_compatibility_csv(path: Path, rows: list[dict[str, Any]]) -> None:

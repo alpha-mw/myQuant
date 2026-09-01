@@ -11,6 +11,7 @@ from quant_investor.market.cn_benchmark_store import (
     load_generation,
     publish_generation,
 )
+from scripts.operations import run_cn_benchmark_close as producer
 
 
 def _rows() -> list[dict[str, object]]:
@@ -76,3 +77,28 @@ def test_benchmark_pointer_cas_conflict(tmp_path: Path) -> None:
             expected_pointer_sha256=EMPTY_POINTER_SHA256,
             acquisition_receipt_ref={"path": "private/capture-2.json", "sha256": "b" * 64},
         )
+
+
+def test_tushare_capture_uses_monthly_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
+    import pandas as pd
+
+    calls: list[tuple[str, str, str]] = []
+
+    class FakePro:
+        def index_daily(self, *, ts_code: str, start_date: str, end_date: str):
+            calls.append((ts_code, start_date, end_date))
+            return pd.DataFrame([{"ts_code": ts_code, "trade_date": start_date, "close": 1000.0}])
+
+    monkeypatch.setattr(producer, "create_tushare_pro", lambda *_args: FakePro())
+
+    rows = producer._provider_rows(
+        "token-value-is-never-recorded",
+        start_date="2026-03-17",
+        end_date="2026-08-31",
+        source="tushare",
+    )
+
+    assert len(calls) == 18
+    assert calls[0][1:] == ("20260317", "20260331")
+    assert calls[-1][1:] == ("20260801", "20260831")
+    assert len(rows) == 18
