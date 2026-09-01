@@ -10,7 +10,7 @@ Parquet closures bound by a manifest and an owner declaration.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_EVEN
 import hashlib
 import json
@@ -174,14 +174,19 @@ def _valuation_at(record_id: str, valuation_date: str) -> str:
         raise StrategyRecordStoreError(
             "CANONICAL_PERFORMANCE_SOURCE_UNAVAILABLE:valuation date is invalid"
         ) from exc
-    # The record timestamp is the only permitted deterministic time carrier in
-    # the normalized migration input.  Historical corrections may deliberately
-    # value an earlier trade date, so the date components need not be equal.
-    local = datetime.combine(parsed_day, parsed_time, tzinfo=ZoneInfo("Asia/Shanghai"))
     if declared_day > parsed_day:
         raise StrategyRecordStoreError(
             "CANONICAL_PERFORMANCE_SOURCE_UNAVAILABLE:valuation date is after record time"
         )
+    # Ordinary records use their record timestamp as the valuation time.  A
+    # catch-up batch deliberately gives every immutable record one truthful
+    # publication timestamp plus an ordinal; its economic valuation time is
+    # the corresponding A-share close on the declared historical trade date.
+    local = datetime.combine(
+        declared_day if match.group("ordinal") is not None else parsed_day,
+        time(15, 0) if match.group("ordinal") is not None else parsed_time,
+        tzinfo=ZoneInfo("Asia/Shanghai"),
+    )
     return local.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 

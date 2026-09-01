@@ -333,6 +333,38 @@ def test_extension_appends_new_valuation_and_rejects_same_date() -> None:
         )
 
 
+def test_batch_extension_uses_each_historical_market_close_as_valuation_time() -> None:
+    catalog = _projection_catalog()
+    normalized, _, _ = normalize_registered_projection(catalog)
+    rows = build_seed_rows(normalized, catalog=catalog)
+
+    for ordinal, valuation_date, nav in (
+        (1, "2026-01-04", 1_030_000),
+        (2, "2026-01-05", 1_040_000),
+    ):
+        rows = extend_performance_rows(
+            rows,
+            strict_record={
+                "record": f"20260901_115917-b{ordinal:02d}",
+                "data_date": valuation_date,
+                "execution_kind": "carry_forward",
+                "execution_status": "no_action_carry_forward_official_valuation",
+                "accounting": {
+                    "cash_after": nav,
+                    "market_value_after": 0,
+                    "total_value_after": nav,
+                    "portfolio_pnl_after": nav - 1_000_000,
+                },
+            },
+            manual_manifest_sha256=SHA_A,
+            ledger_parquet_sha256=SHA_B,
+            financial_state_sha256=SHA_C,
+        )
+
+    assert rows[-2]["valuation_at"] == "2026-01-04T07:00:00Z"
+    assert rows[-1]["valuation_at"] == "2026-01-05T07:00:00Z"
+
+
 def test_extension_carries_external_flow_without_counting_it_as_return() -> None:
     catalog = _projection_catalog()
     normalized, _, _ = normalize_registered_projection(catalog)
