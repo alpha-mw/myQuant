@@ -1616,7 +1616,7 @@ def research_publish_policy(*, workspace_root: str) -> dict[str, Any]:
 def research_morning_strategy(
     *, workspace_root: str, request_path: str, expected_request_sha256: str
 ) -> dict[str, Any]:
-    """Validate or seal one exact 09:45 morning-strategy closure."""
+    """Validate or seal one exact scheduled-slot snapshot closure."""
 
     from quant_investor.intelligence import run_morning_strategy
 
@@ -1646,7 +1646,7 @@ def research_morning_cutover(
 def research_morning_evaluate(
     *, workspace_root: str, request_path: str, expected_request_sha256: str
 ) -> dict[str, Any]:
-    """Evaluate one successful 09:45 strategy against the strict same-day close."""
+    """Evaluate one successful snapshot strategy against the strict same-day close."""
 
     from quant_investor.intelligence import evaluate_morning_strategy_eod
 

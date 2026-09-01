@@ -252,7 +252,7 @@ TDX member endpoint may return industry or broad-index identities in addition
 to concepts; they remain sealed in raw partitions, while projection admits
 only IDs present in the exact same-date captured TDX concept registry.
 
-## 09:45 morning strategy
+## 09:45 daily snapshot strategy
 
 `research morning-strategy` extends the same stable research lane; it does not
 create a second data or investment system. The automation first captures one
@@ -265,15 +265,19 @@ Required core closure:
 previous-trade-date Factor VERIFIED / ACTIVE / READY
 exact LOW/W80 OPEN observations
 Store-v3 registered pointer and active_closure
-09:30-09:46 Asia/Shanghai Sina capture with exact raw SHA
+same-trading-date Sina capture at or after 09:30 Asia/Shanghai with exact raw SHA
+actual capture time, provider time, market session and timing status preserved
 installed/scheduler origin verified by the surrounding automation
 ```
 
 An absent same-date Top100, Macro blocker, Fundamental partial state, Theme
 economic-exposure gap, or benchmark-relative tail is auxiliary and may produce
 `PARTIAL`; it cannot be silently filled. Stale Factor, invalid Store,
-unavailable quote, wrong time/date, unsafe output, SHA drift or authority drift
-is a core blocker.
+unavailable quote, pre-open or wrong-date capture, provider-date mismatch,
+unsafe output, SHA drift or authority drift is a core blocker. `09:47` is only
+the boundary between `ON_TIME_0945` and `MORNING_INTRADAY`; it is not a failure
+boundary. Midday, afternoon and post-close same-date snapshots remain eligible
+as `MIDDAY_SNAPSHOT`, `AFTERNOON_INTRADAY` and `POST_CLOSE_SNAPSHOT`.
 
 `compile-daily` may remove the Macro pipeline-data veto only from one exact
 `cn-macro-readiness-closure.v1` source. The closure is content-addressed,
@@ -298,9 +302,12 @@ results/operations/morning_strategy/CN/<YYYYMMDD>/0945-run.v1.json
 ```
 
 The receipt binds previous trade date, Factor pointer, observations, Store
-pointer, quote request/response/raw SHA, optional Top100 manifest, output SHA,
-core/auxiliary blockers and false broker/order/execution/holdings-mutation
-flags. Exact replay is `NO_ACTION`; different bytes conflict.
+pointer, quote request/response/raw SHA, scheduled reference time, exact actual
+capture time, market session, timing status, capture delay, optional Top100
+manifest, output SHA, core/auxiliary blockers and false broker/order/execution/
+holdings-mutation flags. The `0945-*` names identify the scheduled canonical
+slot, not an asserted quote timestamp. Exact replay is `NO_ACTION`; different
+bytes conflict.
 
 The 20:20 `research morning-cutover` receipt separates
 `core_production_status`, `holdings_status`, and `auxiliary_status`. Its state

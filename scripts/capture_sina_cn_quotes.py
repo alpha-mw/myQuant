@@ -17,6 +17,7 @@ from urllib.request import Request, urlopen
 from quant_investor.contracts import canonical_json_bytes, parse_canonical_json_bytes
 from quant_investor.intelligence.morning import (
     SINA_CAPTURE_SCHEMA,
+    classify_sina_quote_timing,
     validate_sina_quote_capture,
 )
 
@@ -222,6 +223,7 @@ def run(
         "execution": False,
     }
     validate_sina_quote_capture(capture, raw=raw, run_date=run_date)
+    timing = classify_sina_quote_timing(request_time, run_date=run_date)
     capture_path = root / "capture.json"
     capture_sha = _write_once(capture_path, canonical_json_bytes(capture))
     summary = {
@@ -232,6 +234,7 @@ def run(
         "capture_path": capture_path.relative_to(workspace).as_posix(),
         "capture_sha256": capture_sha,
         "raw_sha256": raw_sha,
+        **timing,
         "broker": False,
         "order": False,
         "execution": False,

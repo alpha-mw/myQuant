@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
 from decimal import Decimal, InvalidOperation
 import hashlib
 import json
@@ -37,6 +37,13 @@ _DATE_RE: Final = re.compile(r"^[0-9]{8}$")
 _SHA_RE: Final = re.compile(r"^[0-9a-f]{64}$")
 _COMPANY_RE: Final = re.compile(r"^[0-9]{6}\.(?:SH|SZ|BJ)$")
 _SHANGHAI: Final = ZoneInfo("Asia/Shanghai")
+_SCHEDULED_REFERENCE_LOCAL: Final = time(9, 45)
+_EARLIEST_CAPTURE_LOCAL: Final = time(9, 30)
+_ON_TIME_END_LOCAL: Final = time(9, 47)
+_MORNING_END_LOCAL: Final = time(11, 30)
+_AFTERNOON_START_LOCAL: Final = time(13, 0)
+_CLOSE_LOCAL: Final = time(15, 0)
+_PROVIDER_CLOSE_LATEST_LOCAL: Final = time(15, 0, 59)
 
 
 def _date(value: Any, *, label: str) -> str:
@@ -174,6 +181,52 @@ def _timestamp(value: Any, *, label: str) -> datetime:
     return parsed
 
 
+def _quote_timing(request_time: datetime, *, run_date: str) -> dict[str, Any]:
+    local = request_time.astimezone(_SHANGHAI)
+    local_time = local.time().replace(tzinfo=None)
+    if local.strftime("%Y%m%d") != run_date:
+        raise IntelligenceError("Sina quote request date differs")
+    if local_time < _EARLIEST_CAPTURE_LOCAL:
+        raise IntelligenceError("Sina quote request precedes the same-day snapshot window")
+    if local_time < _ON_TIME_END_LOCAL:
+        market_session = "OPENING_WINDOW"
+        timing_status = "ON_TIME_0945"
+    elif local_time <= _MORNING_END_LOCAL:
+        market_session = "MORNING"
+        timing_status = "MORNING_INTRADAY"
+    elif local_time < _AFTERNOON_START_LOCAL:
+        market_session = "MIDDAY_BREAK"
+        timing_status = "MIDDAY_SNAPSHOT"
+    elif local_time <= _CLOSE_LOCAL:
+        market_session = "AFTERNOON"
+        timing_status = "AFTERNOON_INTRADAY"
+    else:
+        market_session = "POST_CLOSE"
+        timing_status = "POST_CLOSE_SNAPSHOT"
+    reference = local.replace(
+        hour=_SCHEDULED_REFERENCE_LOCAL.hour,
+        minute=_SCHEDULED_REFERENCE_LOCAL.minute,
+        second=0,
+        microsecond=0,
+    )
+    return {
+        "scheduled_reference_time": reference.isoformat(timespec="seconds"),
+        "actual_capture_time": local.isoformat(timespec="seconds"),
+        "market_session": market_session,
+        "timing_status": timing_status,
+        "capture_delay_seconds": max(0, int((local - reference).total_seconds())),
+    }
+
+
+def classify_sina_quote_timing(request_time: Any, *, run_date: str) -> dict[str, Any]:
+    """Classify one exact same-day Sina capture without rewriting its timestamp."""
+
+    return _quote_timing(
+        _timestamp(request_time, label="quote request_time"),
+        run_date=run_date,
+    )
+
+
 def validate_sina_quote_capture(
     document: Mapping[str, Any],
     *,
@@ -223,11 +276,7 @@ def validate_sina_quote_capture(
     response_time = _timestamp(value.get("response_time"), label="quote response_time")
     if response_time < request_time or (response_time - request_time).total_seconds() > 120:
         raise IntelligenceError("Sina quote response chronology is invalid")
-    local = request_time.astimezone(_SHANGHAI)
-    if local.strftime("%Y%m%d") != run_date or not (
-        (local.hour, local.minute) >= (9, 30) and (local.hour, local.minute) <= (9, 46)
-    ):
-        raise IntelligenceError("Sina quote request is outside the 09:30-09:46 window")
+    classify_sina_quote_timing(value.get("request_time"), run_date=run_date)
     mappings = value.get("symbol_mapping")
     rows = value.get("quote_rows")
     if type(mappings) is not list or not mappings or type(rows) is not list or not rows:
@@ -291,8 +340,9 @@ def validate_sina_quote_capture(
             provider_time = datetime.strptime(str(row.get("provider_time")), "%H:%M:%S")
         except ValueError as exc:
             raise IntelligenceError("Sina quote provider time is invalid") from exc
-        if not (provider_time.hour == 9 and 30 <= provider_time.minute <= 46):
-            raise IntelligenceError("Sina quote provider time is outside the morning window")
+        provider_local = provider_time.time()
+        if not _EARLIEST_CAPTURE_LOCAL <= provider_local <= _PROVIDER_CLOSE_LATEST_LOCAL:
+            raise IntelligenceError("Sina quote provider time is outside the trading-day range")
     if observed_symbols != expected_symbols:
         raise IntelligenceError("Sina quote rows do not close the requested symbols")
     return value
@@ -428,6 +478,7 @@ def _morning_input_state(
         label="quote raw response",
     )
     quote = validate_sina_quote_capture(capture, raw=raw, run_date=run_date)
+    quote_timing = classify_sina_quote_timing(quote["request_time"], run_date=run_date)
 
     pool_path = values["pool_manifest_path"]
     pool_sha = values["pool_manifest_sha256"]
@@ -458,6 +509,7 @@ def _morning_input_state(
         "store_pointer": store_pointer,
         "store_pointer_sha256": expected_store_sha,
         "quote": quote,
+        "quote_timing": quote_timing,
         "quote_capture_ref": {
             "path": values["quote_capture_path"],
             "sha256": values["quote_capture_sha256"],
@@ -612,6 +664,7 @@ def run_morning_strategy(
             else "UNAVAILABLE"
         ),
         "quote_status": "READY",
+        **state["quote_timing"],
         "core_blockers": state["core_blockers"],
         "auxiliary_blockers": state["auxiliary_blockers"],
         "broker": False,
@@ -644,6 +697,16 @@ def run_morning_strategy(
     ):
         if declaration not in output_raw:
             raise IntelligenceError("morning strategy authority declaration is missing")
+    timing_declarations = {
+        "scheduled_reference_time": state["quote_timing"]["scheduled_reference_time"],
+        "actual_capture_time": state["quote_timing"]["actual_capture_time"],
+        "market_session": state["quote_timing"]["market_session"],
+        "timing_status": state["quote_timing"]["timing_status"],
+        "capture_delay_seconds": str(state["quote_timing"]["capture_delay_seconds"]),
+    }
+    for key, value in timing_declarations.items():
+        if f"{key}={value}".encode("ascii") not in output_raw:
+            raise IntelligenceError("morning strategy timing declaration is missing")
     quote = state["quote"]
     receipt = {
         "schema_version": MORNING_RECEIPT_SCHEMA,
@@ -661,6 +724,7 @@ def run_morning_strategy(
         "quote_request_time": quote["request_time"],
         "quote_response_time": quote["response_time"],
         "quote_raw_sha256": quote["raw_ref"]["sha256"],
+        **state["quote_timing"],
         "pool_manifest_ref": state["pool_ref"],
         "core_blockers": state["core_blockers"],
         "auxiliary_blockers": state["auxiliary_blockers"],
@@ -734,7 +798,7 @@ def evaluate_morning_strategy_eod(
     workspace_root: str | os.PathLike[str],
     request: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Evaluate one successful 09:45 run against the same-day strict close.
+    """Evaluate one successful scheduled-slot snapshot against the same-day strict close.
 
     This inactive research evaluator creates no portfolio, order, fill or
     holdings state.  It binds the exact morning receipt, public quote capture,
@@ -1209,6 +1273,7 @@ __all__ = [
     "EOD_EVALUATION_SCHEMA",
     "MORNING_RECEIPT_SCHEMA",
     "SINA_CAPTURE_SCHEMA",
+    "classify_sina_quote_timing",
     "evaluate_morning_strategy_eod",
     "run_morning_strategy",
     "evaluate_morning_cutover",

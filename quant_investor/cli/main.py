@@ -755,9 +755,9 @@ def _build_parser() -> argparse.ArgumentParser:
         ("compile-evidence", "compile exact inactive evidence closure"),
         ("compile-daily", "compile exact inactive daily Investment Intelligence"),
         ("pool-publish", "publish exact immutable daily Factor research pool"),
-        ("morning-strategy", "validate or seal exact 09:45 strategy closure"),
+        ("morning-strategy", "validate or seal exact scheduled-slot snapshot closure"),
         ("morning-cutover", "seal exact 20:20 cutover or rollback decision"),
-        ("morning-evaluate", "evaluate exact 09:45 strategy at same-day close"),
+        ("morning-evaluate", "evaluate exact snapshot strategy at same-day close"),
         ("readiness", "assess generation-compatible readiness"),
         ("inspect", "inspect one stable artifact without mutation"),
     ):

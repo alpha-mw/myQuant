@@ -36,15 +36,22 @@ def _write(path: Path, value: dict | bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-def _quote_capture(tmp_path: Path, *, run_date: str = "20260827") -> tuple[str, str]:
+def _quote_capture(
+    tmp_path: Path,
+    *,
+    run_date: str = "20260827",
+    request_time: str = "2026-08-27T01:45:00Z",
+    response_time: str = "2026-08-27T01:45:01Z",
+    provider_time: str = "09:45:00",
+) -> tuple[str, str]:
     raw_path = tmp_path / f"data/private/cn_public_quotes/{run_date}/sina-0945/raw.gb18030.txt"
     raw = b"provider raw bytes"
     raw_sha = _write(raw_path, raw)
     capture = {
         "schema_version": morning.SINA_CAPTURE_SCHEMA,
         "provider": "SINA",
-        "request_time": "2026-08-27T01:45:00Z",
-        "response_time": "2026-08-27T01:45:01Z",
+        "request_time": request_time,
+        "response_time": response_time,
         "encoding": "GB18030",
         "raw_ref": {
             "path": raw_path.relative_to(tmp_path).as_posix(),
@@ -67,7 +74,7 @@ def _quote_capture(tmp_path: Path, *, run_date: str = "20260827") -> tuple[str, 
                 "previous_close": "48.50",
                 "price": "49.50",
                 "provider_date": "2026-08-27",
-                "provider_time": "09:45:00",
+                "provider_time": provider_time,
                 "symbol": "002463.SZ",
                 "volume": "100",
             }
@@ -166,7 +173,15 @@ def test_morning_seal_publishes_exact_no_authority_receipt(tmp_path: Path, monke
     output_path = tmp_path / "results/operations/morning_strategy/CN/20260827/0945-strategy.md"
     output_path.parent.mkdir(parents=True, mode=0o700)
     output_path.write_text(
-        "research_only=true\nbroker=false\nlive_order=false\n" "actual_holdings_mutation=false\n",
+        "research_only=true\n"
+        "broker=false\n"
+        "live_order=false\n"
+        "actual_holdings_mutation=false\n"
+        "scheduled_reference_time=2026-08-27T09:45:00+08:00\n"
+        "actual_capture_time=2026-08-27T09:45:00+08:00\n"
+        "market_session=OPENING_WINDOW\n"
+        "timing_status=ON_TIME_0945\n"
+        "capture_delay_seconds=0\n",
         encoding="utf-8",
     )
     output_path.chmod(0o600)
@@ -192,16 +207,99 @@ def test_morning_seal_publishes_exact_no_authority_receipt(tmp_path: Path, monke
     assert receipt["live_order"] is False
     assert receipt["live_execution"] is False
     assert receipt["actual_holdings_mutation"] is False
+    assert receipt["actual_capture_time"] == "2026-08-27T09:45:00+08:00"
+    assert receipt["timing_status"] == "ON_TIME_0945"
+    assert receipt["capture_delay_seconds"] == 0
 
 
-def test_quote_window_rejects_non_0945_capture(tmp_path: Path) -> None:
+def test_morning_seal_requires_exact_timing_declarations(tmp_path: Path, monkeypatch) -> None:
+    request = _morning_request(tmp_path, action="SEAL")
+    pointer = json.loads((tmp_path / morning.STORE_POINTER_RELATIVE).read_bytes())
+    _patch_inputs(monkeypatch, pointer)
+    output_path = tmp_path / "results/operations/morning_strategy/CN/20260827/0945-strategy.md"
+    output_path.parent.mkdir(parents=True, mode=0o700)
+    output_path.write_text(
+        "research_only=true\n"
+        "broker=false\n"
+        "live_order=false\n"
+        "actual_holdings_mutation=false\n",
+        encoding="utf-8",
+    )
+    output_path.chmod(0o600)
+    request["output_path"] = output_path.relative_to(tmp_path).as_posix()
+    request["output_sha256"] = hashlib.sha256(output_path.read_bytes()).hexdigest()
+
+    with pytest.raises(morning.IntelligenceError, match="timing declaration"):
+        morning.run_morning_strategy(
+            workspace_root=tmp_path,
+            request=request,
+            now=datetime(2026, 8, 27, 10, 0, tzinfo=SHANGHAI),
+        )
+
+
+@pytest.mark.parametrize(
+    ("request_time", "provider_time", "market_session", "timing_status", "delay"),
+    [
+        ("2026-08-27T01:45:00Z", "09:45:00", "OPENING_WINDOW", "ON_TIME_0945", 0),
+        ("2026-08-27T02:00:00Z", "10:00:00", "MORNING", "MORNING_INTRADAY", 900),
+        ("2026-08-27T04:00:00Z", "11:30:00", "MIDDAY_BREAK", "MIDDAY_SNAPSHOT", 8100),
+        (
+            "2026-08-27T06:17:36Z",
+            "14:17:36",
+            "AFTERNOON",
+            "AFTERNOON_INTRADAY",
+            16356,
+        ),
+        (
+            "2026-08-27T13:00:00Z",
+            "15:00:03",
+            "POST_CLOSE",
+            "POST_CLOSE_SNAPSHOT",
+            40500,
+        ),
+    ],
+)
+def test_quote_timing_accepts_same_day_snapshots(
+    tmp_path: Path,
+    request_time: str,
+    provider_time: str,
+    market_session: str,
+    timing_status: str,
+    delay: int,
+) -> None:
+    quote_path, _sha = _quote_capture(
+        tmp_path,
+        request_time=request_time,
+        response_time=(
+            datetime.strptime(request_time, "%Y-%m-%dT%H:%M:%SZ")
+            .replace(tzinfo=timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z")
+        ),
+        provider_time=provider_time,
+    )
+    path = tmp_path / quote_path
+    capture = json.loads(path.read_bytes())
+    raw = (path.parent / "raw.gb18030.txt").read_bytes()
+    morning.validate_sina_quote_capture(capture, raw=raw, run_date="20260827")
+    timing = morning.classify_sina_quote_timing(request_time, run_date="20260827")
+    assert timing["market_session"] == market_session
+    assert timing["timing_status"] == timing_status
+    assert timing["capture_delay_seconds"] == delay
+
+
+def test_quote_timing_rejects_preopen_and_wrong_date(tmp_path: Path) -> None:
     quote_path, _sha = _quote_capture(tmp_path)
     path = tmp_path / quote_path
     capture = json.loads(path.read_bytes())
-    capture["request_time"] = "2026-08-27T02:00:00Z"
-    capture["response_time"] = "2026-08-27T02:00:01Z"
     raw = (path.parent / "raw.gb18030.txt").read_bytes()
-    with pytest.raises(morning.IntelligenceError, match="outside"):
+    capture["request_time"] = "2026-08-27T01:29:59Z"
+    capture["response_time"] = "2026-08-27T01:30:00Z"
+    with pytest.raises(morning.IntelligenceError, match="precedes"):
+        morning.validate_sina_quote_capture(capture, raw=raw, run_date="20260827")
+    capture["request_time"] = "2026-08-28T01:45:00Z"
+    capture["response_time"] = "2026-08-28T01:45:01Z"
+    with pytest.raises(morning.IntelligenceError, match="date differs"):
         morning.validate_sina_quote_capture(capture, raw=raw, run_date="20260827")
 
 
@@ -239,6 +337,9 @@ def test_sina_capture_dry_run_and_live_fake(tmp_path: Path) -> None:
     live = SINA.run(args, fetcher=lambda _url: _sina_raw(), now=lambda: next(moments))
     assert live["status"] == "CAPTURED"
     assert live["broker"] is False
+    assert live["actual_capture_time"] == "2026-08-27T09:45:00+08:00"
+    assert live["timing_status"] == "ON_TIME_0945"
+    assert live["capture_delay_seconds"] == 0
     assert (output / "capture.json").is_file()
 
 

@@ -188,10 +188,14 @@ unsafe. It may call `market recover-transient-write-veto` only for a hash-bound
 zero-write `TUSHARE_TOKEN_MISSING` veto and exact READY preflight receipt. Never
 use it for Macro, security, schema, lineage or pointer-drift vetoes.
 
-At 09:45 the automation captures public quotes with
+The 09:45 scheduled automation captures public quotes with
 `scripts/capture_sina_cn_quotes.py`, then runs `research morning-strategy`
-PREFLIGHT and SEAL using exact request SHAs. The only accepted receipt path is
-`results/operations/morning_strategy/CN/<date>/0945-run.v1.json`. At 20:20,
+PREFLIGHT and SEAL using exact request SHAs. A same-trading-date capture at or
+after 09:30 may be on-time, morning, midday, afternoon or post-close; the real
+capture/provider times, market session, timing status and delay must be carried
+through the report and immutable receipt. The only accepted receipt path is
+`results/operations/morning_strategy/CN/<date>/0945-run.v1.json`; `0945` names
+the canonical scheduled slot, not the observed quote time. At 20:20,
 `research morning-cutover` returns one scheduler action after direct receipt,
 Calendar, Factor, observation, Store and import-origin replay. Macro and other
 auxiliary blockers are disclosed but do not override a closed core. Scheduler

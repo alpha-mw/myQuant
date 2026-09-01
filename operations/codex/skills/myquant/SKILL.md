@@ -118,8 +118,12 @@ operator-only.
 
 Morning strategy is a separate research-only read lane over the prior close.
 `research morning-strategy` requires prior-date Factor READY, exact OPEN LOW/W80
-observations, verified Store holdings and a 09:30-09:46 credential-free Sina
-capture. Missing Macro, Fundamental, Theme economic exposure, Top100 or
+observations, verified Store holdings and a credential-free Sina capture from
+the current trading date at or after 09:30 Asia/Shanghai. `09:47` classifies a
+capture as delayed but does not block it; midday, afternoon and post-close
+same-date snapshots are allowed only when their real request/provider times,
+market session, timing status, delay and raw SHA remain exact and visible.
+Missing Macro, Fundamental, Theme economic exposure, Top100 or
 benchmark-relative evidence may make it PARTIAL; stale Factor, invalid Store or
 missing quote blocks it. Its immutable receipt never grants broker, order,
 execution or holdings authority. `research morning-cutover` seals the 20:20
