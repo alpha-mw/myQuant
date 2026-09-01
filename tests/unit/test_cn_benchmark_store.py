@@ -89,7 +89,13 @@ def test_tushare_capture_uses_monthly_chunks(monkeypatch: pytest.MonkeyPatch) ->
             calls.append((ts_code, start_date, end_date))
             return pd.DataFrame([{"ts_code": ts_code, "trade_date": start_date, "close": 1000.0}])
 
-    monkeypatch.setattr(producer, "create_tushare_pro", lambda *_args: FakePro())
+    connection_args: list[tuple[object, ...]] = []
+
+    def fake_create(*args: object):
+        connection_args.append(args)
+        return FakePro()
+
+    monkeypatch.setattr(producer, "create_tushare_pro", fake_create)
     monkeypatch.setattr(producer, "TUSHARE_REQUEST_INTERVAL_SECONDS", 0.0)
 
     rows = producer._provider_rows(
@@ -100,6 +106,7 @@ def test_tushare_capture_uses_monthly_chunks(monkeypatch: pytest.MonkeyPatch) ->
     )
 
     assert len(calls) == 18
+    assert connection_args[0][2] == "https://api.tushare.pro"
     assert calls[0][1:] == ("20260317", "20260331")
     assert calls[-1][1:] == ("20260801", "20260831")
     assert len(rows) == 18

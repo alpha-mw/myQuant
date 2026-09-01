@@ -21,9 +21,9 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 TUSHARE_REQUEST_INTERVAL_SECONDS = 13.0
+TUSHARE_OFFICIAL_URL = "https://api.tushare.pro"
 
 from quant_investor.credential_utils import create_tushare_pro
-from quant_investor.config import Config
 from quant_investor.market.cn_benchmark_store import (
     EMPTY_POINTER_SHA256,
     REQUIRED_CODES,
@@ -73,7 +73,7 @@ def _provider_rows(
 
     if token is None:
         raise RuntimeError("PROJECT_ENV token is required for Tushare benchmark capture")
-    pro = create_tushare_pro(ts, token, Config.TUSHARE_URL)
+    pro = create_tushare_pro(ts, token, TUSHARE_OFFICIAL_URL)
     if pro is None:
         raise RuntimeError("benchmark provider initialization failed")
     result: list[dict[str, Any]] = []
