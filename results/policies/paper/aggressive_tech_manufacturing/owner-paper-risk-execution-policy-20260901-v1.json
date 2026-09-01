@@ -1,0 +1,81 @@
+{
+  "schema_version": "owner-paper-risk-execution-policy.v1",
+  "policy_id": "owner-paper-risk-execution-policy-20260901-v1",
+  "strategy_domain": "aggressive_tech_manufacturing",
+  "owner": "Maxwell",
+  "effective_from": "2026-09-01T00:00:00+08:00",
+  "account_scope": "ALL_REGISTERED_PAPER_ACCOUNTS",
+  "automatic_paper_execution": true,
+  "action_scope": "RISK_REDUCING_SELLS_ONLY",
+  "authority": {
+    "paper_order": true,
+    "paper_fill": true,
+    "paper_ledger_mutation": true,
+    "broker": false,
+    "live_order": false,
+    "live_execution": false,
+    "actual_holdings_mutation": false,
+    "funds_transfer": false
+  },
+  "signal_policy": {
+    "owner_stop_strict_close_breach": {
+      "action": "CLEAR_RISK",
+      "sell_fraction": "1.00"
+    },
+    "thesis_invalidated_or_hard_data_risk": {
+      "action": "CLEAR_RISK",
+      "sell_fraction": "1.00"
+    },
+    "profit_giveback_at_least_35_percent": {
+      "action": "REDUCE_RISK",
+      "sell_fraction": "0.50"
+    },
+    "profit_giveback_20_to_35_percent_with_deterioration": {
+      "action": "REDUCE_RISK",
+      "sell_fraction": "0.25",
+      "required_companion": "FALLING_SCORE_OR_WEAK_TREND_OR_OVERSIZE_OR_THEME_CROWDING"
+    },
+    "profit_giveback_20_to_35_percent_without_deterioration": {
+      "action": "NO_FILL_REVIEW_ONLY",
+      "sell_fraction": "0.00"
+    }
+  },
+  "execution_policy": {
+    "price_type": "NEXT_VALID_TRADING_DAY_OPEN",
+    "adverse_slippage_fraction": "0.05",
+    "sell_fill_price": "next_open * (1 - adverse_slippage_fraction)",
+    "buy_fill_price": "UNAVAILABLE_OUT_OF_SCOPE",
+    "suspension": "NO_FILL_CARRY_PENDING",
+    "open_at_or_below_limit_down": "NO_FILL_CARRY_PENDING",
+    "calculated_price_outside_legal_price_limit": "NO_FILL_CARRY_PENDING",
+    "partial_fill": "DISABLED_FULL_VALID_LOT_OR_NO_FILL",
+    "buy_lot_size": 100,
+    "sell_lot_size": 100,
+    "odd_lot_rule": "ONLY_FULL_POSITION_CLEAR_MAY_SELL_ALL_REMAINING_SHARES",
+    "t_plus_one": "SELL_ONLY_SETTLED_SHARES",
+    "expiry_trading_sessions": 3,
+    "expiry_action": "CANCEL_AND_REQUIRE_NEW_REVIEW",
+    "corporate_action": "BLOCK_UNTIL_SHARES_COST_AND_PRICE_LIMITS_ARE_ADJUSTED",
+    "idempotency_key": "account_id|policy_id|signal_date|symbol|action|shares",
+    "duplicate_order_policy": "EXACT_REPLAY_NO_ACTION_CONFLICT_BLOCKED"
+  },
+  "fees": {
+    "broker_commission_rate": "0.0001",
+    "broker_commission_minimum_cny": "5.00",
+    "commission_includes_regulatory_and_handling": true,
+    "transfer_fee_rate": "0.00001",
+    "transfer_fee_sides": "BUY_AND_SELL",
+    "stamp_duty_rate": "0.0005",
+    "stamp_duty_side": "SELL_ONLY",
+    "fee_rounding": "CNY_0.01_HALF_UP"
+  },
+  "evidence_sources": {
+    "stamp_duty": "财政部_税务总局公告2023年第39号",
+    "exchange_fee_reference": "上海证券交易所股票投资交易费用",
+    "transfer_fee_reference": "中国结算A股交易过户费0.01permille双边",
+    "owner_commission_instruction": "COMMISSION_RATE_ONE_PER_TEN_THOUSAND",
+    "owner_slippage_instruction": "ADVERSE_SLIPPAGE_APPROXIMATELY_FIVE_PERCENT"
+  },
+  "writer_state": "POLICY_READY_REGISTERED_PAPER_WRITER_REQUIRED",
+  "real_trading_authority": false
+}

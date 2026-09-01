@@ -1,0 +1,120 @@
+{
+  "schema_version": "owner-trailing-anchor-policy.v1",
+  "policy_id": "owner-trailing-anchor-policy-20260901-v1",
+  "strategy_domain": "aggressive_tech_manufacturing",
+  "owner": "Maxwell",
+  "effective_from": "2026-09-01T00:00:00+08:00",
+  "authority": {
+    "research_threshold_calculation": true,
+    "paper_risk_reduction_input": true,
+    "store_mutation": false,
+    "actual_holdings_mutation": false,
+    "broker": false,
+    "live_order": false,
+    "live_execution": false,
+    "trade": false
+  },
+  "store_binding": {
+    "pointer_path": "results/strategy_records/CN/aggressive_tech_manufacturing/_record_store/current.v1.json",
+    "pointer_sha256": "e23661b23547563ea0328880da6cb7ae0d1bde902d33618090ae39f75bb4c1c1",
+    "active_record_id": "20260822_0045",
+    "ledger_path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260822_0045/ledger_after_manual_switch.parquet",
+    "ledger_sha256": "c40c7fa32a0eb90a7c590e3faaa5ff9db3ad100298629972794c934c699ebe11"
+  },
+  "calculation": {
+    "peak_source": "STRICT_CN_DAILY_CLOSE_FROM_TRACKING_START",
+    "review_profit_retention": "0.80",
+    "reduce_profit_retention": "0.65",
+    "moving_take_profit_review_price": "avg_cost + 0.80 * max(peak_price - avg_cost, 0)",
+    "moving_take_profit_reduce_price": "avg_cost + 0.65 * max(peak_price - avg_cost, 0)",
+    "moving_stop_price": "moving_take_profit_review_price",
+    "no_positive_peak_state": "NOT_APPLICABLE_UNTIL_POSITIVE_PROFIT_PEAK",
+    "rounding": "CNY_0.01_HALF_UP",
+    "automatic_order": false
+  },
+  "anchors": [
+    {
+      "symbol": "002008.SZ",
+      "company_name": "大族激光",
+      "tracking_start_date": "20260901",
+      "anchor_state": "OWNER_APPROVED_RESET_NO_STRUCTURED_BUY_FOUND",
+      "exclude_pre_anchor_peaks": true
+    },
+    {
+      "symbol": "002384.SZ",
+      "company_name": "东山精密",
+      "tracking_start_date": "20260901",
+      "anchor_state": "OWNER_APPROVED_RESET_NO_STRUCTURED_BUY_FOUND",
+      "exclude_pre_anchor_peaks": true
+    },
+    {
+      "symbol": "002463.SZ",
+      "company_name": "沪电股份",
+      "tracking_start_date": "20260810",
+      "anchor_state": "EXACT_RECONCILED_ADD",
+      "anchor_ref": {
+        "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260810_1948/manual_execution_manifest.json",
+        "sha256": "3e6f8003898ee4623422688e14dbe13fb422b69b1f88bd56700b84696465c026",
+        "symbol": "002463.SZ",
+        "shares": 700,
+        "execution_price_cny": "119.63",
+        "final_total_fee_cny": "9.21"
+      },
+      "exclude_pre_anchor_peaks": true
+    },
+    {
+      "symbol": "002916.SZ",
+      "company_name": "深南电路",
+      "tracking_start_date": "20260810",
+      "anchor_state": "EXACT_RECONCILED_BUY",
+      "anchor_ref": {
+        "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260810_1948/manual_execution_manifest.json",
+        "sha256": "3e6f8003898ee4623422688e14dbe13fb422b69b1f88bd56700b84696465c026",
+        "symbol": "002916.SZ",
+        "shares": 200,
+        "execution_price_cny": "362.20",
+        "final_total_fee_cny": "7.96"
+      },
+      "exclude_pre_anchor_peaks": true
+    },
+    {
+      "symbol": "601899.SH",
+      "company_name": "紫金矿业",
+      "tracking_start_date": "20260819",
+      "anchor_state": "EXACT_OWNER_CONFIRMED_BUY",
+      "anchor_ref": {
+        "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260820_1321/manual_execution_manifest.json",
+        "sha256": "c59a118376c9bceeef54219fb7796c6e0cd92f963418f65e41e84a91bd8fabae",
+        "symbol": "601899.SH",
+        "shares": 5000,
+        "execution_price_cny": "33.45",
+        "final_total_fee_cny": "18.40"
+      },
+      "exclude_pre_anchor_peaks": true
+    },
+    {
+      "symbol": "605358.SH",
+      "company_name": "立昂微",
+      "tracking_start_date": "20260901",
+      "anchor_state": "OWNER_APPROVED_RESET_NO_STRUCTURED_BUY_FOUND",
+      "exclude_pre_anchor_peaks": true,
+      "retired_unexecutable_trailing_stop_cny": "163.51"
+    },
+    {
+      "symbol": "688183.SH",
+      "company_name": "生益电子",
+      "tracking_start_date": "20260810",
+      "anchor_state": "EXACT_RECONCILED_BUY",
+      "anchor_ref": {
+        "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260810_1948/manual_execution_manifest.json",
+        "sha256": "3e6f8003898ee4623422688e14dbe13fb422b69b1f88bd56700b84696465c026",
+        "symbol": "688183.SH",
+        "shares": 500,
+        "execution_price_cny": "109.73",
+        "final_total_fee_cny": "6.04"
+      },
+      "exclude_pre_anchor_peaks": true
+    }
+  ],
+  "invalidation": "EARLIEST_OF_OWNER_REVISION_POSITION_REMOVAL_NEW_ENTRY_ADD_OR_CORPORATE_ACTION"
+}

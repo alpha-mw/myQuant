@@ -42,6 +42,14 @@
    `metadata.shares`；human_action 的精确动作、`metadata.authorized=true`、
    `approved_by=maxwell`、完全相等的 `shares`。
 
+5. **Standing Paper 风险减仓授权**：自 2026-09-01 起，owner policy
+   `owner-paper-risk-execution-policy-20260901-v1` 可替代第4条的逐笔 `human_action`，但只对
+   `ALL_REGISTERED_PAPER_ACCOUNTS` 的风险减仓/退出有效。执行器必须精确重放 policy SHA、
+   signal、账户 ledger、Calendar/T+1、lot、停牌/涨跌停、next-open price、5% adverse
+   slippage、费用税率、expiry、corporate action 与 idempotency；缺任一项保持
+   `POLICY_READY_REGISTERED_PAPER_WRITER_REQUIRED` 或 `NO_FILL`。该 standing authorization
+   永不授予 broker、真实订单、实际持仓或资金划转权限，也不授权新风险买入。
+
 ## 允许与禁止
 
 允许：
