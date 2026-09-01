@@ -32,6 +32,7 @@ from quant_investor.strategy_records.event_store import (
     load_generation as load_events,
 )
 from quant_investor.strategy_records.performance import (
+    MAX_PERFORMANCE_JSON_BYTES,
     MONEY_QUANTUM,
     UNIT_QUANTUM,
     build_manifest as build_performance_manifest,
@@ -794,7 +795,11 @@ def close_through_latest(
         ],
     )
     owner_raw = canonical_json_bytes(owner)
-    owner_sha = immutable_write(prefix / "owner_declaration.v1.json", owner_raw)
+    owner_sha = immutable_write(
+        prefix / "owner_declaration.v1.json",
+        owner_raw,
+        max_bytes=MAX_PERFORMANCE_JSON_BYTES,
+    )
     performance_manifest = build_performance_manifest(
         performance_generation_id=performance_generation,
         generated_at=plan["effective_at"],
@@ -817,7 +822,11 @@ def close_through_latest(
         rows=next_performance,
     )
     manifest_raw = canonical_json_bytes(performance_manifest)
-    manifest_sha = immutable_write(prefix / "manifest.v1.json", manifest_raw)
+    manifest_sha = immutable_write(
+        prefix / "manifest.v1.json",
+        manifest_raw,
+        max_bytes=MAX_PERFORMANCE_JSON_BYTES,
+    )
     performance_ref = build_performance_history_ref(
         manifest=performance_manifest,
         manifest_sha256=manifest_sha,
