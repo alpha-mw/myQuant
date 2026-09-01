@@ -98,6 +98,18 @@ current verified price with that peak:
 - `profit_giveback_ratio = (peak_unrealized_profit - current_unrealized_profit)
   / peak_unrealized_profit`
 
+当 exact owner fill、fee-inclusive avg cost、shares、entry/add trade date 与 strict-close
+history 全部闭合时，日度研究自动计算：
+
+- `moving_take_profit_review_price = avg_cost + 80% × (peak_price - avg_cost)`；
+- `moving_take_profit_reduce_price = avg_cost + 65% × (peak_price - avg_cost)`；
+- `moving_stop_price = moving_take_profit_review_price`，但它只是复核触发，不是自动订单。
+
+最近一次 add 改变整仓成本时，默认把 `trailing_profit_tracking_start_date` 重置为该 add 的
+exact trade date，并从该日重新计算整仓 peak；若 add 后 `peak_price <= avg_cost`，状态固定为
+`NOT_APPLICABLE_UNTIL_POSITIVE_PROFIT_PEAK`。缺 owner fill/date/fee/quantity 任一项时保持
+`UNCONFIRMED/NON_EXECUTABLE`。这一自动计算不改 Store ledger，不创建订单或成交。
+
 If the profit peak or current realtime price is unavailable, mark the trailing
 take-profit status `unconfirmed` and do not infer a sell. A
 `profit_giveback_ratio >= 20%` is a mandatory review trigger, not an automatic
@@ -296,6 +308,12 @@ broker、order、execution、trade、持仓或正式个股动作 authority。
   缺 continuity 或 pointer/catalog closure 时为 `BREACH`，并阻断持仓结论。
 - Owner stop 只读取 exact owner policy；仅 `STRICT_CN_DAILY_CLOSE <= stop` 为 `BREACH`。
   盘中触碰保持 `WATCH`，不得自动创建订单或成交。
+- Owner stop strict-close breach 后，automation 自动生成 evidence-bound EXIT_REVIEW card，
+  包含 symbol、shares、strict close、stop、buffer、建议 `reduce_risk/clear_risk` 数量、quote
+  freshness、Store/Factor/Decision 状态和全部 blocker。现有 policy 的
+  `OWNER_CONFIRMATION_REQUIRED_EXIT_REVIEW` 下，人工只需选择 `CONFIRM / HOLD / REVISE`；
+  automation 不得连接 broker 或写 actual holdings。取消最终人工确认需要一个新的、明确
+  owner-approved successor policy，不能由本合同推断。
 - Formal action freshness 只来自 unified System/Mainline 的 exact active decision closure；
   缺失时为 `NOT_CONFIGURED`，Decision Log 为 `NOT_APPLICABLE`，不得写伪 no-action。
 
@@ -310,6 +328,9 @@ broker、order、execution、trade、持仓或正式个股动作 authority。
 - **Factor 生产链**：分别报告 LOW、W80 active signal，W75 control-only 状态、Factor pointer、
   generation、as-of、LOW/W80 observations、Top100、Theme replay 与 Decision closure。不得把
   W75、旧 observation 或旧 Top100 当作当前候选。
+- **Factor cadence**：LOW/W80 数值、排名、production head 与 observations 必须在每个交易日
+  收盘后更新，并在下一交易日 MORNING_STRATEGY 前对齐前一交易日；Factor 定义、方向、权重、
+  准入、淘汰、成熟度与健康评审才按周度或更低频治理。周度信号更新不能替代日度生产 rollover。
 - **指数趋势条件**：在 exact index close 可用时，分别报告沪深300、中证500、中证1000、
   创业板指、科创50的 close/MA20/MA60，并分类
   `TREND_SUPPORTIVE (close >= MA20 >= MA60)`、
