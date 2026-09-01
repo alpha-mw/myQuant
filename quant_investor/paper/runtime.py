@@ -246,6 +246,21 @@ def risk_exit_preview(
     eligibility = validate_eligibility(eligibility_value)
     if intent["account_id"] != account_id or intent["policy_ref"] != policy_ref:
         raise PaperError("PAPER_POLICY_SHA_MISMATCH", "intent policy/account differs")
+    applied = (loaded["state"].get("applied_source_intents") or {}).get(intent["source_intent_id"])
+    if isinstance(applied, Mapping):
+        if applied.get("intent_sha256") != intent_sha:
+            raise PaperError("PAPER_IDEMPOTENCY_CONFLICT", intent["source_intent_id"])
+        return {
+            "command_status": "NO_ACTION_ALREADY_APPLIED",
+            "account_id": account_id,
+            "expected_current_pointer_sha256": loaded["pointer_sha256"],
+            "outcome": None,
+            "write_set": [],
+            "broker": False,
+            "real_order": False,
+            "actual_holdings_mutation": False,
+            "blockers": [],
+        }
     existing_pending = (loaded["state"].get("pending_intents") or {}).get(
         intent["source_intent_id"]
     )
@@ -316,6 +331,8 @@ def risk_exit_run(
         expected_eligibility_sha256=expected_eligibility_sha256,
     )
     if preview["command_status"] == "PAPER_ACCOUNT_NOT_REGISTERED":
+        return preview
+    if preview["command_status"] == "NO_ACTION_ALREADY_APPLIED":
         return preview
     if preview["expected_current_pointer_sha256"] != expected_current_pointer_sha256:
         raise PaperError("PAPER_COMPARE_AND_SWAP_CONFLICT", "caller pointer differs")

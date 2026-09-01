@@ -275,6 +275,16 @@ def test_temp_account_pending_fill_and_idempotent_replay(tmp_path: Path) -> None
     final = store.load_account("paper-alpha")
     assert final["ledger"][0]["shares"] == 100
     assert final["state"]["cash"] == "101134.4200"
+    replay_preview = risk_exit_preview(
+        workspace_root=str(workspace),
+        account_id="paper-alpha",
+        intent_path=intent_path.relative_to(workspace).as_posix(),
+        expected_intent_sha256=intent_ref["sha256"],
+        eligibility_path=ready_path.relative_to(workspace).as_posix(),
+        expected_eligibility_sha256=ready_ref["sha256"],
+    )
+    assert replay_preview["command_status"] == "NO_ACTION_ALREADY_APPLIED"
+    assert replay_preview["write_set"] == []
     replay = store.commit(
         account_id="paper-alpha",
         expected_pointer_sha256=final["pointer_sha256"],
