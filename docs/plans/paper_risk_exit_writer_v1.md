@@ -91,6 +91,9 @@ every referenced artifact. `evidence_status=READY` requires valid raw unadjusted
 open/pre-close, exact provider price limits, exact suspension state, Calendar
 OPEN, and `corporate_action_state=CLEAR`. Missing evidence yields typed pending;
 writer never guesses board/ST limits or corporate-action adjustments.
+Only genuinely absent or not-yet-available evidence may yield pending. A
+supplied path, SHA, content, symbol, or session mismatch is a hard integrity
+conflict with zero writes.
 
 ### `paper-order.v1`
 
@@ -239,9 +242,10 @@ creation. Source-checkout preview/status/verify remain read-only.
   never clamped.
 - Corporate-action state other than `CLEAR` yields
   `PENDING_CORPORATE_ACTION`.
-- Expiry counts exact Calendar OPEN sessions. The third unfilled evaluated
-  session becomes `EXPIRED_REEVALUATION_REQUIRED`; weekends/closed dates do not
-  count.
+- Expiry counts exact Calendar OPEN sessions inclusively: `eligible_from` is
+  session 1, and the intent becomes `EXPIRED_REEVALUATION_REQUIRED` after the
+  close of session 3 if still unfilled. Weekends/closed dates do not count;
+  symbol suspension does not extend expiry.
 
 ## Fees and accounting
 
@@ -253,6 +257,7 @@ commission = max(gross × 0.0001, 5.00)
 transfer_fee = gross × 0.00001
 stamp_duty = gross × 0.0005
 total_fees = commission + transfer_fee + stamp_duty
+gross - total_fees > 0
 cash_after = cash_before + gross - total_fees
 realized_delta = gross - total_fees - avg_cost_before × sold_shares
 shares_after = shares_before - sold_shares

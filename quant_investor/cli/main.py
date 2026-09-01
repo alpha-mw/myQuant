@@ -1209,6 +1209,51 @@ def _build_parser() -> argparse.ArgumentParser:
         help="正式回测不可用（固定 fail closed）",
     )
 
+    paper_parser = subparsers.add_parser("paper", help="独立 Paper 风险退出执行器")
+    paper_subparsers = paper_parser.add_subparsers(dest="paper_command", required=True)
+    for name in ("writer-status", "account-status", "verify"):
+        child = paper_subparsers.add_parser(name)
+        _add_workspace_argument(child)
+        if name != "writer-status":
+            child.add_argument("--account-id", required=True)
+    preview = paper_subparsers.add_parser("risk-exit-preview")
+    _add_workspace_argument(preview)
+    preview.add_argument("--account-id", required=True)
+    preview.add_argument("--intent", required=True, type=_workspace_relative_canonical_path)
+    preview.add_argument("--expected-intent-sha256", required=True, type=_sha256_argument)
+    preview.add_argument("--eligibility", required=True, type=_workspace_relative_canonical_path)
+    preview.add_argument("--expected-eligibility-sha256", required=True, type=_sha256_argument)
+    register = paper_subparsers.add_parser("account-register")
+    _add_workspace_argument(register)
+    register.add_argument("--registration", required=True, type=_workspace_relative_canonical_path)
+    register.add_argument("--expected-registration-sha256", required=True, type=_sha256_argument)
+    register.add_argument("--allow-write", action="store_true", required=True)
+    run = paper_subparsers.add_parser("risk-exit-run")
+    _add_workspace_argument(run)
+    run.add_argument("--account-id", required=True)
+    run.add_argument("--intent", required=True, type=_workspace_relative_canonical_path)
+    run.add_argument("--expected-intent-sha256", required=True, type=_sha256_argument)
+    run.add_argument("--eligibility", required=True, type=_workspace_relative_canonical_path)
+    run.add_argument("--expected-eligibility-sha256", required=True, type=_sha256_argument)
+    run.add_argument("--expected-current-pointer-sha256", required=True, type=_sha256_argument)
+    run.add_argument("--allow-write", action="store_true", required=True)
+    for child in (register, run):
+        child.add_argument(
+            "--release-install-input",
+            required=True,
+            type=_workspace_relative_canonical_path,
+        )
+        child.add_argument(
+            "--expected-release-install-input-sha256",
+            required=True,
+            type=_sha256_argument,
+        )
+        child.add_argument(
+            "--release-repository-root",
+            required=True,
+            type=_canonical_absolute_path,
+        )
+
     portfolio_parser = subparsers.add_parser(
         "portfolio",
         help="只读组合闭环诊断",
@@ -1275,6 +1320,71 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
     """Route the explicit public command tree without dynamic dispatch."""
     parser = _build_parser()
     args = parser.parse_args(argv)
+
+    if args.command == "paper":
+        from quant_investor.paper import (
+            account_register,
+            account_status,
+            risk_exit_preview,
+            risk_exit_run,
+            verify_account,
+            writer_status,
+        )
+
+        if args.paper_command == "writer-status":
+            _print_json(writer_status(workspace_root=args.workspace_root))
+        elif args.paper_command == "account-status":
+            _print_json(
+                account_status(workspace_root=args.workspace_root, account_id=args.account_id)
+            )
+        elif args.paper_command == "verify":
+            _print_json(
+                verify_account(workspace_root=args.workspace_root, account_id=args.account_id)
+            )
+        elif args.paper_command == "risk-exit-preview":
+            _print_json(
+                risk_exit_preview(
+                    workspace_root=args.workspace_root,
+                    account_id=args.account_id,
+                    intent_path=args.intent,
+                    expected_intent_sha256=args.expected_intent_sha256,
+                    eligibility_path=args.eligibility,
+                    expected_eligibility_sha256=args.expected_eligibility_sha256,
+                )
+            )
+        elif args.paper_command == "account-register":
+            _print_json(
+                account_register(
+                    workspace_root=args.workspace_root,
+                    registration_path=args.registration,
+                    expected_registration_sha256=args.expected_registration_sha256,
+                    allow_write=args.allow_write,
+                    release_install_input_path=args.release_install_input,
+                    expected_release_install_input_sha256=(
+                        args.expected_release_install_input_sha256
+                    ),
+                    release_repository_root=args.release_repository_root,
+                )
+            )
+        elif args.paper_command == "risk-exit-run":
+            _print_json(
+                risk_exit_run(
+                    workspace_root=args.workspace_root,
+                    account_id=args.account_id,
+                    intent_path=args.intent,
+                    expected_intent_sha256=args.expected_intent_sha256,
+                    eligibility_path=args.eligibility,
+                    expected_eligibility_sha256=args.expected_eligibility_sha256,
+                    expected_current_pointer_sha256=args.expected_current_pointer_sha256,
+                    allow_write=args.allow_write,
+                    release_install_input_path=args.release_install_input,
+                    expected_release_install_input_sha256=(
+                        args.expected_release_install_input_sha256
+                    ),
+                    release_repository_root=args.release_repository_root,
+                )
+            )
+        return
 
     if args.command == "system" and args.system_command == "status":
         _print_json(

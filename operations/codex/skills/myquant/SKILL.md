@@ -193,6 +193,15 @@ active state, or production state.
 - Paper assumptions must be explicit and effective-dated. Missing calendar,
   T+1, lot, suspension, limit, price, fee, corporate-action, or cancellation
   semantics remain blocked.
+- The independent `paper` CLI exposes the registered sell-only Paper risk-exit
+  writer. Release A is code-ready but must remain `PAPER_ACCOUNT_NOT_REGISTERED`
+  until a separate owner-authorized account genesis exists. `writer-status`,
+  `account-status`, `risk-exit-preview`, and `verify` are read-only.
+  `account-register` and `risk-exit-run` require `--allow-write`, exact
+  installed-release evidence, and Paper-only pointer authority; they never
+  clone actual Store, connect a broker, create a real order, or mutate actual
+  holdings. Factor/Fundamental readiness is not a writer dependency; any
+  upstream dependency must already be sealed in the explicit Paper intent.
 - Graduation is a sealed research record and learning proposal. It does not
   silently change a factor, policy, portfolio, active generation, or Memory.
 
