@@ -31,6 +31,28 @@ projection, ordered fields/items/counts, request-ID hash, local observation
 time, selected closed session, and attempt slot. Cache and local-date fallback
 never authorize publication.
 
+Before any component stage, the coordinator may repeat this read-only close-
+authority call exactly once after a fixed 250ms delay when the first transport
+failure is classified as `DNS`, `CONNECT`, `TLS`, or `TIMEOUT`. This bounded
+retry applies in both shadow and execute mode. `READ`, `CONNECTION_RESET`,
+`UNKNOWN`, provider/API, HTTP, redirect, response-size, schema, and calendar
+contract failures are never retried inside the same slot. A timeout may retry
+in any close-authority network phase because `trade_cal` is read-only and no
+PIT, Market, History, Fundamental, or Macro stage has started. The underlying
+HTTPS client still performs exactly one physical request per `.request()`;
+Theme, Fundamental, capability probes, and component acquisition keep their
+independent attempt budgets.
+
+When a close-authority transport failure occurs, the new immutable
+`attempt.json` may include `cn-close-authority-transport-retry.v1` evidence:
+only allowlisted failure class/phase, nonnegative elapsed milliseconds, call
+count, fixed delay, retry decision, and terminal outcome. It never contains a
+token, URL parameters, request/response bytes, exception type/message, or raw
+errno. `state.json` remains the control-state projection and never contains
+this diagnostic evidence. A failed early slot still returns `RETRY_PENDING`;
+an unresolved final slot still returns `SAME_DAY_SLA_MISSED`, and neither may
+be followed by an unregistered manual retry.
+
 The component DAG is:
 
 ```text

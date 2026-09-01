@@ -13,10 +13,12 @@ import errno
 import fcntl
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import secrets
 import stat
+import time as time_module
 from typing import Any, Final
 from zoneinfo import ZoneInfo
 
@@ -57,6 +59,55 @@ _RECOVERY_POINTER_PATHS: Final = (
     "results/factors/_active.json",
     "results/strategy_records/CN/aggressive_tech_manufacturing/_record_store/current.v1.json",
 )
+_TRANSPORT_RETRY_SCHEMA: Final = "cn-close-authority-transport-retry.v1"
+_TRANSPORT_RETRY_DELAY_MS: Final = 250
+_TRANSPORT_RETRY_ELIGIBLE_CLASSES: Final = frozenset({"CONNECT", "DNS", "TIMEOUT", "TLS"})
+_TRANSPORT_FAILURE_CLASSES: Final = frozenset(
+    {
+        "CONNECT",
+        "CONNECTION_RESET",
+        "DNS",
+        "READ",
+        "TIMEOUT",
+        "TLS",
+        "UNKNOWN",
+    }
+)
+_TRANSPORT_FAILURE_PHASES: Final = frozenset(
+    {
+        "RESPONSE_BODY",
+        "RESPONSE_HEADERS",
+        "REQUEST_SEND",
+        "TLS_CONTEXT",
+        "UNKNOWN",
+    }
+)
+_SAFE_CONTROLLED_ERROR_CODES: Final = frozenset(
+    {
+        "CLOSE_AUTHORITY_RAW_SHA_MISMATCH",
+        "CLOSE_AUTHORITY_TARGET_INVALID",
+        "CLOSE_AUTHORITY_TIME_INVALID",
+        "CLOSE_CALENDAR_DATE_COVERAGE_INCOMPLETE",
+        "CLOSE_CALENDAR_EMPTY",
+        "CLOSE_CALENDAR_ENVELOPE_INVALID",
+        "CLOSE_CALENDAR_PRETRADE_CHAIN_INVALID",
+        "CLOSE_CALENDAR_ROW_INVALID",
+        "CLOSE_SESSION_NOT_AVAILABLE",
+        "CLOSE_SESSION_TARGET_NOT_TODAY",
+        "TUSHARE_API_ERROR",
+        "TUSHARE_CLIENT_CONFIG_INVALID",
+        "TUSHARE_ENDPOINT_BLOCKED",
+        "TUSHARE_HTTP_STATUS_ERROR",
+        "TUSHARE_REDIRECT_BLOCKED",
+        "TUSHARE_REQUEST_INVALID",
+        "TUSHARE_RESPONSE_INVALID",
+        "TUSHARE_RESPONSE_TOO_LARGE",
+        "TUSHARE_TOKEN_MISSING",
+        "TUSHARE_TRANSPORT_ERROR",
+    }
+)
+_MONOTONIC = time_module.monotonic
+_SLEEP = time_module.sleep
 
 
 class DailyMaintenanceError(RuntimeError):
@@ -568,6 +619,136 @@ def _seal_attempt(
     return final_payload
 
 
+def _close_call_elapsed_ms(started_at: float) -> int:
+    try:
+        elapsed = (_MONOTONIC() - started_at) * 1000
+    except Exception:
+        return 0
+    if not math.isfinite(elapsed) or elapsed <= 0:
+        return 0
+    return int(elapsed)
+
+
+def _transport_failure_event(
+    *,
+    attempt: int,
+    error: TushareHttpsError,
+    fallback_elapsed_ms: int,
+) -> dict[str, Any]:
+    diagnostic = getattr(error, "transport_diagnostic", None)
+    failure_class = getattr(diagnostic, "failure_class", "UNKNOWN")
+    failure_phase = getattr(diagnostic, "failure_phase", "UNKNOWN")
+    elapsed_ms = getattr(diagnostic, "elapsed_ms", fallback_elapsed_ms)
+    if failure_class not in _TRANSPORT_FAILURE_CLASSES:
+        failure_class = "UNKNOWN"
+    if failure_phase not in _TRANSPORT_FAILURE_PHASES:
+        failure_phase = "UNKNOWN"
+    if type(elapsed_ms) is not int or elapsed_ms < 0:
+        elapsed_ms = fallback_elapsed_ms
+    return {
+        "attempt": attempt,
+        "outcome": "TRANSPORT_FAILURE",
+        "failure_class": failure_class,
+        "failure_phase": failure_phase,
+        "elapsed_ms": elapsed_ms,
+    }
+
+
+def _success_event(*, attempt: int, elapsed_ms: int) -> dict[str, Any]:
+    return {
+        "attempt": attempt,
+        "outcome": "SUCCESS",
+        "elapsed_ms": elapsed_ms,
+    }
+
+
+def _controlled_failure_event(
+    *,
+    attempt: int,
+    error: CloseSessionAuthorityError | TushareHttpsError,
+    elapsed_ms: int,
+) -> dict[str, Any]:
+    observed_code = getattr(error, "code", "OTHER_CONTROLLED_FAILURE")
+    safe_code = (
+        observed_code
+        if observed_code in _SAFE_CONTROLLED_ERROR_CODES
+        else "OTHER_CONTROLLED_FAILURE"
+    )
+    return {
+        "attempt": attempt,
+        "outcome": "CONTROLLED_FAILURE",
+        "error_code": safe_code,
+        "elapsed_ms": elapsed_ms,
+    }
+
+
+def _generic_failure_event(*, attempt: int, elapsed_ms: int) -> dict[str, Any]:
+    return {
+        "attempt": attempt,
+        "outcome": "EXCEPTION",
+        "elapsed_ms": elapsed_ms,
+    }
+
+
+def _transport_retry_evidence(
+    *,
+    attempts: list[dict[str, Any]],
+    retry_eligible: bool,
+    terminal_outcome: str,
+) -> dict[str, Any]:
+    attempt_count = len(attempts)
+    retry_performed = attempt_count == 2
+    evidence = {
+        "schema_version": _TRANSPORT_RETRY_SCHEMA,
+        "attempt_count": attempt_count,
+        "retry_eligible": retry_eligible,
+        "retry_performed": retry_performed,
+        "retry_delay_ms": _TRANSPORT_RETRY_DELAY_MS if retry_performed else 0,
+        "terminal_outcome": terminal_outcome,
+        "attempts": [dict(item) for item in attempts],
+    }
+    if (
+        attempt_count not in {1, 2}
+        or type(retry_eligible) is not bool
+        or terminal_outcome not in {"FAILURE", "SUCCESS"}
+        or [item.get("attempt") for item in attempts] != list(range(1, attempt_count + 1))
+        or (attempt_count == 2) is not retry_performed
+        or (terminal_outcome == "SUCCESS") != (attempts[-1].get("outcome") == "SUCCESS")
+    ):
+        raise DailyMaintenanceError("TRANSPORT_RETRY_EVIDENCE_INVALID")
+    expected_keys = {
+        "TRANSPORT_FAILURE": {
+            "attempt",
+            "outcome",
+            "failure_class",
+            "failure_phase",
+            "elapsed_ms",
+        },
+        "SUCCESS": {"attempt", "outcome", "elapsed_ms"},
+        "CONTROLLED_FAILURE": {"attempt", "outcome", "error_code", "elapsed_ms"},
+        "EXCEPTION": {"attempt", "outcome", "elapsed_ms"},
+    }
+    for item in attempts:
+        outcome = item.get("outcome")
+        if (
+            outcome not in expected_keys
+            or set(item) != expected_keys[outcome]
+            or type(item.get("elapsed_ms")) is not int
+            or item["elapsed_ms"] < 0
+        ):
+            raise DailyMaintenanceError("TRANSPORT_RETRY_EVIDENCE_INVALID")
+        if outcome == "TRANSPORT_FAILURE" and (
+            item["failure_class"] not in _TRANSPORT_FAILURE_CLASSES
+            or item["failure_phase"] not in _TRANSPORT_FAILURE_PHASES
+        ):
+            raise DailyMaintenanceError("TRANSPORT_RETRY_EVIDENCE_INVALID")
+        if outcome == "CONTROLLED_FAILURE" and item["error_code"] not in (
+            _SAFE_CONTROLLED_ERROR_CODES | {"OTHER_CONTROLLED_FAILURE"}
+        ):
+            raise DailyMaintenanceError("TRANSPORT_RETRY_EVIDENCE_INVALID")
+    return evidence
+
+
 def run_cn_daily_maintenance(
     *,
     workspace_root: str | Path,
@@ -641,16 +822,100 @@ def run_cn_daily_maintenance(
                 "protected_surfaces": list(_PROTECTED_SURFACES),
             }
             return _seal_attempt(attempt_root=attempt, payload=payload, state=payload)
+        transport_retry: dict[str, Any] | None = None
         try:
-            close_result = close_authority(now=local_now)
-            raw_response = bytes(close_result.raw_response_bytes)
-            raw_sha = hashlib.sha256(raw_response).hexdigest()
-            close_receipt = dict(close_result.receipt)
-            if close_receipt.get("raw_response_sha256") != raw_sha:
-                raise CloseSessionAuthorityError("CLOSE_AUTHORITY_RAW_SHA_MISMATCH")
-            target_date = close_receipt.get("target_trade_date")
-            if type(target_date) is not str or len(target_date) != 8 or not target_date.isdigit():
-                raise CloseSessionAuthorityError("CLOSE_AUTHORITY_TARGET_INVALID")
+            close_attempts: list[dict[str, Any]] = []
+            retry_eligible = False
+            for close_attempt in (1, 2):
+                close_started_at = _MONOTONIC()
+                try:
+                    close_result = close_authority(now=local_now)
+                    raw_response = bytes(close_result.raw_response_bytes)
+                    raw_sha = hashlib.sha256(raw_response).hexdigest()
+                    close_receipt = dict(close_result.receipt)
+                    if close_receipt.get("raw_response_sha256") != raw_sha:
+                        raise CloseSessionAuthorityError("CLOSE_AUTHORITY_RAW_SHA_MISMATCH")
+                    target_date = close_receipt.get("target_trade_date")
+                    if (
+                        type(target_date) is not str
+                        or len(target_date) != 8
+                        or not target_date.isdigit()
+                    ):
+                        raise CloseSessionAuthorityError("CLOSE_AUTHORITY_TARGET_INVALID")
+                except TushareHttpsError as exc:
+                    elapsed_ms = _close_call_elapsed_ms(close_started_at)
+                    if exc.code == "TUSHARE_TRANSPORT_ERROR":
+                        event = _transport_failure_event(
+                            attempt=close_attempt,
+                            error=exc,
+                            fallback_elapsed_ms=elapsed_ms,
+                        )
+                        close_attempts.append(event)
+                        if close_attempt == 1:
+                            retry_eligible = (
+                                event["failure_class"] in _TRANSPORT_RETRY_ELIGIBLE_CLASSES
+                            )
+                            if retry_eligible:
+                                _SLEEP(_TRANSPORT_RETRY_DELAY_MS / 1000)
+                                continue
+                    elif close_attempts:
+                        close_attempts.append(
+                            _controlled_failure_event(
+                                attempt=close_attempt,
+                                error=exc,
+                                elapsed_ms=elapsed_ms,
+                            )
+                        )
+                    if close_attempts:
+                        transport_retry = _transport_retry_evidence(
+                            attempts=close_attempts,
+                            retry_eligible=retry_eligible,
+                            terminal_outcome="FAILURE",
+                        )
+                    raise
+                except CloseSessionAuthorityError as exc:
+                    if close_attempts:
+                        close_attempts.append(
+                            _controlled_failure_event(
+                                attempt=close_attempt,
+                                error=exc,
+                                elapsed_ms=_close_call_elapsed_ms(close_started_at),
+                            )
+                        )
+                        transport_retry = _transport_retry_evidence(
+                            attempts=close_attempts,
+                            retry_eligible=retry_eligible,
+                            terminal_outcome="FAILURE",
+                        )
+                    raise
+                except Exception:
+                    if close_attempts:
+                        close_attempts.append(
+                            _generic_failure_event(
+                                attempt=close_attempt,
+                                elapsed_ms=_close_call_elapsed_ms(close_started_at),
+                            )
+                        )
+                        transport_retry = _transport_retry_evidence(
+                            attempts=close_attempts,
+                            retry_eligible=retry_eligible,
+                            terminal_outcome="FAILURE",
+                        )
+                    raise
+                else:
+                    if close_attempts:
+                        close_attempts.append(
+                            _success_event(
+                                attempt=close_attempt,
+                                elapsed_ms=_close_call_elapsed_ms(close_started_at),
+                            )
+                        )
+                        transport_retry = _transport_retry_evidence(
+                            attempts=close_attempts,
+                            retry_eligible=retry_eligible,
+                            terminal_outcome="SUCCESS",
+                        )
+                    break
         except (CloseSessionAuthorityError, TushareHttpsError) as exc:
             code = getattr(exc, "code", "CLOSE_AUTHORITY_FAILED")
             retryable = code in {
@@ -695,7 +960,14 @@ def run_cn_daily_maintenance(
                     ),
                 )
                 payload["write_veto_ref"] = {"path": veto_path, "sha256": veto_sha}
-            return _seal_attempt(attempt_root=attempt, payload=payload, state=payload)
+            receipt_payload = dict(payload)
+            if transport_retry is not None:
+                receipt_payload["transport_retry"] = transport_retry
+            return _seal_attempt(
+                attempt_root=attempt,
+                payload=receipt_payload,
+                state=payload,
+            )
         except Exception:
             payload = {
                 "schema_version": "cn-daily-maintenance-attempt.v1",
@@ -725,7 +997,14 @@ def run_cn_daily_maintenance(
                     ),
                 )
                 payload["write_veto_ref"] = {"path": veto_path, "sha256": veto_sha}
-            return _seal_attempt(attempt_root=attempt, payload=payload, state=payload)
+            receipt_payload = dict(payload)
+            if transport_retry is not None:
+                receipt_payload["transport_retry"] = transport_retry
+            return _seal_attempt(
+                attempt_root=attempt,
+                payload=receipt_payload,
+                state=payload,
+            )
         raw_path = attempt / "close-session.raw.json"
         _write_once(raw_path, raw_response)
         close_receipt["attempt_slot"] = slot
@@ -893,6 +1172,8 @@ def run_cn_daily_maintenance(
             "blockers": blockers,
             "protected_surfaces": list(_PROTECTED_SURFACES),
         }
+        if transport_retry is not None:
+            payload["transport_retry"] = transport_retry
         if mode == "execute" and core_hard_block:
             veto_path, veto_sha = _write_veto(
                 root,

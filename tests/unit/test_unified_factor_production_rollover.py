@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from pathlib import Path
 
@@ -228,6 +229,41 @@ def test_maintenance_receipt_accepts_only_exact_execute_success(tmp_path: Path) 
         receipt_path=receipt_path,
         expected_receipt_sha256=receipt_sha,
     )
+    assert result["target_date"] == "20260820"
+    assert result["status"] == "COMPLETE"
+
+
+def test_maintenance_receipt_accepts_optional_transport_retry_evidence(
+    tmp_path: Path,
+) -> None:
+    workspace, receipt_path, _receipt_sha = _maintenance_attempt(tmp_path)
+    receipt = json.loads(receipt_path.read_bytes())
+    receipt["transport_retry"] = {
+        "schema_version": "cn-close-authority-transport-retry.v1",
+        "attempt_count": 2,
+        "retry_eligible": True,
+        "retry_performed": True,
+        "retry_delay_ms": 250,
+        "terminal_outcome": "SUCCESS",
+        "attempts": [
+            {
+                "attempt": 1,
+                "outcome": "TRANSPORT_FAILURE",
+                "failure_class": "TIMEOUT",
+                "failure_phase": "RESPONSE_HEADERS",
+                "elapsed_ms": 15_000,
+            },
+            {"attempt": 2, "outcome": "SUCCESS", "elapsed_ms": 20},
+        ],
+    }
+    receipt_sha = _write(receipt_path, receipt)
+
+    result = validate_daily_maintenance_receipt(
+        workspace_root=workspace,
+        receipt_path=receipt_path,
+        expected_receipt_sha256=receipt_sha,
+    )
+
     assert result["target_date"] == "20260820"
     assert result["status"] == "COMPLETE"
 

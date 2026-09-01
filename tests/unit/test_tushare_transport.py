@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
 import hashlib
+import http.client
 import inspect
 import json
 from pathlib import Path
+import socket
+import ssl
 from typing import Any
 
 import pytest
@@ -38,6 +41,9 @@ class _Response:
 
 class _Connection:
     response = _Response(200, b"")
+    constructor_failure: BaseException | None = None
+    request_failure: BaseException | None = None
+    response_failure: BaseException | None = None
     constructor_calls: list[dict[str, Any]] = []
     request_calls: list[dict[str, Any]] = []
     close_count = 0
@@ -58,6 +64,8 @@ class _Connection:
                 "context": context,
             }
         )
+        if self.constructor_failure is not None:
+            raise self.constructor_failure
 
     def request(
         self,
@@ -75,8 +83,12 @@ class _Connection:
                 "headers": headers,
             }
         )
+        if self.request_failure is not None:
+            raise self.request_failure
 
     def getresponse(self) -> _Response:
+        if self.response_failure is not None:
+            raise self.response_failure
         return self.response
 
     def close(self) -> None:
@@ -85,6 +97,9 @@ class _Connection:
 
 @pytest.fixture(autouse=True)
 def _reset_connection(monkeypatch: pytest.MonkeyPatch) -> None:
+    _Connection.constructor_failure = None
+    _Connection.request_failure = None
+    _Connection.response_failure = None
     _Connection.constructor_calls = []
     _Connection.request_calls = []
     _Connection.close_count = 0
@@ -418,10 +433,7 @@ def test_secret_samples_never_reach_exception_text_or_chain(
     monkeypatch.setenv("TUSHARE_TOKEN", samples["environment"])
     _install_success(
         monkeypatch,
-        body=json.dumps(
-            {"echo": samples["response"]},
-            separators=(",", ":"),
-        ).encode(),
+        body=b'{"echo":"' + samples["response"].encode(),
     )
     failures: list[TushareHttpsError] = []
 
@@ -461,6 +473,133 @@ def test_secret_samples_never_reach_exception_text_or_chain(
     for sample in samples.values():
         assert sample not in rendered
     assert all(failure.__cause__ is None for failure in failures)
+    assert all(failure.__context__ is None for failure in failures)
+    assert all(failure.args == (failure.code,) for failure in failures)
+
+
+@pytest.mark.parametrize(
+    ("location", "source_error", "failure_class", "failure_phase"),
+    [
+        ("context", ssl.SSLError("TLS_SECRET"), "TLS", "TLS_CONTEXT"),
+        ("request", socket.gaierror("DNS_SECRET"), "DNS", "REQUEST_SEND"),
+        (
+            "request",
+            ConnectionRefusedError("CONNECT_SECRET"),
+            "CONNECT",
+            "REQUEST_SEND",
+        ),
+        ("request", ssl.SSLError("TLS_SECRET"), "TLS", "REQUEST_SEND"),
+        (
+            "response",
+            TimeoutError("TIMEOUT_SECRET"),
+            "TIMEOUT",
+            "RESPONSE_HEADERS",
+        ),
+        (
+            "body",
+            http.client.IncompleteRead(b"PRIVATE_PARTIAL"),
+            "READ",
+            "RESPONSE_BODY",
+        ),
+        (
+            "body",
+            ConnectionResetError("RESET_SECRET"),
+            "CONNECTION_RESET",
+            "RESPONSE_BODY",
+        ),
+        ("request", RuntimeError("UNKNOWN_SECRET"), "UNKNOWN", "REQUEST_SEND"),
+    ],
+)
+def test_transport_failure_diagnostic_is_allowlisted_and_context_free(
+    monkeypatch: pytest.MonkeyPatch,
+    location: str,
+    source_error: BaseException,
+    failure_class: str,
+    failure_phase: str,
+) -> None:
+    monkeypatch.setenv("TUSHARE_TOKEN", TOKEN)
+    monotonic = iter((10.0, 10.125))
+    monkeypatch.setattr(tushare_transport, "_MONOTONIC", lambda: next(monotonic))
+    _install_success(monkeypatch)
+    if location == "context":
+        monkeypatch.setattr(
+            tushare_transport,
+            "_CREATE_DEFAULT_CONTEXT",
+            lambda: (_ for _ in ()).throw(source_error),
+        )
+    elif location == "request":
+        _Connection.request_failure = source_error
+    elif location == "response":
+        _Connection.response_failure = source_error
+    else:
+        _Connection.response = _Response(200, source_error)
+
+    with pytest.raises(TushareHttpsError) as captured:
+        OfficialTushareHttpsClient().request(
+            api_name="daily",
+            params={},
+            expected_fields=FIELDS,
+        )
+
+    failure = captured.value
+    diagnostic = failure.transport_diagnostic
+    assert failure.code == "TUSHARE_TRANSPORT_ERROR"
+    assert failure.args == ("TUSHARE_TRANSPORT_ERROR",)
+    assert str(failure) == "TUSHARE_TRANSPORT_ERROR"
+    assert "SECRET" not in repr(failure)
+    assert failure.__cause__ is None
+    assert failure.__context__ is None
+    assert diagnostic is not None
+    assert diagnostic.as_dict() == {
+        "failure_class": failure_class,
+        "failure_phase": failure_phase,
+        "elapsed_ms": 125,
+    }
+    if location == "context":
+        assert not _Connection.request_calls
+    else:
+        assert len(_Connection.request_calls) == 1
+
+
+@pytest.mark.parametrize(
+    "control_error",
+    [KeyboardInterrupt(), SystemExit(), GeneratorExit()],
+)
+def test_transport_does_not_swallow_control_exceptions(
+    monkeypatch: pytest.MonkeyPatch,
+    control_error: BaseException,
+) -> None:
+    monkeypatch.setenv("TUSHARE_TOKEN", TOKEN)
+    _install_success(monkeypatch)
+    _Connection.request_failure = control_error
+
+    with pytest.raises(type(control_error)):
+        OfficialTushareHttpsClient().request(
+            api_name="daily",
+            params={},
+            expected_fields=FIELDS,
+        )
+    assert len(_Connection.request_calls) == 1
+
+
+@pytest.mark.parametrize("operation", ["request", "diagnose_schema"])
+def test_transport_client_never_retries_one_request_call(
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    monkeypatch.setenv("TUSHARE_TOKEN", TOKEN)
+    _install_success(monkeypatch)
+    _Connection.request_failure = TimeoutError("must-not-be-rendered")
+    client = OfficialTushareHttpsClient(strict_decimal_decode=True)
+
+    with pytest.raises(TushareHttpsError, match="TUSHARE_TRANSPORT_ERROR"):
+        getattr(client, operation)(
+            api_name="daily",
+            params={},
+            expected_fields=FIELDS,
+        )
+    assert len(_Connection.constructor_calls) == 1
+    assert len(_Connection.request_calls) == 1
 
 
 def test_request_validation_exception_is_static_and_pre_socket(
@@ -488,6 +627,7 @@ def test_request_validation_exception_is_static_and_pre_socket(
     assert str(captured.value) == "TUSHARE_REQUEST_INVALID"
     assert secret not in repr(captured.value)
     assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
     assert not _Connection.constructor_calls
 
 

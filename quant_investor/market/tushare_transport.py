@@ -4,13 +4,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
+import errno
 import hashlib
 import http.client
 import json
 import math
 import os
 import re
+import socket
 import ssl
+import time
 import unicodedata
 from types import MappingProxyType
 from typing import Any, Final, Mapping, NoReturn, Sequence
@@ -34,13 +37,78 @@ _RESPONSE_ENVELOPE_FIELDS = frozenset({"code", "data", "detail", "msg", "request
 _RESPONSE_DATA_FIELDS = frozenset({"count", "fields", "has_more", "items"})
 _HTTPS_CONNECTION = http.client.HTTPSConnection
 _CREATE_DEFAULT_CONTEXT = ssl.create_default_context
+_MONOTONIC = time.monotonic
+
+_TRANSPORT_FAILURE_CLASSES: Final = frozenset(
+    {
+        "CONNECT",
+        "CONNECTION_RESET",
+        "DNS",
+        "READ",
+        "TIMEOUT",
+        "TLS",
+        "UNKNOWN",
+    }
+)
+_TRANSPORT_FAILURE_PHASES: Final = frozenset(
+    {
+        "RESPONSE_BODY",
+        "RESPONSE_HEADERS",
+        "REQUEST_SEND",
+        "TLS_CONTEXT",
+        "UNKNOWN",
+    }
+)
+_CONNECT_ERRNOS: Final = frozenset(
+    {
+        errno.ECONNREFUSED,
+        errno.EHOSTUNREACH,
+        errno.ENETUNREACH,
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class TushareTransportDiagnostic:
+    """Allowlisted transport metadata with no source exception material."""
+
+    failure_class: str
+    failure_phase: str
+    elapsed_ms: int
+
+    def __post_init__(self) -> None:
+        if (
+            self.failure_class not in _TRANSPORT_FAILURE_CLASSES
+            or self.failure_phase not in _TRANSPORT_FAILURE_PHASES
+            or type(self.elapsed_ms) is not int
+            or self.elapsed_ms < 0
+        ):
+            raise ValueError("TUSHARE_TRANSPORT_DIAGNOSTIC_INVALID")
+
+    def as_dict(self) -> dict[str, str | int]:
+        return {
+            "failure_class": self.failure_class,
+            "failure_phase": self.failure_phase,
+            "elapsed_ms": self.elapsed_ms,
+        }
 
 
 class TushareHttpsError(RuntimeError):
     """A static-code provider failure that never renders response or secrets."""
 
-    def __init__(self, code: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        *,
+        transport_diagnostic: TushareTransportDiagnostic | None = None,
+    ) -> None:
+        if transport_diagnostic is not None and (
+            code != "TUSHARE_TRANSPORT_ERROR"
+            or not isinstance(transport_diagnostic, TushareTransportDiagnostic)
+        ):
+            raise ValueError("TUSHARE_ERROR_DIAGNOSTIC_INVALID")
         self.code = code
+        self.transport_diagnostic = transport_diagnostic
         super().__init__(code)
 
     def __str__(self) -> str:
@@ -85,6 +153,53 @@ class TushareSchemaDiagnostic:
 
 def _fail(code: str) -> NoReturn:
     raise TushareHttpsError(code) from None
+
+
+def _elapsed_ms(started_at: float) -> int:
+    try:
+        elapsed = (_MONOTONIC() - started_at) * 1000
+    except Exception:
+        return 0
+    if not math.isfinite(elapsed) or elapsed <= 0:
+        return 0
+    return int(elapsed)
+
+
+def _transport_failure_class(exc: Exception, *, phase: str) -> str:
+    if isinstance(exc, socket.gaierror):
+        return "DNS"
+    if isinstance(exc, (ssl.SSLError, ssl.CertificateError)):
+        return "TLS"
+    if isinstance(exc, (TimeoutError, socket.timeout)):
+        return "TIMEOUT"
+    if isinstance(
+        exc,
+        (ConnectionResetError, ConnectionAbortedError, BrokenPipeError),
+    ):
+        return "CONNECTION_RESET"
+    if isinstance(exc, ConnectionRefusedError):
+        return "CONNECT"
+    if isinstance(exc, OSError) and exc.errno in _CONNECT_ERRNOS:
+        return "CONNECT"
+    if isinstance(exc, http.client.IncompleteRead):
+        return "READ"
+    if isinstance(exc, OSError) and phase == "RESPONSE_BODY":
+        return "READ"
+    return "UNKNOWN"
+
+
+def _transport_diagnostic(
+    exc: Exception,
+    *,
+    phase: str,
+    started_at: float,
+) -> TushareTransportDiagnostic:
+    safe_phase = phase if phase in _TRANSPORT_FAILURE_PHASES else "UNKNOWN"
+    return TushareTransportDiagnostic(
+        failure_class=_transport_failure_class(exc, phase=safe_phase),
+        failure_phase=safe_phase,
+        elapsed_ms=_elapsed_ms(started_at),
+    )
 
 
 def validate_official_endpoint(value: str) -> None:
@@ -145,6 +260,7 @@ def _request_bytes(
         "params": dict(params),
         "token": token,
     }
+    raw: bytes | None = None
     try:
         raw = json.dumps(
             payload,
@@ -154,6 +270,8 @@ def _request_bytes(
             sort_keys=True,
         ).encode("utf-8")
     except (TypeError, ValueError, UnicodeError):
+        pass
+    if raw is None:
         _fail("TUSHARE_REQUEST_INVALID")
     if len(raw) > MAX_REQUEST_BYTES:
         _fail("TUSHARE_REQUEST_INVALID")
@@ -184,6 +302,8 @@ def _decode_provider_payload(
     }
     if strict_decimal_decode:
         decode_options["parse_float"] = Decimal
+    payload: Any = None
+    decode_failed = False
     try:
         payload = json.loads(
             raw.decode("utf-8", errors="strict"),
@@ -192,6 +312,8 @@ def _decode_provider_payload(
     except TushareHttpsError:
         raise
     except (UnicodeError, TypeError, ValueError, json.JSONDecodeError):
+        decode_failed = True
+    if decode_failed:
         _fail("TUSHARE_RESPONSE_INVALID")
     if type(payload) is not dict or set(payload) != _RESPONSE_ENVELOPE_FIELDS:
         _fail("TUSHARE_RESPONSE_INVALID")
@@ -471,9 +593,12 @@ def replay_tushare_response_bytes(
         or not 1 <= max_response_items <= _MAX_CONFIGURED_RESPONSE_ITEMS
     ):
         _fail("TUSHARE_RESPONSE_INVALID")
+    fields: tuple[Any, ...] | None = None
     try:
         fields = tuple(expected_fields)
     except TypeError:
+        pass
+    if fields is None:
         _fail("TUSHARE_RESPONSE_INVALID")
     if (
         not fields
@@ -529,6 +654,7 @@ class OfficialTushareHttpsClient:
         params: Mapping[str, Any],
         expected_fields: Sequence[str],
     ) -> tuple[tuple[str, ...], bytes]:
+        request_invalid = False
         try:
             validate_official_endpoint(OFFICIAL_TUSHARE_URL)
             if (
@@ -561,11 +687,17 @@ class OfficialTushareHttpsClient:
             return fields, body
         except TushareHttpsError:
             raise
-        except BaseException:
+        except Exception:
+            request_invalid = True
+        if request_invalid:
             _fail("TUSHARE_REQUEST_INVALID")
+        raise AssertionError("validated request did not return")
 
     def _fetch_raw(self, body: bytes) -> bytes:
         connection: http.client.HTTPSConnection | None = None
+        started_at = _MONOTONIC()
+        phase = "TLS_CONTEXT"
+        diagnostic: TushareTransportDiagnostic | None = None
         try:
             context = _CREATE_DEFAULT_CONTEXT()
             connection = _HTTPS_CONNECTION(
@@ -574,6 +706,7 @@ class OfficialTushareHttpsClient:
                 timeout=self._timeout_seconds,
                 context=context,
             )
+            phase = "REQUEST_SEND"
             connection.request(
                 "POST",
                 OFFICIAL_TUSHARE_PATH,
@@ -584,26 +717,38 @@ class OfficialTushareHttpsClient:
                     "User-Agent": "myquant-market-data",
                 },
             )
+            phase = "RESPONSE_HEADERS"
             response = connection.getresponse()
             status = response.status
             if 300 <= status < 400:
                 _fail("TUSHARE_REDIRECT_BLOCKED")
             if status != 200:
                 _fail("TUSHARE_HTTP_STATUS_ERROR")
+            phase = "RESPONSE_BODY"
             raw = response.read(self._max_response_bytes + 1)
             if len(raw) > self._max_response_bytes:
                 _fail("TUSHARE_RESPONSE_TOO_LARGE")
             return raw
         except TushareHttpsError:
             raise
-        except BaseException:
-            _fail("TUSHARE_TRANSPORT_ERROR")
+        except Exception as exc:
+            diagnostic = _transport_diagnostic(
+                exc,
+                phase=phase,
+                started_at=started_at,
+            )
         finally:
             if connection is not None:
                 try:
                     connection.close()
-                except BaseException:
+                except Exception:
                     pass
+        if diagnostic is not None:
+            raise TushareHttpsError(
+                "TUSHARE_TRANSPORT_ERROR",
+                transport_diagnostic=diagnostic,
+            ) from None
+        raise AssertionError("transport failure missing diagnostic")
 
     def request(
         self,
@@ -662,6 +807,7 @@ __all__ = [
     "TushareHttpsError",
     "TushareResponse",
     "TushareSchemaDiagnostic",
+    "TushareTransportDiagnostic",
     "replay_tushare_response_bytes",
     "validate_official_endpoint",
 ]

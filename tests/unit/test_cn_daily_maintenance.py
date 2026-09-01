@@ -20,6 +20,7 @@ from quant_investor.market.close_session_authority import (
     CloseSessionAuthorityResult,
     acquire_close_session_authority,
 )
+from quant_investor.market import daily_maintenance
 from quant_investor.market.daily_maintenance import (
     DailyMaintenanceError,
     MaintenanceComponents,
@@ -32,6 +33,10 @@ from quant_investor.market.credential_preflight import (
     CredentialPreflightError,
     read_project_env_token,
     write_credential_preflight,
+)
+from quant_investor.market.tushare_transport import (
+    TushareHttpsError,
+    TushareTransportDiagnostic,
 )
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -142,6 +147,22 @@ def _components(stage_callback=_ready):
         fundamental=_health,
         macro_release=stage_callback,
         system_status=lambda _context: {"capabilities": {"investment": "READY"}},
+    )
+
+
+def _transport_error(
+    failure_class: str,
+    *,
+    phase: str = "REQUEST_SEND",
+    elapsed_ms: int = 15,
+) -> TushareHttpsError:
+    return TushareHttpsError(
+        "TUSHARE_TRANSPORT_ERROR",
+        transport_diagnostic=TushareTransportDiagnostic(
+            failure_class=failure_class,
+            failure_phase=phase,
+            elapsed_ms=elapsed_ms,
+        ),
     )
 
 
@@ -292,6 +313,314 @@ def test_retry_is_quiet_early_and_sla_failure_in_final_slot(tmp_path):
         )
         assert result["status"] == expected
         assert not (run_root / "WRITE_VETO.json").exists()
+
+
+def test_close_authority_retries_one_eligible_transport_failure_then_runs_dag_once(
+    tmp_path,
+    monkeypatch,
+):
+    run_root = tmp_path / "data/private/cn_daily_maintenance"
+    run_root.mkdir(parents=True, mode=0o700)
+    close_calls = []
+    stage_calls = []
+    sleeps = []
+    monotonic = iter((1.0, 1.010, 2.0, 2.020))
+    monkeypatch.setattr(daily_maintenance, "_MONOTONIC", lambda: next(monotonic))
+    monkeypatch.setattr(daily_maintenance, "_SLEEP", sleeps.append)
+
+    def close(**_kwargs):
+        close_calls.append(len(close_calls) + 1)
+        if len(close_calls) == 1:
+            raise _transport_error("TIMEOUT", phase="RESPONSE_HEADERS", elapsed_ms=15_000)
+        return _close_result()
+
+    def stage(context):
+        stage_calls.append(context.target_date)
+        return _ready(context)
+
+    result = run_cn_daily_maintenance(
+        workspace_root=tmp_path,
+        run_root=run_root,
+        mode="execute",
+        attempt_slot="2020",
+        components=_components(stage_callback=stage),
+        now=datetime(2026, 8, 19, 20, 20, tzinfo=SHANGHAI),
+        close_authority=close,
+    )
+
+    assert result["status"] == "COMPLETE"
+    assert close_calls == [1, 2]
+    assert sleeps == [0.25]
+    assert stage_calls == ["20260819"] * 4
+    assert result["transport_retry"] == {
+        "schema_version": "cn-close-authority-transport-retry.v1",
+        "attempt_count": 2,
+        "retry_eligible": True,
+        "retry_performed": True,
+        "retry_delay_ms": 250,
+        "terminal_outcome": "SUCCESS",
+        "attempts": [
+            {
+                "attempt": 1,
+                "outcome": "TRANSPORT_FAILURE",
+                "failure_class": "TIMEOUT",
+                "failure_phase": "RESPONSE_HEADERS",
+                "elapsed_ms": 15_000,
+            },
+            {"attempt": 2, "outcome": "SUCCESS", "elapsed_ms": 20},
+        ],
+    }
+    receipt_path = Path(result["attempt_receipt_ref"]["path"])
+    receipt = _assert_shared_canonical(receipt_path)
+    state = _assert_shared_canonical(Path(result["state_ref"]["path"]))
+    assert receipt["transport_retry"] == result["transport_retry"]
+    assert "transport_retry" not in state
+
+
+@pytest.mark.parametrize(
+    ("slot", "expected_status"),
+    [("1620", "RETRY_PENDING"), ("2020", "SAME_DAY_SLA_MISSED")],
+)
+def test_close_authority_stops_after_two_eligible_transport_failures(
+    tmp_path,
+    monkeypatch,
+    slot,
+    expected_status,
+):
+    run_root = tmp_path / slot
+    run_root.mkdir(mode=0o700)
+    close_calls = []
+    sleeps = []
+    monotonic = iter((1.0, 1.001, 2.0, 2.001))
+    monkeypatch.setattr(daily_maintenance, "_MONOTONIC", lambda: next(monotonic))
+    monkeypatch.setattr(daily_maintenance, "_SLEEP", sleeps.append)
+
+    def close(**_kwargs):
+        close_calls.append(True)
+        raise _transport_error("DNS", elapsed_ms=len(close_calls) * 10)
+
+    result = run_cn_daily_maintenance(
+        workspace_root=tmp_path,
+        run_root=run_root,
+        mode="execute",
+        attempt_slot=slot,
+        components=_components(stage_callback=lambda _context: pytest.fail("stage ran")),
+        now=datetime(2026, 8, 19, 20, 20, tzinfo=SHANGHAI),
+        close_authority=close,
+    )
+
+    assert result["status"] == expected_status
+    assert result["blockers"] == ["TUSHARE_TRANSPORT_ERROR"]
+    assert result["stage_results"] == []
+    assert result["canonical_unchanged"] is True
+    assert len(close_calls) == 2
+    assert sleeps == [0.25]
+    assert result["transport_retry"]["attempt_count"] == 2
+    assert result["transport_retry"]["terminal_outcome"] == "FAILURE"
+    assert [item["elapsed_ms"] for item in result["transport_retry"]["attempts"]] == [
+        10,
+        20,
+    ]
+    assert not (run_root / "WRITE_VETO.json").exists()
+    state = _assert_shared_canonical(Path(result["state_ref"]["path"]))
+    assert "transport_retry" not in state
+
+
+@pytest.mark.parametrize("failure_class", ["READ", "CONNECTION_RESET", "UNKNOWN"])
+def test_noneligible_transport_failure_records_diagnostic_without_same_slot_retry(
+    tmp_path,
+    monkeypatch,
+    failure_class,
+):
+    run_root = tmp_path / failure_class
+    run_root.mkdir(mode=0o700)
+    close_calls = []
+    sleeps = []
+    monotonic = iter((1.0, 1.001))
+    monkeypatch.setattr(daily_maintenance, "_MONOTONIC", lambda: next(monotonic))
+    monkeypatch.setattr(daily_maintenance, "_SLEEP", sleeps.append)
+
+    def close(**_kwargs):
+        close_calls.append(True)
+        raise _transport_error(failure_class, phase="RESPONSE_BODY")
+
+    result = run_cn_daily_maintenance(
+        workspace_root=tmp_path,
+        run_root=run_root,
+        mode="execute",
+        attempt_slot="1620",
+        components=_components(stage_callback=lambda _context: pytest.fail("stage ran")),
+        now=datetime(2026, 8, 19, 16, 20, tzinfo=SHANGHAI),
+        close_authority=close,
+    )
+
+    assert len(close_calls) == 1
+    assert sleeps == []
+    assert result["status"] == "RETRY_PENDING"
+    assert result["transport_retry"]["attempt_count"] == 1
+    assert result["transport_retry"]["retry_eligible"] is False
+    assert result["transport_retry"]["retry_performed"] is False
+    assert result["transport_retry"]["retry_delay_ms"] == 0
+    assert "transport_retry" not in _assert_shared_canonical(Path(result["state_ref"]["path"]))
+
+
+@pytest.mark.parametrize(
+    ("second_error", "expected_status", "expected_blocker", "second_outcome"),
+    [
+        (
+            TushareHttpsError("TUSHARE_API_ERROR"),
+            "RETRY_PENDING",
+            "TUSHARE_API_ERROR",
+            "CONTROLLED_FAILURE",
+        ),
+        (
+            TushareHttpsError("TUSHARE_RESPONSE_INVALID"),
+            "BLOCKED",
+            "TUSHARE_RESPONSE_INVALID",
+            "CONTROLLED_FAILURE",
+        ),
+        (
+            CloseSessionAuthorityError("CLOSE_CALENDAR_ROW_INVALID"),
+            "BLOCKED",
+            "CLOSE_CALENDAR_ROW_INVALID",
+            "CONTROLLED_FAILURE",
+        ),
+        (
+            RuntimeError("SECOND_ATTEMPT_SECRET"),
+            "BLOCKED",
+            "CLOSE_AUTHORITY_EXCEPTION",
+            "EXCEPTION",
+        ),
+    ],
+)
+def test_retry_uses_second_attempt_as_terminal_authority_without_third_call(
+    tmp_path,
+    monkeypatch,
+    second_error,
+    expected_status,
+    expected_blocker,
+    second_outcome,
+):
+    run_root = tmp_path / expected_blocker
+    run_root.mkdir(mode=0o700)
+    close_calls = []
+    sleeps = []
+    monotonic = iter((1.0, 1.001, 2.0, 2.005))
+    monkeypatch.setattr(daily_maintenance, "_MONOTONIC", lambda: next(monotonic))
+    monkeypatch.setattr(daily_maintenance, "_SLEEP", sleeps.append)
+
+    def close(**_kwargs):
+        close_calls.append(True)
+        if len(close_calls) == 1:
+            raise _transport_error("CONNECT")
+        raise second_error
+
+    result = run_cn_daily_maintenance(
+        workspace_root=tmp_path,
+        run_root=run_root,
+        mode="execute",
+        attempt_slot="1620",
+        components=_components(stage_callback=lambda _context: pytest.fail("stage ran")),
+        now=datetime(2026, 8, 19, 16, 20, tzinfo=SHANGHAI),
+        close_authority=close,
+    )
+
+    assert len(close_calls) == 2
+    assert sleeps == [0.25]
+    assert result["status"] == expected_status
+    assert result["blockers"] == [expected_blocker]
+    assert result["transport_retry"]["terminal_outcome"] == "FAILURE"
+    assert result["transport_retry"]["attempts"][1]["outcome"] == second_outcome
+    receipt_raw = Path(result["attempt_receipt_ref"]["path"]).read_bytes()
+    assert b"SECOND_ATTEMPT_SECRET" not in receipt_raw
+    assert "transport_retry" not in json.loads(Path(result["state_ref"]["path"]).read_bytes())
+    assert (run_root / "WRITE_VETO.json").exists() is (expected_status == "BLOCKED")
+
+
+@pytest.mark.parametrize(
+    ("code", "expected_status", "expect_veto"),
+    [
+        ("TUSHARE_API_ERROR", "RETRY_PENDING", False),
+        ("TUSHARE_HTTP_STATUS_ERROR", "RETRY_PENDING", False),
+        ("TUSHARE_REDIRECT_BLOCKED", "BLOCKED", True),
+        ("TUSHARE_RESPONSE_TOO_LARGE", "BLOCKED", True),
+        ("TUSHARE_RESPONSE_INVALID", "BLOCKED", True),
+    ],
+)
+def test_nontransport_provider_failures_never_get_same_slot_retry(
+    tmp_path,
+    monkeypatch,
+    code,
+    expected_status,
+    expect_veto,
+):
+    run_root = tmp_path / code
+    run_root.mkdir(mode=0o700)
+    close_calls = []
+    sleeps = []
+    monotonic = iter((1.0, 1.001))
+    monkeypatch.setattr(daily_maintenance, "_MONOTONIC", lambda: next(monotonic))
+    monkeypatch.setattr(daily_maintenance, "_SLEEP", sleeps.append)
+
+    def close(**_kwargs):
+        close_calls.append(True)
+        raise TushareHttpsError(code)
+
+    result = run_cn_daily_maintenance(
+        workspace_root=tmp_path,
+        run_root=run_root,
+        mode="execute",
+        attempt_slot="1620",
+        components=_components(stage_callback=lambda _context: pytest.fail("stage ran")),
+        now=datetime(2026, 8, 19, 16, 20, tzinfo=SHANGHAI),
+        close_authority=close,
+    )
+
+    assert len(close_calls) == 1
+    assert sleeps == []
+    assert result["status"] == expected_status
+    assert result["blockers"] == [code]
+    assert "transport_retry" not in result
+    assert (run_root / "WRITE_VETO.json").exists() is expect_veto
+
+
+def test_new_transport_retry_attempt_does_not_rewrite_historical_receipt(
+    tmp_path,
+    monkeypatch,
+):
+    run_root = tmp_path / "data/private/cn_daily_maintenance"
+    historical = run_root / "attempts/historical/attempt.json"
+    historical.parent.mkdir(parents=True, mode=0o700)
+    run_root.chmod(0o700)
+    (run_root / "attempts").chmod(0o700)
+    historical_raw = b'{"immutable":"historical"}'
+    historical.write_bytes(historical_raw)
+    historical.chmod(0o600)
+    monotonic = iter((1.0, 1.001, 2.0, 2.001))
+    monkeypatch.setattr(daily_maintenance, "_MONOTONIC", lambda: next(monotonic))
+    monkeypatch.setattr(daily_maintenance, "_SLEEP", lambda _delay: None)
+    calls = []
+
+    def close(**_kwargs):
+        calls.append(True)
+        if len(calls) == 1:
+            raise _transport_error("DNS")
+        return _close_result()
+
+    result = run_cn_daily_maintenance(
+        workspace_root=tmp_path,
+        run_root=run_root,
+        mode="shadow",
+        attempt_slot="1620",
+        components=_components(
+            stage_callback=lambda context: {**_ready(context), "write_performed": False}
+        ),
+        now=datetime(2026, 8, 19, 16, 20, tzinfo=SHANGHAI),
+        close_authority=close,
+    )
+
+    assert result["transport_retry"]["terminal_outcome"] == "SUCCESS"
+    assert historical.read_bytes() == historical_raw
 
 
 @pytest.mark.parametrize(

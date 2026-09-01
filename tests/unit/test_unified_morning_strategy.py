@@ -375,6 +375,41 @@ def test_macro_partial_does_not_block_dual_run_cutover(tmp_path: Path, monkeypat
     assert result["schedule_action"] == "ENABLE_0945_CREATE_2100_FALLBACK_KEEP_2130"
 
 
+def test_cutover_accepts_optional_transport_retry_evidence(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    pointer, store_sha = _store(tmp_path)
+    _patch_inputs(monkeypatch, pointer)
+    request = _cutover_request(tmp_path, store_sha, tmp_path / "calendar.json")
+    maintenance_path = tmp_path / request["maintenance_receipt_path"]
+    maintenance = json.loads(maintenance_path.read_bytes())
+    maintenance["transport_retry"] = {
+        "schema_version": "cn-close-authority-transport-retry.v1",
+        "attempt_count": 2,
+        "retry_eligible": True,
+        "retry_performed": True,
+        "retry_delay_ms": 250,
+        "terminal_outcome": "SUCCESS",
+        "attempts": [
+            {
+                "attempt": 1,
+                "outcome": "TRANSPORT_FAILURE",
+                "failure_class": "TIMEOUT",
+                "failure_phase": "RESPONSE_HEADERS",
+                "elapsed_ms": 15_000,
+            },
+            {"attempt": 2, "outcome": "SUCCESS", "elapsed_ms": 20},
+        ],
+    }
+    request["maintenance_receipt_sha256"] = _write(maintenance_path, maintenance)
+
+    result = morning.evaluate_morning_cutover(workspace_root=tmp_path, request=request)
+
+    assert result["morning_strategy_cutover_eligible"] is True
+    assert result["schedule_action"] == "ENABLE_0945_CREATE_2100_FALLBACK_KEEP_2130"
+
+
 def test_unverified_scheduler_keeps_evening_fallback(tmp_path: Path, monkeypatch) -> None:
     pointer, store_sha = _store(tmp_path)
     _patch_inputs(monkeypatch, pointer)
