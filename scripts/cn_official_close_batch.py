@@ -23,8 +23,14 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from quant_investor.market.cn_benchmark_store import load_generation as load_benchmarks
-from quant_investor.strategy_records.event_store import load_generation as load_events
+from quant_investor.market.cn_benchmark_store import (
+    CNBenchmarkStoreError,
+    load_generation as load_benchmarks,
+)
+from quant_investor.strategy_records.event_store import (
+    StrategyEventStoreError,
+    load_generation as load_events,
+)
 from quant_investor.strategy_records.performance import (
     MONEY_QUANTUM,
     UNIT_QUANTUM,
@@ -410,10 +416,16 @@ def close_through_latest(
     market_pointer, market_manifest_path, market_manifest = _market(
         project, expected_market_pointer_sha
     )
-    benchmark = load_benchmarks(project / "data/parquet/cn/benchmarks")
+    try:
+        benchmark = load_benchmarks(project / "data/parquet/cn/benchmarks")
+    except CNBenchmarkStoreError as exc:
+        raise StrategyRecordStoreError(f"BENCHMARK_SOURCE_UNAVAILABLE:{exc}") from exc
     if benchmark["pointer_sha256"] != expected_benchmark_pointer_sha:
         raise StrategyRecordStoreError("benchmark pointer preimage mismatch")
-    event = load_events(root / "_event_store")
+    try:
+        event = load_events(root / "_event_store")
+    except StrategyEventStoreError as exc:
+        raise StrategyRecordStoreError(f"EVENT_SOURCE_UNAVAILABLE:{exc}") from exc
     if event["pointer_sha256"] != expected_event_pointer_sha:
         raise StrategyRecordStoreError("event pointer preimage mismatch")
     open_dates, _calendar = _calendar_dates(calendar_receipt_path, calendar_receipt_sha)
