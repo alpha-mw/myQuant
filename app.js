@@ -988,6 +988,26 @@
     setText("cashExposure", percent(viewBundle.portfolio.cash_weight) + " / " + percent(viewBundle.portfolio.gross_exposure));
     setText("performancePeriod", bundle.portfolio.performance_start_date + " → " + viewBundle.portfolio.performance_end_date);
     setText("headerPeriod", bundle.portfolio.performance_start_date + " — " + viewBundle.portfolio.performance_end_date);
+    var assurance = bundle.assurance || {};
+    setText(
+      "dataAssuranceStatus",
+      assurance.data && assurance.data.status === "VERIFIED"
+        ? "UPDATED"
+        : assurance.data
+          ? assurance.data.status
+          : "UNAVAILABLE"
+    );
+    setText("accountingAssuranceStatus", assurance.accounting ? assurance.accounting.status : "UNAVAILABLE");
+    setText("attributionAssuranceStatus", assurance.attribution ? assurance.attribution.status : "UNAVAILABLE");
+    setText("evidenceAssuranceStatus", assurance.evidence ? assurance.evidence.status : "UNAVAILABLE");
+    setText(
+      "assuranceCoverage",
+      "History " + (assurance.historical_coverage || "UNAVAILABLE") +
+        " · Prospective " + (assurance.prospective_coverage || "UNAVAILABLE") +
+        (assurance.prospective_effective_date
+          ? " from " + assurance.prospective_effective_date
+          : "")
+    );
     setText(
       "freshnessLabel",
       v2Snapshot && v2Snapshot.bundle
