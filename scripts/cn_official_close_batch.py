@@ -62,6 +62,7 @@ from close_cn_dashboard_official_valuation import (
 from cn_dashboard_common import validate_record
 
 BATCH_PLAN_SCHEMA = "myquant.cn_official_close_batch_plan.v1"
+BATCH_IMPLEMENTATION_VERSION = "2"
 BATCH_RECEIPT_SCHEMA = "myquant.strategy_daily_close_receipt.v1"
 BATCH_COMPLETION_SCHEMA = "myquant.cn_official_close_batch_completion.v1"
 POLICY_SCHEMA = "myquant.cn_daily_official_close_policy.v1"
@@ -526,6 +527,7 @@ def close_through_latest(
     }
     input_fingerprint = _fingerprint(
         {
+            "batch_implementation_version": BATCH_IMPLEMENTATION_VERSION,
             "requested_target": required_candidates[-1],
             "missing_dates": required_candidates,
             "preimages": preimages,
@@ -553,6 +555,7 @@ def close_through_latest(
         effective_at = planned.isoformat().replace("+00:00", "Z")
         plan = {
             "schema_id": BATCH_PLAN_SCHEMA,
+            "batch_implementation_version": BATCH_IMPLEMENTATION_VERSION,
             "transaction_id": transaction_id,
             "input_fingerprint": input_fingerprint,
             "transaction_planned_at": effective_at,
