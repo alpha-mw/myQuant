@@ -298,3 +298,17 @@ def test_accounting_pointer_cas_retains_history_and_rejects_stale_writer(
     ).read_bytes() == canonical_json_bytes(first)
     with pytest.raises(StrategyAccountingError, match="preimage"):
         _publish_pointer(pointer, first, expected=first_sha)
+
+
+def test_manual_fill_status_accepts_applied_and_vetoes_rejected_orders() -> None:
+    from scripts.prepare_cn_strategy_accounting import (
+        _manual_fill_status,
+        _manual_rejection_status,
+    )
+
+    assert _manual_fill_status("apply_locally_no_broker") is True
+    assert _manual_fill_status("filled_local_manual") is True
+    assert _manual_fill_status("user_reported_filled_external_manual_no_broker_api") is True
+    assert _manual_fill_status("formal_order_rejected_no_manual_fill") is False
+    assert _manual_rejection_status("formal_order_rejected_no_manual_fill") is True
+    assert _manual_rejection_status("watch_only_no_execution") is True

@@ -51,7 +51,7 @@ from quant_investor.strategy_records.store import (  # noqa: E402
 
 _MAX_ARCHIVE_DECOMPRESSED = 512 * 1024 * 1024
 _MAX_MEMBER = 64 * 1024 * 1024
-_ACCOUNTING_COMPILER_VERSION = "2"
+_ACCOUNTING_COMPILER_VERSION = "3"
 
 
 def _sha(raw: bytes) -> str:
@@ -191,6 +191,40 @@ def _side(value: Any) -> str | None:
     if "BUY" in text or "ADD" in text:
         return "BUY"
     return None
+
+
+def _manual_fill_status(value: Any) -> bool:
+    status = str(value or "").lower()
+    rejected = (
+        "rejected",
+        "no_execution",
+        "watch_only",
+        "optional_not_applied",
+        "invalidated",
+    )
+    accepted = (
+        "filled",
+        "apply_locally_no_broker",
+        "owner_declared_actual_fill",
+        "user_reported_filled",
+    )
+    return not any(token in status for token in rejected) and any(
+        token in status for token in accepted
+    )
+
+
+def _manual_rejection_status(value: Any) -> bool:
+    status = str(value or "").lower()
+    return any(
+        token in status
+        for token in (
+            "rejected",
+            "no_execution",
+            "watch_only",
+            "optional_not_applied",
+            "invalidated",
+        )
+    )
 
 
 def _trade_date(value: Any, *, fallback: str) -> str:
@@ -379,7 +413,32 @@ def _extract_historical_audit(
             manual.get("applied_local_trades") or []
         )
         source_rows: list[Mapping[str, Any]] = applied
-        if not source_rows and manifest.get("action_taken_today") is True:
+        manual_has_rejection = False
+        if not source_rows:
+            manual_orders_member = reader.read(
+                record_id, "manual_switch_and_take_profit_orders.csv"
+            )
+            manual_rows: list[Mapping[str, Any]] = []
+            if manual_orders_member is not None:
+                manual_orders_raw, manual_orders_path = manual_orders_member
+                all_manual_rows = list(
+                    csv.DictReader(io.StringIO(manual_orders_raw.decode("utf-8-sig")))
+                )
+                manual_rows = [
+                    row for row in all_manual_rows if _manual_fill_status(row.get("status"))
+                ]
+                manual_has_rejection = any(
+                    _manual_rejection_status(row.get("status")) for row in all_manual_rows
+                )
+                if manual_rows:
+                    source_rows = manual_rows
+                    source_path = manual_orders_path
+                    source_sha = _sha(manual_orders_raw)
+        if (
+            not source_rows
+            and not manual_has_rejection
+            and manifest.get("action_taken_today") is True
+        ):
             orders_member = reader.read(record_id, "orders.csv")
             if orders_member is not None:
                 orders_raw, source_path = orders_member
