@@ -206,6 +206,9 @@ assured.assurance = {
   prospective_effective_date: "2099-01-03",
   blockers: ["LEGACY_GAP"],
   reported_fill_count: 1,
+  known_fee_fill_count: 0,
+  owner_policy_reconciled_fee_fill_count: 0,
+  legacy_unavailable_fee_fill_count: 1,
   unexplained_share_delta_count: 1
 };
 assert.deepStrictEqual(Contract.validateBundle(assured), { valid: true, errors: [] });

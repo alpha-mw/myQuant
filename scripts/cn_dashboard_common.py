@@ -3372,6 +3372,9 @@ def build_bundle(
             "prospective_effective_date": None,
             "blockers": ["ACCOUNTING_GENERATION_UNAVAILABLE"],
             "reported_fill_count": None,
+            "known_fee_fill_count": None,
+            "owner_policy_reconciled_fee_fill_count": None,
+            "legacy_unavailable_fee_fill_count": None,
             "unexplained_share_delta_count": None,
         }
         accounting_refs: list[dict[str, str]] = []
@@ -3379,8 +3382,7 @@ def build_bundle(
         genesis = accounting["genesis"]
         audit = accounting["audit"]
         source_aligned = (
-            accounting["state"] == "VERIFIED"
-            and genesis["effective_date"] == unitized[-1]["date"]
+            accounting["state"] == "VERIFIED" and genesis["effective_date"] == unitized[-1]["date"]
         )
         assurance = {
             "data": {"status": "VERIFIED" if source_aligned else "BLOCKED"},
@@ -3389,22 +3391,24 @@ def build_bundle(
             "evidence": {"status": genesis["status"]["evidence"]},
             "historical_coverage": genesis["coverage"]["historical"],
             "prospective_coverage": genesis["coverage"]["prospective"],
-            "prospective_effective_date": genesis["coverage"][
-                "prospective_effective_date"
-            ],
+            "prospective_effective_date": genesis["coverage"]["prospective_effective_date"],
             "blockers": (
-                list(genesis["blockers"])
-                + ([] if source_aligned else ["SOURCE_STORE_ADVANCED"])
+                list(genesis["blockers"]) + ([] if source_aligned else ["SOURCE_STORE_ADVANCED"])
             ),
             "reported_fill_count": audit["reported_fill_count"],
+            "known_fee_fill_count": audit.get("known_fee_fill_count", 0),
+            "owner_policy_reconciled_fee_fill_count": audit.get(
+                "owner_policy_reconciled_fee_fill_count", 0
+            ),
+            "legacy_unavailable_fee_fill_count": audit["legacy_unavailable_fee_fill_count"],
             "unexplained_share_delta_count": len(audit["unexplained_share_deltas"]),
         }
         accounting_pointer = accounting["pointer"]
         accounting_refs = [
             {
-                "path": (
-                    record_root / "_accounting_store/current.v1.json"
-                ).relative_to(project_root).as_posix(),
+                "path": (record_root / "_accounting_store/current.v1.json")
+                .relative_to(project_root)
+                .as_posix(),
                 "sha256": accounting["pointer_sha256"],
             },
             {
@@ -3713,18 +3717,20 @@ def validate_bundle_shape(bundle: Any) -> list[str]:
             or assurance[dimension].get("status") not in assurance_statuses
             for dimension in ("data", "accounting", "attribution", "evidence")
         )
-        or assurance.get("historical_coverage")
-        not in {"PARTIAL", "COMPLETE", "UNAVAILABLE"}
-        or assurance.get("prospective_coverage")
-        not in {"READY", "BLOCKED", "UNAVAILABLE"}
+        or assurance.get("historical_coverage") not in {"PARTIAL", "COMPLETE", "UNAVAILABLE"}
+        or assurance.get("prospective_coverage") not in {"READY", "BLOCKED", "UNAVAILABLE"}
         or not isinstance(assurance.get("blockers"), list)
     ):
         errors.append("assurance_status_invalid")
-    elif assurance is not None and (
-        assurance["accounting"]["status"] == "VERIFIED"
-        or assurance["attribution"]["status"] == "VERIFIED"
-        or assurance["evidence"]["status"] == "VERIFIED"
-    ) and assurance.get("historical_coverage") != "COMPLETE":
+    elif (
+        assurance is not None
+        and (
+            assurance["accounting"]["status"] == "VERIFIED"
+            or assurance["attribution"]["status"] == "VERIFIED"
+            or assurance["evidence"]["status"] == "VERIFIED"
+        )
+        and assurance.get("historical_coverage") != "COMPLETE"
+    ):
         errors.append("assurance_historical_overclaim")
     public_redacted = bundle.get("public_redacted") is True
     if public_redacted and (

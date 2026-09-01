@@ -51,6 +51,7 @@ from quant_investor.strategy_records.store import (  # noqa: E402
 
 _MAX_ARCHIVE_DECOMPRESSED = 512 * 1024 * 1024
 _MAX_MEMBER = 64 * 1024 * 1024
+_ACCOUNTING_COMPILER_VERSION = "2"
 
 
 def _sha(raw: bytes) -> str:
@@ -207,6 +208,7 @@ def _normalize_trade(
     source_path: str,
     source_sha: str,
     fallback_date: str,
+    fee_correction: Mapping[str, Any] | None,
 ) -> dict[str, Any] | None:
     side = _side(row.get("side") or row.get("action"))
     symbol = row.get("symbol")
@@ -237,7 +239,15 @@ def _normalize_trade(
         )[:24]
     )
     known_fee = row.get("final_total_fee_cny")
-    fee_status = "KNOWN" if known_fee is not None else "LEGACY_UNAVAILABLE"
+    if known_fee is not None:
+        fee_status = "KNOWN"
+        fee_value = known_fee
+    elif fee_correction is not None:
+        fee_status = "OWNER_POLICY_RECONCILED"
+        fee_value = fee_correction["final_total_fee_cny"]
+    else:
+        fee_status = "LEGACY_UNAVAILABLE"
+        fee_value = None
     return {
         "event_id": event_id,
         "record_id": record_id,
@@ -249,7 +259,24 @@ def _normalize_trade(
         "price_cny": format(price, "f"),
         "gross_amount_cny": format(price * shares, "f"),
         "fee_status": fee_status,
-        "total_fee_cny": format(Decimal(str(known_fee)), "f") if known_fee is not None else None,
+        "total_fee_cny": format(Decimal(str(fee_value)), "f") if fee_value is not None else None,
+        "fee_evidence_ref": (
+            {
+                "path": fee_correction["source_path"],
+                "sha256": fee_correction["source_sha256"],
+            }
+            if fee_correction is not None
+            else None
+        ),
+        "fee_components": (
+            {
+                "commission_cny": fee_correction["commission_cny"],
+                "transfer_fee_cny": fee_correction["transfer_fee_cny"],
+                "stamp_duty_cny": fee_correction["stamp_duty_cny"],
+            }
+            if fee_correction is not None
+            else None
+        ),
         "reported_realized_pnl_cny": (
             format(Decimal(str(row["realized_pnl"])), "f")
             if row.get("realized_pnl") is not None
@@ -294,9 +321,44 @@ def _extract_historical_audit(
         if row.get("symbol") and row.get("shares")
     }
     calculated = dict(opening_shares)
+    corrections: dict[tuple[str, str, int, str], dict[str, Any]] = {}
+    for lineage in catalog["lineage_index"]:
+        record_id = str(lineage["record_id"])
+        manual_member = reader.read(record_id, "manual_execution_manifest.json")
+        if manual_member is None:
+            continue
+        manual_raw, manual_path = manual_member
+        manual = json.loads(manual_raw)
+        for row in manual.get("reconciled_source_trades") or []:
+            source_record = row.get("source_actual_fill_record")
+            final_fee = row.get("final_total_fee_cny")
+            if not isinstance(source_record, str) or final_fee is None:
+                continue
+            try:
+                key = (
+                    source_record,
+                    str(row["symbol"]),
+                    int(row["shares"]),
+                    format(Decimal(str(row["execution_price"])), "f"),
+                )
+            except (KeyError, ValueError, ArithmeticError):
+                continue
+            corrections[key] = {
+                "final_total_fee_cny": final_fee,
+                "commission_cny": row.get("commission_cny"),
+                "transfer_fee_cny": row.get("transfer_fee_cny"),
+                "stamp_duty_cny": row.get("stamp_duty_cny"),
+                "source_path": manual_path,
+                "source_sha256": _sha(manual_raw),
+                "correction_record_id": record_id,
+                "broker_delivery_statement_available": bool(
+                    manual.get("owner_declaration", {}).get("broker_delivery_statement_available")
+                ),
+            }
     trades: list[dict[str, Any]] = []
     unknown_fee_count = 0
     known_fee_count = 0
+    policy_fee_count = 0
     for lineage in catalog["lineage_index"]:
         record_id = str(lineage["record_id"])
         manifest_member = reader.read(record_id, "manifest.json")
@@ -325,6 +387,18 @@ def _extract_historical_audit(
                 source_rows = list(csv.DictReader(io.StringIO(orders_raw.decode("utf-8-sig"))))
         fallback_date = str(lineage.get("valuation_date") or "")
         for index, raw in enumerate(source_rows, start=1):
+            try:
+                correction_key = (
+                    record_id,
+                    str(raw.get("symbol")),
+                    int(float(raw.get("shares") or 0)),
+                    format(
+                        Decimal(str(raw.get("execution_price") or raw.get("price") or 0)),
+                        "f",
+                    ),
+                )
+            except (ValueError, ArithmeticError):
+                correction_key = ("", "", 0, "0")
             trade = _normalize_trade(
                 raw,
                 record_id=record_id,
@@ -332,6 +406,7 @@ def _extract_historical_audit(
                 source_path=source_path,
                 source_sha=source_sha,
                 fallback_date=fallback_date,
+                fee_correction=corrections.get(correction_key),
             )
             if trade is None:
                 continue
@@ -340,6 +415,8 @@ def _extract_historical_audit(
             )
             if trade["fee_status"] == "KNOWN":
                 known_fee_count += 1
+            elif trade["fee_status"] == "OWNER_POLICY_RECONCILED":
+                policy_fee_count += 1
             else:
                 unknown_fee_count += 1
             trades.append(trade)
@@ -367,6 +444,7 @@ def _extract_historical_audit(
             "current_active_record_id": source_store["active_record_id"],
             "reported_fill_count": len(trades),
             "known_fee_fill_count": known_fee_count,
+            "owner_policy_reconciled_fee_fill_count": policy_fee_count,
             "legacy_unavailable_fee_fill_count": unknown_fee_count,
             "reported_fills": trades,
             "unexplained_share_deltas": unexplained,
@@ -555,6 +633,7 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
     }
     reader = RecordReader(project=project, record_root=record_root, records=catalog["records"])
     preimages = {
+        "accounting_compiler_version": _ACCOUNTING_COMPILER_VERSION,
         "source_store": source_store,
         "industry_capture_sha256": args.industry_capture_sha,
     }
@@ -654,6 +733,11 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
             "historical_status": "PARTIAL",
             "prospective_status": "READY",
             "reported_fill_count": audit["reported_fill_count"],
+            "known_fee_fill_count": audit["known_fee_fill_count"],
+            "owner_policy_reconciled_fee_fill_count": audit[
+                "owner_policy_reconciled_fee_fill_count"
+            ],
+            "legacy_unavailable_fee_fill_count": audit["legacy_unavailable_fee_fill_count"],
             "unexplained_share_delta_count": len(audit["unexplained_share_deltas"]),
             "provider_calls": False,
             "broker_calls": False,
@@ -713,6 +797,9 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         "historical_status": "PARTIAL",
         "prospective_status": "READY",
         "reported_fill_count": audit["reported_fill_count"],
+        "known_fee_fill_count": audit["known_fee_fill_count"],
+        "owner_policy_reconciled_fee_fill_count": audit["owner_policy_reconciled_fee_fill_count"],
+        "legacy_unavailable_fee_fill_count": audit["legacy_unavailable_fee_fill_count"],
         "unexplained_share_delta_count": len(audit["unexplained_share_deltas"]),
         "provider_calls": False,
         "broker_calls": False,
@@ -757,6 +844,13 @@ def main() -> int:
                 "coverage": verified["genesis"]["coverage"],
                 "accounting_status": verified["genesis"]["status"],
                 "reported_fill_count": verified["audit"]["reported_fill_count"],
+                "known_fee_fill_count": verified["audit"]["known_fee_fill_count"],
+                "owner_policy_reconciled_fee_fill_count": verified["audit"].get(
+                    "owner_policy_reconciled_fee_fill_count", 0
+                ),
+                "legacy_unavailable_fee_fill_count": verified["audit"][
+                    "legacy_unavailable_fee_fill_count"
+                ],
                 "unexplained_share_delta_count": len(verified["audit"]["unexplained_share_deltas"]),
                 "provider_calls": False,
                 "broker_calls": False,

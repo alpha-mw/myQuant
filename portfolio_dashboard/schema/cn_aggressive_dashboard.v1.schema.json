@@ -85,7 +85,9 @@
       "required": [
         "data", "accounting", "attribution", "evidence", "historical_coverage",
         "prospective_coverage", "prospective_effective_date", "blockers",
-        "reported_fill_count", "unexplained_share_delta_count"
+        "reported_fill_count", "known_fee_fill_count",
+        "owner_policy_reconciled_fee_fill_count", "legacy_unavailable_fee_fill_count",
+        "unexplained_share_delta_count"
       ],
       "properties": {
         "data": {"$ref": "#/$defs/assuranceDimension"},
@@ -97,6 +99,9 @@
         "prospective_effective_date": {"type": ["string", "null"]},
         "blockers": {"type": "array", "items": {"type": "string"}},
         "reported_fill_count": {"type": ["integer", "null"], "minimum": 0},
+        "known_fee_fill_count": {"type": ["integer", "null"], "minimum": 0},
+        "owner_policy_reconciled_fee_fill_count": {"type": ["integer", "null"], "minimum": 0},
+        "legacy_unavailable_fee_fill_count": {"type": ["integer", "null"], "minimum": 0},
         "unexplained_share_delta_count": {"type": ["integer", "null"], "minimum": 0}
       }
     },
