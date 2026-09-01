@@ -43,9 +43,26 @@ def _write_exact(path: Path, raw: bytes) -> None:
         os.close(fd)
 
 
-def _provider_rows(token: str, *, start_date: str, end_date: str) -> list[dict[str, Any]]:
+def _provider_rows(
+    token: str | None,
+    *,
+    start_date: str,
+    end_date: str,
+    source: str,
+) -> list[dict[str, Any]]:
+    if source == "eastmoney":
+        from backfill_cn_dashboard_benchmark import pull_eastmoney_kline_rows
+
+        rows = pull_eastmoney_kline_rows(
+            start_date=start_date,
+            end_date=end_date,
+            ts_codes=REQUIRED_CODES,
+        )
+        return sorted(rows, key=lambda row: (row["date"], row["ts_code"]))
     import tushare as ts  # type: ignore[import-not-found]
 
+    if token is None:
+        raise RuntimeError("PROJECT_ENV token is required for Tushare benchmark capture")
     pro = create_tushare_pro(ts, token, Config.TUSHARE_URL)
     if pro is None:
         raise RuntimeError("benchmark provider initialization failed")
@@ -110,6 +127,7 @@ def main() -> int:
     parser.add_argument("--end-date", required=True)
     parser.add_argument("--generation-id", required=True)
     parser.add_argument("--expected-pointer-sha256", required=True)
+    parser.add_argument("--source", choices=("tushare", "eastmoney"), default="tushare")
     parser.add_argument("--execute", action="store_true")
     args = parser.parse_args()
     workspace = args.workspace_root.resolve(strict=True)
@@ -132,11 +150,16 @@ def main() -> int:
             )
         )
         return 0
-    token = read_project_env_token(workspace / ".env")
+    token = read_project_env_token(workspace / ".env") if args.source == "tushare" else None
     try:
-        rows = _provider_rows(token, start_date=args.start_date, end_date=args.end_date)
+        rows = _provider_rows(
+            token,
+            start_date=args.start_date,
+            end_date=args.end_date,
+            source=args.source,
+        )
     finally:
-        token = ""
+        token = None
     expected_days = {row["date"] for row in rows if args.start_date <= row["date"] <= args.end_date}
     if not expected_days:
         raise RuntimeError("benchmark capture returned no trade dates")
@@ -152,7 +175,10 @@ def main() -> int:
         "codes": list(REQUIRED_CODES),
         "row_count": len(rows),
         "rows_sha256": _sha(canonical_json_bytes(rows)),
-        "credential_contract": "PROJECT_ENV_V2",
+        "source_system": args.source,
+        "credential_contract": (
+            "PROJECT_ENV_V2" if args.source == "tushare" else "PUBLIC_READ_ONLY_NO_CREDENTIAL"
+        ),
         "credential_material_recorded": False,
         "broker_order_trade_authority": False,
     }
