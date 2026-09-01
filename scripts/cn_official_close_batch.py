@@ -187,13 +187,9 @@ def _inventory(directory: Path) -> dict[str, Any]:
         rows.append(
             {
                 "path": path.name,
+                "type": "file",
+                "size": len(raw),
                 "sha256": _sha(raw),
-                "bytes": len(raw),
-                "media_type": (
-                    "application/vnd.apache.parquet"
-                    if path.suffix == ".parquet"
-                    else "text/csv" if path.suffix == ".csv" else "application/json"
-                ),
             }
         )
         total += len(raw)
