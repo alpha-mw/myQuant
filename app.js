@@ -1045,6 +1045,20 @@
     }, delay);
   }
 
+  function publicBundleDataUpdated(bundle) {
+    if (!PublicMode || !bundle || bundle.public_redacted !== true) return false;
+    var performanceEnd = bundle.portfolio && bundle.portfolio.performance_end_date;
+    return bundle.status !== "BLOCKED" &&
+      Array.isArray(bundle.blockers) && bundle.blockers.length === 0 &&
+      typeof performanceEnd === "string" &&
+      bundle.latest_data_date === performanceEnd &&
+      Array.isArray(bundle.benchmarks) && bundle.benchmarks.length === 3 &&
+      bundle.benchmarks.every(function (benchmark) {
+        return benchmark && benchmark.end_date === performanceEnd &&
+          Array.isArray(benchmark.missing_dates) && benchmark.missing_dates.length === 0;
+      });
+  }
+
   function render() {
     var snapshot = Contract.deriveSnapshot(window.MyQuantCNAggressiveDashboard);
     var status = byId("runtimeStatus");
@@ -1077,8 +1091,9 @@
       );
       renderBlockers(v2Snapshot.blockers);
     } else {
-      status.textContent = snapshot.status === "FRESH" ? "UPDATED" : snapshot.status;
-      status.className = "status-pill " + snapshot.status.toLowerCase();
+      var publicUpdated = publicBundleDataUpdated(snapshot.bundle);
+      status.textContent = publicUpdated || snapshot.status === "FRESH" ? "UPDATED" : snapshot.status;
+      status.className = "status-pill " + (publicUpdated ? "fresh" : snapshot.status.toLowerCase());
       renderBlockers(snapshot.blockers);
     }
     if (snapshot.bundle) renderBundle(snapshot.bundle, null);
