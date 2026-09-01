@@ -293,6 +293,40 @@ def test_checker_omits_requirement_when_canonical_date_is_current() -> None:
     assert checker.official_valuation_publication_requirement(v1, v2) is None
 
 
+def test_latest_required_close_is_independent_of_event_closure(tmp_path: Path) -> None:
+    from quant_investor.market.cn_benchmark_store import (
+        EMPTY_POINTER_SHA256,
+        REQUIRED_CODES,
+        publish_generation,
+    )
+
+    market = tmp_path / "data/parquet/cn/_latest.json"
+    market.parent.mkdir(parents=True)
+    market.write_text(json.dumps({"latest_complete_trade_date": "20260828"}), encoding="utf-8")
+    rows = [
+        {
+            "date": day,
+            "ts_code": code,
+            "close": 1000.0 + index,
+            "source_system": "fixture.index_daily",
+            "coverage": "exact_close",
+            "value_date": day,
+        }
+        for day in ("2026-08-24", "2026-08-28")
+        for index, code in enumerate(REQUIRED_CODES)
+    ]
+    publish_generation(
+        tmp_path / "data/parquet/cn/benchmarks",
+        rows=rows,
+        generation_id="benchmark-required-date-test",
+        captured_at="2026-08-28T10:00:00Z",
+        expected_pointer_sha256=EMPTY_POINTER_SHA256,
+        acquisition_receipt_ref={"path": "capture.json", "sha256": "a" * 64},
+    )
+
+    assert checker.latest_required_close_date(tmp_path) == "2026-08-28"
+
+
 def test_attempt_receipt_is_immutable_and_does_not_touch_selector(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir()

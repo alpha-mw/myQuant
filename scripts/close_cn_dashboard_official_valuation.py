@@ -61,9 +61,11 @@ EXPECTED_RECORD_FILES = {
 }
 ORDINARY_PUBLICATION_CLASS = "ORDINARY_SAME_DAY_OFFICIAL_VALUATION"
 LATE_PUBLICATION_CLASS = "LATE_OFFICIAL_VALUATION_PUBLICATION"
+BATCH_PUBLICATION_CLASS = "BATCH_CATCH_UP_OFFICIAL_VALUATION"
 LATE_PUBLICATION_SCHEMA = "myquant.strategy_record_publication_delay.v1"
 LATE_PUBLICATION_REASON = "SHARED_CHECKOUT_SAFETY_GATE_DELAY"
 ORDINARY_PUBLICATION_REASON = "SAME_DAY_OFFICIAL_VALUATION"
+BATCH_PUBLICATION_REASON = "OWNER_AUTHORIZED_CONTINUOUS_CLOSE_CATCH_UP"
 LATE_VALUATION_DATE = date(2026, 8, 21)
 LATE_PUBLICATION_DATE = date(2026, 8, 22)
 LATE_SOURCE_RECORD = "20260820_1321"
@@ -336,6 +338,7 @@ def _publication_contract(
     if publication_class not in {
         ORDINARY_PUBLICATION_CLASS,
         LATE_PUBLICATION_CLASS,
+        BATCH_PUBLICATION_CLASS,
     }:
         raise ValueError("publication class is invalid")
     valuation_date = _iso_date(expected_valuation_date, label="expected valuation date")
@@ -354,13 +357,23 @@ def _publication_contract(
     recorded_shanghai = recorded_at.astimezone(ZoneInfo("Asia/Shanghai"))
     if recorded_shanghai.date() != publication_date:
         raise ValueError("recorded_at publication date mismatch")
-    if record_id != recorded_shanghai.strftime("%Y%m%d_%H%M"):
+    if publication_class == BATCH_PUBLICATION_CLASS:
+        prefix = recorded_shanghai.strftime("%Y%m%d_%H%M%S")
+        if re.fullmatch(re.escape(prefix) + r"-b[0-9]{2}", record_id) is None:
+            raise ValueError("batch record_id does not bind recorded_at second and ordinal")
+    elif record_id != recorded_shanghai.strftime("%Y%m%d_%H%M"):
         raise ValueError("record_id does not match recorded_at Shanghai minute")
     receipt_at = _aware_timestamp(receipt_created_at, label="continuity receipt created_at")
     if receipt_at > recorded_at:
         raise ValueError("continuity receipt is later than recorded_at")
 
     delay_days = (publication_date - valuation_date).days
+    if publication_class == BATCH_PUBLICATION_CLASS:
+        if publication_date < valuation_date:
+            raise ValueError("batch publication predates valuation")
+        if publication_delay_reason != BATCH_PUBLICATION_REASON:
+            raise ValueError("batch publication reason is invalid")
+        return recorded_shanghai, None
     if publication_class == ORDINARY_PUBLICATION_CLASS:
         if delay_days != 0:
             raise ValueError("ordinary publication must be same-day")
@@ -916,8 +929,8 @@ def build_record(
         _normalize_symbol(symbol, label="source ledger")
         for symbol in source_ledger["symbol"].astype(str)
     }
-    if len(symbols) != 7:
-        raise ValueError("source holdings must contain exactly seven symbols")
+    if not symbols or len(symbols) != len(source_ledger):
+        raise ValueError("source holdings must be a non-empty unique symbol set")
     evidence_check = validate_strict_market_close_evidence(
         evidence,
         project_root=project,

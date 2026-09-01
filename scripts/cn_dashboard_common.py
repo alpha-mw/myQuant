@@ -36,6 +36,7 @@ TRANSACTION_BACKFILL_PROVENANCE_SCHEMA_VERSION = "cn_aggressive_transaction_back
 STRICT_MARKET_CLOSE_EVIDENCE_SCHEMA_VERSION = "cn_dashboard_strict_market_close_evidence.v1"
 ORDINARY_PUBLICATION_CLASS = "ORDINARY_SAME_DAY_OFFICIAL_VALUATION"
 LATE_PUBLICATION_CLASS = "LATE_OFFICIAL_VALUATION_PUBLICATION"
+BATCH_PUBLICATION_CLASS = "BATCH_CATCH_UP_OFFICIAL_VALUATION"
 LATE_PUBLICATION_SCHEMA = "myquant.strategy_record_publication_delay.v1"
 LATE_PUBLICATION_REASON = "SHARED_CHECKOUT_SAFETY_GATE_DELAY"
 LATE_SOURCE_RECORD = "20260820_1321"
@@ -43,7 +44,7 @@ MARKET = "CN"
 STRATEGY = "aggressive_tech_manufacturing"
 LEGACY_RETURN_METHOD = "initial_capital_return_excluding_external_flows"
 CANONICAL_RETURN_METHOD = "flow_neutral_unitization_v1"
-RECORD_NAME_RE = re.compile(r"^[0-9]{8}_[0-9]{4}$")
+RECORD_NAME_RE = re.compile(r"^(?:[0-9]{8}_[0-9]{4}|[0-9]{8}_[0-9]{6}-b[0-9]{2})$")
 SYMBOL_RE = re.compile(r"^[0-9]{6}\.(?:SH|SZ|BJ)$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 GENERATION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -507,12 +508,22 @@ def _validate_publication_timing(
         manual.get("recorded_at_iso"), label="publication_recorded_at"
     )
     recorded_shanghai = recorded.astimezone(ZoneInfo("Asia/Shanghai"))
-    if record_dir.name != recorded_shanghai.strftime("%Y%m%d_%H%M"):
+    if manifest_class == BATCH_PUBLICATION_CLASS:
+        prefix = recorded_shanghai.strftime("%Y%m%d_%H%M%S")
+        if re.fullmatch(re.escape(prefix) + r"-b[0-9]{2}", record_dir.name) is None:
+            raise DashboardInputError("batch_publication_record_id_mismatch")
+    elif record_dir.name != recorded_shanghai.strftime("%Y%m%d_%H%M"):
         raise DashboardInputError("publication_record_id_minute_mismatch")
     trade_date = _record_date(
         manual.get("valuation_trade_date") or manual.get("trade_date"),
         "publication_valuation_trade_date",
     )
+    if manifest_class == BATCH_PUBLICATION_CLASS:
+        if manifest_delay is not None or manual_delay is not None:
+            raise DashboardInputError("batch_publication_delay_not_allowed")
+        if recorded_shanghai.date().isoformat() < trade_date:
+            raise DashboardInputError("batch_publication_predates_valuation")
+        return
     if manifest_class == ORDINARY_PUBLICATION_CLASS:
         if manifest_delay is not None or manual_delay is not None:
             raise DashboardInputError("ordinary_publication_delay_not_allowed")

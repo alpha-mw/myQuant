@@ -1,0 +1,70 @@
+{
+  "schema_id": "myquant.cn_official_close_retrospective_owner_declaration.v1",
+  "declaration_id": "cn-official-close-retrospective-20260824-20260828-v1",
+  "owner": "Maxwell",
+  "authorized_at": "2026-09-01T00:00:00Z",
+  "policy_id": "cn-daily-official-close-policy-v1",
+  "strategy_label": "aggressive_tech_manufacturing",
+  "dates": [
+    {
+      "trade_date": "2026-08-24",
+      "executions": [],
+      "orders": [],
+      "fills": [],
+      "funding": [],
+      "cost_basis_changes": [],
+      "corporate_actions": [],
+      "manual_changes": [],
+      "source_receipt_id": "automation-20260824-daily-review-v1"
+    },
+    {
+      "trade_date": "2026-08-25",
+      "executions": [],
+      "orders": [],
+      "fills": [],
+      "funding": [],
+      "cost_basis_changes": [],
+      "corporate_actions": [],
+      "manual_changes": [],
+      "source_receipt_id": null
+    },
+    {
+      "trade_date": "2026-08-26",
+      "executions": [],
+      "orders": [],
+      "fills": [],
+      "funding": [],
+      "cost_basis_changes": [],
+      "corporate_actions": [],
+      "manual_changes": [],
+      "source_receipt_id": "automation-20260826-daily-review-v1"
+    },
+    {
+      "trade_date": "2026-08-27",
+      "executions": [],
+      "orders": [],
+      "fills": [],
+      "funding": [],
+      "cost_basis_changes": [],
+      "corporate_actions": [],
+      "manual_changes": [],
+      "source_receipt_id": "automation-20260827-daily-review-v1"
+    },
+    {
+      "trade_date": "2026-08-28",
+      "executions": [],
+      "orders": [],
+      "fills": [],
+      "funding": [],
+      "cost_basis_changes": [],
+      "corporate_actions": [],
+      "manual_changes": [],
+      "source_receipt_id": "automation-20260828-daily-review-v1"
+    }
+  ],
+  "retrospective_empty_event_closure_authorized": true,
+  "view_only_mark_is_cross_check_only": true,
+  "broker_order_trade_authority": false,
+  "actual_holdings_mutation_authority": false,
+  "cash_mutation_authority": false
+}

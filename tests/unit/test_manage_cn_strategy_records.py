@@ -89,6 +89,13 @@ def test_inventory_reports_unregistered_legacy_and_registered_orphans(
     assert after["orphans_preserved"] is True
 
 
+def test_batch_record_identity_is_versioned_without_changing_legacy_identity() -> None:
+    assert manager._strict_run_id("20260821_1200") == "20260821_1200"
+    assert manager._strict_run_id("20260901_090000-b01") == "20260901_090000-b01"
+    with pytest.raises(StrategyRecordStoreError, match="YYYYMMDD"):
+        manager._strict_run_id("20260901_090000")
+
+
 def test_reselect_catalog_command_requires_explicit_owner_approval(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

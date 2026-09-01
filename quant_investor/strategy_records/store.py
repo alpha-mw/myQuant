@@ -41,11 +41,12 @@ NEW_RECORD_MAX_FILES: Final = 128
 EMPTY_POINTER_SHA256: Final = hashlib.sha256(b"").hexdigest()
 PUBLICATION_DELAY_SCHEMA: Final = "myquant.strategy_record_publication_delay.v1"
 LATE_OFFICIAL_VALUATION_PUBLICATION: Final = "LATE_OFFICIAL_VALUATION_PUBLICATION"
+BATCH_CATCH_UP_OFFICIAL_VALUATION: Final = "BATCH_CATCH_UP_OFFICIAL_VALUATION"
 LATE_PUBLICATION_REASON: Final = "SHARED_CHECKOUT_SAFETY_GATE_DELAY"
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _GENERATION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
-_RECORD_ID = re.compile(r"^[0-9]{8}_[0-9]{4}$")
+_RECORD_ID = re.compile(r"^(?:[0-9]{8}_[0-9]{4}|[0-9]{8}_[0-9]{6}-b[0-9]{2})$")
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 

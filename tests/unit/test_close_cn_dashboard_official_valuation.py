@@ -368,6 +368,46 @@ def test_late_publication_contract_is_identical_and_historical_only(
     assert closed["data_date"] == "2026-08-21"
 
 
+def test_batch_publication_uses_real_second_plus_ordinal_without_loosening_late_contract(
+    tmp_path: Path,
+) -> None:
+    project, staging_dir, _summary, _evidence = _build(
+        tmp_path,
+        record_id="20260901_090000-b01",
+        recorded_at_iso="2026-09-01T09:00:00+08:00",
+        receipt_created_at="2026-08-21T13:27:37Z",
+        publication_class=valuation.BATCH_PUBLICATION_CLASS,
+        expected_valuation_date="2026-08-21",
+        expected_publication_date="2026-09-01",
+        publication_delay_reason=valuation.BATCH_PUBLICATION_REASON,
+    )
+    manifest = json.loads((staging_dir / "manifest.json").read_text())
+    manual = json.loads((staging_dir / "manual_execution_manifest.json").read_text())
+
+    assert manifest["publication_class"] == valuation.BATCH_PUBLICATION_CLASS
+    assert manual["publication_class"] == valuation.BATCH_PUBLICATION_CLASS
+    assert "publication_delay" not in manifest
+    assert "publication_delay" not in manual
+    assert (
+        validate_record(staging_dir, project / "results" / "records", project)["data_date"]
+        == "2026-08-21"
+    )
+
+
+def test_batch_publication_rejects_synthetic_future_ordinal_identity(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="batch record_id"):
+        _build(
+            tmp_path,
+            record_id="20260901_090001-b01",
+            recorded_at_iso="2026-09-01T09:00:00+08:00",
+            receipt_created_at="2026-08-21T13:27:37Z",
+            publication_class=valuation.BATCH_PUBLICATION_CLASS,
+            expected_valuation_date="2026-08-21",
+            expected_publication_date="2026-09-01",
+            publication_delay_reason=valuation.BATCH_PUBLICATION_REASON,
+        )
+
+
 def _publication_kwargs() -> dict[str, object]:
     return {
         "publication_class": valuation.LATE_PUBLICATION_CLASS,

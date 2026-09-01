@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timezone
 from decimal import Decimal
 import fcntl
 import hashlib
@@ -91,7 +91,7 @@ ARCHIVE_MAX_MEMBERS = 10_000
 ARCHIVE_MAX_EXPANDED_BYTES = 2 * 1024 * 1024 * 1024
 ARCHIVE_FREE_SPACE_RESERVE_BYTES = 256 * 1024 * 1024
 _RECORD_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
-_STRICT_RUN_ID = re.compile(r"^[0-9]{8}_[0-9]{4}$")
+_STRICT_RUN_ID = re.compile(r"^(?:[0-9]{8}_[0-9]{4}|[0-9]{8}_[0-9]{6}-b[0-9]{2})$")
 _ARCHIVE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 TRANSACTION_PLAN_SCHEMA = "myquant.strategy_record_quarantine_plan.v1"
 TRANSACTION_EVENT_SCHEMA = "myquant.strategy_record_quarantine_event.v1"
@@ -217,7 +217,9 @@ def _record_id(value: str) -> str:
 def _strict_run_id(value: str) -> str:
     record_id = _record_id(value)
     if _STRICT_RUN_ID.fullmatch(record_id) is None:
-        raise StrategyRecordStoreError("new record_id must use YYYYMMDD_HHMM")
+        raise StrategyRecordStoreError(
+            "new record_id must use YYYYMMDD_HHMM or batch YYYYMMDD_HHMMSS-bNN"
+        )
     return record_id
 
 
@@ -3769,6 +3771,137 @@ def _common_record_root(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--record-root", required=True)
 
 
+def command_publish_event_closures(args: argparse.Namespace) -> dict[str, Any]:
+    """Publish explicit owner-authorized CLOSED_EMPTY event-state rows."""
+
+    from quant_investor.strategy_records.event_store import (
+        build_empty_closure,
+        publish_generation,
+    )
+
+    project = Path(args.project_root).resolve(strict=True)
+    root = Path(args.record_root).resolve(strict=True)
+    policy_path = project / _safe_relative(args.policy_path)
+    declaration_path = project / _safe_relative(args.retrospective_declaration)
+    policy_raw = policy_path.read_bytes()
+    declaration_raw = declaration_path.read_bytes()
+    if _sha(policy_raw) != args.policy_sha256:
+        raise StrategyRecordStoreError("event policy SHA mismatch")
+    if _sha(declaration_raw) != args.retrospective_declaration_sha256:
+        raise StrategyRecordStoreError("retrospective declaration SHA mismatch")
+    policy = json.loads(policy_raw)
+    declaration = json.loads(declaration_raw)
+    if (
+        policy.get("schema_id") != "myquant.cn_daily_official_close_policy.v1"
+        or policy.get("revoked_at") is not None
+        or declaration.get("schema_id")
+        != "myquant.cn_official_close_retrospective_owner_declaration.v1"
+        or declaration.get("retrospective_empty_event_closure_authorized") is not True
+    ):
+        raise StrategyRecordStoreError("event policy/declaration contract mismatch")
+    loaded = load_registered_catalog(root)
+    if loaded is None:
+        raise StrategyRecordStoreError("event closure publication requires Store-v3")
+    _pointer, catalog = loaded
+    receipts = {
+        row.get("receipt_id"): row
+        for row in catalog.get("receipts", [])
+        if isinstance(row, dict) and isinstance(row.get("receipt_id"), str)
+    }
+    sealed_at = _timestamp(args.published_at)
+    closures: list[dict[str, Any]] = []
+    for row in declaration.get("dates") or []:
+        if not isinstance(row, dict):
+            raise StrategyRecordStoreError("retrospective date row is invalid")
+        day = date.fromisoformat(str(row.get("trade_date"))).isoformat()
+        for dimension in (
+            "executions",
+            "orders",
+            "fills",
+            "funding",
+            "cost_basis_changes",
+            "corporate_actions",
+            "manual_changes",
+        ):
+            if row.get(dimension) != []:
+                raise StrategyRecordStoreError(
+                    f"retrospective event dimension is not empty:{day}:{dimension}"
+                )
+        receipt_id = row.get("source_receipt_id")
+        source_ref = None
+        if receipt_id is not None:
+            receipt = receipts.get(receipt_id)
+            if not isinstance(receipt, dict) or receipt.get("content_sha256") != content_sha256(
+                receipt
+            ):
+                raise StrategyRecordStoreError(f"retrospective source receipt is invalid:{day}")
+            source_ref = {
+                "path": f"catalog:{catalog['generation_id']}#receipt:{receipt_id}",
+                "sha256": receipt["content_sha256"],
+            }
+        cutoff = datetime.combine(
+            date.fromisoformat(day),
+            time(15, 30),
+            tzinfo=_SHANGHAI,
+        ).astimezone(timezone.utc)
+        closures.append(
+            build_empty_closure(
+                trade_date=day,
+                sealed_at=sealed_at,
+                cutoff_at=_utc_timestamp(cutoff),
+                policy_ref={"path": args.policy_path, "sha256": args.policy_sha256},
+                owner_declaration_ref={
+                    "path": args.retrospective_declaration,
+                    "sha256": args.retrospective_declaration_sha256,
+                },
+                source_receipt_ref=source_ref,
+            )
+        )
+    published = publish_generation(
+        root / "_event_store",
+        generation_id=args.generation_id,
+        generated_at=sealed_at,
+        expected_pointer_sha256=args.expected_event_pointer_sha256,
+        closures=closures,
+        policy_ref={"path": args.policy_path, "sha256": args.policy_sha256},
+    )
+    return {
+        "status": "PUBLISHED",
+        "generation_id": args.generation_id,
+        "pointer_sha256": published["pointer_sha256"],
+        "trade_dates": published["pointer"]["trade_dates"],
+        "broker_calls": False,
+        "order_calls": False,
+        "trade_calls": False,
+    }
+
+
+def command_close_through_latest(args: argparse.Namespace) -> dict[str, Any]:
+    """Plan or execute one offline all-or-nothing official-close batch."""
+
+    from scripts.cn_official_close_batch import close_through_latest
+
+    values = {
+        "project_root": Path(args.project_root),
+        "record_root": Path(args.record_root),
+        "expected_store_pointer_sha": args.expected_pointer_sha,
+        "expected_market_pointer_sha": args.expected_market_pointer_sha,
+        "expected_benchmark_pointer_sha": args.expected_benchmark_pointer_sha,
+        "expected_event_pointer_sha": args.expected_event_pointer_sha,
+        "calendar_receipt_path": Path(args.calendar_receipt),
+        "calendar_receipt_sha": args.calendar_receipt_sha,
+        "policy_path": args.policy_path,
+        "policy_sha": args.policy_sha,
+        "retrospective_path": args.retrospective_declaration,
+        "retrospective_sha": args.retrospective_declaration_sha,
+        "execute": args.execute,
+    }
+    if args.execute:
+        with _operation_lock(args.record_root):
+            return close_through_latest(**values)
+    return close_through_latest(**values)
+
+
 def _publication_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--generation-id")
     parser.add_argument("--published-at")
@@ -3884,6 +4017,34 @@ def build_parser() -> argparse.ArgumentParser:
     verify = subparsers.add_parser("verify")
     _common_record_root(verify)
     verify.set_defaults(handler=command_verify)
+
+    event_close = subparsers.add_parser("publish-event-closures")
+    _common_record_root(event_close)
+    event_close.add_argument("--project-root", required=True)
+    event_close.add_argument("--policy-path", required=True)
+    event_close.add_argument("--policy-sha256", required=True)
+    event_close.add_argument("--retrospective-declaration", required=True)
+    event_close.add_argument("--retrospective-declaration-sha256", required=True)
+    event_close.add_argument("--expected-event-pointer-sha256", required=True)
+    event_close.add_argument("--generation-id", required=True)
+    event_close.add_argument("--published-at")
+    event_close.set_defaults(handler=command_publish_event_closures, mutating=True)
+
+    close_latest = subparsers.add_parser("close-through-latest")
+    _common_record_root(close_latest)
+    close_latest.add_argument("--project-root", required=True)
+    close_latest.add_argument("--expected-pointer-sha", required=True)
+    close_latest.add_argument("--expected-market-pointer-sha", required=True)
+    close_latest.add_argument("--expected-benchmark-pointer-sha", required=True)
+    close_latest.add_argument("--expected-event-pointer-sha", required=True)
+    close_latest.add_argument("--calendar-receipt", required=True)
+    close_latest.add_argument("--calendar-receipt-sha", required=True)
+    close_latest.add_argument("--policy-path", required=True)
+    close_latest.add_argument("--policy-sha", required=True)
+    close_latest.add_argument("--retrospective-declaration")
+    close_latest.add_argument("--retrospective-declaration-sha")
+    close_latest.add_argument("--execute", action="store_true")
+    close_latest.set_defaults(handler=command_close_through_latest)
 
     reselect = subparsers.add_parser("reselect-catalog")
     _common_record_root(reselect)

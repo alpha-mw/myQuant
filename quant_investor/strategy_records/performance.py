@@ -40,6 +40,7 @@ PERFORMANCE_MIGRATION_RECEIPT_SCHEMA: Final = (
     "myquant.strategy_performance_migration_candidate_receipt.v1"
 )
 LATE_OFFICIAL_VALUATION_PUBLICATION: Final = "LATE_OFFICIAL_VALUATION_PUBLICATION"
+BATCH_CATCH_UP_OFFICIAL_VALUATION: Final = "BATCH_CATCH_UP_OFFICIAL_VALUATION"
 
 HISTORICAL_LABEL: Final = "aggressive_tech_manufacturing"
 CANONICAL_STRATEGY_ID: Final = "cn-aggressive-tech-manufacturing"
@@ -53,7 +54,9 @@ MAX_PERFORMANCE_PARQUET_BYTES: Final = 64 * 1024 * 1024
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _GENERATION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
-_RECORD_ID = re.compile(r"^(?P<day>[0-9]{8})_(?P<clock>[0-9]{4})$")
+_RECORD_ID = re.compile(
+    r"^(?P<day>[0-9]{8})_(?P<clock>[0-9]{4})(?:(?P<seconds>[0-9]{2})-b(?P<ordinal>[0-9]{2}))?$"
+)
 _UTC_TIMESTAMP = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 
 
@@ -164,7 +167,8 @@ def _valuation_at(record_id: str, valuation_date: str) -> str:
         )
     try:
         parsed_day = datetime.strptime(match.group("day"), "%Y%m%d").date()
-        parsed_time = datetime.strptime(match.group("clock"), "%H%M").time()
+        clock = match.group("clock") + (match.group("seconds") or "")
+        parsed_time = datetime.strptime(clock, "%H%M%S" if len(clock) == 6 else "%H%M").time()
         declared_day = date.fromisoformat(valuation_date)
     except ValueError as exc:
         raise StrategyRecordStoreError(
@@ -1166,6 +1170,7 @@ def validate_lineage_index(value: Any, *, active_record_id: Any) -> tuple[str, .
         if row.get("publication_class") not in {
             "OFFICIAL_FINANCIAL_STATE",
             LATE_OFFICIAL_VALUATION_PUBLICATION,
+            BATCH_CATCH_UP_OFFICIAL_VALUATION,
             "RECEIPT_ONLY_NO_ACTION",
             "CORRECTION",
         }:

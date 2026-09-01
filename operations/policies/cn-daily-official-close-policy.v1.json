@@ -1,0 +1,46 @@
+{
+  "schema_id": "myquant.cn_daily_official_close_policy.v1",
+  "policy_id": "cn-daily-official-close-policy-v1",
+  "owner": "Maxwell",
+  "strategy_label": "aggressive_tech_manufacturing",
+  "canonical_strategy_id": "cn-aggressive-tech-manufacturing",
+  "record_root": "results/strategy_records/CN/aggressive_tech_manufacturing",
+  "effective_from": "2026-09-01T00:00:00Z",
+  "revoked_at": null,
+  "max_backlog_open_days": 20,
+  "event_inbox": {
+    "pointer_path": "results/strategy_records/CN/aggressive_tech_manufacturing/_event_store/current.v1.json",
+    "owner_append_cutoff_local": "15:30:00",
+    "timezone": "Asia/Shanghai",
+    "sealed_empty_inventory_is_owner_authorized_closure": true,
+    "owner_obligation": "All executions, orders, fills, funding, cost-basis changes, corporate actions, and manual changes must be appended before cutoff.",
+    "late_event_behavior": "OFFICIAL_CLOSE_RESTATEMENT_REQUIRED"
+  },
+  "allowed_writes": [
+    "DAILY_NO_ACTION_CONTINUITY_RECEIPT",
+    "OFFICIAL_VALUATION_RECORD",
+    "PERFORMANCE_APPEND",
+    "IMMUTABLE_CATALOG_GENERATION",
+    "STRATEGY_RECORD_POINTER_CAS",
+    "IMMUTABLE_CN_BENCHMARK_GENERATION",
+    "CN_BENCHMARK_POINTER_CAS",
+    "REDACTED_DASHBOARD_PUBLICATION"
+  ],
+  "forbidden": {
+    "broker_connection": true,
+    "order_creation": true,
+    "trade_execution": true,
+    "unregistered_share_mutation": true,
+    "unregistered_cash_mutation": true,
+    "factor_mutation": true,
+    "fundamental_mutation": true,
+    "pit_mutation_outside_existing_maintenance": true,
+    "macro_mutation": true,
+    "public_holdings_or_amounts_or_paths_or_real_sha": true
+  },
+  "publication_gate": "LATEST_OFFICIAL_DATE_EQUALS_LATEST_REQUIRED_CLOSE_DATE",
+  "restatement_requires_separate_owner_authorization": true,
+  "broker_order_trade_authority": false,
+  "actual_holdings_mutation_authority": false,
+  "cash_mutation_without_registered_event_authority": false
+}
