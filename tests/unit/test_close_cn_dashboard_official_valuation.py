@@ -497,6 +497,40 @@ def test_strict_evidence_rejects_wrong_sha_date_inventory_and_nonpositive(
         valuation.validate_strict_market_close_evidence(bad_close, **kwargs)
 
 
+def test_batch_evidence_accepts_newer_market_head_with_exact_historical_rows(
+    tmp_path: Path,
+) -> None:
+    project, _source, _closure, market_pointer, evidence = _source_fixture(tmp_path)
+    pointer = json.loads(market_pointer.read_text())
+    manifest_path = project / pointer["manifest_path"]
+    manifest = json.loads(manifest_path.read_text())
+    pointer["latest_complete_trade_date"] = "20260824"
+    pointer["latest_trade_date"] = "20260824"
+    manifest["latest_complete_trade_date"] = "20260824"
+    manifest["latest_trade_date"] = "20260824"
+    _write_json(manifest_path, manifest)
+    _write_json(market_pointer, pointer)
+    evidence["latest_complete_trade_date"] = "20260824"
+    evidence["market_pointer_sha256"] = _sha(market_pointer)
+    evidence["snapshot_manifest_sha256"] = _sha(manifest_path)
+    kwargs = {
+        "project_root": project,
+        "expected_symbols": set(STOCKS),
+        "expected_trade_date": TRADE_DATE,
+        "expected_market_pointer_sha256": _sha(market_pointer),
+    }
+
+    with pytest.raises(ValueError, match="snapshot identity"):
+        valuation.validate_strict_market_close_evidence(evidence, **kwargs)
+    validated = valuation.validate_strict_market_close_evidence(
+        evidence,
+        **kwargs,
+        allow_historical_market_head=True,
+    )
+    assert validated["latest_complete_trade_date"] == TRADE_DATE
+    assert validated["market_pointer_sha256"] == _sha(market_pointer)
+
+
 def test_registered_source_rejects_pointer_and_identity_drift(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

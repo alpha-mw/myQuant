@@ -474,6 +474,7 @@ def validate_strict_market_close_evidence(
     expected_symbols: set[str],
     expected_trade_date: str,
     expected_market_pointer_sha256: str | None = None,
+    allow_historical_market_head: bool = False,
 ) -> dict[str, Any]:
     """Validate the local strict-Parquet close evidence contract.
 
@@ -509,12 +510,15 @@ def validate_strict_market_close_evidence(
         raise ValueError("market pointer status is not OK")
     snapshot_id = str(evidence.get("snapshot_id") or "")
     latest_complete = str(evidence.get("latest_complete_trade_date") or "").replace("-", "")
-    if not snapshot_id or latest_complete != expected_trade_date:
+    if (
+        not snapshot_id
+        or (not allow_historical_market_head and latest_complete != expected_trade_date)
+        or (allow_historical_market_head and latest_complete < expected_trade_date)
+    ):
         raise ValueError("market snapshot identity is incomplete")
     if (
         pointer.get("snapshot_id") != snapshot_id
-        or str(pointer.get("latest_complete_trade_date") or "").replace("-", "")
-        != expected_trade_date
+        or str(pointer.get("latest_complete_trade_date") or "").replace("-", "") != latest_complete
     ):
         raise ValueError("market pointer snapshot binding mismatch")
 
@@ -542,8 +546,7 @@ def validate_strict_market_close_evidence(
     if (
         manifest.get("market", "CN") != "CN"
         or manifest.get("snapshot_id") != snapshot_id
-        or str(manifest.get("latest_complete_trade_date") or "").replace("-", "")
-        != expected_trade_date
+        or str(manifest.get("latest_complete_trade_date") or "").replace("-", "") != latest_complete
     ):
         raise ValueError("snapshot manifest identity mismatch")
     serving_root_value = manifest.get("derived_serving_root")
@@ -937,6 +940,7 @@ def build_record(
         expected_symbols=symbols,
         expected_trade_date=trade_date,
         expected_market_pointer_sha256=expected_market_pointer_sha256,
+        allow_historical_market_head=publication_class == BATCH_PUBLICATION_CLASS,
     )
     close_by_code = evidence_check["stocks"]
 
