@@ -41,6 +41,7 @@ MARK_SOURCE_KIND = "STRICT_CN_EOD_CLOSE"
 DAILY_SCOPE = "DAILY_SYNC_LATEST_VERIFIED_LOCAL_CLOSE"
 NO_ACTION_RECEIPT_SCHEMA = "myquant.strategy_record_no_action_receipt.v1"
 OFFICIAL_CLOSE_BATCH_RECEIPT_SCHEMA = "myquant.strategy_daily_close_receipt.v1"
+BATCH_PUBLICATION_CLASS = "BATCH_CATCH_UP_OFFICIAL_VALUATION"
 LATE_PUBLICATION_CLASS = "LATE_OFFICIAL_VALUATION_PUBLICATION"
 LATE_PUBLICATION_SCHEMA = "publication_delay.v1"
 LATE_CATALOG_PUBLICATION_SCHEMA = "myquant.strategy_record_publication_delay.v1"
@@ -1085,7 +1086,7 @@ def build_v2_bundle(
             )
         else:
             receipt_id = f"automation-{generation_local_date.strftime('%Y%m%d')}" "-daily-review-v1"
-            financial_publication = (
+            ordinary_financial_publication = (
                 lineage_row.get("publication_class") == "OFFICIAL_FINANCIAL_STATE"
                 and lineage_row.get("valuation_date") == generation_date_text
                 and _local_date_from_timestamp(
@@ -1093,6 +1094,38 @@ def build_v2_bundle(
                 )
                 == generation_local_date
             )
+            active_batch_receipts = [
+                candidate
+                for candidate in catalog.get("receipts", [])
+                if isinstance(candidate, dict)
+                and candidate.get("schema_id") == OFFICIAL_CLOSE_BATCH_RECEIPT_SCHEMA
+                and candidate.get("record_id") == active_id
+            ]
+            batch_financial_publication = (
+                lineage_row.get("publication_class") == BATCH_PUBLICATION_CLASS
+                and lineage_row.get("valuation_date")
+                == v1_bundle.get("portfolio", {}).get("performance_end_date")
+                and len(active_batch_receipts) == 1
+                and active_batch_receipts[0].get("trade_date")
+                == lineage_row.get("valuation_date")
+                and active_batch_receipts[0].get("status") == "OFFICIAL_CLOSE_PREPARED"
+                and active_batch_receipts[0].get("payload_copied") is False
+                and active_batch_receipts[0].get("actual_holdings_mutation_authority") is False
+                and active_batch_receipts[0].get("cash_mutation_authority") is False
+                and active_batch_receipts[0].get("broker_order_trade_authority") is False
+                and active_batch_receipts[0].get("content_sha256")
+                == store_content_sha256(active_batch_receipts[0])
+                and _local_date_from_timestamp(
+                    active_batch_receipts[0].get("effective_at"),
+                    label="official_close_batch_effective_at",
+                )
+                == generation_local_date
+                and _local_date_from_timestamp(
+                    record_row.get("sealed_at"), label="active_record_sealed_at"
+                )
+                == generation_local_date
+            )
+            financial_publication = ordinary_financial_publication or batch_financial_publication
     else:
         receipt_id = f"automation-{generation_local_date.strftime('%Y%m%d')}" "-daily-review-v1"
     matching_receipts = [

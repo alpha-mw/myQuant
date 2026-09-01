@@ -714,9 +714,20 @@ def test_exact_financial_publication_can_refresh_without_receipt(
 def test_financial_publication_accepts_registered_close_batch_receipts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    inputs = _fixture(tmp_path, monkeypatch, include_receipt=False)
+    inputs = _fixture(
+        tmp_path,
+        monkeypatch,
+        include_receipt=False,
+        latest_complete_trade_date="20260818",
+    )
+    inputs[0]["portfolio"]["performance_end_date"] = "2026-08-18"
+    inputs[0]["content_sha256"] = v2.content_sha256(inputs[0])
+    _write(inputs[1], (json.dumps(inputs[0], sort_keys=True) + "\n").encode())
     catalog = inputs[4]
     catalog["lineage_index"][0]["valuation_date"] = "2026-08-18"
+    catalog["lineage_index"][0]["publication_class"] = (
+        "BATCH_CATCH_UP_OFFICIAL_VALUATION"
+    )
     catalog["records"][0]["sealed_at"] = "2026-08-18T01:00:00Z"
     batch_receipt = {
         "schema_id": "myquant.strategy_daily_close_receipt.v1",
