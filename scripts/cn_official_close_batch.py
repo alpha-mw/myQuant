@@ -314,7 +314,10 @@ def _market_evidence(
         "benchmark_input_sha256": _sha(csv_raw),
         "benchmark_pointer_path": "data/parquet/cn/benchmarks/_latest.json",
         "benchmark_pointer_sha256": benchmark["pointer_sha256"],
+        "benchmark_generation_id": benchmark["pointer"]["generation_id"],
+        "benchmark_manifest_path": benchmark["pointer"]["manifest"]["path"],
         "benchmark_manifest_sha256": benchmark["manifest_sha256"],
+        "benchmark_series_path": benchmark["pointer"]["series"]["path"],
         "benchmark_series_sha256": benchmark["series_sha256"],
         "stocks": stocks,
         "indices": [
@@ -455,9 +458,7 @@ def close_through_latest(
                 plan = json.loads(_read(plan_path, label="daily-close frozen plan"))
                 completion_path = _completion_path(root, transaction_id)
                 if completion_path.exists():
-                    recovered = json.loads(
-                        _read(completion_path, label="daily-close completion")
-                    )
+                    recovered = json.loads(_read(completion_path, label="daily-close completion"))
                     if (
                         recovered.get("schema_id") != BATCH_COMPLETION_SCHEMA
                         or recovered.get("transaction_id") != transaction_id

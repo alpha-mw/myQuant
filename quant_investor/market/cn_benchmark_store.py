@@ -9,9 +9,11 @@ manifest and Parquet series have been written and read back.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import csv
 from datetime import date, datetime, timezone
 import fcntl
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -188,6 +190,74 @@ def _series_bytes(rows: Sequence[Mapping[str, Any]]) -> bytes:
     return sink.getvalue().to_pybytes()
 
 
+def compatibility_csv_bytes(rows: Sequence[Mapping[str, Any]]) -> bytes:
+    """Return the exact legacy Dashboard projection for immutable rows.
+
+    The CSV is a convenience projection, never benchmark authority.  Keeping
+    the serializer here lets legacy official records prove their historical
+    byte SHA from a registered immutable generation after the mutable alias has
+    advanced.
+    """
+
+    normalized = _normalize_rows(rows)
+    fields = ["date", "ts_code", "close", "source_system", "value_date", "coverage"]
+    output = io.StringIO(newline="")
+    writer = csv.DictWriter(output, fieldnames=fields)
+    writer.writeheader()
+    for row in normalized:
+        writer.writerow(
+            {
+                field: (
+                    row[field].isoformat() if hasattr(row[field], "isoformat") else str(row[field])
+                )
+                for field in fields
+            }
+        )
+    return output.getvalue().encode("utf-8")
+
+
+def load_immutable_generation(root: Path, generation_id: str) -> dict[str, Any]:
+    """Load one explicitly named immutable generation without consulting latest."""
+
+    root = root.resolve()
+    if _GENERATION.fullmatch(generation_id) is None:
+        raise CNBenchmarkStoreError("benchmark generation ID is invalid")
+    prefix = Path("_generations") / generation_id
+    manifest_path = root / prefix / "manifest.v1.json"
+    manifest_raw = _read_regular(manifest_path, label="benchmark immutable manifest")
+    manifest = json.loads(manifest_raw)
+    _validate_seal(manifest, label="benchmark immutable manifest")
+    if (
+        manifest.get("schema_id") != BENCHMARK_MANIFEST_SCHEMA
+        or manifest.get("generation_id") != generation_id
+    ):
+        raise CNBenchmarkStoreError("benchmark immutable manifest identity mismatch")
+    series_ref = manifest.get("series")
+    expected_series_path = (prefix / "series.parquet").as_posix()
+    if not isinstance(series_ref, dict) or series_ref.get("path") != expected_series_path:
+        raise CNBenchmarkStoreError("benchmark immutable series ref mismatch")
+    series_raw = _read_regular(root / expected_series_path, label="benchmark immutable series")
+    if _sha256(series_raw) != series_ref.get("sha256") or len(series_raw) != series_ref.get(
+        "bytes"
+    ):
+        raise CNBenchmarkStoreError("benchmark immutable series closure mismatch")
+    table = pq.read_table(pa.BufferReader(series_raw))
+    if table.schema != _SCHEMA:
+        raise CNBenchmarkStoreError("benchmark immutable series schema mismatch")
+    rows = table.to_pylist()
+    normalized = _normalize_rows(rows)
+    if normalized != rows:
+        raise CNBenchmarkStoreError("benchmark immutable series order/values are non-canonical")
+    return {
+        "manifest": manifest,
+        "rows": rows,
+        "manifest_path": manifest_path,
+        "manifest_sha256": _sha256(manifest_raw),
+        "series_path": root / expected_series_path,
+        "series_sha256": _sha256(series_raw),
+    }
+
+
 def publish_generation(
     root: Path,
     *,
@@ -304,30 +374,22 @@ def load_generation(root: Path) -> dict[str, Any]:
     manifest_ref = pointer.get("manifest")
     if not isinstance(manifest_ref, dict):
         raise CNBenchmarkStoreError("benchmark manifest ref is absent")
-    manifest_raw = _read_regular(root / str(manifest_ref.get("path")), label="benchmark manifest")
-    if _sha256(manifest_raw) != manifest_ref.get("sha256"):
+    immutable = load_immutable_generation(root, str(pointer.get("generation_id") or ""))
+    manifest_raw = _read_regular(immutable["manifest_path"], label="benchmark manifest")
+    if str(immutable["manifest_path"].relative_to(root)) != manifest_ref.get("path") or _sha256(
+        manifest_raw
+    ) != manifest_ref.get("sha256"):
         raise CNBenchmarkStoreError("benchmark manifest SHA mismatch")
-    manifest = json.loads(manifest_raw)
-    _validate_seal(manifest, label="benchmark manifest")
-    if manifest.get("schema_id") != BENCHMARK_MANIFEST_SCHEMA or manifest.get(
-        "generation_id"
-    ) != pointer.get("generation_id"):
-        raise CNBenchmarkStoreError("benchmark manifest closure mismatch")
+    manifest = immutable["manifest"]
     series_ref = pointer.get("series")
     if not isinstance(series_ref, dict) or series_ref != manifest.get("series"):
         raise CNBenchmarkStoreError("benchmark series ref mismatch")
-    series_raw = _read_regular(root / str(series_ref.get("path")), label="benchmark series")
+    series_raw = _read_regular(immutable["series_path"], label="benchmark series")
     if _sha256(series_raw) != series_ref.get("sha256") or len(series_raw) != series_ref.get(
         "bytes"
     ):
         raise CNBenchmarkStoreError("benchmark series closure mismatch")
-    table = pq.read_table(pa.BufferReader(series_raw))
-    if table.schema != _SCHEMA:
-        raise CNBenchmarkStoreError("benchmark series schema mismatch")
-    rows = table.to_pylist()
-    normalized = _normalize_rows(rows)
-    if normalized != rows:
-        raise CNBenchmarkStoreError("benchmark series order/values are non-canonical")
+    rows = immutable["rows"]
     return {
         "pointer": pointer,
         "manifest": manifest,
@@ -346,7 +408,9 @@ __all__ = [
     "CNBenchmarkStoreError",
     "EMPTY_POINTER_SHA256",
     "REQUIRED_CODES",
+    "compatibility_csv_bytes",
     "load_generation",
+    "load_immutable_generation",
     "pointer_sha256",
     "publish_generation",
 ]

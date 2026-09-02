@@ -3800,6 +3800,29 @@ def command_publish_event_closures(args: argparse.Namespace) -> dict[str, Any]:
         or declaration.get("retrospective_empty_event_closure_authorized") is not True
     ):
         raise StrategyRecordStoreError("event policy/declaration contract mismatch")
+    if (
+        declaration.get("policy_id") != policy.get("policy_id")
+        or declaration.get("strategy_label") != "aggressive_tech_manufacturing"
+        or not isinstance(declaration.get("owner"), str)
+        or not declaration.get("owner", "").strip()
+        or any(
+            declaration.get(name) is not False
+            for name in (
+                "broker_order_trade_authority",
+                "actual_holdings_mutation_authority",
+                "cash_mutation_authority",
+            )
+        )
+    ):
+        raise StrategyRecordStoreError("retrospective owner declaration identity invalid")
+    try:
+        authorized_at = datetime.fromisoformat(
+            str(declaration.get("authorized_at") or "").replace("Z", "+00:00")
+        )
+    except ValueError as exc:
+        raise StrategyRecordStoreError("retrospective authorization time invalid") from exc
+    if authorized_at.tzinfo is None:
+        raise StrategyRecordStoreError("retrospective authorization timezone missing")
     loaded = load_registered_catalog(root)
     if loaded is None:
         raise StrategyRecordStoreError("event closure publication requires Store-v3")
@@ -3811,7 +3834,10 @@ def command_publish_event_closures(args: argparse.Namespace) -> dict[str, Any]:
     }
     sealed_at = _timestamp(args.published_at)
     closures: list[dict[str, Any]] = []
-    for row in declaration.get("dates") or []:
+    declaration_dates = declaration.get("dates")
+    if not isinstance(declaration_dates, list) or not declaration_dates:
+        raise StrategyRecordStoreError("retrospective declaration dates missing")
+    for row in declaration_dates:
         if not isinstance(row, dict):
             raise StrategyRecordStoreError("retrospective date row is invalid")
         day = date.fromisoformat(str(row.get("trade_date"))).isoformat()
@@ -3845,6 +3871,8 @@ def command_publish_event_closures(args: argparse.Namespace) -> dict[str, Any]:
             time(15, 30),
             tzinfo=_SHANGHAI,
         ).astimezone(timezone.utc)
+        if authorized_at.astimezone(timezone.utc) < cutoff:
+            raise StrategyRecordStoreError("retrospective authorization precedes cutoff")
         closures.append(
             build_empty_closure(
                 trade_date=day,

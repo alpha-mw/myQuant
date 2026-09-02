@@ -6,9 +6,12 @@ import pytest
 
 from quant_investor.market.cn_benchmark_store import (
     CNBenchmarkCASMismatch,
+    CNBenchmarkStoreError,
     EMPTY_POINTER_SHA256,
     REQUIRED_CODES,
+    compatibility_csv_bytes,
     load_generation,
+    load_immutable_generation,
     publish_generation,
 )
 from scripts.operations import run_cn_benchmark_close as producer
@@ -77,6 +80,63 @@ def test_benchmark_pointer_cas_conflict(tmp_path: Path) -> None:
             expected_pointer_sha256=EMPTY_POINTER_SHA256,
             acquisition_receipt_ref={"path": "private/capture-2.json", "sha256": "b" * 64},
         )
+
+
+def test_explicit_immutable_generation_reproduces_legacy_alias_after_latest_advances(
+    tmp_path: Path,
+) -> None:
+    first = publish_generation(
+        tmp_path,
+        rows=_rows(),
+        generation_id="benchmark-first-test",
+        captured_at="2026-08-25T10:00:00Z",
+        expected_pointer_sha256=EMPTY_POINTER_SHA256,
+        acquisition_receipt_ref={"path": "private/first.json", "sha256": "a" * 64},
+    )
+    old_alias = compatibility_csv_bytes(first["rows"])
+    extended = [
+        *_rows(),
+        *[
+            {
+                "date": "2026-08-26",
+                "ts_code": code,
+                "close": 1100.0 + index,
+                "source_system": "fixture.index_daily",
+                "coverage": "exact_close",
+                "value_date": "2026-08-26",
+            }
+            for index, code in enumerate(REQUIRED_CODES)
+        ],
+    ]
+    publish_generation(
+        tmp_path,
+        rows=extended,
+        generation_id="benchmark-second-test",
+        captured_at="2026-08-26T10:00:00Z",
+        expected_pointer_sha256=first["pointer_sha256"],
+        acquisition_receipt_ref={"path": "private/second.json", "sha256": "b" * 64},
+    )
+
+    historical = load_immutable_generation(tmp_path, "benchmark-first-test")
+    assert compatibility_csv_bytes(historical["rows"]) == old_alias
+    assert compatibility_csv_bytes(load_generation(tmp_path)["rows"]) != old_alias
+
+
+def test_explicit_immutable_generation_rejects_missing_or_tampered_bytes(tmp_path: Path) -> None:
+    publish_generation(
+        tmp_path,
+        rows=_rows(),
+        generation_id="benchmark-first-test",
+        captured_at="2026-08-25T10:00:00Z",
+        expected_pointer_sha256=EMPTY_POINTER_SHA256,
+        acquisition_receipt_ref={"path": "private/first.json", "sha256": "a" * 64},
+    )
+    with pytest.raises(CNBenchmarkStoreError, match="regular file"):
+        load_immutable_generation(tmp_path, "benchmark-missing-test")
+    series = tmp_path / "_generations/benchmark-first-test/series.parquet"
+    series.write_bytes(series.read_bytes() + b"tamper")
+    with pytest.raises(CNBenchmarkStoreError, match="series closure mismatch"):
+        load_immutable_generation(tmp_path, "benchmark-first-test")
 
 
 def test_tushare_capture_uses_monthly_chunks(monkeypatch: pytest.MonkeyPatch) -> None:

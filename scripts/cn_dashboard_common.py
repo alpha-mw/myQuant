@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo
 
 from quant_investor.strategy_records.store import (
     StrategyRecordStoreError,
+    content_sha256,
     load_archive_binding,
     load_registered_catalog,
 )
@@ -722,6 +723,93 @@ def _validate_funding_correction(manual: dict[str, Any], record_dir: Path) -> di
     }
 
 
+def _verify_registered_benchmark_compatibility_alias(
+    *,
+    evidence: Mapping[str, Any],
+    record_id: str,
+    record_root: Path,
+    project_root: Path,
+    expected_alias_path: str,
+    expected_alias_sha256: str,
+) -> None:
+    """Resolve the one retired mutable alias through registered exact lineage."""
+
+    alias = "portfolio_dashboard/inputs/cn_index_benchmark.csv"
+    if expected_alias_path != alias:
+        raise DashboardInputError("official_valuation_benchmark_source_sha_mismatch")
+    from quant_investor.market.cn_benchmark_store import (
+        CNBenchmarkStoreError,
+        compatibility_csv_bytes,
+        load_immutable_generation,
+    )
+
+    generation_id = evidence.get("benchmark_generation_id")
+    if generation_id is None:
+        try:
+            registered = load_registered_catalog(record_root)
+        except StrategyRecordStoreError as exc:
+            raise DashboardInputError("official_valuation_benchmark_lineage_invalid") from exc
+        if registered is None:
+            raise DashboardInputError("official_valuation_benchmark_lineage_missing")
+        _pointer, catalog = registered
+        matches = [
+            row
+            for row in catalog.get("receipts", [])
+            if isinstance(row, dict)
+            and row.get("schema_id") == "myquant.strategy_daily_close_receipt.v1"
+            and row.get("record_id") == record_id
+        ]
+        if len(matches) != 1:
+            raise DashboardInputError("official_valuation_benchmark_receipt_ambiguous")
+        receipt = matches[0]
+        if receipt.get("content_sha256") != content_sha256(receipt):
+            raise DashboardInputError("official_valuation_benchmark_receipt_invalid")
+        transaction_id = receipt.get("transaction_id")
+        if not isinstance(transaction_id, str) or not GENERATION_ID_RE.fullmatch(transaction_id):
+            raise DashboardInputError("official_valuation_benchmark_transaction_invalid")
+        plan_path = (
+            record_root / "_record_store/daily_close_transactions" / transaction_id / "plan.v1.json"
+        )
+        plan_artifact = stable_read(plan_path, project_root)
+        plan = load_json(plan_artifact)
+        if (
+            not isinstance(plan, dict)
+            or plan.get("schema_id") != "myquant.cn_official_close_batch_plan.v1"
+            or plan.get("transaction_id") != transaction_id
+            or plan.get("input_fingerprint") != receipt.get("input_fingerprint")
+            or plan.get("content_sha256") != content_sha256(plan)
+            or record_id not in (plan.get("record_ids") or [])
+        ):
+            raise DashboardInputError("official_valuation_benchmark_plan_invalid")
+        preimages = plan.get("preimages")
+        if not isinstance(preimages, dict) or preimages.get(
+            "benchmark_pointer_sha256"
+        ) != evidence.get("benchmark_pointer_sha256"):
+            raise DashboardInputError("official_valuation_benchmark_pointer_lineage_mismatch")
+        generation_id = plan.get("benchmark_generation_id")
+    if not isinstance(generation_id, str) or not GENERATION_ID_RE.fullmatch(generation_id):
+        raise DashboardInputError("official_valuation_benchmark_generation_invalid")
+    try:
+        generation = load_immutable_generation(
+            project_root / "data/parquet/cn/benchmarks", generation_id
+        )
+    except (OSError, ValueError, CNBenchmarkStoreError) as exc:
+        raise DashboardInputError("official_valuation_benchmark_generation_unavailable") from exc
+    expected_manifest = (Path("_generations") / generation_id / "manifest.v1.json").as_posix()
+    expected_series = (Path("_generations") / generation_id / "series.parquet").as_posix()
+    if evidence.get("benchmark_manifest_path") not in (None, expected_manifest):
+        raise DashboardInputError("official_valuation_benchmark_manifest_path_mismatch")
+    if evidence.get("benchmark_series_path") not in (None, expected_series):
+        raise DashboardInputError("official_valuation_benchmark_series_path_mismatch")
+    if generation["manifest_sha256"] != evidence.get("benchmark_manifest_sha256") or generation[
+        "series_sha256"
+    ] != evidence.get("benchmark_series_sha256"):
+        raise DashboardInputError("official_valuation_benchmark_generation_sha_mismatch")
+    rebuilt = compatibility_csv_bytes(generation["rows"])
+    if hashlib.sha256(rebuilt).hexdigest() != expected_alias_sha256:
+        raise DashboardInputError("official_valuation_benchmark_alias_bytes_mismatch")
+
+
 def validate_record(
     record_dir: Path,
     record_root: Path,
@@ -1065,6 +1153,7 @@ def validate_record(
                         "official_valuation_stock_source_sha_mismatch:" + position_symbol
                     )
             position["price_date"] = data_date
+        benchmark_source_verified = False
         for code, row in indices.items():
             if (
                 _record_date(
@@ -1090,9 +1179,25 @@ def validate_record(
                     or not SHA256_RE.fullmatch(benchmark_sha)
                 ):
                     raise DashboardInputError("official_valuation_benchmark_source_ref_invalid")
-                benchmark_artifact = stable_read(project_root / benchmark_path, project_root)
-                if benchmark_artifact.sha256 != benchmark_sha:
-                    raise DashboardInputError("official_valuation_benchmark_source_sha_mismatch")
+                if not benchmark_source_verified:
+                    try:
+                        benchmark_artifact = stable_read(
+                            project_root / benchmark_path, project_root
+                        )
+                    except DashboardInputError as exc:
+                        if not str(exc).startswith("artifact_missing:"):
+                            raise
+                        benchmark_artifact = None
+                    if benchmark_artifact is None or benchmark_artifact.sha256 != benchmark_sha:
+                        _verify_registered_benchmark_compatibility_alias(
+                            evidence=evidence,
+                            record_id=record_dir.name,
+                            record_root=record_root,
+                            project_root=project_root,
+                            expected_alias_path=benchmark_path,
+                            expected_alias_sha256=benchmark_sha,
+                        )
+                    benchmark_source_verified = True
         if source_record:
             source_manifest = stable_read(source_dir / "manifest.json", project_root)
             source_manual = stable_read(source_dir / "manual_execution_manifest.json", project_root)

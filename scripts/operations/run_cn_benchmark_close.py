@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import csv
 from datetime import date, datetime, timedelta, timezone
 import hashlib
 import json
@@ -26,6 +25,7 @@ from quant_investor.market.cn_benchmark_store import (
     EMPTY_POINTER_SHA256,
     REQUIRED_CODES,
     canonical_json_bytes,
+    compatibility_csv_bytes,
     load_generation,
     pointer_sha256,
     publish_generation,
@@ -129,21 +129,12 @@ def _provider_rows(
 
 
 def _write_compatibility_csv(path: Path, rows: list[dict[str, Any]]) -> None:
-    fields = ["date", "ts_code", "close", "source_system", "value_date", "coverage"]
-    ordered = []
-    for row in sorted(rows, key=lambda value: (str(value["date"]), value["ts_code"])):
-        output: dict[str, str] = {}
-        for field in fields:
-            value = row[field]
-            output[field] = value.isoformat() if hasattr(value, "isoformat") else str(value)
-        ordered.append(output)
+    raw = compatibility_csv_bytes(rows)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        mode="w", encoding="utf-8", newline="", dir=path.parent, delete=False
-    ) as handle:
-        writer = csv.DictWriter(handle, fieldnames=fields)
-        writer.writeheader()
-        writer.writerows(ordered)
+    with tempfile.NamedTemporaryFile(mode="wb", dir=path.parent, delete=False) as handle:
+        handle.write(raw)
+        handle.flush()
+        os.fsync(handle.fileno())
         temporary = Path(handle.name)
     os.replace(temporary, path)
 

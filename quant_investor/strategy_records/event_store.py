@@ -75,6 +75,22 @@ def _read(path: Path, *, label: str) -> bytes:
     return first
 
 
+def _write_exact_once(path: Path, raw: bytes, *, label: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        if _read(path, label=label) != raw:
+            raise StrategyEventStoreError(f"{label} identity collision")
+        return
+    descriptor = os.open(
+        path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600
+    )
+    try:
+        os.write(descriptor, raw)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def pointer_sha256(root: Path) -> str:
     path = root / "current.v1.json"
     return _sha(_read(path, label="event pointer")) if path.exists() else EMPTY_POINTER_SHA256
@@ -174,6 +190,20 @@ def publish_generation(
     for ref in (policy_ref,):
         if set(ref) != {"path", "sha256"} or _SHA.fullmatch(str(ref.get("sha256"))) is None:
             raise StrategyEventStoreError("event policy ref is invalid")
+    existing = None
+    if expected_pointer_sha256 != EMPTY_POINTER_SHA256:
+        if pointer_sha256(root) != expected_pointer_sha256:
+            raise StrategyEventCASMismatch("event pointer preimage mismatch")
+        existing = load_generation(root)
+        current_by_date = {row["trade_date"]: row for row in existing["closures"]}
+        candidate_by_date = {row["trade_date"]: row for row in rows}
+        for day, current in current_by_date.items():
+            if day not in candidate_by_date:
+                raise StrategyEventStoreError("event successor dropped current closure set")
+            if candidate_by_date[day] != current:
+                raise StrategyEventStoreError("OFFICIAL_CLOSE_RESTATEMENT_REQUIRED")
+        if candidate_by_date == current_by_date:
+            return {**existing, "no_action": True}
     generation = _seal(
         {
             "schema_id": EVENT_GENERATION_SCHEMA,
@@ -224,6 +254,15 @@ def publish_generation(
         if observed != expected_pointer_sha256:
             raise StrategyEventCASMismatch(
                 f"event pointer CAS mismatch: expected {expected_pointer_sha256}, observed {observed}"
+            )
+        if expected_pointer_sha256 != EMPTY_POINTER_SHA256:
+            previous_raw = _read(root / "current.v1.json", label="event predecessor pointer")
+            if _sha(previous_raw) != expected_pointer_sha256:
+                raise StrategyEventCASMismatch("event predecessor pointer SHA mismatch")
+            _write_exact_once(
+                root / "pointer_history" / f"{expected_pointer_sha256}.json",
+                previous_raw,
+                label="event pointer history",
             )
         temporary = root / f".current.tmp-{os.getpid()}-{secrets.token_hex(4)}"
         fd = os.open(
