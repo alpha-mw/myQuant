@@ -1,0 +1,27 @@
+{
+  "schema_id": "myquant.cn_official_close_retrospective_ratification_completion.v1",
+  "ratification_id": "cn-official-close-retrospective-20260901-ratification-v1",
+  "ratification_ref": {
+    "path": "operations/policies/cn-official-close-retrospective-20260901-ratification.v1.json",
+    "sha256": "f01652093f5edd6c53a6432e4b2384eec4e8733429c934f9d349becd9191589c"
+  },
+  "completed_at": "2026-09-02T08:20:44Z",
+  "event_generation_id": "event-close-20260824-20260901-ratified-v1",
+  "event_generation_sha256": "5147c0a6a9ce49b9b58a162b1150c18f01c9d724d386c45359dc4043ccac49ba",
+  "event_pointer_sha256": "fc4ed6397d072dc9193ae8449d21b0d46b8deeaaad6ee63cbfe0d9341224c641",
+  "retained_predecessor_pointer_sha256": "e618b73095d12710e42cd53e76ccd2bd8960d0615bd42bd42b6fb2ce3e097a72",
+  "trade_dates": [
+    "2026-08-24",
+    "2026-08-25",
+    "2026-08-26",
+    "2026-08-27",
+    "2026-08-28",
+    "2026-08-31",
+    "2026-09-01"
+  ],
+  "exact_replay_status": "NO_ACTION",
+  "broker_order_trade_authority": false,
+  "actual_holdings_mutation_authority": false,
+  "cash_mutation_authority": false,
+  "content_sha256": "64ceaa421ea37713de5b7553586b3cb7dd266ff8f7fec1f50cbf37baf4f99883"
+}

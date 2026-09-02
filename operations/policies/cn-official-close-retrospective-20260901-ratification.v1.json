@@ -1,0 +1,46 @@
+{
+  "schema_id": "myquant.cn_official_close_retrospective_ratification.v1",
+  "ratification_id": "cn-official-close-retrospective-20260901-ratification-v1",
+  "owner": "Maxwell",
+  "confirmed_at": "2026-09-02T08:20:44Z",
+  "strategy_label": "aggressive_tech_manufacturing",
+  "trade_date": "2026-09-01",
+  "confirmed_empty_dimensions": [
+    "executions",
+    "orders",
+    "fills",
+    "funding",
+    "cost_basis_changes",
+    "corporate_actions",
+    "manual_changes"
+  ],
+  "retrospective_declaration_ref": {
+    "path": "operations/policies/cn-official-close-retrospective-20260901.v1.json",
+    "sha256": "d6ec860f217a038f40217cfde8709f328f82b914a82260e2a957db5dff9643b4"
+  },
+  "event_pointer_ref": {
+    "path": "results/strategy_records/CN/aggressive_tech_manufacturing/_event_store/current.v1.json",
+    "sha256": "e618b73095d12710e42cd53e76ccd2bd8960d0615bd42bd42b6fb2ce3e097a72"
+  },
+  "event_generation_ref": {
+    "path": "results/strategy_records/CN/aggressive_tech_manufacturing/_event_store/generations/event-close-20260901-v1.v1.json",
+    "sha256": "6ad69d3720c0d3b8eb620381f7378bdf8d5cdd4f2a428f8e55803e88d5e0c9a0"
+  },
+  "event_closure_sha256": "f76b40cb89feb3472c73060d31627b5c8554acfc09fb2ea81edf7a2f6ed6e66e",
+  "predecessor_event_generation_ref": {
+    "path": "results/strategy_records/CN/aggressive_tech_manufacturing/_event_store/generations/event-close-20260831-v1.v1.json",
+    "sha256": "a2cfe2fda1c19de25570e575433f8bee45357cff7c6c8712af13a3d392b9f0b7"
+  },
+  "store_pointer_ref": {
+    "path": "results/strategy_records/CN/aggressive_tech_manufacturing/_record_store/current.v1.json",
+    "sha256": "e38009f75a65a1b3ef52231fd1695a2d6821ed6fc06e8762c357c9860564254c"
+  },
+  "store_receipt_sha256": "9b9bd590e451a890b4e70966469f76c7abc8f63fee4822c9a03ee4fbe7e8ff32",
+  "transaction_id": "daily-close-20260901-8e423c0573b3b952",
+  "transaction_plan_file_sha256": "3e2b4313ba74d20663cd502516151c265740d3929461efcd0ac91a8f597debca",
+  "transaction_completion_file_sha256": "ca321b626966b4e9b6612ea512e7801e39197b3d527f1949fbae7310fb48502c",
+  "actual_holdings_mutation_authority": false,
+  "cash_mutation_authority": false,
+  "broker_order_trade_authority": false,
+  "content_sha256": "7803cd9f660a32f5c6536b8b7090b5d195c727b92b78247d7afd9743c2fb740b"
+}
