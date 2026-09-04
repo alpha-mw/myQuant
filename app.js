@@ -1006,6 +1006,12 @@
         " · Prospective " + (assurance.prospective_coverage || "UNAVAILABLE") +
         (assurance.prospective_effective_date
           ? " from " + assurance.prospective_effective_date
+          : "") +
+        (Number.isInteger(assurance.reported_fill_count) &&
+        Number.isInteger(assurance.legacy_unavailable_fee_fill_count)
+          ? " · Fees " +
+            (assurance.reported_fill_count - assurance.legacy_unavailable_fee_fill_count) +
+            "/" + assurance.reported_fill_count + " reconciled"
           : "")
     );
     setText(
