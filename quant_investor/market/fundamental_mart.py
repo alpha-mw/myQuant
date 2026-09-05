@@ -2830,6 +2830,9 @@ def build_canonical_scope_evidence(
     daily_start: str | None = None,
 ) -> dict[str, Any]:
     """Bind a provider rebuild to the exact canonical scope source and symbols."""
+    from .scope_transition import assert_scope_readable
+
+    assert_scope_readable(Path(canonical_path).resolve().parent.parent.parent)
 
     resolved = Path(canonical_path).expanduser()
     if not resolved.is_absolute():

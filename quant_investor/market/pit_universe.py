@@ -969,6 +969,10 @@ class PITUniverseStore:
         manifest SHA-256, which prevents a mutable-path lookup from silently
         selecting different bytes.
         """
+        if manifest_path is None:
+            from .scope_transition import assert_scope_readable
+
+            assert_scope_readable(self.root_dir.parent.parent.parent.parent)
         if _lineage_depth > PIT_UNIVERSE_MAX_LINEAGE_DEPTH:
             raise RuntimeError("pit_generation_lineage_depth_exceeded")
         discovery_payload: dict[str, Any] = {}
@@ -1219,6 +1223,9 @@ class PITUniverseStore:
         descriptor = os.open(lock_path, flags, 0o600)
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX)
+            from .scope_transition import assert_scope_readable
+
+            assert_scope_readable(self.root_dir.resolve().parent.parent.parent.parent)
             yield
         finally:
             fcntl.flock(descriptor, fcntl.LOCK_UN)
@@ -1855,6 +1862,8 @@ def _replay_and_validate_pit_capture(
     canonical_scope_path: str | Path,
     expected_scope_sha256: str,
     expected_parent_pointer_sha256: str = "",
+    scope_transition_request: str | Path | None = None,
+    expected_scope_transition_sha256: str = "",
 ) -> tuple[
     dict[str, Any],
     list[PITUniverseRecord],
@@ -2067,6 +2076,21 @@ def _replay_and_validate_pit_capture(
         if str(exc) != "pit_latest_generation_binding_missing":
             raise
         parent_binding = _empty_parent_binding()
+    scope_change = None
+    if bool(scope_transition_request) != bool(expected_scope_transition_sha256):
+        raise RuntimeError("SCOPE_TRANSITION_ARGUMENTS_REQUIRED_TOGETHER")
+    if scope_transition_request:
+        from .scope_transition import load_request, validate_pit_transition
+
+        scope_change = load_request(scope_transition_request, expected_scope_transition_sha256)
+        validate_pit_transition(
+            scope_change,
+            parent=parent_binding,
+            scope_path=scope_path,
+            scope_sha=scope_sha,
+            capture_sha=expected_capture_sha256,
+        )
+        scope_path = scope_change["canonical_scope_path"]
     parent_scope = dict(
         dict(parent_binding.get("manifest") or {}).get("source_bindings") or {}
     ).get("full_a_scope")
@@ -2118,8 +2142,10 @@ def _replay_and_validate_pit_capture(
         ):
             raise RuntimeError("pit_frozen_scope_predecessor_binding_changed")
         parent_scope = {"path": scope_path, "sha256": scope_sha}
-    if parent_binding.get("generation_id") and (
-        parent_scope.get("path") != scope_path or parent_scope.get("sha256") != scope_sha
+    if (
+        scope_change is None
+        and parent_binding.get("generation_id")
+        and (parent_scope.get("path") != scope_path or parent_scope.get("sha256") != scope_sha)
     ):
         raise RuntimeError("pit_frozen_scope_predecessor_binding_changed")
     parent_pending = dict(
@@ -2133,10 +2159,11 @@ def _replay_and_validate_pit_capture(
             for record in raw_records
             if record.source_list_status in {LIST_STATUS_DELISTED, LIST_STATUS_PENDING}
         }
-        silently_removed = prior_identities - current_identities - transitioned
+        admitted = set(scope_change["added"]) if scope_change else set()
+        silently_removed = prior_identities - current_identities - transitioned - admitted
         if silently_removed:
             raise RuntimeError("pit_scope_expansion_pending_continuity_invalid")
-        if prior_identities & scope_symbols:
+        if (prior_identities & scope_symbols) - admitted:
             raise RuntimeError("pit_scope_expansion_admission_not_configured")
     parent_records_by_symbol = records_by_symbol(parent_binding.get("records") or [])
     fresh_records_by_symbol = records_by_symbol(fresh_records)
@@ -2257,6 +2284,11 @@ def _replay_and_validate_pit_capture(
         "parent_discovery_pointer_sha256": parent_binding["discovery_pointer_sha256"],
         "expected_parent_pointer_sha256": effective_expected_parent,
     }
+    if scope_change is not None:
+        report["scope_transition_ref"] = {
+            "path": str(scope_transition_request),
+            "sha256": expected_scope_transition_sha256,
+        }
     return report, raw_records, latest_records, parent_binding
 
 
@@ -2268,6 +2300,8 @@ def validate_pit_universe_capture(
     canonical_scope_path: str | Path,
     expected_scope_sha256: str,
     expected_parent_pointer_sha256: str = "",
+    scope_transition_request: str | Path | None = None,
+    expected_scope_transition_sha256: str = "",
 ) -> dict[str, Any]:
     report, _, _, _ = _replay_and_validate_pit_capture(
         capture_receipt_path,
@@ -2276,6 +2310,8 @@ def validate_pit_universe_capture(
         canonical_scope_path=canonical_scope_path,
         expected_scope_sha256=expected_scope_sha256,
         expected_parent_pointer_sha256=expected_parent_pointer_sha256,
+        scope_transition_request=scope_transition_request,
+        expected_scope_transition_sha256=expected_scope_transition_sha256,
     )
     return report
 
@@ -2370,6 +2406,8 @@ def publish_pit_universe_capture(
     canonical_scope_path: str | Path,
     expected_scope_sha256: str,
     expected_parent_pointer_sha256: str = "",
+    scope_transition_request: str | Path | None = None,
+    expected_scope_transition_sha256: str = "",
     canonical: bool = True,
     shadow_root: str | Path | None = None,
 ) -> dict[str, Any]:
@@ -2386,6 +2424,8 @@ def publish_pit_universe_capture(
         canonical_scope_path=canonical_scope_path,
         expected_scope_sha256=expected_scope_sha256,
         expected_parent_pointer_sha256=expected_parent_pointer_sha256,
+        scope_transition_request=scope_transition_request,
+        expected_scope_transition_sha256=expected_scope_transition_sha256,
     )
     if not canonical:
         if shadow_root is None:
@@ -2419,6 +2459,10 @@ def publish_pit_universe_capture(
         }
     if shadow_root is not None:
         raise RuntimeError("pit_shadow_root_forbidden_for_canonical_publish")
+    if scope_transition_request:
+        from .scope_transition import require_transition_publisher
+
+        require_transition_publisher(scope_transition_request, expected_scope_transition_sha256)
     published = store.write_snapshot(
         raw_records=raw_records,
         latest_records=latest_records,
@@ -2428,6 +2472,11 @@ def publish_pit_universe_capture(
         parent_binding=parent_binding,
         carried_forward_symbols=validation["carried_forward_symbols"],
         source_bindings={
+            **(
+                {"scope_transition": validation["scope_transition_ref"]}
+                if "scope_transition_ref" in validation
+                else {}
+            ),
             "capture": {
                 "schema_version": PIT_UNIVERSE_CAPTURE_SCHEMA_VERSION,
                 "path": validation["capture_receipt_path"],

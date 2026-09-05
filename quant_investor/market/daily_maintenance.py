@@ -132,6 +132,8 @@ class MaintenanceContext:
     close_session_receipt_path: Path
     close_session_receipt_sha256: str
     prior_stage_results: tuple[Mapping[str, Any], ...] = ()
+    scope_transition_request: Path | None = None
+    expected_scope_transition_sha256: str = ""
 
 
 StageCallback = Callable[[MaintenanceContext], Mapping[str, Any]]
@@ -755,12 +757,27 @@ def run_cn_daily_maintenance(
     run_root: str | Path,
     mode: str,
     attempt_slot: str = "auto",
+    scope_transition_request: str | Path | None = None,
+    expected_scope_transition_sha256: str = "",
     components: MaintenanceComponents | None = None,
     now: datetime | None = None,
     close_authority: Callable[..., CloseSessionAuthorityResult] = (acquire_close_session_authority),
 ) -> dict[str, Any]:
     """Run one locked orchestration attempt without owning component internals."""
 
+    if bool(scope_transition_request) != bool(expected_scope_transition_sha256):
+        raise DailyMaintenanceError("SCOPE_TRANSITION_ARGUMENTS_REQUIRED_TOGETHER")
+    if scope_transition_request:
+        from .scope_transition import run_scope_transition
+
+        return run_scope_transition(
+            workspace_root=workspace_root,
+            run_root=run_root,
+            mode=mode,
+            attempt_slot=attempt_slot,
+            request_path=scope_transition_request,
+            request_sha256=expected_scope_transition_sha256,
+        )
     if mode not in {"shadow", "execute"}:
         raise DailyMaintenanceError("MAINTENANCE_MODE_INVALID")
     observed_now = now or datetime.now(tz=ZoneInfo(TIMEZONE))
@@ -1418,7 +1435,24 @@ def clear_cn_daily_write_veto(
     lane: str = "global",
 ) -> dict[str, Any]:
     """Archive one exact veto under the same lock; never delete its evidence."""
+    root = _owner_only_directory(Path(run_root), create=False)
+    with _RunLock(root / ".daily-maintenance.lock"):
+        return _clear_cn_daily_write_veto_locked(
+            run_root=root,
+            expected_veto_sha256=expected_veto_sha256,
+            reason=reason,
+            lane=lane,
+        )
 
+
+def _clear_cn_daily_write_veto_locked(
+    *,
+    run_root: str | Path,
+    expected_veto_sha256: str,
+    reason: str,
+    lane: str = "global",
+) -> dict[str, Any]:
+    """Exact archive body; caller must already hold the registered run lock."""
     if (
         len(expected_veto_sha256) != 64
         or any(character not in "0123456789abcdef" for character in expected_veto_sha256)
@@ -1430,51 +1464,50 @@ def clear_cn_daily_write_veto(
     ):
         raise DailyMaintenanceError("CLEAR_WRITE_VETO_ARGUMENTS_INVALID")
     root = _owner_only_directory(Path(run_root), create=False)
-    with _RunLock(root / ".daily-maintenance.lock"):
-        veto = root / ("WRITE_VETO.json" if lane == "global" else "MACRO_WRITE_VETO.json")
-        if not _path_present(veto):
-            return {
-                "schema_version": "cn-daily-maintenance-veto-clear.v1",
-                "status": "NO_ACTION",
-                "cleared": False,
-                "lane": lane,
-            }
-        raw = _read_owner_file(veto, code="WRITE_VETO_UNSAFE")
-        observed_sha = hashlib.sha256(raw).hexdigest()
-        if observed_sha != expected_veto_sha256:
-            raise DailyMaintenanceError("WRITE_VETO_SHA_MISMATCH")
-        archive = _child_directory(root, "veto_archive")
-        archived_path = archive / f"{observed_sha}.json"
-        if _path_present(archived_path):
-            archived_raw = _read_owner_file(archived_path, code="WRITE_VETO_ARCHIVE_CONFLICT")
-            if hashlib.sha256(archived_raw).hexdigest() != observed_sha:
-                raise DailyMaintenanceError("WRITE_VETO_ARCHIVE_CONFLICT")
-            veto.unlink()
-        else:
-            os.replace(veto, archived_path)
-        cleared_at = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        receipt = {
+    veto = root / ("WRITE_VETO.json" if lane == "global" else "MACRO_WRITE_VETO.json")
+    if not _path_present(veto):
+        return {
             "schema_version": "cn-daily-maintenance-veto-clear.v1",
-            "status": "CLEARED",
-            "cleared": True,
-            "cleared_at": cleared_at,
-            "reason": reason,
+            "status": "NO_ACTION",
+            "cleared": False,
             "lane": lane,
-            "archived_veto_ref": {
-                "path": str(archived_path),
-                "sha256": observed_sha,
-            },
         }
-        receipt_path = archive / (
-            f"{observed_sha}.{cleared_at.replace(':', '').replace('-', '')}."
-            f"{secrets.token_hex(4)}.clear.json"
-        )
-        receipt_sha = _write_once(receipt_path, _canonical_json_bytes(receipt))
-        receipt["clear_receipt_ref"] = {
-            "path": str(receipt_path),
-            "sha256": receipt_sha,
-        }
-        return receipt
+    raw = _read_owner_file(veto, code="WRITE_VETO_UNSAFE")
+    observed_sha = hashlib.sha256(raw).hexdigest()
+    if observed_sha != expected_veto_sha256:
+        raise DailyMaintenanceError("WRITE_VETO_SHA_MISMATCH")
+    archive = _child_directory(root, "veto_archive")
+    archived_path = archive / f"{observed_sha}.json"
+    if _path_present(archived_path):
+        archived_raw = _read_owner_file(archived_path, code="WRITE_VETO_ARCHIVE_CONFLICT")
+        if hashlib.sha256(archived_raw).hexdigest() != observed_sha:
+            raise DailyMaintenanceError("WRITE_VETO_ARCHIVE_CONFLICT")
+        veto.unlink()
+    else:
+        os.replace(veto, archived_path)
+    cleared_at = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    receipt = {
+        "schema_version": "cn-daily-maintenance-veto-clear.v1",
+        "status": "CLEARED",
+        "cleared": True,
+        "cleared_at": cleared_at,
+        "reason": reason,
+        "lane": lane,
+        "archived_veto_ref": {
+            "path": str(archived_path),
+            "sha256": observed_sha,
+        },
+    }
+    receipt_path = archive / (
+        f"{observed_sha}.{cleared_at.replace(':', '').replace('-', '')}."
+        f"{secrets.token_hex(4)}.clear.json"
+    )
+    receipt_sha = _write_once(receipt_path, _canonical_json_bytes(receipt))
+    receipt["clear_receipt_ref"] = {
+        "path": str(receipt_path),
+        "sha256": receipt_sha,
+    }
+    return receipt
 
 
 def cli_exit_required(payload: Mapping[str, Any]) -> bool:

@@ -865,6 +865,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="owner-only private attempt evidence root",
     )
     market_daily_maintain.add_argument("--mode", required=True, choices=["shadow", "execute"])
+    market_daily_maintain.add_argument("--scope-transition-request", type=_canonical_absolute_path)
+    market_daily_maintain.add_argument(
+        "--expected-scope-transition-sha256", default=None, type=_sha256_argument
+    )
     market_daily_maintain.add_argument(
         "--attempt-slot",
         default="auto",
@@ -1668,6 +1672,14 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
             run_root=args.run_root,
             mode=args.mode,
             attempt_slot=args.attempt_slot,
+            **(
+                {
+                    "scope_transition_request": args.scope_transition_request,
+                    "expected_scope_transition_sha256": args.expected_scope_transition_sha256,
+                }
+                if args.scope_transition_request or args.expected_scope_transition_sha256
+                else {}
+            ),
         )
         _print_json(result)
         if cli_exit_required(result):

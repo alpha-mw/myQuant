@@ -412,6 +412,10 @@ class MarketDataStore:
         descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX)
+            if self.market == "CN":
+                from .scope_transition import assert_scope_readable
+
+                assert_scope_readable(self.data_root.resolve().parent)
             yield
         finally:
             fcntl.flock(descriptor, fcntl.LOCK_UN)

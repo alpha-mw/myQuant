@@ -283,6 +283,9 @@ def registered_component_apis() -> DailyComponentAPIs:
 
 
 def _scope_reference(workspace: Path) -> tuple[Path, str, list[str]]:
+    from .scope_transition import assert_scope_readable
+
+    assert_scope_readable(workspace)
     path = workspace / "data/cn_universe/cn_index_components.json"
     payload, _raw, digest = _json_object(path)
     values = payload.get("full_a")
@@ -523,18 +526,37 @@ class _DefaultComponents:
                     "provider_call_count": 1,
                 },
             }
-        capture = self.apis.pit_acquire(
-            provider,
-            capture_root=context.attempt_root / "pit_capture",
-            source_run_id=f"daily-{context.target_date}-{context.attempt_slot}",
-            effective_date=context.target_date,
-        )
+        if context.scope_transition_request:
+            from .scope_transition import load_request
+
+            request = load_request(
+                context.scope_transition_request, context.expected_scope_transition_sha256
+            )
+            capture = {
+                "capture_receipt_path": request["pit_capture_ref"]["path"],
+                "capture_receipt_sha256": request["pit_capture_ref"]["sha256"],
+                "provider_call_count": 0,
+            }
+        else:
+            capture = self.apis.pit_acquire(
+                provider,
+                capture_root=context.attempt_root / "pit_capture",
+                source_run_id=f"daily-{context.target_date}-{context.attempt_slot}",
+                effective_date=context.target_date,
+            )
         common = {
             "store": store,
             "canonical_scope_path": scope_path,
             "expected_scope_sha256": scope_sha,
             "expected_parent_pointer_sha256": parent_sha,
         }
+        if context.scope_transition_request:
+            common.update(
+                {
+                    "scope_transition_request": context.scope_transition_request,
+                    "expected_scope_transition_sha256": context.expected_scope_transition_sha256,
+                }
+            )
         self.apis.pit_validate(
             capture["capture_receipt_path"],
             capture["capture_receipt_sha256"],

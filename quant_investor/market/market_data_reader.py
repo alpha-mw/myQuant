@@ -835,6 +835,10 @@ class MarketDataReader:
         return result.reset_index(drop=True)
 
     def _load_latest_payload(self, *, refresh: bool = False) -> dict[str, Any]:
+        if self.market == "CN":
+            from .scope_transition import assert_scope_readable
+
+            assert_scope_readable(self.data_root.resolve().parent)
         if self._latest_payload is not None and not refresh:
             return dict(self._latest_payload)
         try:
@@ -1356,6 +1360,10 @@ class MarketDataReader:
         return list(symbols)
 
     def _load_components(self) -> dict[str, Any]:
+        if self.market == "CN":
+            from .scope_transition import assert_scope_readable
+
+            assert_scope_readable(self.data_root.resolve().parent)
         if self._components_payload is not None:
             return dict(self._components_payload)
         candidates = [

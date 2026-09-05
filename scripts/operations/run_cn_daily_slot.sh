@@ -8,9 +8,13 @@ workspace_root=""
 run_root=""
 attempt_slot=""
 expected_import_root=""
+scope_transition_request=""
+scope_transition_sha=""
 
 while (( $# > 0 )); do
   case "$1" in
+    --scope-transition-request) scope_transition_request="$2"; shift 2 ;;
+    --expected-scope-transition-sha256) scope_transition_sha="$2"; shift 2 ;;
     --python) installed_python="$2"; shift 2 ;;
     --workspace-root) workspace_root="$2"; shift 2 ;;
     --run-root) run_root="$2"; shift 2 ;;
@@ -29,6 +33,13 @@ if [[ "$installed_python" != /* || ! -x "$installed_python" || \
       "$workspace_root" != /* || "$run_root" != /* || "$expected_import_root" != /* ]]; then
   print -u2 -- "CN_SLOT_LAUNCHER_PATH_INVALID"
   exit 2
+fi
+
+if [[ -n "$scope_transition_request" || -n "$scope_transition_sha" ]]; then
+  if [[ "$scope_transition_request" != /* || ${#scope_transition_sha} != 64 || "$attempt_slot" != "2020" ]]; then
+    print -u2 -- "SCOPE_TRANSITION_ARGUMENTS_REQUIRED_TOGETHER"
+    exit 2
+  fi
 fi
 
 import_origin="$($installed_python -I -c 'import pathlib,quant_investor; print(pathlib.Path(quant_investor.__file__).resolve())')"
@@ -65,7 +76,7 @@ fi
 preflight_sha="$(/usr/bin/shasum -a 256 "$preflight_path" | /usr/bin/awk '{print $1}')"
 
 veto_path="$run_root/WRITE_VETO.json"
-if [[ -f "$veto_path" ]]; then
+if [[ -f "$veto_path" && -z "$scope_transition_request" ]]; then
   veto_sha="$(/usr/bin/shasum -a 256 "$veto_path" | /usr/bin/awk '{print $1}')"
   env TUSHARE_TOKEN="$slot_token" \
     "$installed_python" -I -m quant_investor market recover-transient-write-veto \
@@ -75,11 +86,17 @@ if [[ -f "$veto_path" ]]; then
       --expected-credential-preflight-sha256 "$preflight_sha"
 fi
 
+transition_args=()
+if [[ -n "$scope_transition_request" ]]; then
+  transition_args=(--scope-transition-request "$scope_transition_request"
+    --expected-scope-transition-sha256 "$scope_transition_sha")
+fi
+
 env TUSHARE_TOKEN="$slot_token" \
   PYTHONPATH="" \
   "$installed_python" -I -m quant_investor market daily-maintain \
     --market CN --workspace-root "$workspace_root" --run-root "$run_root" \
-    --mode execute --attempt-slot "$attempt_slot"
+    --mode execute --attempt-slot "$attempt_slot" "${transition_args[@]}"
 exit_code=$?
 unset slot_token
 exit "$exit_code"
