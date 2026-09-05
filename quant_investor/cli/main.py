@@ -875,6 +875,10 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=["auto", "1620", "1720", "1820", "2020"],
     )
 
+    market_daily_maintain.add_argument(
+        "--retire-coverage-declaration-sha256", default=None, type=_sha256_argument
+    )
+
     market_clear_veto = market_subparsers.add_parser(
         "clear-write-veto",
         help="按 exact SHA 封存并清除 CN 日度维护 write veto",
@@ -1672,6 +1676,11 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
             run_root=args.run_root,
             mode=args.mode,
             attempt_slot=args.attempt_slot,
+            **(
+                {"retire_coverage_declaration_sha256": args.retire_coverage_declaration_sha256}
+                if args.retire_coverage_declaration_sha256
+                else {}
+            ),
             **(
                 {
                     "scope_transition_request": args.scope_transition_request,

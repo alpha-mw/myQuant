@@ -759,12 +759,15 @@ def run_cn_daily_maintenance(
     attempt_slot: str = "auto",
     scope_transition_request: str | Path | None = None,
     expected_scope_transition_sha256: str = "",
+    retire_coverage_declaration_sha256: str = "",
     components: MaintenanceComponents | None = None,
     now: datetime | None = None,
     close_authority: Callable[..., CloseSessionAuthorityResult] = (acquire_close_session_authority),
 ) -> dict[str, Any]:
     """Run one locked orchestration attempt without owning component internals."""
 
+    if retire_coverage_declaration_sha256 and not scope_transition_request:
+        raise DailyMaintenanceError("SCOPE_TRANSITION_REQUEST_REQUIRED_FOR_DECLARATION_RETIREMENT")
     if bool(scope_transition_request) != bool(expected_scope_transition_sha256):
         raise DailyMaintenanceError("SCOPE_TRANSITION_ARGUMENTS_REQUIRED_TOGETHER")
     if scope_transition_request:
@@ -777,6 +780,7 @@ def run_cn_daily_maintenance(
             attempt_slot=attempt_slot,
             request_path=scope_transition_request,
             request_sha256=expected_scope_transition_sha256,
+            retire_coverage_declaration_sha256=retire_coverage_declaration_sha256,
         )
     if mode not in {"shadow", "execute"}:
         raise DailyMaintenanceError("MAINTENANCE_MODE_INVALID")

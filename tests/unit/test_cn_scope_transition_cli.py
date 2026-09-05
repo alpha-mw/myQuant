@@ -76,3 +76,90 @@ def test_launcher_rejects_unpaired_request_before_credential_access(tmp_path):
     assert result.returncode == 2
     assert "SCOPE_TRANSITION_ARGUMENTS_REQUIRED_TOGETHER" in result.stderr
     assert not (tmp_path / "run").exists()
+
+
+def test_retirement_requires_transition_before_any_credential_access(tmp_path):
+    import sys
+
+    launcher = Path(__file__).resolve().parents[2] / "scripts/operations/run_cn_daily_slot.sh"
+    result = subprocess.run(
+        [
+            str(launcher),
+            "--python",
+            sys.executable,
+            "--expected-import-root",
+            str(tmp_path),
+            "--workspace-root",
+            str(tmp_path),
+            "--run-root",
+            str(tmp_path / "run"),
+            "--attempt-slot",
+            "2020",
+            "--retire-coverage-declaration-sha256",
+            "a" * 64,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "REQUIRED_FOR_DECLARATION_RETIREMENT" in result.stderr
+    assert not (tmp_path / "run").exists()
+
+
+def test_launcher_passes_exact_retirement_and_scope_args(tmp_path):
+    import sys, json
+
+    launcher = Path(__file__).resolve().parents[2] / "scripts/operations/run_cn_daily_slot.sh"
+    fake = tmp_path / "python"
+    fake.write_text(
+        "#!"
+        + sys.executable
+        + "\n"
+        + """import sys,json
+from pathlib import Path
+root=Path("""
+        + repr(str(tmp_path))
+        + """)
+a=sys.argv[1:]
+if '-c' in a:
+    code=a[a.index('-c')+1]
+    print(str(root/'quant_investor/__init__.py') if 'import pathlib,quant_investor' in code else 'unit-test-token')
+elif 'credential-preflight' in a:
+    p=Path(a[a.index('--run-root')+1])/'credential_preflight'/(a[a.index('--receipt-id')+1]+'.json')
+    p.parent.mkdir(parents=True,exist_ok=True);p.write_text('{}')
+elif 'daily-maintain' in a:
+    (root/'args.json').write_text(json.dumps(a))
+else:
+    raise SystemExit('unexpected launcher route')
+"""
+    )
+    fake.chmod(0o755)
+    request = tmp_path / "request.json"
+    result = subprocess.run(
+        [
+            str(launcher),
+            "--python",
+            str(fake),
+            "--expected-import-root",
+            str(tmp_path),
+            "--workspace-root",
+            str(tmp_path),
+            "--run-root",
+            str(tmp_path / "run"),
+            "--attempt-slot",
+            "2020",
+            "--scope-transition-request",
+            str(request),
+            "--expected-scope-transition-sha256",
+            "b" * 64,
+            "--retire-coverage-declaration-sha256",
+            "a" * 64,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    argv = json.loads((tmp_path / "args.json").read_text())
+    assert argv[argv.index("--scope-transition-request") + 1] == str(request)
+    assert argv[argv.index("--expected-scope-transition-sha256") + 1] == "b" * 64
+    assert argv[argv.index("--retire-coverage-declaration-sha256") + 1] == "a" * 64

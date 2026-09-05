@@ -51,3 +51,14 @@ edit the previous installed package or select dirty workspace code for a live
 transition. Existing checkpoint bytes remain intact; a changed canonical scope
 or Market/PIT binding requires a new rebuild binding rather than relabeling the
 old checkpoint as current.
+
+An obsolete per-run `daily_basic_coverage_boundaries.json` may independently
+block the Fundamental consumer after Market/PIT closure. The explicit paired
+`--retire-coverage-declaration-sha256 <exact-sha>` option archives only the fixed
+canonical file, after verified transition readiness, if its sealed v2 content
+has exclusively older cutoffs. It preserves exact bytes and a retirement receipt,
+creates no replacement exemptions, and does not rebind old interval identities.
+The new rebuild starts with the normal strict no-exemption default and may create
+new evidence-backed declarations from its own raw capture. Receipt replay checks
+the exact schema, invariant values, archived bytes and readiness ref. The option
+is unavailable without the paired scope-transition request and its SHA.

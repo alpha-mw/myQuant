@@ -10,9 +10,11 @@ attempt_slot=""
 expected_import_root=""
 scope_transition_request=""
 scope_transition_sha=""
+retire_coverage_sha=""
 
 while (( $# > 0 )); do
   case "$1" in
+    --retire-coverage-declaration-sha256) retire_coverage_sha="$2"; shift 2 ;;
     --scope-transition-request) scope_transition_request="$2"; shift 2 ;;
     --expected-scope-transition-sha256) scope_transition_sha="$2"; shift 2 ;;
     --python) installed_python="$2"; shift 2 ;;
@@ -40,6 +42,11 @@ if [[ -n "$scope_transition_request" || -n "$scope_transition_sha" ]]; then
     print -u2 -- "SCOPE_TRANSITION_ARGUMENTS_REQUIRED_TOGETHER"
     exit 2
   fi
+fi
+
+if [[ -n "$retire_coverage_sha" && ( -z "$scope_transition_request" || ${#retire_coverage_sha} != 64 ) ]]; then
+  print -u2 -- "SCOPE_TRANSITION_REQUEST_REQUIRED_FOR_DECLARATION_RETIREMENT"
+  exit 2
 fi
 
 import_origin="$($installed_python -I -c 'import pathlib,quant_investor; print(pathlib.Path(quant_investor.__file__).resolve())')"
@@ -90,6 +97,10 @@ transition_args=()
 if [[ -n "$scope_transition_request" ]]; then
   transition_args=(--scope-transition-request "$scope_transition_request"
     --expected-scope-transition-sha256 "$scope_transition_sha")
+fi
+
+if [[ -n "$retire_coverage_sha" ]]; then
+  transition_args+=(--retire-coverage-declaration-sha256 "$retire_coverage_sha")
 fi
 
 env TUSHARE_TOKEN="$slot_token" \

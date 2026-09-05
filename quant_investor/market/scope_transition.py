@@ -425,6 +425,93 @@ def _ready_receipt(op: Path) -> dict[str, Any]:
     return {**ready, "receipt_ref": reference(op / "readiness.json")}
 
 
+def _retire_stale_coverage_declaration(q, op: Path, expected_sha: str) -> dict[str, Any]:
+    """Archive an explicitly selected obsolete per-run exemption, never rebind it."""
+    from .cn_nontrading_evidence import canonical_json_sha256
+
+    if _OWNER.get() != op.name:
+        raise RuntimeError("SCOPE_COVERAGE_RETIREMENT_REQUIRES_OPERATION")
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_sha):
+        raise RuntimeError("SCOPE_COVERAGE_DECLARATION_SHA_INVALID")
+    source = Path(q["workspace_root"]) / "data/cn_universe/daily_basic_coverage_boundaries.json"
+    archive = op / "retired-inputs" / f"daily-basic-coverage-{expected_sha}.json"
+    receipt = op / f"coverage-declaration-retirement-{expected_sha}.json"
+    replayed = receipt.exists()
+    if replayed:
+        result = json.loads(_bytes(receipt))
+        if (
+            result.get("request_sha256") != op.name
+            or result.get("archived_ref") != {"path": str(archive), "sha256": expected_sha}
+            or result.get("readiness_ref") != reference(op / "readiness.json")
+            or source.exists()
+        ):
+            raise RuntimeError("SCOPE_COVERAGE_RETIREMENT_REPLAY_DRIFT")
+        raw = read_ref(result["archived_ref"])
+    elif source.exists():
+        raw = read_ref({"path": str(source), "sha256": expected_sha})
+    else:
+        raw = read_ref({"path": str(archive), "sha256": expected_sha})
+    payload = json.loads(raw)
+    body = {"schema_version": payload.get("schema_version"), "intervals": payload.get("intervals")}
+    if (
+        set(payload) != {"schema_version", "intervals", "record_sha256"}
+        or payload["schema_version"] != "daily-basic-coverage-intervals.v2"
+        or canonical_json_sha256(body) != payload["record_sha256"]
+        or not isinstance(payload["intervals"], list)
+        or not payload["intervals"]
+        or any(
+            not isinstance(row, dict)
+            or not re.fullmatch(r"[0-9]{8}", str(row.get("cutoff", "")))
+            or row["cutoff"] >= q["effective_date"]
+            for row in payload["intervals"]
+        )
+    ):
+        raise RuntimeError("SCOPE_COVERAGE_DECLARATION_NOT_PROVEN_STALE")
+    if replayed:
+        if (
+            set(result)
+            != {
+                "schema_version",
+                "status",
+                "request_sha256",
+                "source_path",
+                "archived_ref",
+                "readiness_ref",
+                "interval_count",
+                "replacement_exemptions_created",
+                "reason",
+                "recorded_at",
+            }
+            or result["schema_version"] != "cn-stale-coverage-declaration-retirement.v1"
+            or result["status"] != "ARCHIVED"
+            or result["source_path"] != str(source)
+            or result["interval_count"] != len(payload["intervals"])
+            or result["replacement_exemptions_created"] is not False
+            or result["reason"] != "PRIOR_CUTOFF_DECLARATION_NOT_VALID_FOR_NEW_PIT_BINDING"
+        ):
+            raise RuntimeError("SCOPE_COVERAGE_RETIREMENT_RECEIPT_INVALID")
+        return {**result, "status": "NO_ACTION", "receipt_ref": reference(receipt)}
+    _write_new(archive, raw)
+    if source.exists():
+        if _bytes(source) != raw:
+            raise RuntimeError("SCOPE_COVERAGE_DECLARATION_CHANGED")
+        source.unlink()
+    result = {
+        "schema_version": "cn-stale-coverage-declaration-retirement.v1",
+        "status": "ARCHIVED",
+        "request_sha256": op.name,
+        "source_path": str(source),
+        "archived_ref": reference(archive),
+        "readiness_ref": reference(op / "readiness.json"),
+        "interval_count": len(payload["intervals"]),
+        "replacement_exemptions_created": False,
+        "reason": "PRIOR_CUTOFF_DECLARATION_NOT_VALID_FOR_NEW_PIT_BINDING",
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _write_new(receipt, encoded(result))
+    return {**result, "receipt_ref": reference(receipt)}
+
+
 def run_scope_transition(
     *,
     workspace_root: str | Path,
@@ -433,6 +520,7 @@ def run_scope_transition(
     attempt_slot: str,
     request_path: str | Path,
     request_sha256: str,
+    retire_coverage_declaration_sha256: str = "",
 ) -> dict[str, Any]:
     """Receipt-bound recovery branch of daily-maintain; reuses its component DAG."""
     from contextlib import ExitStack
@@ -477,11 +565,17 @@ def run_scope_transition(
                 raise RuntimeError("SCOPE_TRANSITION_REPLAY_DRIFT")
             recovery = _recover_exact_veto(q, op, request_sha256)
             ready = _ready_receipt(op)
+            with _owned(request_sha256):
+                retirement = (
+                    _retire_stale_coverage_declaration(q, op, retire_coverage_declaration_sha256)
+                    if retire_coverage_declaration_sha256
+                    else None
+                )
             if marker.exists():
                 if json.loads(_bytes(marker))["request_sha256"] != request_sha256:
                     raise RuntimeError("SCOPE_TRANSITION_MARKER_CONFLICT")
                 marker.unlink()
-            return {**ready, "status": "NO_ACTION"}
+            return {**ready, "status": "NO_ACTION", "coverage_declaration_retirement": retirement}
         read_ref(q["veto_ref"])
         if marker.exists() and json.loads(_bytes(marker))["request_sha256"] != request_sha256:
             raise RuntimeError("SCOPE_TRANSITION_ALREADY_RUNNING")
@@ -614,8 +708,17 @@ def run_scope_transition(
                 _write_new(terminal, encoded(payload))
                 recovery = _recover_exact_veto(q, op, request_sha256)
                 ready = _ready_receipt(op)
+                retirement = (
+                    _retire_stale_coverage_declaration(q, op, retire_coverage_declaration_sha256)
+                    if retire_coverage_declaration_sha256
+                    else None
+                )
                 marker.unlink()
-                return {**ready, "veto_recovery": recovery}
+                return {
+                    **ready,
+                    "veto_recovery": recovery,
+                    "coverage_declaration_retirement": retirement,
+                }
             except Exception as exc:
                 # Pre-CAS recovery may restore only exact old inputs. After PIT
                 # CAS leave the marker and veto; the same request recovers forward.

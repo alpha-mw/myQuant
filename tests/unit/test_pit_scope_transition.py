@@ -510,3 +510,69 @@ def test_veto_recovery_or_clear_receipt_tamper_blocks_replay(monkeypatch, transi
         record.write_bytes(st.encoded(value))
     with pytest.raises(RuntimeError):
         execute(transition)
+
+
+@pytest.mark.parametrize("cutoff,allowed", [("20260818", True), ("20260819", False)])
+def test_stale_coverage_retirement_is_exact_and_does_not_create_exemptions(
+    monkeypatch, transition, cutoff, allowed
+):
+    from quant_investor.market.cn_nontrading_evidence import canonical_json_sha256
+
+    install_components(monkeypatch, transition)
+    assert execute(transition)["claude_input_ready"] is True
+    root, store, q, request, sha = transition
+    op = root / "data/private/cn_daily_maintenance/scope_transitions" / sha
+    source = root / "data/cn_universe/daily_basic_coverage_boundaries.json"
+    body = {
+        "schema_version": "daily-basic-coverage-intervals.v2",
+        "intervals": [{"cutoff": cutoff}],
+    }
+    ref = put(source, {**body, "record_sha256": canonical_json_sha256(body)})
+    before = source.read_bytes()
+    with st._owned(sha):
+        if not allowed:
+            with pytest.raises(RuntimeError, match="NOT_PROVEN_STALE"):
+                st._retire_stale_coverage_declaration(q, op, ref["sha256"])
+            assert source.read_bytes() == before
+            return
+        with pytest.raises(RuntimeError, match="SHA_MISMATCH"):
+            st._retire_stale_coverage_declaration(q, op, "0" * 64)
+        result = st._retire_stale_coverage_declaration(q, op, ref["sha256"])
+        assert result["status"] == "ARCHIVED"
+        assert result["replacement_exemptions_created"] is False
+        assert st.read_ref(result["archived_ref"]) == before
+        assert not source.exists()
+        assert st._retire_stale_coverage_declaration(q, op, ref["sha256"])["status"] == "NO_ACTION"
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("schema_version", "wrong"),
+        ("status", "BLOCKED"),
+        ("interval_count", 0),
+        ("replacement_exemptions_created", True),
+        ("reason", "wrong"),
+    ],
+)
+def test_coverage_retirement_receipt_tamper_is_rejected(monkeypatch, transition, field, value):
+    from quant_investor.market.cn_nontrading_evidence import canonical_json_sha256
+
+    install_components(monkeypatch, transition)
+    execute(transition)
+    root, store, q, request, sha = transition
+    op = root / "data/private/cn_daily_maintenance/scope_transitions" / sha
+    source = root / "data/cn_universe/daily_basic_coverage_boundaries.json"
+    body = {
+        "schema_version": "daily-basic-coverage-intervals.v2",
+        "intervals": [{"cutoff": "20260818"}],
+    }
+    ref = put(source, {**body, "record_sha256": canonical_json_sha256(body)})
+    with st._owned(sha):
+        out = st._retire_stale_coverage_declaration(q, op, ref["sha256"])
+        path = Path(out["receipt_ref"]["path"])
+        record = json.loads(path.read_bytes())
+        record[field] = value
+        path.write_bytes(st.encoded(record))
+        with pytest.raises(RuntimeError):
+            st._retire_stale_coverage_declaration(q, op, ref["sha256"])
