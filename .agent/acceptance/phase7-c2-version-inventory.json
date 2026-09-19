@@ -1,0 +1,336 @@
+{
+  "status": "READ_ONLY_VERSION_DISPATCH_INVENTORY",
+  "observed_at": "2026-09-13T13:30:52.974277+00:00",
+  "files": 22,
+  "sites": [
+    {
+      "path": "quant_investor/operations/catchup_binding.py",
+      "line": 171,
+      "schemas": [
+        "cn-daily-execute-recipe.v5"
+      ],
+      "text": "recipes[day][\"schema_version\"] != \"cn-daily-execute-recipe.v5\""
+    },
+    {
+      "path": "quant_investor/operations/catchup_binding.py",
+      "line": 466,
+      "schemas": [
+        "cn-daily-native-inputs.v6"
+      ],
+      "text": "!= (\"cn-daily-native-inputs.v6\" if version == \"v3\" else \"cn-daily-native-inputs.v5\")"
+    },
+    {
+      "path": "quant_investor/operations/completion_decision.py",
+      "line": 115,
+      "schemas": [
+        "cn-daily-native-inputs.v6"
+      ],
+      "text": "\"cn-daily-native-inputs.v6\","
+    },
+    {
+      "path": "quant_investor/operations/source_slot_inputs.py",
+      "line": 76,
+      "schemas": [
+        "cn-daily-execute-recipe.v5"
+      ],
+      "text": "\"schema_version\": \"cn-daily-execute-recipe.v5\","
+    },
+    {
+      "path": "quant_investor/operations/materialization_contract.py",
+      "line": 16,
+      "schemas": [
+        "cn-daily-materialization.v5"
+      ],
+      "text": "SCHEMA_V5 = \"cn-daily-materialization.v5\""
+    },
+    {
+      "path": "quant_investor/operations/decision_recipe.py",
+      "line": 136,
+      "schemas": [
+        "cn-daily-native-inputs.v6"
+      ],
+      "text": "\"cn-daily-native-inputs.v6\","
+    },
+    {
+      "path": "quant_investor/operations/native_input_contract.py",
+      "line": 44,
+      "schemas": [
+        "cn-daily-native-inputs.v6"
+      ],
+      "text": "shapes[\"cn-daily-native-inputs.v6\"] = shapes[\"cn-daily-native-inputs.v5\"] | {\"cutoff_ref\"}"
+    },
+    {
+      "path": "quant_investor/operations/native_input_contract.py",
+      "line": 52,
+      "schemas": [
+        "cn-daily-native-inputs.v6"
+      ],
+      "text": "\"cn-daily-native-inputs.v6\","
+    },
+    {
+      "path": "quant_investor/operations/native_input_contract.py",
+      "line": 58,
+      "schemas": [
+        "cn-daily-native-inputs.v6"
+      ],
+      "text": "\"cn-daily-native-inputs.v6\","
+    },
+    {
+      "path": "quant_investor/operations/native_input_contract.py",
+      "line": 62,
+      "schemas": [
+        "cn-daily-native-inputs.v6"
+      ],
+      "text": "if schema in {\"cn-daily-native-inputs.v5\", \"cn-daily-native-inputs.v6\"}:"
+    },
+    {
+      "path": "quant_investor/operations/native_input_contract.py",
+      "line": 67,
+      "schemas": [
+        "cn-daily-native-inputs.v6"
+      ],
+      "text": "if schema == \"cn-daily-native-inputs.v6\":"
+    },
+    {
+      "path": "quant_investor/operations/morning_risk_sources.py",
+      "line": 30,
+      "schemas": [
+        "cn-daily-native-inputs.v6"
+      ],
+      "text": "PROFILES = {\"cn-daily-native-inputs.v4\", \"cn-daily-native-inputs.v5\", \"cn-daily-native-inputs.v6\"}"
+    },
+    {
+      "path": "quant_investor/operations/research_cutoff_contract.py",
+      "line": 13,
+      "schemas": [
+        "cn-daily-research-cutoff.v1"
+      ],
+      "text": "SCHEMA = \"cn-daily-research-cutoff.v1\""
+    },
+    {
+      "path": "quant_investor/operations/execution_recipe.py",
+      "line": 11,
+      "schemas": [
+        "cn-daily-execute-recipe.v5"
+      ],
+      "text": "SCHEMA_V5 = \"cn-daily-execute-recipe.v5\""
+    },
+    {
+      "path": "quant_investor/operations/automatic_catchup_resolution.py",
+      "line": 227,
+      "schemas": [
+        "cn-daily-execute-recipe.v5"
+      ],
+      "text": "template[\"schema_version\"] != \"cn-daily-execute-recipe.v5\""
+    },
+    {
+      "path": "quant_investor/operations/daily_preparation_contract.py",
+      "line": 192,
+      "schemas": [
+        "cn-daily-execute-recipe.v5"
+      ],
+      "text": "\"schema_version\": \"cn-daily-execute-recipe.v5\","
+    },
+    {
+      "path": "quant_investor/operations/completion_corporate.py",
+      "line": 57,
+      "schemas": [
+        "cn-daily-native-inputs.v6"
+      ],
+      "text": "\"cn-daily-native-inputs.v6\","
+    },
+    {
+      "path": "quant_investor/operations/corporate_adapter.py",
+      "line": 14,
+      "schemas": [
+        "cn-corporate-recipe.v2"
+      ],
+      "text": "SCHEMA = \"cn-corporate-recipe.v2\""
+    },
+    {
+      "path": "quant_investor/operations/corporate_adapter.py",
+      "line": 205,
+      "schemas": [
+        "cn-daily-native-inputs.v6"
+      ],
+      "text": "\"cn-daily-native-inputs.v6\","
+    },
+    {
+      "path": "quant_investor/operations/research_source_bundle.py",
+      "line": 30,
+      "schemas": [
+        "cn-daily-acquired-sources.v1"
+      ],
+      "text": "SCHEMA = \"cn-daily-acquired-sources.v1\""
+    },
+    {
+      "path": "scripts/daily_completion_dashboard.py",
+      "line": 47,
+      "schemas": [
+        "cn-daily-native-inputs.v6"
+      ],
+      "text": "\"cn-daily-native-inputs.v6\","
+    },
+    {
+      "path": "scripts/daily_catchup.py",
+      "line": 285,
+      "schemas": [
+        "cn-daily-native-inputs.v6"
+      ],
+      "text": "\"v3\" if native[\"schema_version\"] == \"cn-daily-native-inputs.v6\" else \"v2\""
+    },
+    {
+      "path": "scripts/daily_catchup.py",
+      "line": 460,
+      "schemas": [
+        "cn-daily-native-inputs.v6"
+      ],
+      "text": "\"v3\" if native[\"schema_version\"] == \"cn-daily-native-inputs.v6\" else \"v2\""
+    },
+    {
+      "path": "scripts/daily_ledger_replay.py",
+      "line": 97,
+      "schemas": [
+        "cn-daily-native-inputs.v6"
+      ],
+      "text": "\"cn-daily-native-inputs.v6\","
+    },
+    {
+      "path": "scripts/daily_materialization.py",
+      "line": 354,
+      "schemas": [
+        "cn-daily-native-inputs.v6"
+      ],
+      "text": "\"cn-daily-native-inputs.v6\","
+    },
+    {
+      "path": "scripts/daily_materialization.py",
+      "line": 378,
+      "schemas": [
+        "cn-daily-native-inputs.v6"
+      ],
+      "text": "or native_document.get(\"schema_version\") != \"cn-daily-native-inputs.v6\""
+    },
+    {
+      "path": "scripts/daily_materialization.py",
+      "line": 408,
+      "schemas": [
+        "cn-daily-native-inputs.v6"
+      ],
+      "text": "\"cn-daily-native-inputs.v6\","
+    },
+    {
+      "path": "scripts/daily_materialization.py",
+      "line": 743,
+      "schemas": [
+        "cn-daily-native-inputs.v6"
+      ],
+      "text": "document[\"schema_version\"] = \"cn-daily-native-inputs.v6\""
+    },
+    {
+      "path": "scripts/daily_dashboard_publication.py",
+      "line": 189,
+      "schemas": [
+        "cn-daily-native-inputs.v6"
+      ],
+      "text": "inputs[\"schema_version\"] not in {\"cn-daily-native-inputs.v5\", \"cn-daily-native-inputs.v6\"}"
+    },
+    {
+      "path": "scripts/daily_dashboard_publication.py",
+      "line": 720,
+      "schemas": [
+        "cn-daily-native-inputs.v6"
+      ],
+      "text": "in {\"cn-daily-native-inputs.v5\", \"cn-daily-native-inputs.v6\"}"
+    },
+    {
+      "path": "scripts/daily_dashboard_publication.py",
+      "line": 798,
+      "schemas": [
+        "cn-daily-native-inputs.v6"
+      ],
+      "text": "inputs[\"schema_version\"] not in {\"cn-daily-native-inputs.v5\", \"cn-daily-native-inputs.v6\"}"
+    },
+    {
+      "path": "scripts/daily_ledger.py",
+      "line": 153,
+      "schemas": [
+        "cn-daily-native-inputs.v6"
+      ],
+      "text": "\"cn-daily-native-inputs.v6\","
+    },
+    {
+      "path": "scripts/daily_native_inputs.py",
+      "line": 225,
+      "schemas": [
+        "cn-daily-native-inputs.v6"
+      ],
+      "text": "\"cn-daily-native-inputs.v6\","
+    },
+    {
+      "path": "scripts/daily_native_inputs.py",
+      "line": 240,
+      "schemas": [
+        "cn-daily-native-inputs.v6"
+      ],
+      "text": "\"cn-daily-native-inputs.v6\","
+    },
+    {
+      "path": "scripts/daily_native_inputs.py",
+      "line": 249,
+      "schemas": [
+        "cn-daily-native-inputs.v6"
+      ],
+      "text": "\"cn-daily-native-inputs.v6\","
+    },
+    {
+      "path": "scripts/daily_native_inputs.py",
+      "line": 254,
+      "schemas": [
+        "cn-daily-native-inputs.v6"
+      ],
+      "text": "if value[\"schema_version\"] in {\"cn-daily-native-inputs.v5\", \"cn-daily-native-inputs.v6\"}:"
+    },
+    {
+      "path": "scripts/daily_native_inputs.py",
+      "line": 258,
+      "schemas": [
+        "cn-daily-native-inputs.v6"
+      ],
+      "text": "if value[\"schema_version\"] == \"cn-daily-native-inputs.v6\":"
+    },
+    {
+      "path": "scripts/daily_native_inputs.py",
+      "line": 296,
+      "schemas": [
+        "cn-daily-native-inputs.v6"
+      ],
+      "text": "\"cn-daily-native-inputs.v6\","
+    },
+    {
+      "path": "scripts/daily_native_inputs.py",
+      "line": 307,
+      "schemas": [
+        "cn-daily-native-inputs.v6"
+      ],
+      "text": "if value[\"schema_version\"] == \"cn-daily-native-inputs.v6\":"
+    },
+    {
+      "path": "scripts/daily_native_inputs.py",
+      "line": 326,
+      "schemas": [
+        "cn-daily-native-inputs.v6"
+      ],
+      "text": "\"cn-daily-native-inputs.v6\","
+    },
+    {
+      "path": "scripts/daily_completion_store.py",
+      "line": 53,
+      "schemas": [
+        "cn-daily-native-inputs.v6"
+      ],
+      "text": "in {\"cn-daily-native-inputs.v4\", \"cn-daily-native-inputs.v5\", \"cn-daily-native-inputs.v6\"}"
+    }
+  ],
+  "implementation_complete": false
+}

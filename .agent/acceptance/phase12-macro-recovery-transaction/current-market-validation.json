@@ -1,0 +1,37 @@
+{
+  "scope": "NATIVE_FIRST_CHUNK_REPLAY_AGAINST_CURRENT_CANONICAL_MARKET",
+  "checks": [
+    {
+      "date": "20260904",
+      "state": "PASS",
+      "observation_content_hash": "bf23ec3db8efda9807b474a170f31dd7b200dc1dafa326f7ccccb322cd945c1b",
+      "evidence_sha256": "823f7a179d5cdae7e0962463285221bad577a5e7c6a1d35adad72a0fefe1fd83"
+    },
+    {
+      "date": "20260907",
+      "state": "PASS",
+      "observation_content_hash": "0089c7e3ceb0d46d0921df7fc2c82e9fed2bd715f801c846e071d348f19d39d8",
+      "evidence_sha256": "a10806ddc4465b05654e35ca06b98357ba743b711fda13737de2f10173917baf"
+    },
+    {
+      "date": "20260908",
+      "state": "PASS",
+      "observation_content_hash": "b3f8d7133a1858e8f6406830b0ef9ad1fe6a15ade3c93d066f58b91339ccff63",
+      "evidence_sha256": "6749fbb55e5605481c5139c7ff6c6b798963f70a0c8de6c23c6a36685305379e"
+    },
+    {
+      "date": "20260909",
+      "state": "PASS",
+      "observation_content_hash": "6b7b50b07d1a0897609afdb897cac98393b8d2c49a32697501d37be8970cc91f",
+      "evidence_sha256": "3835045e3844a31051f2e494b28ef1fd6baeca12cec9d0083d84cfce00505829"
+    },
+    {
+      "date": "20260910",
+      "state": "PASS",
+      "observation_content_hash": "6b29cfc1e7daf3ce00d75e8b84d50658a91fa569f0c80b603a23d55ce59ce876",
+      "evidence_sha256": "fc614aaa1a4a488c29f508e45852fe111811e9b1cfa6ea5d09710806577510b6"
+    }
+  ],
+  "canonical_writes": false,
+  "provider_calls": false
+}

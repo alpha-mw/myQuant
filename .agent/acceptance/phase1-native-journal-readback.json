@@ -1,0 +1,20 @@
+{
+  "phase": 1,
+  "status": "PASS",
+  "producer_commit": "3c46cb36918ca00d4fb61707bcfc16ca06b5c2a1",
+  "completion_ref": {
+    "path": "results/operations/daily_production/CN/20260827/completion.v1.json",
+    "sha256": "4d7b0b76091d2385a5e8f18ec4f6a3d3a52d20d58f9e253663a577deb9a0c94b"
+  },
+  "consumer_source_sha256": {
+    "quant_investor/operations/status_projection.py": "50fc9574a29fdf5a9e33f103cbfb329e27a4ca9edede2184ac0d4c1f8dd9baca",
+    "quant_investor/operations/daily_status.py": "b729725cc2868e50034b4c17536fbbc317ec704ac00d6b5cbad1c567dcbf5e1c",
+    "quant_investor/operations/daily_runner.py": "36b249b59d1f7dbf853ee772f7b736ae97c48d7a45a4f1abf5f17f3fb60eb107"
+  },
+  "verified_nodes": 16,
+  "all_attempts": 1,
+  "original_times_refs_preserved": true,
+  "read_sources_unchanged": true,
+  "read_source_count": 285,
+  "native_admission_not_inferred": true
+}

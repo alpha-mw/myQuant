@@ -1,0 +1,34 @@
+{
+  "phase": 4,
+  "status": "IMPLEMENTATION_IN_PROGRESS",
+  "review": "Architect required eight amendments; Critic APPROVE plus logical PIT alias precision APPROVE",
+  "implemented": [
+    "native retained PIT extraction through Factor source bundle/mirrors/deep selection replay",
+    "exact native PIT record/schema/row-count/records-SHA/listing-status checks",
+    "exact source v2 wrapper parser (not yet wired)",
+    "focus membership artifact builder and two compiled focus kinds (final report and adapters not yet wired)"
+  ],
+  "verification": [
+    "8 focus PIT tests passed in 1.00s",
+    "PIT helper mypy/flake8 passed",
+    "real frozen synthetic PIT source extraction passed with 79 retained physical source refs; both focus companies research eligible but outside Top100",
+    "4 source modules passed mypy; membership builder/output integration tests still pending"
+  ],
+  "source_sha256": {
+    "quant_investor/factors/production_pit.py": "dc52d69808d8bab3f43b85650b87db9338b531210abdc98abdc152e31f962860",
+    "quant_investor/intelligence/theme_sources.py": "ab2a3948700d8ce54ea2c8156b6e11f55b737093f087eaf493672ecd4f97de80",
+    "quant_investor/intelligence/pcb_ai_hardware.py": "2a742ac8d165bff0291152710b3a49ee51c6dc98b88799b36a8ce8dd75449ee7",
+    "quant_investor/contracts/builtins.py": "bdc3c38c051e39c4acbdabbe099de73af29d64908c6e0883d8d780e7d5372d0c",
+    "tests/unit/test_daily_evidence_focus_pit.py": "723a73e62361ed0c2d648e7dc846f6c04cccd9dd9be50f640a7bb68f930ff66a"
+  },
+  "remaining": [
+    "focus artifact builder tests/strong shape checks",
+    "final focus exposure report builder",
+    "Theme source v2 acquisition policy/binding/capture/handoff integration",
+    "Theme/Exposure recipes and adapters with missingness lifecycle",
+    "completed-source replay and output name mapping",
+    "ordinary Decision exposure scope isolation",
+    "native v2 full-path focused acceptance"
+  ],
+  "whole_goal_complete": false
+}

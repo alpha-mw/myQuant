@@ -1,0 +1,21 @@
+{
+  "observed_at": "2026-09-15T08:26:51.099667+00:00",
+  "child_pid": 3772,
+  "trade_date": "20260831",
+  "state": "EOD_SEALED_FINAL_DISPATCH_REPLAY_PENDING",
+  "completion_ref": {
+    "path": "results/operations/daily_production/CN/20260831/completion.v1.json",
+    "sha256": "109edda414ff9f0c9cb9f363ab1a1bcfd5879321ad649f0fc78b4b054445b3bd"
+  },
+  "schema_version": "cn-daily-eod-completion.v2",
+  "status": "SUCCEEDED",
+  "verified_terminal_count": 16,
+  "synthetic": true,
+  "prospective_admission_state": "LEDGER_INELIGIBLE",
+  "production_deployed": false,
+  "full_stage_acceptance_proven": false,
+  "active_observed_replay": {
+    "trade_date": "20260831",
+    "call": 6
+  }
+}

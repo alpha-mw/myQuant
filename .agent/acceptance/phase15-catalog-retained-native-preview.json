@@ -1,0 +1,15 @@
+{
+  "state": "LOCAL_NATIVE_CATALOG_CANDIDATE_PREVIEW_PASS",
+  "observed_at": "2026-09-13T20:08:49.411503+00:00",
+  "source_root": "/private/tmp/myquant-configured-clock-20260913T192045Z",
+  "input_rows": 3000,
+  "selected_rows": 102,
+  "pool_evidence": 100,
+  "focus_evidence": 2,
+  "native_pool_and_pit_verification": true,
+  "unused_physical_sources_read": false,
+  "workspace_unchanged": true,
+  "elapsed_seconds": 2.48,
+  "scope": "Current local selector and unchanged native Pool/PIT/exposure builders over retained installed-D synthetic inputs. Catalog envelope supplied in memory for candidate preview only; original legacy-list request remains failed. Not installed new-code EOD/cutoff proof.",
+  "full_goal_complete": false
+}

@@ -26,7 +26,11 @@ FUNDAMENTAL_REQUEST_OUTCOME_SCHEMA = "myquant-fundamental-request-outcome.v3"
 # statement as first filed plus any later restatement fetched from Tushare
 # report_type "4", each dated by its own announcement. v3 generations were
 # built without restatements and are not evidence-comparable with v4 ones.
-FUNDAMENTAL_FETCH_PIT_CONTRACT = "myquant-fundamental-fetch-pit.v4"
+# v5 (2026-09-06): a row that breaches PIT ordering is rejected as a row and
+# counted, instead of voiding the entire response it arrived in. A v5 clean
+# outcome may therefore report rows_hard_invalid > 0, which v4 forbade, so v4
+# and v5 outcome accounting cannot be compared field for field.
+FUNDAMENTAL_FETCH_PIT_CONTRACT = "myquant-fundamental-fetch-pit.v5"
 FUNDAMENTAL_ENDPOINT_AUDIT_SCHEMA = "myquant-fundamental-endpoint-audit.v3"
 FUNDAMENTAL_FETCH_CHECKPOINT_SCHEMA = "myquant-fundamental-fetch-checkpoint.v3"
 FUNDAMENTAL_FETCH_CHECKPOINT_POINTER_SCHEMA = (
@@ -64,7 +68,23 @@ class FundamentalEndpointAuditPolicy:
     financial_max_consecutive_missing_baseline_periods: int = 1
     financial_require_latest_baseline: bool = True
     daily_history_boundary_tolerance_days: int = 62
+    #: An errored request means data may be missing, so it stays fail-closed.
     max_error_requests: int = 0
+    #: A malformed request now means the *response* was unusable — wrong
+    #: symbol, missing required columns, not a frame at all. Nothing about it
+    #: is survivable, so it stays fail-closed at zero alongside errors.
+    #:
+    #: This was briefly set to five. The case that forced it was 603400.SH's
+    #: fina_indicator, which on 2026-09-01 ended a 103-minute run: it carried
+    #: the 2026 半年报 twice with identical values, once dated ann_date=20260803
+    #: (correct) and once ann_date=20260422, before the 20260630 period had even
+    #: closed — a provider mis-stamp, most likely a 预约披露日 written into
+    #: ann_date. But a tolerance was the wrong instrument. That defect belonged
+    #: to one row out of nineteen, and ``_strict_pit_cutoff`` now rejects it as
+    #: one row, keeping the other eighteen and leaving the request clean. With
+    #: the classification fixed at the right granularity the threshold has
+    #: nothing left to forgive, and raising it would only have forgiven genuine
+    #: response-level corruption too.
     max_malformed_requests: int = 0
 
     def __post_init__(self) -> None:
@@ -251,14 +271,27 @@ def validate_outcome_accounting_v3(
         raise ValueError(f"{label} hard-invalid subcounters do not reconcile")
 
     if status in {"success", "empty"}:
-        if counters["rows_hard_invalid"] or counters[
-            "rows_discarded_request_malformed"
-        ]:
-            raise ValueError(f"{label} clean outcome contains malformed rows")
+        # A clean outcome may still have rejected individual rows. Row-level
+        # defects — a bad announcement date, an end date after its own
+        # disclosure, an unparseable core value — say nothing about the rest of
+        # the payload, so ``_strict_pit_cutoff`` drops those rows and keeps the
+        # response. What a clean outcome may never carry is
+        # ``rows_discarded_request_malformed``: that counter exists only for
+        # rows thrown away because the *response* was unusable, and a response
+        # that reached this branch was not.
+        #
+        # The rejected rows stay fully accounted for. They are counted here,
+        # split by defect in the hard-invalid subcounters, reconciled against
+        # ``rows_hard_invalid`` above, and sealed per (symbol, table) into the
+        # checkpoint's request outcomes — so "clean" never means "nothing was
+        # dropped", it means "nothing was dropped without being recorded".
+        if counters["rows_discarded_request_malformed"]:
+            raise ValueError(f"{label} clean outcome discarded rows as malformed")
         expected_received = sum(
             counters[field]
             for field in (
                 "rows",
+                "rows_hard_invalid",
                 "rows_filtered_future",
                 "rows_filtered_missing_availability",
                 "rows_filtered_core_values",

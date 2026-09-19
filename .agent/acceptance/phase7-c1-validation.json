@@ -1,0 +1,54 @@
+{
+  "status": "C1_IMPLEMENTED_LOCAL_VALIDATION",
+  "observed_at": "2026-09-13T13:23:24Z",
+  "plan": "docs/plans/phase07_registered_batch_integration.md",
+  "review": "Architect amendments accepted; Critic APPROVE; implementation review retrospective-input blocker fixed and confirmed resolved",
+  "combined_tests": {
+    "session": 6279,
+    "result": "192 passed in 27.27s",
+    "log": ".agent/acceptance/phase7-c1-final-tests.log"
+  },
+  "final_focused_tests": {
+    "session": 82432,
+    "result": "22 passed in 11.67s",
+    "log": ".agent/acceptance/phase7-c1-native-final-tests.log"
+  },
+  "counts_overlap": true,
+  "final_precision_change": "Completed adoption checks Calendar target_trade_date rather than last ordered OPEN date; explicit next-morning target test passed.",
+  "static": {
+    "black": "PASS:9 selected files; owned batch functions formatted separately",
+    "flake8": "PASS:9 selected files and batch fatal checks",
+    "mypy": "PASS:6 source files",
+    "strategy_record_access": "PASS:35 reviewed callers"
+  },
+  "source_sha256": {
+    "quant_investor/strategy_records/close_plan_contracts.py": "6c77db3114c218267006729764af12d67fc3765095d27fd2eddd5431309f6a85",
+    "quant_investor/strategy_records/close_coverage.py": "e1a22e0a29d87b89c70b119f4ce2640b293b35879d5fc58f35e06298c7ca0085",
+    "scripts/cn_official_close_batch.py": "8a5af9ae0fc5ab6c472538e20fc3830cb3d6d0943ca0fa3e52baf9f02816334e",
+    "scripts/daily_production_store_adapter.py": "7952721b90458391782e4defcc76b7e57a3eba3a06f8c48290bfdf492fc1830f",
+    "scripts/daily_store_adoption.py": "58cb31b4e744f3cbae853b329f2a338e0b1a51ab8375d6acc80c969ec9438731",
+    "scripts/daily_completion_store.py": "15d22907c3fda94de3bbeb6982a5aeb827176dfa9583ae4fc038e04edc361d5d",
+    "quant_investor/operations/portfolio_binding.py": "5229986f91246f4061dbfc3f0bfccbb5d66cdb0f42363189ea1252c7b95439e0",
+    "tests/unit/test_registered_close_native.py": "dc03b96af62b34f2beef53768c953ae1997757477bd5c3db19d6f423505b69f6",
+    "tests/unit/test_registered_close_coverage.py": "579bc0d0e028b9320c0e648b35bd8919aa51de10ae5f723c68af9dabbb491b09",
+    "tests/unit/test_daily_evidence_store_plan.py": "b5d0a547536becb52646821d583798b67adc672301c948be46aac448828419ea"
+  },
+  "native_scope": [
+    "registered BUY -> existing build_record official valuation",
+    "single financial CAS and metadata-only recovery",
+    "same-day performance replacement with preserved units/flow",
+    "baseline T-1 portfolio distinct from intraday writer",
+    "v2 fixed plan/receipt/completion and exact dual-source custody",
+    "same-request and current-final adoption",
+    "frozen replay without current heads"
+  ],
+  "limitations": [
+    "SINGLE_EXACT_TARGET_DATE_ONLY",
+    "C2_SOURCE_PREPARATION_CUTOFF_DAG_DASHBOARD_NOT_WIRED",
+    "SELL_FUNDING_CORPORATE_PROFILES_PENDING",
+    "NO_INSTALLED_DAILY_DAG_OR_UNATTENDED_PROOF"
+  ],
+  "actual_financial_or_provider_writes": false,
+  "full_phase7_complete": false,
+  "full_goal_complete": false
+}

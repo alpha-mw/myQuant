@@ -1,0 +1,116 @@
+{
+  "schema_version": "local-validation-receipt.v1",
+  "checkpoint": "phase7-c2-registered-automatic-crossday-recovery",
+  "recorded_at": "2026-09-13T17:43:49.724683+00:00",
+  "status": "IMPLEMENTED_LOCAL_VALIDATION",
+  "goal_status": "ACTIVE_NOT_COMPLETE",
+  "source_sha256": {
+    "quant_investor/operations/automatic_registered_recovery.py": "c95612f91e27b8f17fba6e74dc325ac6aa29a01e0c5ee7d6d3f3fd1ac343e31b",
+    "quant_investor/operations/source_preparation_absence.py": "a457d3d56c01fcea63c152c2b3586655281379cb92aa39a63da27cdbf97433db",
+    "quant_investor/operations/automatic_catchup_closure.py": "06cca86ef7545da5edc21e6ea14f083e44e2fe70098ce14250e7a4baaf5961df",
+    "quant_investor/operations/automatic_catchup_contract.py": "3f56d7e1c34f3ac12ddc78232416249c4027d85e16b29e5f6e07e393af1e3927",
+    "quant_investor/operations/daily_launch_contract.py": "3a85b1f0e780252beae1cd36aa05730b9104af9e2670ea823a30eb9f6a5d62f6",
+    "quant_investor/cli/daily_production.py": "4ab8cb67acb54b1cfed50f1b974d04134e6997dc03cea2a1fb2aecd5fd611dda",
+    "quant_investor/cli/daily_launch.py": "a68f84577c934b9bae42466205b08d650335220e353461d2fd9ea53790c05b5c",
+    "scripts/daily_production.py": "3b8f9fda2849075f97125d8f7c956e6dea4b8afb316b525c129ea72b21c74ea2",
+    "scripts/daily_catchup.py": "381711bf5aeda901fe16c51138f5f08406081f388a053da613df2b9c5533a163",
+    "scripts/daily_automatic_catchup.py": "93f78cac7f3aa168a10bccdd9e757f1094046a2c179e444cdd33ce8c72a102e2",
+    "scripts/daily_launch_inspection.py": "47bffa39ffb8d88dca387295befc890e4962c116c095ed153d8a3a388f03ef03",
+    "tests/unit/test_registered_automatic_recovery.py": "7d625c5e53725fa4ab89258a3c19fe3bf87e68bdf46bb80aca82bf95eee8fbde",
+    "tests/unit/test_registered_automatic_recovery_cli.py": "ddc3a41fdaeedf342dd4897c8b625e88a76fa279a9b63b2c10679b7e24a54328",
+    "tests/unit/test_daily_evidence_execute_wiring.py": "5edfb19d3c81f1c8d8a649fbfa2768a86299bc1466dacfb036e029ff4df7186c",
+    "tests/unit/test_daily_evidence_public_catchup.py": "81668a3bb6fa1365c97aaa68018770d2f3e30dc03a4d5fd0251063bf28755ae8",
+    "docs/plans/phase07_registered_recovery.md": "69489371d011d12998a6d5345832af0a61f38d3f14a801e384e772bad78a07e2",
+    "docs/plans/phase00_15_execution_register.md": "33362e9fffcf6faec4778e4b1a0d7f1644560a6301d9890fb013bb354cbc0e80"
+  },
+  "checks": [
+    {
+      "scope": "Final automatic, origin, expiry, CLI, bootstrap, historical catchup, native bridge and shell launcher regressions",
+      "passed": 264,
+      "seconds": 83.91,
+      "session_id": 95613,
+      "exit_code": 0,
+      "log": ".agent/acceptance/phase7-c2-crossday-final.log"
+    },
+    {
+      "scope": "Exact unstarted preparation and negative unknown/started evidence cases",
+      "passed": 7,
+      "deselected": 7,
+      "seconds": 11.67,
+      "session_id": 46191,
+      "exit_code": 0,
+      "log": ".agent/acceptance/phase7-c2-crossday-absence.log"
+    },
+    {
+      "scope": "Registered CLI v3 and bounded completed-EOD error wire",
+      "passed": 11,
+      "seconds": 8.2,
+      "session_id": 36958,
+      "exit_code": 0,
+      "log": ".agent/acceptance/phase7-c2-crossday-cli.log"
+    },
+    {
+      "scope": "Black",
+      "files": 15,
+      "status": "PASS"
+    },
+    {
+      "scope": "flake8 max100",
+      "files": 15,
+      "status": "PASS"
+    },
+    {
+      "scope": "mypy",
+      "source_files": 11,
+      "status": "PASS"
+    },
+    {
+      "scope": "CLI flake8 max-complexity10",
+      "files": 2,
+      "status": "PASS"
+    },
+    {
+      "scope": "Strategy-record access governance",
+      "reviewed_callers": 36,
+      "status": "PASS"
+    },
+    {
+      "scope": "Package-only CLI import in isolated Python with explicit checkout import path",
+      "status": "PASS",
+      "scripts_loaded": false,
+      "installed_proof": false
+    }
+  ],
+  "counts_overlap": true,
+  "implemented": [
+    "matching ACTIVE registered commit/origin inspection before expiry or fresh producers",
+    "protected CATCH_UP dispatch reuses original binding/origin and exact execution request",
+    "launch-inspection.v3 recovery_scope dispatch and saved inspection revalidation",
+    "exact expired publication error includes sorted complete EOD refs and exits nonzero",
+    "whole-range EOD plus original origin and serving replay before ACTIVE-to-IDLE retirement",
+    "foreign request must validate older completed publication state before lease retirement",
+    "exact binding v3, origin-only execution and validated source-preparation exception within unchanged native maintenance/day absence proof"
+  ],
+  "invariants_exercised": [
+    "same-day and later-day recovery avoid changed/deleted mutable heads",
+    "SERVING_ONLY cannot upgrade to committed DAG execution",
+    "incomplete, unconfirmed, foreign, source-tampered or clock-invalid work cannot borrow recovery authority",
+    "expired EOD remains failure with completed refs; repeated IDLE run changes no files",
+    "unknown publication leaves ACTIVE",
+    "origin-only unstarted expiry creates EXPIRED_UNSTARTED only after native absence; unknown files/claims/handoffs/node evidence refuse closure",
+    "legacy ordinary/bootstrap/historical and public launcher paths preserve prior behavior"
+  ],
+  "test_seams": [
+    "Automatic and CLI scenarios use real native registered BUY/source preparation, original binding/origin and real storage/locks. Full committed-package inspection, EOD completion admission and serving observation are explicit controlled seams.",
+    "The preceding phase7-c2-recovery-validation.json separately exercises native synthetic C1 CAS interruption, original full cutoff/materialization package and metadata-only recovery. These are separate proofs, not an installed full automatic DAG proof."
+  ],
+  "not_claimed": [
+    "live provider/broker use",
+    "installed full registered DAG",
+    "complete native Core/Factor/EOD/Morning convergence in one automatic run",
+    "actual scheduler deployment",
+    "continuous unattended acceptance",
+    "whole Phase0-15 completion"
+  ],
+  "remaining_plan": "docs/plans/phase00_15_execution_register.md"
+}

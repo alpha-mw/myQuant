@@ -1,0 +1,64 @@
+{
+  "observed_at": "2026-09-12T17:48:12.885419+00:00",
+  "status": "COMPLETED_LOCAL_VALIDATION",
+  "full_phase10_complete": false,
+  "full_phase0_15_complete": false,
+  "scope": "PHASE10_NATIVE_FROZEN_OWNER_THRESHOLD_MORNING_V3",
+  "review": "Architect seven amendments accepted; Critic APPROVE",
+  "checks": {
+    "pytest": {
+      "session": 77927,
+      "passed": 192,
+      "seconds": 22.82
+    },
+    "mypy_source_files": 14,
+    "black_checked_files": 21,
+    "flake8": "PASS; strict CI complexity10 on changed intelligence/CLI"
+  },
+  "covered": [
+    "frozen Store/Market/Event/Calendar/corporate source reading",
+    "exact owner rules and source clocks",
+    "independent trailing and initial stop branches",
+    "policy changes or unconfigured data remain partial",
+    "intraday warning only; no peak rewrite; preserved prior-EOD breach",
+    "current-head removal in native v4/v5 Store replay",
+    "native quote parser, consumer, same CLI route and deterministic report",
+    "v3 report/receipt/hash/history consistency and immutable repeats",
+    "cutover accepts exact v3 receipts without applying scheduler changes",
+    "v2 compatibility and shared Phase8 policy semantics"
+  ],
+  "native_example": ".agent/acceptance/phase10-native-v3-replay.json",
+  "source_hashes": {
+    "quant_investor/strategy_records/risk_policy_contract.py": "fd559bcb72cce62101e8cbff3f8b9179642e2fc56f90b085ed21ca9006dec763",
+    "quant_investor/operations/corporate_reconciliation.py": "c199148fedcfc88d30a471c23e9144bd42d993894017e78c92f18add0970a4d9",
+    "quant_investor/operations/morning_risk_sources.py": "653fcdc4f70649427ef31270add59d056044d2ece338383887fa0f4471569b78",
+    "quant_investor/intelligence/morning_threshold_review.py": "601a46e95410003da222379f2da8a2cc4891eee6157a95717c3b9fa0a9672c87",
+    "quant_investor/operations/morning_contract.py": "68a55cbbaf2dd910e52c9b69fa4ef9c104342e2e8b0ce2ad0ccfb49962ff5424",
+    "quant_investor/operations/morning_report.py": "b14e7f9a3689e75f263f6ffd1c2f9542fd1b76fe00d4f7d49cbdc155ea6d4da4",
+    "quant_investor/operations/morning_receipt.py": "bd2f4c9d699554f54be1079d43034e91c01496b63be477125135ea9ee56c695f",
+    "quant_investor/operations/morning_cutover_contract.py": "5f2b05acacaa2a06491a0cf6acffc01493530c6730a56467a2c6a71d0dd25e08",
+    "scripts/daily_morning_consumer.py": "b107c33317d9b45916c0528f1e27bf1cef4040b0bfbb46aceb02313f4e4765a4",
+    "scripts/daily_morning_seal.py": "9bd429df7dce4f1a884ca00645df6f3279b70a986ddfc352988a1c7d3e8562d4",
+    "scripts/daily_morning_history.py": "c4d5943864e52a978d475aef9b20ef64d614ad4a082f1412e5055ad1b305cf70",
+    "scripts/daily_morning_cutover.py": "d40ab703553f6098fa066073ff4d0b0ba2b7ea769ba35ed275b0bf0a3da0f58b",
+    "scripts/daily_completion_store.py": "2a235b2c78286e02afa6b16f537c48163434bc06a40500958cbc600d1e8c554a",
+    "quant_investor/cli/morning_v2.py": "1f6c717bf3ecbaa84bbd2580e3de3b15dafe23f4d344c2611bbf0336bc0f864d",
+    "quant_investor/cli/unified.py": "c1b9d1a5be413e3f5acf94b5792be88f04ba08aaec894752a52736de521cb722",
+    "tests/unit/_native_morning_threshold_fixture.py": "da93b592c64dd5ceb7b821203ce34ee7e14807615496e337c1ad515eeb1c3bb6",
+    "tests/unit/test_morning_threshold_review.py": "aa395d62a9348208793134239243226dc7722de61e27b57eb3293b4f205b6653",
+    "tests/unit/test_morning_v3_consumer.py": "4b2f6a0f5e408d32d1f6412ae0c6007479af89d6f5d0babf9a2ac694865c42a8",
+    "tests/unit/test_morning_v3_receipt.py": "f36b13de0c24f55419c00073a0dfe1cd4453b14930f7ffe728550316991711d4",
+    "tests/unit/test_morning_frozen_store_profiles.py": "66da21a50b684e864134961020ee47db4fc2dad3d86a6d540e287f3a82b64f93",
+    "tests/unit/test_daily_evidence_morning_cutover_v2.py": "ba78baa5564a34fb3f91052acecfe7ada3f035a266f55e5f596f24e34f7b6110"
+  },
+  "limitations": [
+    "Full native EOD/Decision and next-Calendar admission are explicit controlled boundaries in component fixtures",
+    "Positive SEAL/history fixtures also control live provenance and clock; no real live receipt claim",
+    "Current-source installed full-DAG/Morning and consecutive-day proof remain Phase15; actual automation migration remains Phase12"
+  ],
+  "real_policy_changes": 0,
+  "real_account_changes": 0,
+  "live_provider_calls": 0,
+  "deployment_changes": 0,
+  "automation_changes": 0
+}

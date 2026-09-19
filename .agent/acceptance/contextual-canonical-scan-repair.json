@@ -1,0 +1,33 @@
+{
+  "observed_at": "2026-09-16T15:23:17.285352+00:00",
+  "state": "EQUIVALENT_SCAN_IMPLEMENTED_NATIVE_TEST_PENDING",
+  "plan": "docs/plans/contextual_canonical_scan_optimization.md",
+  "architect": "APPROVE",
+  "critic": "APPROVE",
+  "core_ref": {
+    "path": "quant_investor/contracts/core.py",
+    "sha256": "7306666dd67b615df0e4192a00dded1db8ec908933cfdf4aadc8cf18b9def70f"
+  },
+  "focused_tests_passed": 140,
+  "catalog_sha256_unchanged": "bf33e0e64f9c316edf78ba6289535e2d7c39311a4c1feac70ce2da43afc981fb",
+  "retained_replay": {
+    "state": "FAIL",
+    "pid": 42986,
+    "scope": "RETAINED_NATIVE_CALLBACK_UNPROFILED_NOT_FULL_TEST",
+    "native_limit_seconds": 180.0,
+    "timeout_changed": false,
+    "started_at": "2026-09-16T15:17:40.926051+00:00",
+    "catalog_sha256": "bf33e0e64f9c316edf78ba6289535e2d7c39311a4c1feac70ce2da43afc981fb",
+    "core_source_sha256": "7306666dd67b615df0e4192a00dded1db8ec908933cfdf4aadc8cf18b9def70f",
+    "error_type": "FactorGovernanceError",
+    "error": "IMPLEMENTATION_IDENTITY_MISMATCH:prospective validator component identity differs",
+    "seconds": 47.581,
+    "protected_files": 7244,
+    "retained_inventory_unchanged": true,
+    "finished_at": "2026-09-16T15:18:29.535587+00:00"
+  },
+  "new_candidate_location": ".agent/acceptance/phase15-canonical-scan-location.json",
+  "native_limits_changed": false,
+  "runtime_cache_added": false,
+  "full_goal_complete": false
+}

@@ -1,0 +1,19 @@
+{
+  "observed_at": "2026-09-12T20:57:57.880152+00:00",
+  "scope": "REAL_CURRENT_INTERPRETER_AND_SHELL_PRE_CREDENTIAL_REJECTION",
+  "fixture_root": "/private/var/folders/cp/539tc5k549l2jzdy90ptl6cm0000gn/T/phase12-real-launcher-rejection-imk4m96r",
+  "import_origin": "/Users/maxwell/mySpace/myQuant/quant_investor/__init__.py",
+  "exit_code": 2,
+  "stdout": "{\"launcher_receipt_ref\": {\"path\": \"/private/var/folders/cp/539tc5k549l2jzdy90ptl6cm0000gn/T/phase12-real-launcher-rejection-imk4m96r/data/private/cn_daily_maintenance/launcher_attempts/slot-2020-20260912T205757Z-44448/started.json\", \"sha256\": \"ad93f2e765a9ec688f99a97226ea087f8a829473d102047996f8e0a8dd69d95d\"}, \"phase\": \"STARTED\", \"process_exit_code\": null}\n{\"blocker_code\":\"SYSTEM_CONTRACT_INVALID\",\"status\":\"BLOCKED\"}\n{\"launcher_receipt_ref\": {\"path\": \"/private/var/folders/cp/539tc5k549l2jzdy90ptl6cm0000gn/T/phase12-real-launcher-rejection-imk4m96r/data/private/cn_daily_maintenance/launcher_attempts/slot-2020-20260912T205757Z-44448/ended.json\", \"sha256\": \"1a9d5d14a8a42fad2d2de96c14a8458f81beddbd62b10097333c5d99e92cd3a6\"}, \"phase\": \"ENDED\", \"process_exit_code\": 2}\n",
+  "stderr": "",
+  "files": {
+    "inspection.stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "ended.json": "1a9d5d14a8a42fad2d2de96c14a8458f81beddbd62b10097333c5d99e92cd3a6",
+    "started.json": "ad93f2e765a9ec688f99a97226ea087f8a829473d102047996f8e0a8dd69d95d",
+    "inspection.stdout.json": "bac3850877fff4fcd153e59dcd2103e2dc2af876f2f9ed44810f009d16571059"
+  },
+  "credential_receipts_present": false,
+  "native_claims_present": false,
+  "provider_called": false,
+  "installed_success_claim": false
+}

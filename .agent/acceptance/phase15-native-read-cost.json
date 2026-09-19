@@ -1,0 +1,46 @@
+{
+  "observed_at": "2026-09-13T21:26:33.205068+00:00",
+  "scope": "separate30s read-only native load profile; journal writes and financial CAS forbidden; not primary-process stack or completion proof",
+  "profile_status": {
+    "state": "BOUNDED_READ_SAMPLE",
+    "error": "bounded readonly profile elapsed",
+    "elapsed_seconds": 30.054610874969512,
+    "scope": "separate readonly native input load,30s bound; no full-run completion claim"
+  },
+  "profile_path": "/private/tmp/myquant-configured-catalog-20260913T202622Z/native-input-read-profile.txt",
+  "dominant_path": [
+    "load_native_inputs",
+    "read_decision_recipe",
+    "load_research_request",
+    "read_cutoff_inputs",
+    "SourceBundle._verify_origins",
+    "read_theme_handoff",
+    "CoreContext.snapshot",
+    "read_historical_research_inputs",
+    "verify_active",
+    "_verify_pointer_lineage",
+    "compute_bootstrap_signals"
+  ],
+  "next": "Bounded Architect read-only evaluation of existing recorded-pointer route; no cache or runtime change authorized yet",
+  "original_process": {
+    "root": "/private/tmp/myquant-configured-catalog-20260913T202622Z",
+    "handle": 37364,
+    "pid": 14119,
+    "state": "RUNNING",
+    "nodes": {
+      "pit": "SUCCEEDED",
+      "exposure": "SUCCEEDED",
+      "calendar": "SUCCEEDED",
+      "factor": "SUCCEEDED",
+      "fundamental": "SUCCEEDED",
+      "top100": "SUCCEEDED",
+      "macro": "SUCCEEDED",
+      "theme": "SUCCEEDED",
+      "industry": "SUCCEEDED",
+      "market": "SUCCEEDED",
+      "w80_observation": "SUCCEEDED",
+      "low_observation": "SUCCEEDED"
+    }
+  },
+  "full_goal_complete": false
+}

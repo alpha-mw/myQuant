@@ -1,0 +1,12 @@
+{
+  "observed_at": "2026-09-12T20:14:48.786709+00:00",
+  "scope": "REAL_LAUNCHER_PRE_DAG_PROFILE",
+  "launcher": "/Users/maxwell/mySpace/myQuant/scripts/operations/run_cn_daily_slot.sh",
+  "launcher_sha256": "ee50b1410d47317f0878002704c9fdcfcba237eea8122c013a1ac9db15b37562",
+  "fixture_root": "/private/var/folders/cp/539tc5k549l2jzdy90ptl6cm0000gn/T/phase12-launcher-before-f7r9_3ua",
+  "exit_code": 2,
+  "stderr": "CN_SLOT_LAUNCHER_ARGUMENT_INVALID",
+  "interpreter_called": false,
+  "credential_read": false,
+  "native_or_provider_called": false
+}

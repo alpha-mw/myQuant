@@ -1,0 +1,23 @@
+{
+  "observed_at": "2026-09-14T02:42:29.236401+00:00",
+  "case": 4,
+  "root": "/private/tmp/myquant-configured-missing-store-20260914T012539Z",
+  "process_handle": 28287,
+  "child_pid": 58040,
+  "signal": "SIGUSR1",
+  "signal_count_for_this_child": 1,
+  "trace_ref": {
+    "path": "/private/tmp/myquant-configured-missing-store-20260914T012539Z/missing-store.stack.txt",
+    "sha256": "df582a5ff69e61bc1b25513f397471c6f3c2d441af6beac784984d16b6993dd4"
+  },
+  "trace_written_at": "2026-09-14T02:39:55.929180+00:00",
+  "current_phase": "FIRST_NATIVE_DISPATCH_BEFORE_STORE_FAULT",
+  "sampled_route": "DayRunner.resolve -> ResearchSources initialization -> load research request/cutoff -> Theme/Core binding -> historical Factor lineage/source recomputation -> in-memory Market frame preparation",
+  "test_callback_recursion_visible": false,
+  "single_stack_excludes_all_loops": false,
+  "source_review": "NativeDailyRegistry already keeps one ResearchSources object in self.research; no per-node reconstruction cache change justified.",
+  "process_restarted": false,
+  "business_runtime_modified": false,
+  "full_case_proof": false,
+  "production_deployed": false
+}

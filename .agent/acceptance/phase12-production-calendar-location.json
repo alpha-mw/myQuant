@@ -1,0 +1,10 @@
+{
+  "root": "/private/tmp/myquant-production-calendar-20260916T144348Z",
+  "state": "INSTALLED_VERIFIED",
+  "pid": 34998,
+  "production_deployed": false,
+  "started_at": "2026-09-16T14:43:48.618945+00:00",
+  "commit": "a46e5508e4a48802e8eb741eaf7e5660c6d20539",
+  "import_origin": "/private/tmp/myquant-production-calendar-20260916T144348Z/release/installs/a46e5508e4a48802e8eb741eaf7e5660c6d20539-3ccd32bd290b4844e71dceca948d64ca2823512a3d27a443cb71d7ce0be34541/lib/python3.13/site-packages/quant_investor/__init__.py",
+  "finished_at": "2026-09-16T14:44:18.467399+00:00"
+}

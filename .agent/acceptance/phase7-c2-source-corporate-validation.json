@@ -1,0 +1,70 @@
+{
+  "recorded_at": "2026-09-13T14:06:16.164563+00:00",
+  "state": "C2_CORPORATE_AND_SOURCE_PREPARATION_LOCAL_VALIDATION",
+  "whole_goal_complete": false,
+  "c2_complete": false,
+  "validated": [
+    "Native BUY baseline and writer accounting, existing add and new symbol, separate report and native C1 valuation",
+    "Corporate recipe/projection v3, unchanged T-1 report, exact registered report native frozen replay",
+    "Source plan v2 and preparation commitment/construction v2 through configured source launcher to recipe v6",
+    "Previous EOD Store replay and baseline identity, original request repair across dates, no empty Event publication",
+    "No fresh enrollment of standalone finalized-v2 state without original request custody"
+  ],
+  "tests": {
+    "log": ".agent/acceptance/phase7-c2-current-tests.log",
+    "passed": 240,
+    "failed": 0,
+    "seconds": 62.13,
+    "session_id": 81034,
+    "terminal_exit_code": 0,
+    "module_count": 13
+  },
+  "static_checks": {
+    "mypy_source_files": 9,
+    "mypy": "PASS",
+    "black_owned_files": "PASS",
+    "flake8_owned_files": "PASS",
+    "strategy_record_access_governance": "PASS: 35 reviewed callers"
+  },
+  "test_scope": {
+    "synthetic_account_and_market": true,
+    "calendar_transport": "synthetic response with native replay",
+    "financial_algorithms": "native",
+    "prior_store_terminal_and_replay": "native",
+    "full_previous_eod_admission": "controlled fixture seam",
+    "running_install_admission": "controlled fixture seam",
+    "full_native_dag": false,
+    "providers_called": false,
+    "real_financial_mutations": false,
+    "production_deployment": false
+  },
+  "remaining": [
+    "Acquired source bundle v2, cutoff v2 and wrapper v3 with registered native source times",
+    "Materialization v6, native input v7 and complete registered writer versus Decision baseline transport",
+    "Completed-source recovery with original preparation time <= native plan time <= CAS time",
+    "Corporate completed EOD reader, Morning and Dashboard registered change/risk consumption",
+    "Current-source full-DAG and final full CI/install/scheduler/unattended acceptance",
+    "Other original goal gaps including supported financial profiles and historical ordering"
+  ],
+  "source_sha256": {
+    "quant_investor/contracts/builtins.py": "a04007e8b8de766273af123888ec979315e326104497ab929986577ddeff77c3",
+    "quant_investor/intelligence/registered_transition.py": "971b0833aaa60b1a025eb8a6dcf3b660de1fbbffa78fafbd65a0c581dffea03c",
+    "quant_investor/operations/registered_transition.py": "d5f921c72b8a167a228c6f85cf78288a042353b94ea73569f62d645b7168095d",
+    "quant_investor/operations/corporate_adapter.py": "57501fc94009c67595d72d5957c0cf7b1fd836d1ee96f512d17065c13105d7b3",
+    "quant_investor/operations/source_slot_contract.py": "2e33147077a4bfcd118e2be20e9a8cb58cfe65e0865887a7c58a3c836da00b18",
+    "quant_investor/operations/source_slot_inputs.py": "b93e6d7b2fd919a9f675dd0fec41df1ed93052e1f00af0636ec0dfdb897fe640",
+    "quant_investor/operations/daily_preparation.py": "62f98d6a2caf4cd07e54d8ca77f76f03cda4d0a8d018f18722659f2e6bdababf",
+    "quant_investor/operations/daily_preparation_contract.py": "09fef7212afa8e8f7b57012e8869d2586fc7d94c4648d5d1178554d3f304e147",
+    "quant_investor/operations/execution_recipe.py": "51371296d32139cc139c56b935f7e9c6d55ac0cb131e48459786dd702f5111ea",
+    "quant_investor/operations/catchup_binding.py": "c6bc71c118c11ba6136bd870607bdd9baa0f10d6118629ad84438bf04357d3e3",
+    "quant_investor/operations/execution_controls.py": "85b23ebd01ea1c6082266b3e5a7e7daf6bce675cd99a12677c3f8042f07c6b4d",
+    "quant_investor/operations/theme_acquisition.py": "60ac7ca084004e0d4a68ff50a245593608312608f1bb818e4cf51669999078cb",
+    "quant_investor/operations/research_timing.py": "62a508fa74a343217ee2a06248214d188e1d2b04a8dbf0f0b716524ba93bc4d6",
+    "scripts/registered_daily_event_sources.py": "1b164dd0f3a83fabce775e9ddd1c0c6ebc1a2e30785f5ff6cdfac4b13aa387e5",
+    "scripts/daily_source_inputs.py": "7dbec17f02292c6f8fc67a3b42da35a615f3aac8e083429f25a5df542e00b74b",
+    "tests/unit/_registered_event_fixture.py": "c8e9987653a5e5b417408056892e19b75d18866a815c96cb367ffb61c808e431",
+    "tests/unit/test_registered_transition_report.py": "33a11fc6a090b8a353d681c9f2a0bb4906f76f34154b7b53fd10228def64217a",
+    "tests/unit/test_registered_daily_source_selection.py": "f88442ce93b7b5a0f140835f15e5c3f584e6d4ca05157918f568ffd615fa9c2b",
+    "tests/unit/test_registered_daily_preparation.py": "5ce66496e58ac073426dfb574caa56b121190812ed1c8dc5c9c0fa9882f98daf"
+  }
+}

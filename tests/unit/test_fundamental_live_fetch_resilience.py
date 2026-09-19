@@ -371,28 +371,25 @@ def test_fina_indicator_request_uses_provider_supported_fields() -> None:
 
 
 @pytest.mark.parametrize(
-    ("table", "date_column", "malformed_date", "hard_counter", "expected_reason"),
+    ("table", "date_column", "malformed_date", "hard_counter"),
     [
         (
             "daily_basic",
             "trade_date",
             "20240510junk",
             "rows_hard_invalid_availability_date",
-            "invalid_availability_date",
         ),
         (
             "fina_indicator",
             "ann_date",
             "2024051020260510",
             "rows_hard_invalid_availability_date",
-            "invalid_availability_date",
         ),
         (
             "income",
             "end_date",
             "not-a-date",
             "rows_hard_invalid_end_date",
-            "invalid_end_date",
         ),
     ],
 )
@@ -401,8 +398,13 @@ def test_strict_pit_cutoff_rejects_date_suffixes(
     date_column: str,
     malformed_date: str,
     hard_counter: str,
-    expected_reason: str,
 ) -> None:
+    """A date that is not exactly YYYYMMDD costs its row, and is counted.
+
+    The fixture is a single row, so rejecting it empties the response — but the
+    request is not malformed: nothing about the payload as a whole was wrong,
+    and ``rows_discarded_request_malformed`` stays at zero to say so.
+    """
     frame = getattr(_Provider(), table)(ts_code="000001.SZ")
     frame[date_column] = malformed_date
 
@@ -415,8 +417,9 @@ def test_strict_pit_cutoff_rejects_date_suffixes(
 
     assert accepted.empty
     assert stats[hard_counter] == 1
+    assert stats["rows_hard_invalid"] == 1
     assert stats["rows_discarded_request_malformed"] == 0
-    assert reason == expected_reason
+    assert reason == ""
 
 
 def test_strict_pit_cutoff_rejects_financial_end_after_availability() -> None:
@@ -433,7 +436,8 @@ def test_strict_pit_cutoff_rejects_financial_end_after_availability() -> None:
 
     assert accepted.empty
     assert stats["rows_hard_invalid_end_after_availability"] == 1
-    assert reason == "end_after_availability"
+    assert stats["rows_discarded_request_malformed"] == 0
+    assert reason == ""
 
 
 def test_strict_pit_cutoff_allows_forecast_period_after_announcement() -> None:
@@ -496,7 +500,7 @@ def test_missing_availability_row_is_filtered_without_poisoning_valid_row() -> N
     )
 
 
-def test_populated_invalid_availability_discards_otherwise_valid_response() -> None:
+def test_populated_invalid_availability_rejects_only_the_offending_row() -> None:
     valid = _Provider().fina_indicator(ts_code="000001.SZ")
     invalid = valid.copy()
     invalid["ann_date"] = "20240510junk"
@@ -508,11 +512,11 @@ def test_populated_invalid_availability_discards_otherwise_valid_response() -> N
         as_of="20240510",
     )
 
-    assert accepted.empty
-    assert reason == "invalid_availability_date"
+    assert reason == ""
     assert stats["rows_hard_invalid_availability_date"] == 1
-    assert stats["rows_discarded_request_malformed"] == 1
-    assert stats["rows"] == 0
+    assert stats["rows_discarded_request_malformed"] == 0
+    assert stats["rows"] == len(valid)
+    assert "20240510junk" not in set(accepted["ann_date"])
 
 
 def test_core_empty_row_filters_but_nonfinite_value_hard_fails() -> None:
@@ -538,10 +542,10 @@ def test_core_empty_row_filters_but_nonfinite_value_hard_fails() -> None:
         symbol="000001.SZ",
         as_of="20240510",
     )
-    assert accepted.empty
-    assert reason == "invalid_core_values"
+    assert reason == ""
+    assert len(accepted) == len(valid)
     assert stats["rows_hard_invalid_core_numeric"] == 1
-    assert stats["rows_discarded_request_malformed"] == 1
+    assert stats["rows_discarded_request_malformed"] == 0
 
 
 def test_daily_basic_requires_positive_total_mv_not_circ_mv_only() -> None:
@@ -561,7 +565,57 @@ def test_daily_basic_requires_positive_total_mv_not_circ_mv_only() -> None:
     assert stats["rows_filtered_core_values"] == 1
 
 
-def test_endpoint_audit_marks_one_invalid_financial_request_malformed() -> None:
+def test_endpoint_audit_blocks_on_one_unusable_response() -> None:
+    """A response that is not what was asked for voids its request, and the run.
+
+    The defect here is response-level: the provider answers a request for one
+    symbol with another symbol's rows. Nothing in that payload can be trusted,
+    so the request is malformed and the shipped zero threshold blocks.
+    """
+    symbols = [f"{index:06d}.SZ" for index in range(1, 101)]
+
+    class _WrongSymbolIncomeProvider(_Provider):
+        def __getattr__(self, table: str):
+            base = super().__getattr__(table)
+
+            def fetch(**kwargs):
+                frame = base(**kwargs)
+                if (
+                    table == "income"
+                    and kwargs["ts_code"] == symbols[-1]
+                    and not frame.empty
+                ):
+                    frame["ts_code"] = "999999.SZ"
+                return frame
+
+            return fetch
+
+    with pytest.raises(fundamental_mart.FundamentalFetchAuditError) as exc_info:
+        fundamental_mart._fetch_tushare_tables(
+            symbols,
+            years=0,
+            as_of="20240510",
+            workers=1,
+            pro=_WrongSymbolIncomeProvider(),
+            enforce_endpoint_audit=True,
+            symbol_pause_seconds=0,
+        )
+
+    income = exc_info.value.manifest["endpoint_audit"]["endpoints"]["income"]
+    assert income["success"] == 99
+    assert income["malformed"] == 1
+    assert "provider_malformed_requests_above_threshold" in exc_info.value.manifest[
+        "endpoint_audit"
+    ]["blockers"]
+
+
+def test_endpoint_audit_does_not_block_on_one_unusable_row() -> None:
+    """The same run completes when the defect is confined to a row.
+
+    This is the 603400.SH shape: the payload is the right symbol's data and one
+    row inside it is unusable. The row is rejected and counted, the request
+    stays clean, and ``malformed`` stays at zero.
+    """
     symbols = [f"{index:06d}.SZ" for index in range(1, 101)]
 
     class _InvalidIncomeDateProvider(_Provider):
@@ -580,23 +634,28 @@ def test_endpoint_audit_marks_one_invalid_financial_request_malformed() -> None:
 
             return fetch
 
-    with pytest.raises(fundamental_mart.FundamentalFetchAuditError) as exc_info:
-        fundamental_mart._fetch_tushare_tables(
-            symbols,
-            years=0,
-            as_of="20240510",
-            workers=1,
-            pro=_InvalidIncomeDateProvider(),
-            enforce_endpoint_audit=True,
-            symbol_pause_seconds=0,
-        )
+    _tables, manifest = fundamental_mart._fetch_tushare_tables(
+        symbols,
+        years=0,
+        as_of="20240510",
+        workers=1,
+        pro=_InvalidIncomeDateProvider(),
+        enforce_endpoint_audit=True,
+        symbol_pause_seconds=0,
+    )
 
-    income = exc_info.value.manifest["endpoint_audit"]["endpoints"]["income"]
-    assert income["success"] == 99
-    assert income["malformed"] == 1
-    assert "provider_malformed_requests_above_threshold" in exc_info.value.manifest[
-        "endpoint_audit"
-    ]["blockers"]
+    audit = manifest["endpoint_audit"]
+    assert audit["endpoints"]["income"]["malformed"] == 0
+    assert "provider_malformed_requests_above_threshold" not in audit["blockers"]
+    assert int(manifest["requests_malformed"]) == 0
+
+    outcome = next(
+        item
+        for item in manifest["symbol_table_outcomes"]
+        if item["table"] == "income" and item["symbol"] == symbols[-1]
+    )
+    assert outcome["rows_hard_invalid_availability_date"] >= 1
+    assert outcome["rows_discarded_request_malformed"] == 0
 
 
 def test_live_fetch_retries_with_bounded_attempts() -> None:

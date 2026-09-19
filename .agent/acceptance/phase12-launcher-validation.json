@@ -1,0 +1,101 @@
+{
+  "observed_at": "2026-09-12T21:05:04.226396+00:00",
+  "status": "PART_A_COMPLETED_LOCAL_VALIDATION",
+  "phase12_complete": false,
+  "full_goal_complete": false,
+  "sources": [
+    {
+      "path": "scripts/operations/run_cn_daily_slot.sh",
+      "sha256": "194d3ea05b6fe79c569d53bb6757f4b8eb00842ad8066d179b9cf085142f2050"
+    },
+    {
+      "path": "scripts/daily_catchup.py",
+      "sha256": "7f12df00912411f8fb91284c25afefb70910e066b2275518b1d026ca3588e6cb"
+    },
+    {
+      "path": "scripts/daily_automatic_catchup.py",
+      "sha256": "8751273ba5d816c4b079a3408657aa9209bb243f62db9ac3d69fa5791b6563b6"
+    },
+    {
+      "path": "scripts/daily_production.py",
+      "sha256": "c916effb262fa5b38f6c15ffe86613b7562d2899b59fd64a2c4ff149cd57aabe"
+    },
+    {
+      "path": "scripts/daily_launch_inspection.py",
+      "sha256": "201795538b7cd5f9d27808bc8db5e8cbf05ac74d7a6ff7dffaf0e659b8257053"
+    },
+    {
+      "path": "quant_investor/operations/native_bridge.py",
+      "sha256": "399c2832b29ef40f37bc798ec505da7aa4b7f20dc7df09de7c1137375d552da3"
+    },
+    {
+      "path": "quant_investor/operations/daily_launch_contract.py",
+      "sha256": "161e429f3f7c1d2a1473bdf2a28d3a9d57ddc269d9c5a344e9ecab1a03b189b2"
+    },
+    {
+      "path": "quant_investor/operations/execution_controls.py",
+      "sha256": "4a60e3c5a38430abb7b0704de40c6ae1d6e4a44b6a17e69c8f8efab53a929a2d"
+    },
+    {
+      "path": "quant_investor/cli/daily_production.py",
+      "sha256": "87c2e94af939b24258235932ac2c6ccc34baa90057d8309d8b5cabaead5cdffe"
+    },
+    {
+      "path": "quant_investor/cli/daily_launch.py",
+      "sha256": "2ab8d0d44b66f324c110698a9031d87f36b5d42dea3af06b93907c24a76e8c8a"
+    },
+    {
+      "path": "quant_investor/cli/main.py",
+      "sha256": "3b9bfd739fc0de8d1c0b9ce806ad6fba45e46a9b05a3dcee83dcad33e861ca62"
+    }
+  ],
+  "tests": [
+    {
+      "path": "tests/unit/test_daily_launch_inspection.py",
+      "sha256": "0392ad4c6f8360fa91fc2a3765fe6fd6026c70e51cea2090a8cdbf488fe60fba"
+    },
+    {
+      "path": "tests/unit/test_daily_launch_cli.py",
+      "sha256": "1758874247f1ef3ed70ba3858857234412855c0988b760ed0a97c59d0cf82ff7"
+    },
+    {
+      "path": "tests/unit/test_daily_launcher_dag_profile.py",
+      "sha256": "c4f4bfbf20f32c646549fccbba7b63f7761f3d03f5d65942bf1eb5e2f47a59d0"
+    }
+  ],
+  "final_validation": {
+    "session": 84157,
+    "exit_code": 0,
+    "result": "330 passed in 38.63s",
+    "log": {
+      "path": "/tmp/myquant-phase12-a-final.txt",
+      "sha256": "88b09c20c5c85a3113ab2ee8a1aff990389aa7d1ebdf7b8072f69a801917d775"
+    }
+  },
+  "static": {
+    "mypy_source_files": 9,
+    "black_python_files": 13,
+    "cli_complexity10": "PASS",
+    "scoped_flake8": "PASS",
+    "zsh_syntax": "PASS"
+  },
+  "real_launcher_rejection": {
+    "path": ".agent/acceptance/phase12-real-launcher-rejection.json",
+    "sha256": "14b462061ae2fa21d4b9473f5bd8ed34564dfcab44a216f36eb3c8219592ada8"
+  },
+  "automation_config_changes_observed": [],
+  "mutations_to_automations": [],
+  "credentials_read_from_real_workspace": false,
+  "live_provider_calls": false,
+  "limitations": [
+    "Positive installed/EOD/policy and shell interpreter boundaries are explicitly controlled in unit fixtures",
+    "Real current interpreter and shell exercised invalid release rejection with native STARTED/ENDED and zero credential/native claims; not an installed success",
+    "Part B current-source install, initial seed, daily input preparation and scheduler cutover/readback remain required"
+  ],
+  "remaining": [
+    "Native first completed EOD/explicit bootstrap setup",
+    "Code-owned daily Calendar/source/automatic request provisioning and EOD/fallback identity reuse",
+    "Morning v3 scheduled consumption and exact three-role migration",
+    "Current-source installed full-DAG and independent unattended receipts"
+  ]
+}

@@ -1,0 +1,72 @@
+{
+  "observed_at": "2026-09-13T07:31:10.444027+00:00",
+  "status": "IMPLEMENTED_LOCAL_VALIDATION",
+  "goal_complete": false,
+  "scope": "PHASE12_NATIVE_LOCAL_INPUTS_TO_IMMUTABLE_EXISTING_REQUEST",
+  "plan": "docs/plans/phase12_daily_request_preparation.md",
+  "reviews": {
+    "architect": "APPROVE_WITH_CHANGES_ALL_10_ACCEPTED",
+    "critic": "APPROVE"
+  },
+  "verification": {
+    "related_regression": {
+      "session_id": 90441,
+      "exit_code": 0,
+      "passed": 196,
+      "seconds": 7.35
+    },
+    "final_preparation_cli_after_nonsemantic_lint_rename": {
+      "session_id": 45239,
+      "exit_code": 0,
+      "passed": 51,
+      "seconds": 4.08
+    },
+    "counts_overlap_do_not_sum": true,
+    "black_six_files": "PASS",
+    "flake8_six_files": "PASS",
+    "cli_complexity_10": "PASS",
+    "mypy_three_sources": "PASS",
+    "isolated_package_import_without_scripts": "PASS",
+    "initial_failure_resolved": "Native compatibility files use 0644. Read through existing CLI file primitives plus System descriptor directories; modes unchanged."
+  },
+  "exercised": [
+    "native Calendar wire replay",
+    "native Store v3 performance frontier",
+    "native Event and benchmark generation readers",
+    "missing date diagnostics",
+    "bootstrap and automatic request contracts",
+    "head and pointer drift rejection",
+    "commitment-first crash recovery at every generated object",
+    "next-day recovery without fresh source selection",
+    "same-byte and mtime repeat",
+    "foreign pending rejection and lease preservation",
+    "unsafe input alias/mode rejection"
+  ],
+  "controlled_test_boundaries": [
+    "synthetic financial/provider data",
+    "installed-loop static verification",
+    "Factor active baseline verifier",
+    "CLI running-release verifier"
+  ],
+  "not_claimed": [
+    "new current-source installed release",
+    "full native EOD or effectiveness",
+    "live provider acquisition",
+    "actual financial source closure",
+    "launcher daily config integration",
+    "scheduler deployment",
+    "independent unattended receipt"
+  ],
+  "no_live_provider_calls": true,
+  "no_real_financial_writes": true,
+  "no_scheduler_changes": true,
+  "source_sha256": {
+    "quant_investor/operations/daily_preparation_contract.py": "ae3c9e8de826e1a541b03d9aef7b750540252904da0e0d1235c88aafbcfab70a",
+    "quant_investor/operations/daily_preparation.py": "80bfe7b8179a284d183e64afc965492a289a0620ac6e7c984d48d0ae3df2c642",
+    "quant_investor/cli/daily_prepare.py": "47ad2f6e860b0d364e49804adb62f140bf4b4e1a64dcf9b597721ebf5d1d344d",
+    "tests/unit/_daily_preparation_fixture.py": "75820dd6f9920ea21d68bcffe4d4b5409b675b3af8a01dd118de390cd4e1099d",
+    "tests/unit/test_daily_preparation.py": "f1d11bbb7dfb4235c636c9b4c7d120f73b597893a7883f4f704b9de3c01df8ca",
+    "tests/unit/test_daily_prepare_cli.py": "ac6dbf6b530d3642ae0ee2d325dc7e62cefde8c171015741e0f78acb6003e490"
+  },
+  "next": "Bind actual installed static source config and orchestrate existing Calendar/benchmark/Event prerequisites before invoking daily_prepare and existing launcher; do not manufacture historical event declarations."
+}

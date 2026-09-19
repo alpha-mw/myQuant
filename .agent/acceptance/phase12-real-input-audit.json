@@ -1,0 +1,143 @@
+{
+  "observed_at": "2026-09-12T22:18:50.432662+00:00",
+  "scope": "READ_ONLY_EXACT_EXISTING_RECEIPTS",
+  "attempts": {
+    "attempt.json": {
+      "ref": {
+        "path": "data/private/cn_daily_maintenance/attempts/20260911T135111Z-2020-c3fc0db656d4f550/attempt.json",
+        "sha256": "4f7609bbf6fc92ff15c92afcbe46655652186e6f7a0b70ade263bb875c478284"
+      },
+      "summary": {
+        "schema_version": "cn-daily-maintenance-attempt.v1",
+        "status": "PARTIAL",
+        "target_date": "20260911",
+        "maintenance_status": "PARTIAL",
+        "usable_for_investment_research": false,
+        "blockers": [
+          "MACRO_WRITE_VETO_ACTIVE"
+        ],
+        "core_blockers": [],
+        "factor_input_readiness": "READY",
+        "macro_status": "BLOCKED",
+        "fundamental_refresh_status": "HEALTH_ONLY"
+      }
+    },
+    "ended.json": {
+      "ref": {
+        "path": "data/private/cn_daily_maintenance/attempts/20260911T135111Z-2020-c3fc0db656d4f550/ended.json",
+        "sha256": "b866dd4d24b3e948db880b430bbd4a7a82f71faadc1664c2d14c8df620be246c"
+      },
+      "summary": {
+        "ended_at": "2026-09-11T14:04:28Z",
+        "state": "COMPLETED",
+        "workflow_status": "PARTIAL",
+        "receipt_ref": {
+          "path": "/Users/maxwell/mySpace/myQuant/data/private/cn_daily_maintenance/attempts/20260911T135111Z-2020-c3fc0db656d4f550/attempt.json",
+          "sha256": "4f7609bbf6fc92ff15c92afcbe46655652186e6f7a0b70ade263bb875c478284"
+        }
+      }
+    },
+    "stage-FUNDAMENTAL.json": {
+      "ref": {
+        "path": "data/private/cn_daily_maintenance/attempts/20260911T135111Z-2020-c3fc0db656d4f550/stage-FUNDAMENTAL.json",
+        "sha256": "a91a5fdd3597baeef543adb8e7bdd2e5a98a0cc9ffae7ded30c5590052ed20b1"
+      },
+      "summary": {
+        "state": "STAGE_COMPLETED",
+        "result": {
+          "stage": "FUNDAMENTAL",
+          "status": "READY",
+          "blockers": [],
+          "write_performed": false,
+          "research_source_ref": null
+        }
+      }
+    },
+    "stage-MACRO_RELEASE.json": {
+      "ref": {
+        "path": "data/private/cn_daily_maintenance/attempts/20260911T135111Z-2020-c3fc0db656d4f550/stage-MACRO_RELEASE.json",
+        "sha256": "591685132d3f3834910f6e458c82e70b85fa1277711a7ae919c3b22cd825334c"
+      },
+      "summary": {
+        "state": "STAGE_COMPLETED",
+        "result": {
+          "stage": "MACRO_RELEASE",
+          "status": "BLOCKED",
+          "blockers": [
+            "MACRO_WRITE_VETO_ACTIVE"
+          ],
+          "write_performed": false,
+          "research_source_ref": null,
+          "veto_ref": {
+            "path": "/Users/maxwell/mySpace/myQuant/data/private/cn_daily_maintenance/MACRO_WRITE_VETO.json",
+            "sha256": "0730ed36967ce75453486aed0967d1c238c344b1073c369843184f65fcf26c4b"
+          }
+        }
+      }
+    },
+    "stage-FACTOR_LOOP.json": {
+      "ref": {
+        "path": "data/private/cn_daily_maintenance/attempts/20260911T135111Z-2020-c3fc0db656d4f550/stage-FACTOR_LOOP.json",
+        "sha256": "9b6b134a2c0c3614afa1c1ee70665240a6fcb5963c2be51b14a54f36c17a59f2"
+      },
+      "summary": {
+        "state": "STAGE_COMPLETED",
+        "result": {
+          "status": "COMPLETED",
+          "blockers": [],
+          "report_ref": {
+            "path": "/Users/maxwell/mySpace/myQuant/data/private/cn_daily_maintenance/factor_reports/189e4d60c1a8f8fc425294c89b70b43e9420410b4187738a38243d3454b0e7f5.json",
+            "sha256": "189e4d60c1a8f8fc425294c89b70b43e9420410b4187738a38243d3454b0e7f5"
+          },
+          "research_source_ref": null
+        }
+      }
+    }
+  },
+  "current_veto": {
+    "ref": {
+      "path": "data/private/cn_daily_maintenance/MACRO_WRITE_VETO.json",
+      "sha256": "0730ed36967ce75453486aed0967d1c238c344b1073c369843184f65fcf26c4b"
+    },
+    "document": {
+      "attempt_root": "/Users/maxwell/mySpace/myQuant/data/private/cn_daily_maintenance/attempts/20260906T025456Z-2020-aee4f49b05bda325",
+      "attempt_slot": "2020",
+      "blockers": [
+        "MACRO_RELEASE_CONTRACT_BLOCKED"
+      ],
+      "created_at": "2026-09-06T02:54:56Z",
+      "schema_version": "cn-daily-maintenance-macro-write-veto.v1",
+      "target_date": "20260904"
+    }
+  },
+  "original_macro_failure": {
+    "ref": {
+      "path": "data/private/cn_daily_maintenance/attempts/20260906T025456Z-2020-aee4f49b05bda325/stage-MACRO_RELEASE.json",
+      "sha256": "fe36916f164b7a4047f72fd7c5dcf606d9e21a740e0622474063d50bc419eda1"
+    },
+    "document": {
+      "result": {
+        "blockers": [
+          "MACRO_RELEASE_CONTRACT_BLOCKED"
+        ],
+        "evidence": {
+          "error_code": "UNAVAILABLE",
+          "error_type": "MacroMaintenanceError"
+        },
+        "stage": "MACRO_RELEASE",
+        "status": "BLOCKED",
+        "write_performed": false
+      },
+      "state": "STAGE_COMPLETED"
+    }
+  },
+  "usable_for_new_dag_research_inputs": false,
+  "blockers": [
+    "MACRO_WRITE_VETO_ACTIVE",
+    "FUNDAMENTAL_PRODUCER_SOURCE_REF_UNAVAILABLE",
+    "MACRO_PRODUCER_SOURCE_REF_UNAVAILABLE"
+  ],
+  "producer_run_performed": false,
+  "source_mutation_performed": false,
+  "claim": "Existing Factor readiness does not establish complete daily research or native EOD."
+}

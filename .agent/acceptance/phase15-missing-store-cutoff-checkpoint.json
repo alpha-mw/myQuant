@@ -1,0 +1,23 @@
+{
+  "observed_at": "2026-09-14T02:12:35.634596+00:00",
+  "case": 4,
+  "root": "/private/tmp/myquant-configured-missing-store-20260914T012539Z",
+  "state": "ORIGINAL_NATIVE_RESEARCH_CUTOFF_PRESENT_RECOVERY_PENDING",
+  "original_prepared_request_ref": {
+    "path": "results/operations/daily_production/CN/20260827/preparation/bcf903200a845be2cc9a694460ed54ddc0f85d6a9573bad5636133b3cf93f091/request.json",
+    "sha256": "cc5659ce621f5f3c870658a157bf6dd5c2e09ede0df30c4e604e74036d5e771e"
+  },
+  "native_retained_request_ref": {
+    "path": "results/operations/daily_production/CN/20260827/executions/cc5659ce621f5f3c870658a157bf6dd5c2e09ede0df30c4e604e74036d5e771e/inputs/request-cc5659ce621f5f3c870658a157bf6dd5c2e09ede0df30c4e604e74036d5e771e.json",
+    "sha256": "cc5659ce621f5f3c870658a157bf6dd5c2e09ede0df30c4e604e74036d5e771e"
+  },
+  "prepared_and_retained_request_bytes_equal": true,
+  "cutoff_ref": {
+    "path": "results/operations/daily_production/CN/20260827/executions/cc5659ce621f5f3c870658a157bf6dd5c2e09ede0df30c4e604e74036d5e771e/research-cutoff.v1.json",
+    "sha256": "fc3b4a388da45d0f8d18ca3a27c10ed96b6155cce4491cf940c689bdd10257bd"
+  },
+  "schema_version": "cn-daily-research-cutoff.v1",
+  "scope": "SHA_BOUND_NATIVE_PUBLISHED_CUTOFF_AND_EXACT_REQUEST_CUSTODY_READBACK",
+  "full_case_proof": false,
+  "production_deployed": false
+}

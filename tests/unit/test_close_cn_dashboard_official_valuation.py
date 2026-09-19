@@ -50,13 +50,15 @@ def _write_csv(path: Path, rows: list[dict[str, object]]) -> None:
         writer.writerows(rows)
 
 
-def _source_fixture(tmp_path: Path) -> tuple[Path, Path, dict, Path, dict]:
+def _source_fixture(
+    tmp_path: Path, *, stock_symbols=STOCKS, market_subdir="data/parquet/cn"
+) -> tuple[Path, Path, dict, Path, dict]:
     project = tmp_path
     record_root = project / "results" / "records"
     source_dir = record_root / "20260820_1321"
     source_dir.mkdir(parents=True)
     source_rows: list[dict[str, object]] = []
-    for index, symbol in enumerate(STOCKS, start=1):
+    for index, symbol in enumerate(stock_symbols, start=1):
         shares = index * 100
         price = 10.0 + index
         cost_basis = shares * (price - 1.0)
@@ -159,11 +161,11 @@ def _source_fixture(tmp_path: Path) -> tuple[Path, Path, dict, Path, dict]:
     }
 
     snapshot_id = "20260821T000000Z"
-    market_root = project / "data" / "parquet" / "cn"
+    market_root = project / market_subdir
     serving_root = market_root / "_snapshots" / snapshot_id / "serving" / "bars"
     snapshot_manifest_path = market_root / "_snapshots" / f"{snapshot_id}.json"
     stock_evidence: list[dict[str, object]] = []
-    for index, symbol in enumerate(STOCKS, start=1):
+    for index, symbol in enumerate(stock_symbols, start=1):
         serving_path = serving_root / f"symbol={symbol}" / "bars.parquet"
         serving_path.parent.mkdir(parents=True, exist_ok=True)
         pd.DataFrame(

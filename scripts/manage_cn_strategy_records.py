@@ -194,7 +194,7 @@ def _operation_lock(record_root: str | os.PathLike[str]):
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
             raise StrategyRecordStoreError("operation lock is unsafe")
         fcntl.flock(descriptor, fcntl.LOCK_EX)
-        yield
+        yield descriptor
     finally:
         os.close(descriptor)
 
@@ -854,36 +854,15 @@ def _find_and_validate_continuity_receipt(
     if len(matches) != 1:
         raise StrategyRecordStoreError("continuity receipt must be unique")
     receipt = matches[0]
-    if receipt.get("schema_id") != NO_ACTION_RECEIPT_SCHEMA:
-        raise StrategyRecordStoreError("continuity receipt schema mismatch")
-    if receipt.get("content_sha256") != content_sha256(receipt):
-        raise StrategyRecordStoreError("continuity receipt content hash mismatch")
-    if receipt.get("content_sha256") != expected_sha:
-        raise StrategyRecordStoreError("continuity receipt SHA-256 mismatch")
-    if (
-        receipt.get("status") != "NO_ACTION"
-        or receipt.get("payload_copied") is not False
-        or receipt.get("v17_mainline_authority") is not False
-        or receipt.get("broker_order_trade_authority") is not False
-    ):
-        raise StrategyRecordStoreError("continuity receipt authority/status is invalid")
-    active_id = pointer.get("active_record_id")
-    closure = pointer.get("active_closure")
-    if (
-        not isinstance(active_id, str)
-        or not isinstance(closure, dict)
-        or receipt.get("active_record_id") != active_id
-        or receipt.get("active_checkpoint") != closure
-    ):
-        raise StrategyRecordStoreError("continuity receipt active checkpoint mismatch")
-    if candidate_date is not None:
-        if (
-            _shanghai_local_date(receipt.get("created_at"), label="continuity receipt created_at")
-            != candidate_date
-        ):
-            raise StrategyRecordStoreError("continuity receipt date mismatch")
-        if source_record != active_id:
-            raise StrategyRecordStoreError("candidate source record is not active")
+    from quant_investor.strategy_records.receipts import validate_no_action_receipt
+
+    validate_no_action_receipt(
+        receipt, receipt_id=receipt_id, expected_sha=expected_sha,
+        record_id=pointer.get("active_record_id"), checkpoint=pointer.get("active_closure"),
+        trade_date=candidate_date,
+    )
+    if candidate_date is not None and source_record != pointer.get("active_record_id"):
+        raise StrategyRecordStoreError("candidate source record is not active")
     return receipt
 
 
@@ -3905,99 +3884,125 @@ def command_publish_event_closures(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-def command_publish_daily_event_closure(args: argparse.Namespace) -> dict[str, Any]:
-    """Seal one standing-policy CLOSED_EMPTY day after the owner cutoff."""
+def _daily_event_input_form(args):
+    maintenance = [
+        getattr(args, name, None) for name in ("maintenance_receipt", "maintenance_receipt_sha256")
+    ]
+    calendar = [
+        getattr(args, name, None)
+        for name in (
+            "calendar_receipt",
+            "calendar_receipt_sha256",
+            "raw_calendar",
+            "raw_calendar_sha256",
+        )
+    ]
+    if all(maintenance) and not any(calendar):
+        return "MAINTENANCE"
+    if all(calendar) and not any(maintenance):
+        return "CALENDAR"
+    raise StrategyRecordStoreError("DAILY_EVENT_EXACT_SOURCE_FORM_REQUIRED")
 
-    from quant_investor.strategy_records.event_store import (
-        EMPTY_POINTER_SHA256,
-        build_empty_closure,
-        load_generation,
-        publish_generation,
+
+def _publish_daily_event_closure_locked(args, source_form):
+    from scripts.registered_daily_event_sources import assert_no_registered_event
+    from quant_investor.strategy_records import event_store as events
+    from quant_investor.strategy_records.daily_event_source import (
+        DailyEventSources,
+        RECORD_ROOT,
+        read_calendar_source,
+        read_maintenance_source,
+        validate_daily_closure_source,
+        validate_standing_policy,
     )
 
     project = Path(args.project_root).resolve(strict=True)
     root = Path(args.record_root).resolve(strict=True)
+    if root != project / RECORD_ROOT:
+        raise StrategyRecordStoreError("DAILY_EVENT_RECORD_ROOT_INVALID")
     day = date.fromisoformat(args.trade_date).isoformat()
-    policy_path = project / _safe_relative(args.policy_path)
-    if not policy_path.is_file() or policy_path.is_symlink():
-        raise StrategyRecordStoreError("daily event policy is not a regular file")
-    policy_raw = policy_path.read_bytes()
-    if policy_raw != policy_path.read_bytes():
-        raise StrategyRecordStoreError("daily event policy was unstable")
-    if _sha(policy_raw) != args.policy_sha256:
-        raise StrategyRecordStoreError("daily event policy SHA mismatch")
-    policy = json.loads(policy_raw)
-    if (
-        policy.get("schema_id") != "myquant.cn_daily_official_close_policy.v1"
-        or policy.get("revoked_at") is not None
-        or policy.get("event_inbox", {}).get("sealed_empty_inventory_is_owner_authorized_closure")
-        is not True
-    ):
-        raise StrategyRecordStoreError("daily event standing policy is unavailable")
-    now = _manager_utc_now()
-    cutoff = datetime.combine(date.fromisoformat(day), time(15, 30), tzinfo=_SHANGHAI).astimezone(
-        timezone.utc
-    )
-    if now < cutoff:
-        raise StrategyRecordStoreError("daily event closure is before the owner cutoff")
-    receipt_path = Path(args.maintenance_receipt).resolve(strict=True)
-    if not receipt_path.is_file() or receipt_path.is_symlink():
-        raise StrategyRecordStoreError("daily maintenance receipt is not a regular file")
-    receipt_raw = receipt_path.read_bytes()
-    if receipt_raw != receipt_path.read_bytes():
-        raise StrategyRecordStoreError("daily maintenance receipt was unstable")
-    if _sha(receipt_raw) != args.maintenance_receipt_sha256:
-        raise StrategyRecordStoreError("daily maintenance receipt SHA mismatch")
-    receipt = json.loads(receipt_raw)
-    target = str(
-        receipt.get("target_trade_date")
-        or receipt.get("target_date")
-        or receipt.get("maintenance_target_date")
-        or ""
-    ).replace("-", "")
-    if target != day.replace("-", ""):
-        raise StrategyRecordStoreError("daily maintenance receipt target mismatch")
+    assert_no_registered_event(workspace=project, trade_date=day)
+    sources = DailyEventSources(project)
     event_root = root / "_event_store"
-    if args.expected_event_pointer_sha256 == EMPTY_POINTER_SHA256:
-        existing: list[dict[str, Any]] = []
-    else:
-        loaded = load_generation(event_root)
-        if loaded["pointer_sha256"] != args.expected_event_pointer_sha256:
-            raise StrategyRecordStoreError("daily event pointer preimage mismatch")
-        existing = list(loaded["closures"])
-    matches = [row for row in existing if row.get("trade_date") == day]
+    expected = args.expected_event_pointer_sha256
+    if events.pointer_sha256(event_root) != expected:
+        raise StrategyRecordStoreError("daily event pointer preimage mismatch")
+    loaded = None if expected == events.EMPTY_POINTER_SHA256 else events.load_generation(event_root)
+    existing = [] if loaded is None else list(loaded["closures"])
+    for closure in existing:
+        validate_daily_closure_source(workspace=project, closure=closure, sources=sources)
+    matches = [row for row in existing if row["trade_date"] == day]
     if matches:
         if len(matches) != 1:
             raise StrategyRecordStoreError("daily event closure is duplicated")
+        sources.recheck()
+        if events.pointer_sha256(event_root) != expected:
+            raise StrategyRecordStoreError("daily event pointer changed during readback")
+        assert_no_registered_event(workspace=project, trade_date=day)
         return {
             "status": "NO_ACTION",
             "trade_date": day,
-            "pointer_sha256": args.expected_event_pointer_sha256,
+            "pointer_sha256": expected,
             "closure_sha256": matches[0]["content_sha256"],
             "broker_calls": False,
             "order_calls": False,
             "trade_calls": False,
         }
     policy_ref = {"path": args.policy_path, "sha256": args.policy_sha256}
-    closure = build_empty_closure(
+    now = _manager_utc_now()
+    cutoff = datetime.combine(date.fromisoformat(day), time(15, 30), tzinfo=_SHANGHAI).astimezone(
+        timezone.utc
+    )
+    if now.astimezone(_SHANGHAI).date().isoformat() != day:
+        raise StrategyRecordStoreError("DAILY_EVENT_CURRENT_DAY_REQUIRED")
+    if now < cutoff:
+        raise StrategyRecordStoreError("daily event closure is before the owner cutoff")
+    validate_standing_policy(sources.document(policy_ref), at=cutoff)
+    if source_form == "MAINTENANCE":
+        receipt_ref = sources.ref(
+            {"path": args.maintenance_receipt, "sha256": args.maintenance_receipt_sha256}
+        )
+        proof = read_maintenance_source(sources, receipt_ref=receipt_ref, trade_date=day)
+    else:
+        receipt_ref = sources.ref(
+            {"path": args.calendar_receipt, "sha256": args.calendar_receipt_sha256}
+        )
+        proof = read_calendar_source(
+            sources,
+            calendar_ref=receipt_ref,
+            trade_date=day,
+            raw_ref={"path": args.raw_calendar, "sha256": args.raw_calendar_sha256},
+        )
+    if proof["observed_at"] > now:
+        raise StrategyRecordStoreError("DAILY_EVENT_CALENDAR_IN_FUTURE")
+    closure = events.build_empty_closure(
         trade_date=day,
         sealed_at=_utc_timestamp(now),
         cutoff_at=_utc_timestamp(cutoff),
         policy_ref=policy_ref,
         owner_declaration_ref=policy_ref,
-        source_receipt_ref={
-            "path": receipt_path.relative_to(project).as_posix(),
-            "sha256": args.maintenance_receipt_sha256,
-        },
+        source_receipt_ref=receipt_ref,
     )
-    published = publish_generation(
+    validate_daily_closure_source(workspace=project, closure=closure, sources=sources)
+    sources.recheck()
+    if events.pointer_sha256(event_root) != expected:
+        raise StrategyRecordStoreError("daily event pointer changed before publication")
+    assert_no_registered_event(workspace=project, trade_date=day)
+    published = events.publish_generation(
         event_root,
         generation_id=args.generation_id,
         generated_at=_utc_timestamp(now),
-        expected_pointer_sha256=args.expected_event_pointer_sha256,
+        expected_pointer_sha256=expected,
         closures=[*existing, closure],
         policy_ref=policy_ref,
     )
+    readback = events.load_generation(event_root)
+    if readback["pointer_sha256"] != published["pointer_sha256"]:
+        raise StrategyRecordStoreError("DAILY_EVENT_PUBLICATION_CHANGED")
+    for row in readback["closures"]:
+        validate_daily_closure_source(workspace=project, closure=row, sources=sources)
+    sources.recheck()
+    assert_no_registered_event(workspace=project, trade_date=day)
     return {
         "status": "PUBLISHED",
         "trade_date": day,
@@ -4009,6 +4014,263 @@ def command_publish_daily_event_closure(args: argparse.Namespace) -> dict[str, A
         "trade_calls": False,
     }
 
+
+def command_publish_daily_event_closure(args: argparse.Namespace) -> dict[str, Any]:
+    """Owning entry: programmatic and CLI callers both take the Record operation lock."""
+    from quant_investor.strategy_records.event_store import StrategyEventStoreError
+
+    source_form = _daily_event_input_form(args)
+    with _operation_lock(args.record_root):
+        try:
+            return _publish_daily_event_closure_locked(args, source_form)
+        except (ValueError, TypeError, StrategyEventStoreError) as exc:
+            raise StrategyRecordStoreError("DAILY_EVENT_INPUT_INVALID") from exc
+
+
+def command_publish_registered_event_declaration(args: argparse.Namespace) -> dict[str, Any]:
+    """Register exact owner facts and original pointer custody, never a financial state."""
+    from quant_investor.strategy_records.event_store import StrategyEventStoreError
+    from quant_investor.strategy_records import registered_event_contracts as contracts
+    from quant_investor.strategy_records import store as native_store
+    from scripts.registered_daily_event_sources import (
+        ROOT,
+        declaration_document,
+        prepare_publication,
+        read_declaration,
+    )
+
+    project = Path(args.project_root).resolve(strict=True)
+    if Path(args.record_root).resolve(strict=True) != project / ROOT:
+        raise StrategyRecordStoreError("REGISTERED_EVENT_RECORD_ROOT_INVALID")
+    with _operation_lock(args.record_root) as lock_fd:
+        lock_path = project / ROOT / STORE_DIRECTORY / ".operation.v2.lock"
+        lock_identity = os.fstat(lock_fd)
+
+        def recheck_lock():
+            try:
+                held = os.fstat(lock_fd)
+                named = os.lstat(lock_path)
+                if (
+                    not stat.S_ISREG(named.st_mode)
+                    or held.st_nlink != 1
+                    or named.st_nlink != 1
+                    or (held.st_dev, held.st_ino) != (lock_identity.st_dev, lock_identity.st_ino)
+                    or (named.st_dev, named.st_ino) != (held.st_dev, held.st_ino)
+                ):
+                    raise StrategyRecordStoreError("REGISTERED_EVENT_OPERATION_LOCK_CHANGED")
+                probe = os.open(lock_path, os.O_RDWR | os.O_NOFOLLOW)
+                try:
+                    probe_identity = os.fstat(probe)
+                    if (probe_identity.st_dev, probe_identity.st_ino) != (held.st_dev, held.st_ino):
+                        raise StrategyRecordStoreError("REGISTERED_EVENT_OPERATION_LOCK_CHANGED")
+                    try:
+                        fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        return
+                    raise StrategyRecordStoreError("REGISTERED_EVENT_OPERATION_LOCK_LOST")
+                finally:
+                    os.close(probe)
+            except OSError as exc:
+                raise StrategyRecordStoreError(
+                    "REGISTERED_EVENT_OPERATION_LOCK_UNAVAILABLE"
+                ) from exc
+
+        def registered_directory(sources, writer_sha):
+            storage = sources.files.storage
+            parent = storage._open_source_directory(tuple(Path(ROOT + "/_event_store").parts))
+            try:
+                for name in ("registered", writer_sha):
+                    recheck_lock()
+                    storage._reject_casefold_alias(parent, name)
+                    try:
+                        os.mkdir(name, mode=0o700, dir_fd=parent)
+                        os.fsync(parent)
+                    except FileExistsError:
+                        pass
+                    child = os.open(
+                        name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent
+                    )
+                    metadata = os.fstat(child)
+                    if metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) != 0o700:
+                        os.close(child)
+                        raise contracts.RegisteredEventError("REGISTERED_EVENT_DIRECTORY_UNSAFE")
+                    os.close(parent)
+                    parent = child
+            finally:
+                os.close(parent)
+
+        try:
+            recheck_lock()
+            prepared = prepare_publication(
+                workspace=project,
+                owner_fact_ref={"path": args.owner_fact, "sha256": args.owner_fact_sha256},
+                expected_pointer_sha=args.expected_pointer_sha,
+            )
+            sources, fact = prepared["sources"], prepared["fact"]
+            previous = prepared["previous"]
+            registered_at = (
+                previous["registered_at"]
+                if previous is not None
+                else _utc_timestamp(_manager_utc_now())
+            )
+            value = declaration_document(
+                fact=fact,
+                fact_ref=prepared["fact_ref"],
+                pair=prepared["pair"],
+                registered_at=registered_at,
+            )
+            if previous is not None and value != previous:
+                raise contracts.RegisteredEventError("REGISTERED_EVENT_DECLARATION_CONFLICT")
+            sources.recheck()
+            recheck_lock()
+            paths = contracts.paths(fact["writer_pointer_sha256"])
+            if previous is None:
+                registered_directory(sources, fact["writer_pointer_sha256"])
+                pointer_raw = sources.read(prepared["current_ref"])
+                for key, raw in (
+                    ("pointer", pointer_raw),
+                    ("declaration", native_store.canonical_json_bytes(value)),
+                ):
+                    sources.recheck()
+                    recheck_lock()
+                    path = sources.root / paths[key]
+                    native_store._write_exact_once(path, raw)
+                    _fsync_directory(path.parent)
+                    recheck_lock()
+            raw = native_store.canonical_json_bytes(value)
+            reference = {"path": paths["declaration"], "sha256": hashlib.sha256(raw).hexdigest()}
+            recheck_lock()
+            proof = read_declaration(workspace=sources.root, declaration_ref=reference)
+            sources.recheck()
+            recheck_lock()
+            return {
+                "status": "NO_ACTION" if previous is not None else "PUBLISHED",
+                "declaration_ref": reference,
+                "registered_at": value["registered_at"],
+                "evidence_level": "OWNER_DECLARED",
+                "broker_statement_verified": False,
+                "authority": dict(contracts.AUTHORITY),
+                "profile": proof["profile"],
+            }
+        except (ValueError, TypeError, ArithmeticError, StrategyEventStoreError) as exc:
+            raise StrategyRecordStoreError("REGISTERED_EVENT_INPUT_INVALID") from exc
+
+def inspect_planned_daily_event(args):
+    """Read only the exact planned generation, including a pre-CAS staged one."""
+    from quant_investor.strategy_records import event_store as events
+    from quant_investor.strategy_records.event_contracts import validate_generation, instant
+    from quant_investor.strategy_records.daily_event_source import (
+        DailyEventSources,
+        validate_daily_closure_source,
+        RECORD_ROOT,
+    )
+
+    project = Path(args.project_root).resolve(strict=True)
+    root = project / RECORD_ROOT / "_event_store"
+    source = DailyEventSources(project)
+    expected = args.expected_event_pointer_sha256
+    actual = events.pointer_sha256(root)
+    if expected == events.EMPTY_POINTER_SHA256:
+        parent = []
+    else:
+        parent = events.load_historical_generation(root, expected_pointer_sha256=expected)[
+            "closures"
+        ]
+    path = RECORD_ROOT + "/_event_store/generations/" + args.generation_id + ".v1.json"
+    raw = source.files.optional(path)
+    if raw is None:
+        if actual != expected:
+            raise StrategyRecordStoreError("SOURCE_EVENT_FOREIGN_POINTER")
+        return {"state": "ABSENT", "pointer_sha256": actual, "generation": None}
+    generation = validate_generation(json.loads(raw))
+    policy_ref = {"path": args.policy_path, "sha256": args.policy_sha256}
+    if generation["generation_id"] != args.generation_id or generation["policy_ref"] != policy_ref:
+        raise StrategyRecordStoreError("SOURCE_EVENT_GENERATION_IDENTITY_INVALID")
+    matches = [r for r in generation["closures"] if r["trade_date"] == args.trade_date]
+    retained = [r for r in generation["closures"] if r["trade_date"] != args.trade_date]
+    if (
+        len(matches) != 1
+        or retained != parent
+        or any(r["trade_date"] == args.trade_date for r in parent)
+    ):
+        raise StrategyRecordStoreError("SOURCE_EVENT_PARENT_CLOSURES_INVALID")
+    closure = matches[0]
+    calendar_ref = source.ref(
+        {"path": args.calendar_receipt, "sha256": args.calendar_receipt_sha256}
+    )
+    if (
+        closure["policy_ref"] != policy_ref
+        or closure["owner_declaration_ref"] != policy_ref
+        or closure["source_receipt_ref"] != calendar_ref
+        or closure["sealed_at"] != generation["generated_at"]
+    ):
+        raise StrategyRecordStoreError("SOURCE_EVENT_CLOSURE_BINDING_INVALID")
+    seal_time = instant(closure["sealed_at"], label="planned event seal")
+    if (
+        seal_time > _manager_utc_now()
+        or seal_time.astimezone(_SHANGHAI).date().isoformat() != args.trade_date
+    ):
+        raise StrategyRecordStoreError("SOURCE_EVENT_ORIGINAL_SEAL_TIME_INVALID")
+    for row in generation["closures"]:
+        validate_daily_closure_source(workspace=project, closure=row, sources=source)
+    candidate = events._seal(
+        {
+            "schema_id": events.EVENT_POINTER_SCHEMA,
+            "generation_id": args.generation_id,
+            "generation": {
+                "path": "generations/" + args.generation_id + ".v1.json",
+                "sha256": _sha(raw),
+            },
+            "trade_dates": generation["trade_dates"],
+            "previous_pointer_sha256": (
+                None if expected == events.EMPTY_POINTER_SHA256 else expected
+            ),
+            "broker_order_trade_authority": False,
+        }
+    )
+    candidate_sha = _sha(events.canonical_json_bytes(candidate))
+    if actual not in {expected, candidate_sha}:
+        raise StrategyRecordStoreError("SOURCE_EVENT_FOREIGN_POINTER")
+    if actual == candidate_sha and events.load_generation(root)["generation"] != generation:
+        raise StrategyRecordStoreError("SOURCE_EVENT_CURRENT_GENERATION_CHANGED")
+    source.recheck()
+    if events.pointer_sha256(root) != actual:
+        raise StrategyRecordStoreError("SOURCE_EVENT_POINTER_CHANGED")
+    return {
+        "state": "CURRENT_CANDIDATE" if actual == candidate_sha else "STAGED_CANDIDATE",
+        "pointer_sha256": candidate_sha,
+        "generation": generation,
+    }
+
+
+def recover_planned_daily_event(args):
+    """Adopt previously committed source facts; never create/re-sign historical facts."""
+    from quant_investor.strategy_records import event_store as events
+
+    with _operation_lock(args.record_root):
+        result = inspect_planned_daily_event(args)
+        if result["state"] == "ABSENT":
+            raise StrategyRecordStoreError("SOURCE_EVENT_COMMITTED_GENERATION_REQUIRED")
+        generation = result["generation"]
+        if result["state"] == "STAGED_CANDIDATE":
+            events.publish_generation(
+                Path(args.record_root) / "_event_store",
+                generation_id=args.generation_id,
+                generated_at=generation["generated_at"],
+                expected_pointer_sha256=args.expected_event_pointer_sha256,
+                closures=generation["closures"],
+                policy_ref=generation["policy_ref"],
+            )
+        after = inspect_planned_daily_event(args)
+        if (
+            after["state"] != "CURRENT_CANDIDATE"
+            or after["pointer_sha256"] != result["pointer_sha256"]
+        ):
+            raise StrategyRecordStoreError("SOURCE_EVENT_RECOVERY_READBACK_INVALID")
+        return {
+            "status": "NO_ACTION" if result["state"] == "CURRENT_CANDIDATE" else "PUBLISHED",
+            "pointer_sha256": after["pointer_sha256"],
+        }
 
 def command_close_through_latest(args: argparse.Namespace) -> dict[str, Any]:
     """Plan or execute one offline all-or-nothing official-close batch."""
@@ -4029,8 +4291,10 @@ def command_close_through_latest(args: argparse.Namespace) -> dict[str, Any]:
         "retrospective_path": args.retrospective_declaration,
         "retrospective_sha": args.retrospective_declaration_sha,
         "execute": args.execute,
+        "prepare_only": args.prepare,
+        "expected_plan_sha": args.expected_plan_sha,
     }
-    if args.execute:
+    if args.execute or args.prepare:
         with _operation_lock(args.record_root):
             return close_through_latest(**values)
     return close_through_latest(**values)
@@ -4170,11 +4434,25 @@ def build_parser() -> argparse.ArgumentParser:
     daily_event.add_argument("--trade-date", required=True)
     daily_event.add_argument("--policy-path", required=True)
     daily_event.add_argument("--policy-sha256", required=True)
-    daily_event.add_argument("--maintenance-receipt", required=True)
-    daily_event.add_argument("--maintenance-receipt-sha256", required=True)
+    daily_event.add_argument("--maintenance-receipt")
+    daily_event.add_argument("--maintenance-receipt-sha256")
+    daily_event.add_argument("--calendar-receipt")
+    daily_event.add_argument("--calendar-receipt-sha256")
+    daily_event.add_argument("--raw-calendar")
+    daily_event.add_argument("--raw-calendar-sha256")
     daily_event.add_argument("--expected-event-pointer-sha256", required=True)
     daily_event.add_argument("--generation-id", required=True)
     daily_event.set_defaults(handler=command_publish_daily_event_closure, mutating=True)
+
+    registered_event = subparsers.add_parser("publish-registered-event-declaration")
+    _common_record_root(registered_event)
+    registered_event.add_argument("--project-root", required=True)
+    registered_event.add_argument("--owner-fact", required=True)
+    registered_event.add_argument("--owner-fact-sha256", required=True)
+    registered_event.add_argument("--expected-pointer-sha", required=True)
+    registered_event.set_defaults(
+        handler=command_publish_registered_event_declaration, mutating=True
+    )
 
     close_latest = subparsers.add_parser("close-through-latest")
     _common_record_root(close_latest)
@@ -4189,7 +4467,12 @@ def build_parser() -> argparse.ArgumentParser:
     close_latest.add_argument("--policy-sha", required=True)
     close_latest.add_argument("--retrospective-declaration")
     close_latest.add_argument("--retrospective-declaration-sha")
-    close_latest.add_argument("--execute", action="store_true")
+    close_phase = close_latest.add_mutually_exclusive_group()
+    close_phase.add_argument("--execute", action="store_true")
+    close_phase.add_argument(
+        "--prepare", action="store_true", help="seal only the validated native plan"
+    )
+    close_latest.add_argument("--expected-plan-sha", help="exact previously prepared plan SHA")
     close_latest.set_defaults(handler=command_close_through_latest)
 
     reselect = subparsers.add_parser("reselect-catalog")
@@ -4316,7 +4599,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
-        if getattr(args, "mutating", False):
+        if (
+            getattr(args, "mutating", False)
+            and args.handler not in (
+                command_publish_daily_event_closure,
+                command_publish_registered_event_declaration,
+            )
+        ):
             with _operation_lock(args.record_root):
                 if (
                     getattr(args, "handler", None) is command_seal_publish
@@ -4333,7 +4622,8 @@ def main(argv: list[str] | None = None) -> int:
         subprocess.CalledProcessError,
     ) as exc:
         print(
-            json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False),
+            json.dumps({"ok": False, "error": str(exc),
+                        **({"coverage": exc.coverage} if hasattr(exc, "coverage") else {})}, ensure_ascii=False),
             file=sys.stderr,
         )
         return 2

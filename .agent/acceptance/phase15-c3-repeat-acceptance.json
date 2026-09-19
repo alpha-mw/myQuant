@@ -1,0 +1,29 @@
+{
+  "observed_at": "2026-09-14T16:51:07.124820+00:00",
+  "state": "PASS",
+  "runtime_commit": "c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b",
+  "proof_ref": {
+    "path": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/configured-repeat-proof.json",
+    "sha256": "4ba58a3c4b8c1ed5e696eb094169095375b14f0d063046e65d64e6a7e7526b67"
+  },
+  "stage": {
+    "stage": "repeat",
+    "exit_code": 0,
+    "seconds": 5009.18,
+    "log": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/configured-successor-repeat.log"
+  },
+  "request_ref": {
+    "path": "results/operations/daily_production/CN/20260827/preparation/1335469cd918f263243cf08e8d972e99c4ae41f2a22cc7085a7b2f590ebcdc32/request.json",
+    "sha256": "cd9ae41f0801076ce72b8d84264b2fbecb6bfda7fc880fd6baddde1546d667ac"
+  },
+  "completion_ref": {
+    "path": "results/operations/daily_production/CN/20260827/completion.v1.json",
+    "sha256": "f1acaf5e510b0193bb3e010d226d58e6a6337fb2a3bf2efb4ac38ae57bb44c57"
+  },
+  "execution_state": "NO_ACTION",
+  "business_state": "COMPLETE",
+  "workspace_unchanged": true,
+  "maintenance_factor_and_financial_calls_forbidden": true,
+  "synthetic": true,
+  "production_deployed": false
+}

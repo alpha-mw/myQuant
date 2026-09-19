@@ -260,53 +260,70 @@ def _matches_inputs(
 
 
 def _register_factor_production_observations(
-    workspace_root: str, *, registered_at: str
+    workspace_root: str, *, registered_at: str, recover_history: bool = False
 ) -> dict[str, Any]:
     store = FactorProductionStore(workspace_root)
     with store._active_lock():
-        inputs = store.read_active_observation_inputs()
-        rows = list(inputs["factor_rows"])
-        existing: dict[str, dict[str, Any]] = {}
-        for row in rows:
-            path = _observation_path(inputs["signal_date"], row["factor_alias"])
-            stored = store.read_optional(path)
-            if stored is None:
-                continue
-            observation = validate_factor_production_observation(stored.data)
-            if not _matches_inputs(observation, inputs, row):
-                raise _fail("Factor production observation immutable path conflicts")
-            existing[row["factor_alias"]] = observation
-        if existing:
-            stamp = next(iter(existing.values()))["payload"]["registered_at"]
-        else:
-            stamp = _stamp(registered_at, label="registered_at")
-        observations = []
-        created_count = 0
-        for row in rows:
-            alias = row["factor_alias"]
-            path = _observation_path(inputs["signal_date"], alias)
-            selected_observation = existing.get(alias)
-            if selected_observation is None:
-                selected_observation = build_factor_production_observation(
-                    inputs=inputs, factor_row=row, registered_at=stamp
-                )
-                stored = store.write_exact_once(path, canonical_json_bytes(selected_observation))
-                selected_observation = validate_factor_production_observation(stored.data)
-                created_count += 1
-            observations.append(
-                {
-                    "factor_alias": alias,
-                    "factor_id": row["factor_id"],
-                    "observation_id": selected_observation["payload"][
-                        "factor_production_observation_id"
-                    ],
-                    "observation_path": str(path),
-                    "observation_sha256": hashlib.sha256(
-                        canonical_json_bytes(selected_observation)
-                    ).hexdigest(),
-                    "state": "OPEN",
-                }
+        history = (
+            store.read_observation_history()
+            if recover_history
+            else [store.read_active_observation_inputs()]
+        )
+        batches = [
+            _register_inputs(store, inputs, registered_at=registered_at) for inputs in history
+        ]
+    if not batches:
+        return {"command_status": "GENESIS_NOT_OBSERVABLE", "created_count": 0, "observations": []}
+    current = dict(batches[-1])
+    current["created_count"] = sum(batch["created_count"] for batch in batches)
+    current["command_status"] = "REGISTERED" if current["created_count"] else "NO_ACTION"
+    current["recovered_generations"] = batches[:-1]
+    return current
+
+
+def _register_inputs(
+    store: FactorProductionStore, inputs: Mapping[str, Any], *, registered_at: str
+) -> dict[str, Any]:
+    # Caller holds the sole Factor active lock. Each new record uses its real time.
+    rows = list(inputs["factor_rows"])
+    existing: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        path = _observation_path(inputs["signal_date"], row["factor_alias"])
+        stored = store.read_optional(path)
+        if stored is None:
+            continue
+        observation = validate_factor_production_observation(stored.data)
+        if not _matches_inputs(observation, inputs, row):
+            raise _fail("Factor production observation immutable path conflicts")
+        existing[row["factor_alias"]] = observation
+    stamp = _stamp(registered_at, label="registered_at")
+    observations = []
+    created_count = 0
+    for row in rows:
+        alias = row["factor_alias"]
+        path = _observation_path(inputs["signal_date"], alias)
+        selected_observation = existing.get(alias)
+        if selected_observation is None:
+            selected_observation = build_factor_production_observation(
+                inputs=inputs, factor_row=row, registered_at=stamp
             )
+            stored = store.write_exact_once(path, canonical_json_bytes(selected_observation))
+            selected_observation = validate_factor_production_observation(stored.data)
+            created_count += 1
+        observations.append(
+            {
+                "factor_alias": alias,
+                "factor_id": row["factor_id"],
+                "observation_id": selected_observation["payload"][
+                    "factor_production_observation_id"
+                ],
+                "observation_path": str(path),
+                "observation_sha256": hashlib.sha256(
+                    canonical_json_bytes(selected_observation)
+                ).hexdigest(),
+                "state": "OPEN",
+            }
+        )
     return {
         "command_status": "REGISTERED" if created_count else "NO_ACTION",
         "authority_domain": "FACTOR_PRODUCTION_OBSERVATION_ONLY",
@@ -329,12 +346,15 @@ def _register_factor_production_observations(
     }
 
 
-def register_factor_production_observations(workspace_root: str) -> dict[str, Any]:
+def register_factor_production_observations(
+    workspace_root: str, *, recover_history: bool = False
+) -> dict[str, Any]:
     """Register LOW/W80 observations atomically with code-owned current time."""
 
     return _register_factor_production_observations(
         workspace_root,
         registered_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        recover_history=recover_history,
     )
 
 

@@ -1,0 +1,35 @@
+{
+  "observed_at": "2026-09-14T13:44:06.520634+00:00",
+  "state": "LIVE_SEALED_EOD_DECISION_SOURCE_REPLAY_SAMPLED",
+  "pid": 20637,
+  "original_handle": 74723,
+  "tool_handle_available": false,
+  "safe_signal": "SIGUSR1",
+  "signal_count_for_this_process": 1,
+  "trace_ref": {
+    "path": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/configured-native.stack.txt",
+    "sha256": "f2ff6665174e842c8290a0c1ac48f556bfed350aa76242436809e5a47dba4d3c"
+  },
+  "stack_path": [
+    "seal_materialized_completion",
+    "replay_native_completion",
+    "replay_completed_decision",
+    "research_capture.read",
+    "read_cutoff_inputs",
+    "SourceBundle._verify_origins",
+    "read_theme_handoff",
+    "bind_theme_acquisition",
+    "core_pool.recheck",
+    "read_historical_research_inputs",
+    "verify_active",
+    "validate_factor_production_source_closure",
+    "compute_bootstrap_signals",
+    "pandas Arrow column access"
+  ],
+  "sample_scope": "ONE_INSTANT_NOT_TERMINAL_OR_GENERAL_NO_LOOP_PROOF",
+  "next_action": "Await original replay completion; do not repeat the same diagnostic without a phase change or new failure.",
+  "runtime_changes": [],
+  "producer_restart": false,
+  "financial_changes_by_diagnosis": false,
+  "goal_complete": false
+}

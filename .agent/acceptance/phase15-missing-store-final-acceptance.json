@@ -1,0 +1,76 @@
+{
+  "observed_at": "2026-09-14T13:24:40.378073+00:00",
+  "case": 4,
+  "state": "INSTALLED_RETAINED_MISSING_STORE_RECOVERY_PASS",
+  "runtime_commit": "bf078d3235de3ade1379e8082d5d4a49e109f7d5",
+  "root": "/private/tmp/myquant-configured-missing-store-20260914T012539Z",
+  "status_ref": {
+    "path": "/private/tmp/myquant-configured-missing-store-20260914T012539Z/missing-store-resume-driver-status.json",
+    "sha256": "31427787d58495dc10c00e2bfe4363e99e165b6c109fed94e6bd151f88b2c6f5"
+  },
+  "proof_ref": {
+    "path": "/private/tmp/myquant-configured-missing-store-20260914T012539Z/configured-missing-store-proof.json",
+    "sha256": "daf4ca0b19336ee3980b1f23b087a5cea37975a84fb8e834a731d09c9099a178"
+  },
+  "finished_at": "2026-09-14T08:45:01.416829+00:00",
+  "helper_drift": [],
+  "completion_ref": {
+    "path": "results/operations/daily_production/CN/20260827/completion.v1.json",
+    "sha256": "00acab0a55c4c0d6c71d01623059b288f3663bde23078e4f33c234ba46228888"
+  },
+  "native_replay_validated": true,
+  "validated_nodes": [
+    "calendar",
+    "corporate_action_recon",
+    "dashboard",
+    "decision",
+    "exposure",
+    "factor",
+    "fundamental",
+    "industry",
+    "low_observation",
+    "macro",
+    "market",
+    "pit",
+    "store",
+    "theme",
+    "top100",
+    "w80_observation"
+  ],
+  "financial_cas_count": 1,
+  "upstream_producers_forbidden": true,
+  "original_upstream_cutoff_and_pool_unchanged": true,
+  "missing_valuation_date_present_exactly_once": true,
+  "public_execution_state": "SUCCEEDED",
+  "public_business_state": "COMPLETE",
+  "serving_recorded_at_synthetic_replay": {
+    "sealed_evidence_ref": {
+      "path": "results/operations/daily_production/CN/20260827/completion.v1.json",
+      "sha256": "00acab0a55c4c0d6c71d01623059b288f3663bde23078e4f33c234ba46228888"
+    },
+    "publication_state": "RECORDED_EOD_PUBLICATION",
+    "publication_ref": {
+      "path": "results/operations/daily_production/CN/20260827/dashboard/serving-publication.v2.json",
+      "sha256": "d45fdf4ed8512d6b6b7004fa0b9488a5bce820452b9d30dac3ad67d31b57fd01"
+    },
+    "validation_scope": "RECORDED_SERVING_BYTES_ONLY"
+  },
+  "ledger": {
+    "ledger_ref": {
+      "path": "results/prospective/CN/20260827/evidence-ledger.v1.json",
+      "sha256": "e08989ab96d6fc4444ba2ea39aefd6b3fd388f5b0dde57169f2b62a19692b5c4"
+    },
+    "classification": "RETROSPECTIVE_RECOMPUTE",
+    "prospective": false,
+    "synthetic": true,
+    "recomputed": true,
+    "validation_scope": "NATIVE_LEDGER_DERIVATION",
+    "native_business_replay_required": true
+  },
+  "continued_from_retained_test_failure": true,
+  "original_first_public_return_available": false,
+  "first_public_return_reconstructed": false,
+  "synthetic": true,
+  "production_deployed": false,
+  "full_goal_complete": false
+}

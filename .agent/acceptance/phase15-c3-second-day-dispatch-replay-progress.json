@@ -1,0 +1,78 @@
+{
+  "observed_at": "2026-09-15T02:30:54.255278+00:00",
+  "child_pid": 29285,
+  "state": "FULL_SECOND_DAY_STAGE_PASS",
+  "completed_call": {
+    "trade_date": "20260828",
+    "call": 11,
+    "seconds": 1667.7
+  },
+  "started_call": null,
+  "log_ref": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/configured-successor-20260828.log",
+  "caller_identity": "UNCONFIRMED_FROM_LOG_ONLY",
+  "target_eod_complete": true,
+  "synthetic": true,
+  "production_deployed": false,
+  "completed_calls": [
+    {
+      "trade_date": "20260827",
+      "call": 1,
+      "seconds": 1661.17
+    },
+    {
+      "trade_date": "20260827",
+      "call": 2,
+      "seconds": 1660.5
+    },
+    {
+      "trade_date": "20260827",
+      "call": 3,
+      "seconds": 1661.33
+    },
+    {
+      "trade_date": "20260827",
+      "call": 4,
+      "seconds": 1662.17
+    },
+    {
+      "trade_date": "20260827",
+      "call": 5,
+      "seconds": 1685.71
+    },
+    {
+      "trade_date": "20260828",
+      "call": 6,
+      "seconds": 1646.15
+    },
+    {
+      "trade_date": "20260828",
+      "call": 7,
+      "seconds": 1646.47
+    },
+    {
+      "trade_date": "20260827",
+      "call": 8,
+      "seconds": 1690.48
+    },
+    {
+      "trade_date": "20260828",
+      "call": 9,
+      "seconds": 1648.04
+    },
+    {
+      "trade_date": "20260828",
+      "call": 10,
+      "seconds": 1749.74
+    },
+    {
+      "trade_date": "20260828",
+      "call": 11,
+      "seconds": 1667.7
+    }
+  ],
+  "target_node_terminals_observed": 16,
+  "target_day_native_replay_passed": true,
+  "driver_stage_complete": true,
+  "target_eod_sha256": "2bbd9f4f1318be1eb80602350e4e9d4fc017aa667d0c7fdc37c9c4941f01cd30",
+  "acceptance_ref": ".agent/acceptance/phase15-c3-second-day-acceptance.json"
+}

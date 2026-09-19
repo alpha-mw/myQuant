@@ -1,0 +1,69 @@
+{
+  "observed_at": "2026-09-12T16:11:55.523914+00:00",
+  "status": "CORE_LOCAL_VALIDATION_PASSED",
+  "full_phase9_complete": false,
+  "full_phase0_15_complete": false,
+  "review": "Refined recovery Architect amendment accepted, then Critic APPROVE",
+  "alignment_corrections": [
+    "factory-sealed fingerprinted proof; derived immutable capability byte map",
+    "actual selector commit clock after data readback; sealed pre-expiry commit vs unproven pair recovery",
+    "STALE dated client view and actual calendar age after expiry",
+    "shared complete intent/commit/receipt/source/head/final-byte validator for replay and status",
+    "exact matching interrupted head-mirror proposal adopted without restamping",
+    "selector-v3 remnants and malformed selectors preserve legacy writer exclusion"
+  ],
+  "tests": {
+    "python": {
+      "session": 6783,
+      "passed": 160,
+      "seconds": 29.42
+    },
+    "node_contract": {
+      "passed": 12
+    },
+    "legacy_node_v1_v2": "PASS",
+    "mypy_changed_sources": 3,
+    "flake8_changed_files": "PASS",
+    "black_checked_files": 7
+  },
+  "native_replay_receipt": ".agent/acceptance/phase9-v5-native-dashboard-replay.json",
+  "browser": {
+    "http_positive_fault_restore": "Prior actual IAB proof retained in phase9-progress.json",
+    "http_expired": "Actual IAB: STALE, dated historical notice, 100 companies, 42/58 counts, 16 calendar days; synthetic fixture only",
+    "file": "FILE_BROWSER_QA_UNCONFIRMED: Browser Use URL security policy rejected file URL previously; no bypass"
+  },
+  "remaining": [
+    "Actual file-browser verification is policy blocked; Node route checks are not browser proof",
+    "Current-source installed full native EOD/DAG and five-day acceptance belong to final whole-path gate",
+    "Phase7 nonempty/manual adoption and Phases10-15 remain"
+  ],
+  "sources": {
+    "quant_investor/operations/dashboard_evidence.py": "dc83b3a1d95a123607e20f81ba9661e48e2c7545c85d082e2544e34430b547b3",
+    "quant_investor/operations/dashboard_serving_contract.py": "7ddfe1ce2554fc9b8964a01606baceb79d94871a6a4d316552a898e47f14501e",
+    "quant_investor/operations/dashboard_publication_guard.py": "816b76b0535f6a0c4504dc33a91fdcb9c1c9856df7cee218b3fc93923a423d15",
+    "scripts/daily_dashboard_sealed.py": "6b02e46a1ebee16f250daa77b52bf5323b3041f08331f74f09c336f7fad815f0",
+    "scripts/daily_dashboard_publication.py": "a649ebc27939235fae2e9dfb663d608887d7f866ba19b6e3864c6f1371a177ed",
+    "scripts/daily_completion.py": "52354f1c6b7bc993041d740641536050587a02de8679092ed095104fdc49dfe5",
+    "scripts/daily_completion_dashboard.py": "0b4151a5a6f1dbcca467862d4dc044b3d4d181c0d398d07e228d90bf3006a32e",
+    "scripts/daily_completion_store.py": "8023834c31c1a6b5b941521def59f2b76f5c2924199f898a17b0450bb3583ca4",
+    "scripts/daily_completion_replay.py": "1808bd2749e741e990dbddb12e2aad610131a2dce3126772f901e213fb26b52e",
+    "scripts/daily_native_inputs.py": "3c5a914d639886f5d4baa5edd0780af28c9f798523d943ed07c388cde5fe1cd1",
+    "scripts/daily_native_registry.py": "cd3a062a18e42410fb2541538898b4d7a98a1359bf98f13d2dd70f1bd3891abc",
+    "scripts/daily_materialization.py": "195bfe735812cdd523f22d39f12cacecc7c4d5c2493547a91e5cf02dc2ad0797",
+    "scripts/daily_catchup.py": "75ad677ceec0498610161b53fdb87687f1f66b8e0249a5cc00a5f97d0b436b1b",
+    "quant_investor/operations/daily_status.py": "69ed7c5ef3830ec33b630fd5dd882c3b6c50ed83b04dd34d624b9c3b6a25e6fd",
+    "portfolio_dashboard/index.html": "15115028e6a22595b33741d45b740d80f38bb41d98d7dc04d13413b3a8d37f9c",
+    "portfolio_dashboard/app.js": "3ae2bb5e9d5cafe4207373a6d5118eb548938602726bc40c998ef5ca319a447d",
+    "portfolio_dashboard/js/cn_daily_dashboard_contract_v1.js": "dce1aa2b22080ccbfe88a49fb58505398198581571493a0351b9dfb94a2da0f5",
+    "portfolio_dashboard/tests/cn_daily_dashboard_contract_v1.test.js": "8cb84f8ca67438d11c447d0819a0ea5399f1c62434cf706ae80ed2394d6353f4",
+    "portfolio_dashboard/tests/fixtures/daily_sealed_synthetic_raw.json": "ce3144371758ed1a0c2b79691a92feb2bf9a116b6578ef80e5a8aca423a2a40b",
+    "tests/unit/test_daily_dashboard_publication_corrections.py": "c034ca32bcd945d50f8aa92339a9397b36b5c972a7bea6333d09cfc31f7850a0",
+    "tests/unit/test_daily_dashboard_sealed_publication.py": "5d2f46804161e1e7da79515364bd78dfaaa625f8b92d2642cf104daf3d1aa720",
+    "tests/unit/test_daily_dashboard_head_boundaries.py": "73d8e3512b48862bcb3dd7dc465153c51d41d147a34049d6619a6db573a07ece",
+    "tests/unit/test_daily_dashboard_publication_gate.py": "bb83035c6e7d990918a81a9de4e45ce7c3c69e871c178c83e69a1048d8e3c3e0",
+    "tests/unit/test_daily_evidence_public_catchup.py": "88c637acbc29f800bca8727ddf3d40e29c49a837ae77ff39e3372fa6dc9d59fe"
+  },
+  "real_account_writes": 0,
+  "live_providers": 0,
+  "deployment_changes": 0
+}

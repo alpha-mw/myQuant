@@ -1,0 +1,23 @@
+{
+  "status": "PASS",
+  "producer_commit": "3c46cb36918ca00d4fb61707bcfc16ca06b5c2a1",
+  "synthetic": true,
+  "trade_dates": [
+    "20260827",
+    "20260828",
+    "20260831",
+    "20260901",
+    "20260902"
+  ],
+  "five_day_proof_path": "/private/tmp/myquant-final-source-native-20260909T030031Z/five-native-trading-day-proof.json",
+  "five_day_proof_sha256": "5ae1227608b336327a96f2cb1a62658fdbffddb33eac87e48e8e82920ab6a64e",
+  "financial_invariants_path": "/private/tmp/myquant-final-source-native-20260909T030031Z/five-day-financial-invariants.json",
+  "financial_invariants_sha256": "50f1c21bdfeb0d58a96a23a9dd0d79829520e69bb882988282f5b5ebbf4e679e",
+  "native_session": 36956,
+  "native_driver_exit_code": 0,
+  "shares_cost_cash_unchanged": true,
+  "no_trades": true,
+  "read_sources_unchanged": true,
+  "covers_later_phase1_4_code": false,
+  "whole_goal_complete": false
+}

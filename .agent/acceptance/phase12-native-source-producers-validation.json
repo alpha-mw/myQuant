@@ -1,0 +1,76 @@
+{
+  "observed_at": "2026-09-13T08:42:33.197066+00:00",
+  "status": "IMPLEMENTED_LOCAL_VALIDATION",
+  "scope": "PHASE12_NATIVE_EVENT_AND_BENCHMARK_SOURCE_PRODUCERS",
+  "goal_complete": false,
+  "plan": "docs/plans/phase12_native_source_producers.md",
+  "reviews": {
+    "main": "Architect amendments accepted, then Critic APPROVE",
+    "parent_custody": "Architect APPROVE, then Critic APPROVE"
+  },
+  "validation": {
+    "final_related": {
+      "session_id": 51459,
+      "exit_code": 0,
+      "passed": 256,
+      "seconds": 202.87
+    },
+    "focused_producers": {
+      "session_id": 53183,
+      "exit_code": 0,
+      "passed": 50,
+      "seconds": 3.07
+    },
+    "earlier_native_cutoff": {
+      "session_id": 39908,
+      "exit_code": 0,
+      "passed": 71,
+      "seconds": 191.2
+    },
+    "counts_overlap_do_not_sum": true,
+    "black_11_files": "PASS",
+    "flake8_11_files": "PASS",
+    "mypy_6_sources": "PASS",
+    "four_changed_functions_in_large_scripts_format": "PASS"
+  },
+  "runtime_changes": [
+    "Existing daily Event command now supports exact Calendar/raw independently of maintenance; current-day-only new closure and owning Record lock",
+    "Shared daily closure source replay retains actual PARTIAL status and original Calendar/state evidence; mutable veto refs are recorded diagnostics only",
+    "Installed Tushare benchmark capture v2 retains exact raw partitions and original parent pointer; exact parent plus captured rows reconstruct candidate",
+    "Existing benchmark publication lock covers exact candidate CAS/adoption plus compatibility projection; no foreign rollback or hidden historical row replacement",
+    "Existing benchmark script is a CLI wrapper; explicit Eastmoney remains v1; package acquisition does not edit token environment"
+  ],
+  "real_readback": "phase12-native-daily-event-readback.json",
+  "controlled_evidence": [
+    "Synthetic financial/provider rows",
+    "Controlled clock and transport",
+    "Native Calendar/Event/Store/benchmark readers and writers in isolated workspaces"
+  ],
+  "not_claimed": [
+    "Current-source installed whole EOD",
+    "Live provider acquisition in real workspace",
+    "Actual owner confirmation of historical events",
+    "Source orchestration/launcher installation",
+    "Scheduler migration",
+    "Independent unattended run"
+  ],
+  "real_financial_writes": false,
+  "real_provider_calls": false,
+  "scheduler_changes": false,
+  "source_sha256": {
+    "quant_investor/strategy_records/daily_event_source.py": "49844d23e6b13afc85c97158e306942bb5510e6cea6cafb0059d0cc904b75d19",
+    "quant_investor/market/cn_benchmark_capture.py": "37123060ef600bcfcf287662a5b970ddabf0ccbfd2de79223c4be9f491b4867c",
+    "quant_investor/market/cn_benchmark_store.py": "52c7862a9f281d8c5509a0b9872d8be83066695e12fe11063835436ac56f9532",
+    "quant_investor/operations/daily_preparation.py": "de6ece74b0fc47753176288e46ebb70e38b596a8dc9661a6f25ba29bc7e891d9",
+    "quant_investor/operations/corporate_actions.py": "2497f6d684242e5fa270bf7a9b4cc665f684787b3e24f7bb9909f705981c16e0",
+    "quant_investor/operations/research_corporate_inputs.py": "5a2c3c0d19bc807224a351f3adb8ec9b90fddcab540b60954525425209317b05",
+    "scripts/manage_cn_strategy_records.py": "bbac6012ed2905e06d97f1476b527fb80dd3012f1fcd2d847ce669085a330215",
+    "scripts/cn_official_close_batch.py": "c47a1ceb96d25f52341bca9f6ef24adebd42ca22a7e65f0cdd02c972278a7112",
+    "scripts/operations/run_cn_benchmark_close.py": "49a0537a58f81414d66dbfa33dce9b1a47e006474b4b724d8050cd5c9846d508",
+    "tests/unit/_native_source_producer_fixture.py": "59e3b3ab9be06d5de587552c7ff722c7506f6daa03f8f95bfdb4a46e1f36b17b",
+    "tests/unit/test_daily_event_source_producer.py": "54843a904ec87f7438485b9734296d6a42baceb774c367cf9f73aa73073163c7",
+    "tests/unit/test_native_benchmark_capture.py": "67c801ad72c12a8595f65b1de8991678fc46ce07aac2b68f63317075da19f963",
+    "tests/unit/test_cn_benchmark_store.py": "58636709652d653b08949667c3f5927a47bf1a318c4a48eccd0f4d9e936d3c01"
+  },
+  "next": "Implement installed static source config and Calendar/source orchestration in the existing launcher; prepare and launch exact requests only after native source prerequisites; preserve historical factual blockers."
+}

@@ -1,0 +1,108 @@
+{
+  "status": "IMPLEMENTED_LOCAL_VALIDATION_NATIVE_INSTALL_ACCEPTANCE_PENDING",
+  "phase14_complete": false,
+  "full_goal_complete": false,
+  "scope": "Default production-settle and DailyFactorLoop OOS admission using exact original daily evidence; no live OOS or final deployment claim",
+  "reviews": [
+    {
+      "plan": "docs/plans/phase14_evaluator_ledger_design.md",
+      "architect": "APPROVE_WITH_CHANGES; all10 initial amendments accepted",
+      "critic": "APPROVE"
+    },
+    {
+      "plan": "docs/plans/phase14_evaluator_ledger_design.md#native-route-amendment-after-standalone-failure-authoritative",
+      "architect": "APPROVE_WITH_CHANGES; all8 native route amendments accepted",
+      "critic": "APPROVE"
+    },
+    {
+      "plan": "docs/plans/phase14_native_bridge_closure.md",
+      "architect": "APPROVE",
+      "critic": "APPROVE"
+    }
+  ],
+  "behavior": [
+    "Default factor-production-diagnostics.v2; original_close_prospective_count becomes component_sealed_by_close_count with SIGNAL_SEAL_TIMING_ONLY",
+    "Immutable per-observation admission refs; exact same-day completion, native release/slot/snapshot and observation/custody binding",
+    "Eligible-only finite raw-close metric means separated by factor and horizon; unavailable values remain unavailable",
+    "Active verified completion operation or exact archived interpreter child; no direct scripts import, new CLI flags, current-release fallback or source substitution",
+    "Bounded source-drift correction and readback of saved admissions/v2 OOS summary; no cursor advancement on repeated instability",
+    "Five fixed bridge module names added, 39 names/34 physical script sources total; operations identical to the archived baseline"
+  ],
+  "validation": {
+    "final_regression": {
+      "session": 15551,
+      "passed": 188,
+      "seconds": 11.32,
+      "exit_code": 0
+    },
+    "full_real_script_preload": {
+      "session": 10428,
+      "passed": 13,
+      "seconds": 5.2,
+      "included_in_final_regression": true,
+      "controlled_seam": "running installed-release verifier only; real Git blob checks, complete module preload/origin/audit/cleanup and denied writers/network"
+    },
+    "clean_package_only": {
+      "session": 58571,
+      "exit_code": 0,
+      "result": "CLEAN_PACKAGE_ONLY_IMPLEMENTATION_PASS; isolated Python -I; no scripts modules imported"
+    },
+    "black": "15 files checked; final one-line map formatting separately checked",
+    "flake8": "changed runtime modules and new tests PASS",
+    "mypy": "5 runtime files PASS",
+    "diff_check": "scoped tracked changes PASS",
+    "count_note": "Overlapping test runs are not summed"
+  },
+  "archived_native_readback": {
+    "workspace": "/private/tmp/myquant-cutoff-installed-20260913T020706Z/factor-workspace",
+    "release_commit": "eaa60b2d7522db887d387ea99c47a7961c1257a0",
+    "first_attempt": {
+      "session": 23416,
+      "exit_code": 1,
+      "seconds": 172.7,
+      "protected_files": 14862,
+      "protected_changes": [],
+      "result": "DAILY_NATIVE_EVIDENCE_INVALID for both LOW/W80; initial expectation of validated synthetic exclusion was not met",
+      "receipt": ".agent/acceptance/phase14-archived-native-readback.json"
+    },
+    "diagnostic": {
+      "session": 52630,
+      "exit_code": 0,
+      "seconds": 164,
+      "status": "REJECTED",
+      "receipt": ".agent/acceptance/phase14-archived-native-diagnostic.json",
+      "stderr": ".agent/acceptance/phase14-archived-child-stderr.txt"
+    },
+    "cause": "Old recorded interpreter's native bridge rejects scripts.daily_store_adoption at daily_materialization.py:395 during ledger replay: NATIVE_BRIDGE_MODULE_NOT_ALLOWED",
+    "disposition": "No old release retry or mutation. Current fixed module closure repaired; old snapshot stays INVALID native evidence. Not a successful native retrospective or prospective proof."
+  },
+  "limits": [
+    "Positive OOS integration tests use native original observations and native timing derivation with a controlled full-native replay boundary; not real-time OOS",
+    "Current complete script preload uses a disclosed running-install verifier seam, not installed/full-DAG acceptance",
+    "Fresh current-source installed/public/full-DAG/prospective and five-session acceptance remain Phase15",
+    "Phase12 pre-Core input provisioning/bootstrap and scheduler/main financial/Macro prerequisites remain",
+    "Broader Phase13 producer coverage and Phase7/9 acceptance gaps remain as recorded",
+    "Main portfolio/owner policy/Macro veto/active pointers/scheduler/deployment and live providers unchanged"
+  ],
+  "next": "Resume Phase12 pre-Core source/request provisioning and bootstrap. Preserve pending historical financial fact question; no fabricated no-change days. Run final installed/CI/whole-path acceptance after remaining source changes.",
+  "validated_at": "2026-09-13T05:11:28.312935+00:00",
+  "runtime_source_sha256": {
+    "quant_investor/factors/production_outcome_admission.py": "b513b6d976045e624e0863264e22bf90585d6fa2c036a62728890939298fa3d7",
+    "quant_investor/factors/production_outcomes.py": "7c1fa32a0c4940f8264c09e5866b1d05ec5faceec5bfb8275931bbd577395c06",
+    "quant_investor/operations/outcome_native_replay.py": "6b687d3a89770a20aadd46cdf35b4a9f05212eed5e1c76e8608ea91d4e26e06d",
+    "quant_investor/operations/native_bridge.py": "ca7399f4acfd90fa694f145972272d9b3a228c549fd0f0520d5d99d215566664",
+    "scripts/daily_ledger_replay.py": "72ccdd1cbb6e57d0532d47d4c123ac957388069e34e605068f9e66de4b43f052"
+  },
+  "test_source_sha256": {
+    "tests/unit/test_production_outcome_daily_admission.py": "387d2c0b8e1a27812ecea52b61084567f5936f0ccd5f27aef60c6e18577795e1",
+    "tests/unit/test_outcome_native_replay.py": "bfc3f9f8407b00c08a1199e9d238fbf541a1c006c0d9b2086119928a280bc005",
+    "tests/unit/test_daily_evidence_full_native_imports.py": "b29f40f993cb835b84dd2ba72614d61f027d9fd4d1614ebf87f8c689ce5134ae",
+    "tests/unit/test_production_outcome_diagnostics.py": "a411aeaa2c1013338ec616b67e339da48a96eba568c31b4b93c177ff0981a90a",
+    "tests/unit/test_daily_evidence_native_bridge.py": "31486f8e6d99be8685cb61ea6af9ca39338fea9e921366622e05fd3849465108",
+    "tests/unit/test_daily_evidence_eligible_selector.py": "7b79871499a1ca320dd88d8b99a517966a59ca08046750617199acbc0c1ddf37",
+    "tests/unit/test_daily_evidence_morning_consumer.py": "eb08282e2ffbb98f5650d9098c0edbe545d11703d93221d4270d388b02403e81",
+    "tests/unit/test_daily_evidence_morning_seal.py": "7395e4dffc72d729a903658566d89f5f1b2f839f004cbcc1e5c100629ef1e54b",
+    "tests/unit/test_daily_evidence_morning_history.py": "710aab972dbb8db965c76c0c99590393d2a932590b4a9e3dcf2f81380ee45fcf",
+    "tests/unit/test_morning_v3_receipt.py": "12820aa45a3b2ef4e65b2281225a932c49e24cda8ff44af3939414c827e14de6"
+  }
+}

@@ -1,0 +1,712 @@
+{
+  "status": "READ_ONLY_REASON_INVENTORY",
+  "observed_at": "2026-09-13T10:34:30.102887+00:00",
+  "source_count": 8,
+  "unique_reason_count": 103,
+  "sites": [
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_AUTOMATIC_PARENT_FORBIDDEN",
+      "path": "quant_investor/operations/daily_preparation_contract.py",
+      "line": 147
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_BENCHMARK_COMPATIBILITY_CHANGED",
+      "path": "quant_investor/operations/daily_preparation.py",
+      "line": 241
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_BENCHMARK_PATH_INVALID",
+      "path": "quant_investor/operations/daily_preparation_contract.py",
+      "line": 139
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_BOOTSTRAP_PREDECESSOR_INVALID",
+      "path": "quant_investor/operations/daily_preparation_contract.py",
+      "line": 238
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_COMMITMENT_CHANGED",
+      "path": "quant_investor/operations/daily_preparation.py",
+      "line": 410
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_COMMITMENT_CONFLICT",
+      "path": "quant_investor/operations/daily_preparation.py",
+      "line": 354
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_COMMITMENT_DISAPPEARED",
+      "path": "quant_investor/operations/daily_preparation.py",
+      "line": 464
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_COMMITMENT_OBJECTS_INVALID",
+      "path": "quant_investor/operations/daily_preparation.py",
+      "line": 372
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_COMMITMENT_TIME_INVALID",
+      "path": "quant_investor/operations/daily_preparation.py",
+      "line": 361
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_CONFIG_CHANGED",
+      "path": "quant_investor/cli/daily_prepare.py",
+      "line": 51
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_CONFIG_FIELDS_INVALID",
+      "path": "quant_investor/operations/daily_preparation_contract.py",
+      "line": 70
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_CONFIG_SCOPE_INVALID",
+      "path": "quant_investor/operations/daily_preparation_contract.py",
+      "line": 72
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_CONSTRUCTION_INVALID",
+      "path": "quant_investor/operations/daily_preparation_contract.py",
+      "line": 131
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_DEADLINE_INVALID",
+      "path": "quant_investor/operations/daily_preparation_contract.py",
+      "line": 83
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_EMPTY_CONSTRUCTION_FORBIDDEN",
+      "path": "quant_investor/operations/daily_preparation_contract.py",
+      "line": 185
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_EXISTING_EOD_REQUIRES_SEED",
+      "path": "quant_investor/operations/daily_preparation.py",
+      "line": 260
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_FACTOR_PARENT_CHANGED",
+      "path": "quant_investor/operations/daily_preparation.py",
+      "line": 281
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_FACTOR_PARENT_INVALID",
+      "path": "quant_investor/operations/daily_preparation.py",
+      "line": 274
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_FRESH_CALENDAR_REQUIRED",
+      "path": "quant_investor/operations/daily_preparation.py",
+      "line": 453
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_GENERATED_REF_CONFLICT",
+      "path": "quant_investor/operations/daily_preparation.py",
+      "line": 305
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_HEAD_INVALID",
+      "path": "quant_investor/operations/daily_preparation_contract.py",
+      "line": 104
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_HEAD_INVALID",
+      "path": "quant_investor/operations/daily_preparation_contract.py",
+      "line": 108
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_HEAD_PAIR_INVALID",
+      "path": "quant_investor/operations/daily_preparation.py",
+      "line": 150
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_LOCATOR_DATE_INVALID",
+      "path": "quant_investor/operations/daily_preparation_contract.py",
+      "line": 119
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_LOCATOR_INVALID",
+      "path": "quant_investor/operations/daily_preparation_contract.py",
+      "line": 98
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_LOCATOR_SELECTION_INVALID",
+      "path": "quant_investor/operations/daily_preparation_contract.py",
+      "line": 115
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_NATIVE_DATES_MISSING",
+      "path": "quant_investor/operations/daily_preparation.py",
+      "line": 216
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_NATIVE_POINTER_CHANGED",
+      "path": "quant_investor/operations/daily_preparation.py",
+      "line": 198
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_OBJECT_CHANGED",
+      "path": "quant_investor/operations/daily_preparation.py",
+      "line": 413
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_OBJECT_CONFLICT",
+      "path": "quant_investor/operations/daily_preparation.py",
+      "line": 381
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_PENDING_REQUEST",
+      "path": "quant_investor/operations/daily_preparation.py",
+      "line": 322
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_PREIMAGES_INVALID",
+      "path": "quant_investor/operations/daily_preparation_contract.py",
+      "line": 134
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_PREIMAGE_PATH_INVALID",
+      "path": "quant_investor/operations/daily_preparation_contract.py",
+      "line": 137
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_PREVIOUS_OPEN_REQUIRED",
+      "path": "quant_investor/operations/daily_preparation.py",
+      "line": 253
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_PUBLICATION_INVALID",
+      "path": "quant_investor/operations/daily_preparation_contract.py",
+      "line": 85
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_SEED_BINDING_INVALID",
+      "path": "quant_investor/operations/daily_preparation_contract.py",
+      "line": 100
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_SOURCE_CHANGED",
+      "path": "quant_investor/operations/daily_preparation.py",
+      "line": 67
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_SOURCE_CHANGED",
+      "path": "quant_investor/operations/daily_preparation.py",
+      "line": 70
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_SOURCE_CHANGED",
+      "path": "quant_investor/operations/daily_preparation.py",
+      "line": 98
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_SOURCE_CHANGED",
+      "path": "quant_investor/operations/daily_preparation.py",
+      "line": 111
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_SOURCE_CHANGED",
+      "path": "quant_investor/operations/daily_preparation.py",
+      "line": 120
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_SOURCE_CHANGED",
+      "path": "quant_investor/operations/daily_preparation.py",
+      "line": 127
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_SOURCE_CHANGED",
+      "path": "quant_investor/operations/daily_preparation.py",
+      "line": 129
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_SOURCE_MODE_INVALID",
+      "path": "quant_investor/operations/daily_preparation.py",
+      "line": 88
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_SOURCE_SHA_MISMATCH",
+      "path": "quant_investor/operations/daily_preparation.py",
+      "line": 65
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_STORE_CALENDAR_COVERAGE_INVALID",
+      "path": "quant_investor/operations/daily_preparation.py",
+      "line": 189
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "PREPARATION_STORE_V3_REQUIRED",
+      "path": "quant_investor/operations/daily_preparation.py",
+      "line": 176
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_BENCHMARK_CAPTURE_VERSION_CONFLICT",
+      "path": "scripts/daily_source_inputs.py",
+      "line": 233
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_BENCHMARK_FOREIGN_POINTER",
+      "path": "scripts/daily_source_inputs.py",
+      "line": 227
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_BENCHMARK_FOREIGN_POINTER",
+      "path": "scripts/daily_source_inputs.py",
+      "line": 237
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_BENCHMARK_FOREIGN_POINTER",
+      "path": "scripts/daily_source_inputs.py",
+      "line": 255
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_CALENDAR_CAPTURE_INVALID",
+      "path": "quant_investor/operations/source_slot_inputs.py",
+      "line": 120
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_CALENDAR_LINK_INVALID",
+      "path": "quant_investor/operations/source_slot_inputs.py",
+      "line": 131
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_CALENDAR_OBJECT_CONFLICT",
+      "path": "quant_investor/operations/source_slot_inputs.py",
+      "line": 145
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_CALENDAR_OBSERVATION_INVALID",
+      "path": "quant_investor/operations/source_slot_inputs.py",
+      "line": 135
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_CALENDAR_REQUEST_BUDGET_EXHAUSTED",
+      "path": "quant_investor/operations/source_slot_inputs.py",
+      "line": 189
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_CALENDAR_REQUEST_HISTORY_MISSING",
+      "path": "quant_investor/operations/source_slot_inputs.py",
+      "line": 174
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_CALENDAR_REQUEST_MARKER_INVALID",
+      "path": "quant_investor/operations/source_slot_inputs.py",
+      "line": 187
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_CALENDAR_WIRE_INVALID",
+      "path": "quant_investor/operations/source_slot_inputs.py",
+      "line": 126
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_CAPTURE_DATE_CHANGED",
+      "path": "quant_investor/operations/source_slot_inputs.py",
+      "line": 198
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_CAPTURE_DATE_CHANGED",
+      "path": "quant_investor/operations/source_slot_inputs.py",
+      "line": 216
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_CAPTURE_OBSERVATION_INVALID",
+      "path": "quant_investor/operations/source_slot_inputs.py",
+      "line": 221
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_COMPLETED_HEAD_REQUIRED",
+      "path": "scripts/daily_source_inputs.py",
+      "line": 163
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_COMPLETED_NATIVE_PROOF_INVALID",
+      "path": "scripts/daily_source_inputs.py",
+      "line": 152
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_COMPLETED_SNAPSHOT_REQUIRED",
+      "path": "scripts/daily_source_inputs.py",
+      "line": 140
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_CONFIG_CHANGED",
+      "path": "quant_investor/cli/daily_sources.py",
+      "line": 109
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_CONFIG_INSTALL_MISMATCH",
+      "path": "quant_investor/cli/daily_sources.py",
+      "line": 91
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_CONFIG_LAUNCH_PROFILE_INVALID",
+      "path": "quant_investor/operations/source_slot_inputs.py",
+      "line": 49
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_EVENT_DATE_MISSING",
+      "path": "scripts/daily_source_inputs.py",
+      "line": 197
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_EVENT_FOREIGN_POINTER",
+      "path": "scripts/daily_source_inputs.py",
+      "line": 194
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_EVENT_OWNER_CUTOFF_NOT_REACHED",
+      "path": "scripts/daily_source_inputs.py",
+      "line": 208
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_FOREIGN_ACTIVE_REQUEST",
+      "path": "scripts/daily_source_inputs.py",
+      "line": 108
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_HISTORICAL_EVENTS_MISSING",
+      "path": "quant_investor/operations/source_slot_inputs.py",
+      "line": 348
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_HISTORICAL_EVENT_GENERATION_MISSING",
+      "path": "scripts/daily_source_inputs.py",
+      "line": 204
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_LOCATOR_CALENDAR_MISMATCH",
+      "path": "scripts/daily_source_inputs.py",
+      "line": 78
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_LOCATOR_CAS_CONFLICT",
+      "path": "quant_investor/operations/source_slot_storage.py",
+      "line": 83
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_LOCATOR_CAS_CONFLICT",
+      "path": "quant_investor/operations/source_slot_storage.py",
+      "line": 92
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_LOCATOR_CONFIG_CHANGED",
+      "path": "quant_investor/operations/source_slot_contract.py",
+      "line": 143
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_LOCATOR_EARLY_REQUEST",
+      "path": "quant_investor/operations/source_slot_contract.py",
+      "line": 125
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_LOCATOR_HISTORY_BOUND_EXCEEDED",
+      "path": "quant_investor/operations/source_slot_storage.py",
+      "line": 64
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_LOCATOR_HISTORY_CYCLE",
+      "path": "quant_investor/operations/source_slot_storage.py",
+      "line": 49
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_LOCATOR_HISTORY_MISSING_OR_CHANGED",
+      "path": "quant_investor/operations/source_slot_storage.py",
+      "line": 58
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_LOCATOR_INITIAL_STATE_INVALID",
+      "path": "quant_investor/operations/source_slot_contract.py",
+      "line": 140
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_LOCATOR_INVALID",
+      "path": "quant_investor/operations/source_slot_contract.py",
+      "line": 113
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_LOCATOR_LOCK_WORKSPACE_MISMATCH",
+      "path": "quant_investor/operations/source_slot_storage.py",
+      "line": 68
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_LOCATOR_PATH_INVALID",
+      "path": "quant_investor/operations/source_slot_contract.py",
+      "line": 122
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_LOCATOR_PLAN_MISMATCH",
+      "path": "scripts/daily_source_inputs.py",
+      "line": 81
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_LOCATOR_READBACK_FAILED",
+      "path": "quant_investor/operations/source_slot_storage.py",
+      "line": 100
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_LOCATOR_REQUEST_PATH_INVALID",
+      "path": "quant_investor/operations/source_slot_contract.py",
+      "line": 129
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_LOCATOR_SAME_DAY_CHANGE",
+      "path": "quant_investor/operations/source_slot_contract.py",
+      "line": 157
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_LOCATOR_STATE_INVALID",
+      "path": "quant_investor/operations/source_slot_contract.py",
+      "line": 131
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_LOCATOR_TRANSITION_INVALID",
+      "path": "quant_investor/operations/source_slot_contract.py",
+      "line": 163
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_OPERATION_MODE_INVALID",
+      "path": "scripts/daily_source_inputs.py",
+      "line": 380
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_PLAN_BENCHMARK_CALENDAR_MISMATCH",
+      "path": "quant_investor/operations/source_slot_inputs.py",
+      "line": 316
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_PLAN_BENCHMARK_INVALID",
+      "path": "quant_investor/operations/source_slot_inputs.py",
+      "line": 293
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_PLAN_EVENT_INVALID",
+      "path": "quant_investor/operations/source_slot_inputs.py",
+      "line": 269
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_PLAN_EVENT_INVALID",
+      "path": "quant_investor/operations/source_slot_inputs.py",
+      "line": 282
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_PLAN_EVENT_INVALID",
+      "path": "quant_investor/operations/source_slot_inputs.py",
+      "line": 284
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_PLAN_INVALID",
+      "path": "quant_investor/operations/source_slot_inputs.py",
+      "line": 263
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_PLAN_PREIMAGE_PATH_INVALID",
+      "path": "quant_investor/operations/source_slot_inputs.py",
+      "line": 266
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_PREPARATION_LOCATOR_CHANGED",
+      "path": "quant_investor/operations/source_slot_storage.py",
+      "line": 129
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_PREPARATION_OBJECT_CONFLICT",
+      "path": "quant_investor/operations/source_slot_inputs.py",
+      "line": 425
+    },
+    {
+      "error_class": "PreparationError",
+      "reason": "SOURCE_PREPARATION_PREIMAGES_CHANGED",
+      "path": "quant_investor/operations/daily_preparation.py",
+      "line": 396
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_PREPARATION_RESULT_INVALID",
+      "path": "scripts/daily_source_inputs.py",
+      "line": 431
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_PREPARED_LOCATOR_CONFLICT",
+      "path": "quant_investor/operations/source_slot_storage.py",
+      "line": 123
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_PREPARING_LOCATOR_REQUIRED",
+      "path": "quant_investor/operations/source_slot_storage.py",
+      "line": 119
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_PROVIDER_EVIDENCE_REQUIRED",
+      "path": "scripts/daily_source_inputs.py",
+      "line": 334
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_PROVIDER_EVIDENCE_REQUIRED",
+      "path": "scripts/daily_source_inputs.py",
+      "line": 399
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_REQUEST_COMMITMENT_MISMATCH",
+      "path": "quant_investor/operations/source_slot_inputs.py",
+      "line": 418
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_REQUEST_READBACK_INVALID",
+      "path": "scripts/daily_source_inputs.py",
+      "line": 435
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_RESULT_INVALID",
+      "path": "quant_investor/operations/source_slot_contract.py",
+      "line": 176
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_RESULT_REQUEST_FORBIDDEN",
+      "path": "quant_investor/operations/source_slot_contract.py",
+      "line": 187
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_RESULT_REQUEST_REQUIRED",
+      "path": "quant_investor/operations/source_slot_contract.py",
+      "line": 182
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_STORE_CALENDAR_COVERAGE_INVALID",
+      "path": "quant_investor/operations/source_slot_inputs.py",
+      "line": 338
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_STORE_PREIMAGE_CHANGED",
+      "path": "scripts/daily_source_inputs.py",
+      "line": 262
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_STORE_V3_REQUIRED",
+      "path": "quant_investor/operations/source_slot_inputs.py",
+      "line": 331
+    },
+    {
+      "error_class": "SourceSlotError",
+      "reason": "SOURCE_THEME_PROFILE_INVALID",
+      "path": "quant_investor/operations/source_slot_inputs.py",
+      "line": 73
+    }
+  ],
+  "classification_implemented": false,
+  "scope": "Configured source and preparation producers; existing CLI returns exact code/fields but no retry/owner/next-node taxonomy envelope."
+}

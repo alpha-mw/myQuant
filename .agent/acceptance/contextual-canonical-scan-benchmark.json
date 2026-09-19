@@ -1,0 +1,26 @@
+{
+  "scope": "UNPROFILED_PREDICATE_MICROBENCHMARK_NOT_FULL_VALIDATION",
+  "corpus_strings": 6855,
+  "corpus_characters": 193686,
+  "corpus_sha256": "c023196ca6ec9bc6e33a2f24b99720ccb93ff9d80a3670039133997286ccfde7",
+  "timing_seconds": {
+    "old": [
+      0.004698666976764798,
+      0.004753958899527788,
+      0.004813208011910319,
+      0.0047368749510496855,
+      0.004739708034321666
+    ],
+    "proposed": [
+      0.0009492499521002173,
+      0.0008343749213963747,
+      0.0008382080122828484,
+      0.0008356249891221523,
+      0.0008359999628737569
+    ]
+  },
+  "median_ratio": 5.669507469867439,
+  "unicode_codepoints_checked": 1114112,
+  "predicate_differences": 0,
+  "runtime_files_modified": false
+}

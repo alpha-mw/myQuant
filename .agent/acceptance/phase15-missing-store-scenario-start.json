@@ -1,0 +1,42 @@
+{
+  "observed_at": "2026-09-14T01:36:38.929290+00:00",
+  "case": 4,
+  "state": "CURRENT_INSTALLED_FULL_SCENARIO_RUNNING",
+  "root": "/private/tmp/myquant-configured-missing-store-20260914T012539Z",
+  "process_handle": 28287,
+  "child_pid": 58040,
+  "process_observation": "58040 58039 03:00   1:47.47  59.1 R",
+  "runtime_commit": "bf078d3235de3ade1379e8082d5d4a49e109f7d5",
+  "installation_verified": true,
+  "helper_manifest": {
+    "helper_sha256": {
+      "_native_missing_store_case.py": "4ef224b210bddd524af5fa46525fdeeacd0b2d5a16c3327b37095237b1edb32b",
+      "_native_configured_daily_scenario.py": "a99a56e8c68b3916898ba634acb29caf605a9f9d010972d32293828db15664e1",
+      "_native_full_dag_scenario.py": "c7105739188ad840653dbc18f5d161bd1183deab9912efdb9220860c6b99a0ac",
+      "_native_daily_maintenance_fixture.py": "e15b6318641679f3d2a6229827e589ff344edde6c37fd87ad138b11adac2dada",
+      "_native_synthetic_clock.py": "541d52e1a5e6ddd9aa384d2c0edcbfbcaddcd03bc1646503b2f529678d587211"
+    },
+    "runtime_commit": "bf078d3235de3ade1379e8082d5d4a49e109f7d5",
+    "runtime_differences": []
+  },
+  "intended_fault": "StoreCloseAdapter.execute interrupted before any target-day financial publication",
+  "initial_day": "20260827",
+  "store_baseline_date": "2026-08-26",
+  "recovery_clock_simulated": "2026-08-28T13:20:00Z",
+  "entry": "same original configured request through committed_recovery_only bootstrap cutoff recovery",
+  "required_checks": [
+    "all upstream native nodes successful at interruption",
+    "original cutoff and materialization present and unchanged",
+    "Factor/Top100 files and upstream terminal refs unchanged",
+    "upstream producer calls forbidden on recovery",
+    "exactly one actual native financial CAS",
+    "native Store history gains Aug27 exactly once",
+    "all16 native EOD replay passes",
+    "late serving outcome reported separately"
+  ],
+  "final_acceptance_additional_readback": "If public result is INCOMPLETE, inspect exact native dag-status publication_error/detail and completion_status to prove expiry is the cause; recorded serving expiry alone must not hide an unrelated publication error.",
+  "main_and_parent_log": ".agent/acceptance/phase15-missing-store-driver.log",
+  "native_log": "/private/tmp/myquant-configured-missing-store-20260914T012539Z/missing-store-native.log",
+  "full_dag_proof": false,
+  "production_deployed": false
+}

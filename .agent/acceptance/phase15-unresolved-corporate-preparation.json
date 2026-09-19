@@ -1,0 +1,67 @@
+{
+  "runtime_commit": "bf078d3235de3ade1379e8082d5d4a49e109f7d5",
+  "installed_import_origin": "/private/tmp/myquant-configured-catalog-20260913T202622Z/release/installs/bf078d3235de3ade1379e8082d5d4a49e109f7d5-2a873556ff8305a6ad4d318959c3af1398743228c874da2fdac22dbe30196bb2/lib/python3.13/site-packages/quant_investor/__init__.py",
+  "native_segment_cases_passed": 2,
+  "native_segment_scope": "HISTORICAL_UNRESOLVED_CORPORATE_THEN_NATIVE_STORE_COMMIT_AND_CURRENT_EVENT_DAG_BLOCK",
+  "remaining_dag_nodes_in_current_event_test": "EXPLICIT_FIXTURE_ADAPTERS",
+  "full_dag_claimed": false,
+  "sixth_day_config_preparation_pass": true,
+  "normal_config_unchanged": true,
+  "normal_config_ref": {
+    "path": "configured-inputs/source-config.json",
+    "sha256": "deb3a8278fca35a7cb3e56d81a1b35da2c190fa1709f16a5d211bf9634568779"
+  },
+  "separate_case_config_ref": {
+    "path": "configured-case6-inputs/20260903/configuration.json",
+    "sha256": "af97c75f834b01be5c146ae2f234b49e779253080d63a6040f04e6a3e48b7395"
+  },
+  "event_ref": {
+    "path": "configured-case6-inputs/20260903/unresolved-event.json",
+    "sha256": "2d78f4ec0ca69a4deb5f35bebc5f1cdb567f0482ec814fa7908c1ef88cafb415"
+  },
+  "prepared_full_dag_stage_executed": false,
+  "production_deployed": false,
+  "observed_at": "2026-09-13T23:38:52.687139+00:00",
+  "local_focused_tests": {
+    "passed": 2,
+    "seconds": 2.72
+  },
+  "installed_focused_tests": {
+    "passed": 2,
+    "seconds": 2.47,
+    "session_id": 75026,
+    "exit_code": 0
+  },
+  "source_sha256": {
+    "tests/unit/_native_unresolved_corporate_case.py": "81c1b0d71611e6fc748895b13fbb12ac8632548e1480e1c60fda3430348db7c7",
+    "tests/unit/_native_configured_successor.py": "459908f475c5902678f4288ff2792d445941356f82f59a858983615d6e02b4dd",
+    "tests/unit/test_daily_evidence_corporate_reconciliation.py": "bf8d390ffed52cea94bb0ec57f5369ab62e8b2c6020a5344330e5d6a737be36e",
+    ".agent/acceptance/run_configured_successors.py": "76eaca2d653ec45dcd0b708d37d31166e5d9f3bf832920fa1be598ab8c830e55"
+  },
+  "installed_helper_manifest": {
+    "helper_sha256": {
+      "_native_unresolved_corporate_case.py": "81c1b0d71611e6fc748895b13fbb12ac8632548e1480e1c60fda3430348db7c7",
+      "test_daily_evidence_corporate_reconciliation.py": "bf8d390ffed52cea94bb0ec57f5369ab62e8b2c6020a5344330e5d6a737be36e"
+    },
+    "runtime_commit": "bf078d3235de3ade1379e8082d5d4a49e109f7d5"
+  },
+  "installed_validation_log": "/private/tmp/myquant-configured-catalog-20260913T202622Z/unresolved-corporate-preparation-validation.log",
+  "full_case6_state": "PREPARED_NATIVE_SEGMENT_PASS_FULL_DAG_PENDING",
+  "acceptance_sequence": {
+    "five_unchanged_normal_days": [
+      "20260827",
+      "20260828",
+      "20260831",
+      "20260901",
+      "20260902"
+    ],
+    "separate_sixth_day": "20260903",
+    "sixth_day_cases": [
+      3,
+      6
+    ],
+    "sixth_day_config_change_only": "corporate_action_template_ref"
+  },
+  "business_runtime_changed": false,
+  "full_goal_complete": false
+}

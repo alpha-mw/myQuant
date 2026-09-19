@@ -931,6 +931,26 @@ _FACTOR_FIELD_SETS: Final = {
         "strategy_record_authority",
         "broker_authority",
     ),
+    "factor.production_observation_outcome": (
+        "outcome_id",
+        "series_id",
+        "state",
+        "authority",
+        "observation_ref",
+        "horizon",
+        "label_policy",
+        "origin_session",
+        "end_session",
+        "signal_evidence",
+        "classification_ref",
+        "outcome_source_ref",
+        "source_slice_sha256",
+        "evaluation_implementation",
+        "supersedes_ref",
+        "diagnostics",
+        "evaluated_at",
+        "other_authority",
+    ),
     "factor.production_observation": (
         "factor_production_observation_id",
         "state",
@@ -963,6 +983,7 @@ _FACTOR_FIELD_SETS: Final = {
     ),
 }
 _FACTOR_IDENTITIES: Final = {
+    "factor.production_observation_outcome": "outcome_id",
     "factor.bootstrap_set": "bootstrap_set_id",
     "factor.preregistration": "preregistration_id",
     "factor.configuration_selection": "selection_id",
@@ -1405,6 +1426,173 @@ _INTELLIGENCE_SPECS: Final = {
         },
     ),
 }
+
+_INTELLIGENCE_SPECS["daily_research_tabular_pool_manifest"] = (
+    "manifest_id",
+    _INTELLIGENCE_SPECS["daily_research_pool_manifest"][1]
+    | {
+        "trade_date",
+        "generated_at",
+        "factor_generation_id",
+        "factor_pointer_sha",
+        "low_observation_sha",
+        "w80_observation_sha",
+        "market_pointer_sha",
+        "pit_pointer_sha",
+        "policy_sha",
+        "row_count",
+        "top100_sha",
+    },
+)
+
+for _focus_kind in ("pcb_ai_hardware_membership", "pcb_ai_hardware_evidence"):
+    _INTELLIGENCE_SPECS[_focus_kind] = (
+        "evidence_id",
+        _RESEARCH_COMMON_FIELDS
+        | {
+            "as_of",
+            "trade_date",
+            "focus_topics",
+            "company_set_sha256",
+            "pool_manifest_ref",
+            "pit_selection_ref",
+            "pit_generation_manifest_ref",
+            "pit_membership_ref",
+            "source_refs",
+            "company_rows",
+            "completion_state",
+            "missing_codes",
+        },
+    )
+
+_INTELLIGENCE_SPECS["low_frequency_source_freshness"] = (
+    "freshness_id",
+    _RESEARCH_COMMON_FIELDS
+    | {
+        "domain",
+        "as_of",
+        "trade_date",
+        "source_refs",
+        "policy",
+        "entries",
+        "freshness_state",
+        "warning_codes",
+        "critical_missing_codes",
+    },
+)
+
+_INTELLIGENCE_SPECS["research_portfolio_state"] = (
+    "portfolio_state_id",
+    _RESEARCH_COMMON_FIELDS
+    | {
+        "as_of",
+        "trade_date",
+        "strategy_id",
+        "store_plan_ref",
+        "frozen_pointer_ref",
+        "catalog_ref",
+        "source_record_id",
+        "source_effective_trade_date",
+        "source_sealed_at",
+        "pointer_published_at",
+        "source_refs",
+        "positions",
+        "cash",
+        "timing_status",
+        "prospective",
+        "reason_codes",
+    },
+)
+
+_INTELLIGENCE_SPECS["daily_research_decision_report"] = (
+    "report_id",
+    _RESEARCH_COMMON_FIELDS
+    | {
+        "as_of",
+        "trade_date",
+        "strategy_id",
+        "report_policy",
+        "native_result_ref",
+        "portfolio_state_ref",
+        "source_bindings",
+        "company_rows",
+        "blocker_codes",
+        "timing_status",
+        "prospective",
+    },
+)
+
+_INTELLIGENCE_SPECS["corporate_action_reconciliation"] = (
+    "reconciliation_id",
+    _RESEARCH_COMMON_FIELDS
+    | {
+        "as_of",
+        "trade_date",
+        "strategy_id",
+        "context_ref",
+        "decision_recipe_ref",
+        "store_plan_ref",
+        "portfolio_source_ref",
+        "tracking_policy_ref",
+        "source_refs",
+        "company_rows",
+        "summary_state",
+        "blocker_codes",
+        "custody_at",
+        "timing_status",
+        "prospective",
+    },
+)
+
+_INTELLIGENCE_SPECS["registered_financial_transition_reconciliation"] = (
+    "registered_transition_id",
+    _RESEARCH_COMMON_FIELDS
+    | {
+        "as_of",
+        "trade_date",
+        "strategy_id",
+        "source_profile",
+        "registered_event_declaration_ref",
+        "decision_baseline_pointer_ref",
+        "decision_baseline_catalog_ref",
+        "decision_baseline_record_id",
+        "writer_pointer_ref",
+        "writer_catalog_ref",
+        "writer_record_id",
+        "owner_fact_ref",
+        "owner_declared_at",
+        "registered_at",
+        "evidence_level",
+        "broker_statement_verified",
+        "fee_evidence_level",
+        "domain_states",
+        "position_rows",
+        "cash_before_cny",
+        "cash_after_cny",
+        "cash_delta_cny",
+        "financial_admission_state",
+        "risk_readiness_state",
+        "blocker_codes",
+        "source_refs",
+        "custody_at",
+        "timing_status",
+        "prospective",
+    },
+)
+
+_INTELLIGENCE_SPECS["daily_dashboard_evidence"] = (
+    "dashboard_evidence_id",
+    _RESEARCH_COMMON_FIELDS
+    | {
+        "trade_date",
+        "strategy_id",
+        "source_bindings",
+        "source_refs",
+        "top100_count",
+        "decision_state_counts",
+        "research_state",
+    },
+)
 
 INTELLIGENCE_CONTRACTS: Final = tuple(
     _exact_contract(kind, identity_field, set(fields) | {identity_field})

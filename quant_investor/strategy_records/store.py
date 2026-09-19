@@ -719,12 +719,14 @@ def _validate_pointer_catalog_closure(
     active_delay = (
         active_record.get("publication_delay") if isinstance(active_record, Mapping) else None
     )
-    if isinstance(active_delay, Mapping) and pointer.get("published_at") != active_delay.get(
-        "actual_published_at"
-    ) and not _has_current_active_no_action_receipt(
-        catalog,
-        active_record_id=active,
-        published_at=pointer.get("published_at"),
+    if (
+        isinstance(active_delay, Mapping)
+        and pointer.get("published_at") != active_delay.get("actual_published_at")
+        and not _has_current_active_no_action_receipt(
+            catalog,
+            active_record_id=active,
+            published_at=pointer.get("published_at"),
+        )
     ):
         raise StrategyRecordStoreError("pointer late publication timestamp mismatch")
 
@@ -860,12 +862,14 @@ def _validate_late_external_binding(
         raise StrategyRecordStoreError(
             "late publication external binding requires ONLINE source artifacts"
         )
-    if catalog.get("active_record_id") == record.get("record_id") and catalog.get(
-        "published_at"
-    ) != delay.get("actual_published_at") and not _has_current_active_no_action_receipt(
-        catalog,
-        active_record_id=record.get("record_id"),
-        published_at=catalog.get("published_at"),
+    if (
+        catalog.get("active_record_id") == record.get("record_id")
+        and catalog.get("published_at") != delay.get("actual_published_at")
+        and not _has_current_active_no_action_receipt(
+            catalog,
+            active_record_id=record.get("record_id"),
+            published_at=catalog.get("published_at"),
+        )
     ):
         raise StrategyRecordStoreError("late publication catalog timestamp mismatch")
     manifest = _record_json(
@@ -1180,6 +1184,73 @@ def load_registered_catalog(
     )
     if first_raw != second_raw or first_identity != second_identity:
         raise StrategyRecordStoreError("strategy-record pointer was unstable")
+    return pointer, catalog
+
+
+def load_catalog_snapshot(
+    record_root: str | os.PathLike[str],
+    *,
+    pointer_relative_path: str,
+    expected_pointer_sha256: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Replay an explicitly retained pointer and its immutable catalog.
+
+    This does not select or change current state. The caller must establish the
+    pointer's commit provenance (for example an exact native close completion).
+    """
+    from quant_investor.system.storage import SecureSystemStorage
+
+    root = Path(record_root)
+    reader = SecureSystemStorage(root)
+    relative = _canonical_relative_path(pointer_relative_path, label="retained pointer path")
+    first_stored = reader.read_workspace_file_bytes(relative, maximum_bytes=POINTER_MAX_BYTES)
+    first, identity = first_stored.data, first_stored.stat_identity
+    pointer, catalog = load_catalog_snapshot_bytes(
+        root, pointer_bytes=first, expected_pointer_sha256=expected_pointer_sha256
+    )
+    second_stored = reader.read_workspace_file_bytes(relative, maximum_bytes=POINTER_MAX_BYTES)
+    second, after = second_stored.data, second_stored.stat_identity
+    if first != second or identity != after:
+        raise StrategyRecordStoreError("retained pointer was unstable")
+    return pointer, catalog
+
+
+def load_catalog_snapshot_bytes(
+    record_root: str | os.PathLike[str],
+    *,
+    pointer_bytes: bytes,
+    expected_pointer_sha256: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Decode an exact retained preimage without selecting a current Store head.
+
+    The caller establishes its plan/commit provenance and retains the bytes.
+    All native pointer, catalog and external bindings remain mandatory.
+    """
+    from quant_investor.system.storage import SecureSystemStorage
+
+    if (
+        type(pointer_bytes) is not bytes
+        or not pointer_bytes
+        or len(pointer_bytes) > POINTER_MAX_BYTES
+        or _sha256(pointer_bytes) != expected_pointer_sha256
+    ):
+        raise StrategyRecordStoreError("retained pointer SHA-256 mismatch")
+    root = Path(record_root)
+    reader = SecureSystemStorage(root)
+    pointer = _parse_canonical(pointer_bytes, label="retained strategy-record pointer")
+    _validate_pointer(pointer)
+    catalog_relative = _canonical_relative_path(
+        pointer["catalog_path"], label="retained catalog path"
+    )
+    raw = reader.read_workspace_file_bytes(catalog_relative, maximum_bytes=CATALOG_MAX_BYTES).data
+    if _sha256(raw) != pointer["catalog_sha256"]:
+        raise StrategyRecordStoreError("retained catalog SHA-256 mismatch")
+    catalog = _parse_canonical(raw, label="retained strategy-record catalog")
+    _validate_catalog(catalog, generation_id=pointer["generation_id"])
+    _validate_pointer_catalog_closure(pointer, catalog)
+    _validate_external_catalog_bindings(root, catalog)
+    if reader.read_workspace_file_bytes(catalog_relative, maximum_bytes=CATALOG_MAX_BYTES).data != raw:
+        raise StrategyRecordStoreError("retained catalog was unstable")
     return pointer, catalog
 
 

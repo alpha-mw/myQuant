@@ -202,6 +202,7 @@ def test_macro_recovery_is_forward_only_and_deterministic_by_target(tmp_path):
     )
     journal = tmp_path / "journals/macro/20260819/macro-20260819"
     journal.mkdir(parents=True)
+    _json(journal / "0001-intent.json", {"fixture": "recovery adapter owns validation"})
     calls = []
 
     def recover(**kwargs):
@@ -434,7 +435,9 @@ def test_macro_no_action_requires_semantic_market_manifest_binding(tmp_path, rel
     ("mode", "expected_authority"),
     [("shadow", "candidate"), ("execute", "canonical")],
 )
-def test_daily_macro_prepare_and_commit_receive_exact_authority(tmp_path, mode, expected_authority):
+def test_daily_macro_prepare_and_commit_receive_exact_authority(
+    tmp_path, monkeypatch, mode, expected_authority
+):
     _json(
         tmp_path / "data/parquet/cn/macro_release_calendar/_latest.json",
         {"generation_id": "release-20260818"},
@@ -445,6 +448,11 @@ def test_daily_macro_prepare_and_commit_receive_exact_authority(tmp_path, mode, 
     )
     prepared_calls = []
     commit_calls = []
+    preflight_calls = []
+    monkeypatch.setattr(
+        "quant_investor.macro.maintenance_transaction._preflight_prepared_commit",
+        lambda **kwargs: preflight_calls.append(kwargs),
+    )
 
     def prepare(**kwargs):
         prepared_calls.append(dict(kwargs))
@@ -455,6 +463,7 @@ def test_daily_macro_prepare_and_commit_receive_exact_authority(tmp_path, mode, 
         }
 
     def commit(**kwargs):
+        assert len(preflight_calls) == 1
         commit_calls.append(dict(kwargs))
         return {"status": "SUCCESS"}
 
@@ -493,12 +502,20 @@ def test_daily_macro_prepare_and_commit_receive_exact_authority(tmp_path, mode, 
     assert prepared_calls[0]["market_pointer_path"] == "/market-pointer"
     assert prepared_calls[0]["pit_pointer_path"] == "/pit-pointer"
     if mode == "execute":
+        assert preflight_calls[0]["expected_target_date"] == "20260819"
+        assert preflight_calls[0]["prepared_path"] == "/private/prepared.json"
+        assert (
+            prepared_calls[0]["private_run_root"]
+            == tmp_path / "data/private/macro_recovery_transactions"
+        )
         assert commit_calls[0]["market_pointer_path"] == "/market-pointer"
         assert commit_calls[0]["expected_market_pointer_sha256"] == "d" * 64
         assert commit_calls[0]["pit_pointer_path"] == "/pit-pointer"
         assert commit_calls[0]["expected_pit_pointer_sha256"] == "b" * 64
     else:
         assert commit_calls == []
+        assert preflight_calls == []
+        assert not (tmp_path / "data/private/macro_recovery_transactions").exists()
 
 
 def test_macro_cli_recovery_matrix_dispatches_forward_only(monkeypatch, capsys):

@@ -1,0 +1,89 @@
+{
+  "schema_version": "local-validation-receipt.v1",
+  "checkpoint": "phase7-c2-automatic-origin-custody",
+  "recorded_at": "2026-09-13T16:34:20.319447+00:00",
+  "status": "IMPLEMENTED_LOCAL_VALIDATION",
+  "goal_status": "ACTIVE_NOT_COMPLETE",
+  "source_sha256": {
+    "quant_investor/operations/automatic_origin.py": "5eeed73eeee10d58323770f020336182f33e9b73795c539af646f3fcca35a41e",
+    "quant_investor/operations/automatic_catchup_storage.py": "1a9947df28805721e3b1631b3676c78f594f5c9c114ff2e78f0f73dc00b63af5",
+    "quant_investor/operations/automatic_catchup_resolution.py": "cd8ae8a1e99f5716e5de1747f3b4aa43f7d1f415ab6d58603a4d3a39d4b04774",
+    "quant_investor/operations/maintenance_handoff_contract.py": "572014f38b84f5b081d3961076f502f51c825152fd73f8b841552144f4b8fff7",
+    "quant_investor/operations/maintenance_handoff.py": "ce19dd343736ac5417706e1dfa784107289dd5d019f959fbc4dba73e4f62215a",
+    "quant_investor/operations/research_source_bundle.py": "d98580422255147d1a9b8c3630ad620859a7ea7f357a40744c73cf4347eba024",
+    "quant_investor/operations/completed_handoff_snapshot.py": "44ef77c82ad0e43bd4031efcbfdc8a8ac9b5b3473d0d071c702436c1c026e924",
+    "quant_investor/operations/completion_readback.py": "19264569418d025e83112d2afb42f3d81ccda5df3d86eb2029a00cf8d979dc6f",
+    "quant_investor/operations/archived_handoff_context.py": "cca31f720f7e45d3c1f5cb94f7ba8c3649bf6e68474aedb03a119bac03a57e74",
+    "quant_investor/operations/prospective_timing.py": "5d3e1a2104ddbff600f40ba8a30bc97f883d043fc835eaacf38edc8a21a74efc",
+    "scripts/daily_materialization.py": "a8005e3e92acd7cbc249a089ec22fb779722718fe644fd941d6a417596e636ad",
+    "scripts/daily_catchup.py": "153951a2d303df00ab773c931de7d0bbac61e517578a393feb8c7e698746bd66",
+    "scripts/daily_launch_inspection.py": "d5efdaa95d771645aced2bd20a33465e0b61d64979885655505d646e350d7bc4",
+    "tests/unit/test_registered_automatic_origin.py": "35b028c82b1621c048f6e34e58a3d1784a92b3c7945e0f5d8d9619380f14702a",
+    "tests/unit/test_registered_origin_handoff.py": "3dd5da796ad4b8b1365c80d3b46e8e884c476bd56cd5b42bf0fca03a94df831c",
+    "tests/unit/test_registered_cutoff_materialization.py": "eec69e4f10329dcaea7d5d6e2e32d9c6676e98a66f61de7d4b3c2f453991be8a",
+    "docs/plans/phase07_registered_recovery.md": "208a9583a5346b2c48c4fe710d8908ee0e03c3d3740cd20e8a3777b8670912af",
+    "docs/plans/phase07_registered_daily_wiring.md": "acc3784aeada80c63ce573bef54de11102b4eb8dae2ffaf645b1756f8648e88d",
+    "docs/plans/phase00_15_execution_register.md": "91251a140710cfdbd43a84632722d651df83ebb021986db33abe32f518e86bb4"
+  },
+  "checks": [
+    {
+      "scope": "Related origin, handoff, automatic, launcher, materialization contract and native bridge regressions",
+      "passed": 183,
+      "seconds": 42.84,
+      "terminal_exit_code": 0,
+      "session_id": 48572,
+      "log": ".agent/acceptance/phase7-c2-origin-regression.log"
+    },
+    {
+      "scope": "Final origin and handoff tests including native financial source chain, foreign ACTIVE and archived v4 transport",
+      "passed": 30,
+      "seconds": 28.14,
+      "terminal_exit_code": 0,
+      "session_id": 95871,
+      "log": ".agent/acceptance/phase7-c2-origin-final.log"
+    },
+    {
+      "scope": "Native registered cutoff materialization: v4 origin custody and two existing BUY/position profiles",
+      "passed": 3,
+      "seconds": 211.92,
+      "terminal_exit_code": 0,
+      "session_id": 46232,
+      "evidence": "Terminal tool output: 3 passed in 211.92s (0:03:31)"
+    },
+    {
+      "scope": "Black and flake8 with repository 100-character line limit",
+      "files": 16,
+      "status": "PASS"
+    },
+    {
+      "scope": "mypy",
+      "source_files": 13,
+      "status": "PASS"
+    }
+  ],
+  "counts_overlap": true,
+  "implemented": [
+    "active capability and immutable resolution origin accessor",
+    "automatic-origin.v1 immutable publisher and exact forward replay",
+    "CURRENT-only private controller transport and handoff.v4",
+    "native cutoff origin byte custody",
+    "completed and archived origin snapshot replay",
+    "frozen v6 resolution avoids mutable heads; fresh producer preflight still verifies exact refs"
+  ],
+  "test_seams": [
+    "Registered automatic source fixture uses native BUY/declaration/Store/calendar/preparation, but controls full prior EOD and installation admission.",
+    "Handoff tests control native Core/Factor/install and origin admission to isolate transport.",
+    "Native cutoff v4 scenario controls outer automatic origin/Core/Factor/PIT and full prior EOD; actual financial/registered source/cutoff/materialization and native Store profiles are exercised."
+  ],
+  "not_claimed": [
+    "committed-DAG metadata recovery",
+    "cross-day ACTIVE recovery routing",
+    "launcher inspection v3",
+    "expired publication completion refs",
+    "installed full DAG",
+    "unattended trading-day acceptance",
+    "live provider or brokerage operation",
+    "financial effectiveness"
+  ],
+  "remaining_plan": "docs/plans/phase07_registered_recovery.md"
+}

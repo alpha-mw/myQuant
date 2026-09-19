@@ -1,0 +1,22 @@
+{
+  "state": "CURRENT_INSTALLED_NATIVE_OWNER_STOP_CONTRACT_PASS",
+  "observed_at": "2026-09-14T06:02:02.077083+00:00",
+  "import_origin": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/release/installs/c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b-4cbacd3bf7a64560fb8a6cb1611556f36edb7f1ceb509f07106c7c426bd099de/lib/python3.13/site-packages/quant_investor/__init__.py",
+  "policy_ref": {
+    "path": "results/policies/risk/aggressive_tech_manufacturing/initial-risk-stop.v1/owner-stop-policy-20260828-v1.json",
+    "sha256": "11eb7018ff6abde2d276c7b997e0e61e2cd6b170407872734bb8d407b334c178"
+  },
+  "stop_rows": 2,
+  "legacy_rows": 1,
+  "policy_bytes_and_metadata_unchanged": true,
+  "static_source_files_checked": 704,
+  "static_sources_missing": [],
+  "static_source_sha_drift": [],
+  "superseded_blocker": "MORNING_LEGACY_OWNER_STOP_READER_UNSUPPORTED",
+  "full_morning_eod_quote_custody_verified": false,
+  "trailing_anchor_availability_inferred": false,
+  "config_ready": false,
+  "production_deployed": false,
+  "runtime_commit": "c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b",
+  "verified_install_receipt": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/fixture-receipt.json"
+}

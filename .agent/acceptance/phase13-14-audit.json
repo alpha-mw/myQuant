@@ -1,0 +1,52 @@
+{
+  "observed_at": "2026-09-13T02:37:09.378128+00:00",
+  "scope": "READ_ONLY_PHASE13_14_AUDIT",
+  "source_refs": [
+    {
+      "path": "quant_investor/operations/daily_contract.py",
+      "sha256": "cabf522a62244d362329bcc842f99f586873f6c1fb70586e6b07ada0539720ff"
+    },
+    {
+      "path": "quant_investor/operations/daily_runner.py",
+      "sha256": "1dd362a03bfaa4bb2fbbff6dcc5ecf8b114f1f1cd6a781e91e4ef9a2cde0871a"
+    },
+    {
+      "path": "quant_investor/operations/dependency_diagnostics.py",
+      "sha256": "5483a304ba2b2c27c05e7b4d4ab2b3aea568500639c556ceb58d3a2b47025f83"
+    },
+    {
+      "path": "quant_investor/factors/production_outcomes.py",
+      "sha256": "4044e49ff6b1c4a41a0b8e0a79653cb1cd340ed3ab70464cffbfc3a86b723953"
+    },
+    {
+      "path": "quant_investor/factors/forward_evaluator.py",
+      "sha256": "6eee9e98bb956ff1bb6cb6df884ade76dce99d3f6b7c6ec593511d49b97e3090"
+    }
+  ],
+  "required_taxonomy_present": true,
+  "required_failure_fields_present": true,
+  "producer_mapping_complete": false,
+  "late_registration_counterexample": {
+    "synthetic_input": true,
+    "classification": {
+      "signal_date": "20260904",
+      "seal_time_upper_bound": "2026-09-04T06:59:00Z",
+      "seal_time_evidence_semantics": "LOCAL_IMMUTABLE_POINTER_UPPER_BOUND_NOT_EXTERNAL_TIMESTAMP",
+      "registration_time": "2026-09-06T02:00:00Z",
+      "signal_session_close_utc": "2026-09-04T07:00:00Z",
+      "cohort": "ORIGINAL_CLOSE_COHORT",
+      "next_session_open_utc": null,
+      "sealed_before_next_open": false,
+      "recovered_registration": false,
+      "prospective_eligible": true,
+      "registration_after_seal": true,
+      "reason": "SEALED_BY_ORIGINAL_CLOSE",
+      "executable_origin": null,
+      "executable_origin_reason": "EXECUTION_POLICY_NOT_BOUND",
+      "authority": "NON_AUTHORIZING"
+    }
+  },
+  "daily_ledger_in_evaluator": "NOT_CONNECTED_IN_REVIEWED_PATH",
+  "evaluation_contract_mutated": false,
+  "full_goal_complete": false
+}

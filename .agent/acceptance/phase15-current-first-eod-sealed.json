@@ -1,0 +1,22 @@
+{
+  "observed_at": "2026-09-16T18:56:13.768378+00:00",
+  "state": "SEALED_EOD_RECORDED_READBACK_PASS_ORIGINAL_DRIVER_PENDING",
+  "root": "/private/tmp/myquant-canonical-scan-20260916T152008Z",
+  "commit": "5060dee2d4b39b50a735393d056ebe5adb4efe3b",
+  "completion_ref": {
+    "path": "results/operations/daily_production/CN/20260827/completion.v1.json",
+    "sha256": "18f3b67149b23c9f153994d900efcc99d6c8e0e0618e3518b9f275c07f64d6fd"
+  },
+  "recorded_readback": {
+    "schema_version": "cn-daily-eod-completion.v2",
+    "trade_date": "20260827",
+    "synthetic": true,
+    "node_count": 16,
+    "native_validation_completed_at": "2026-08-27T13:20:00Z",
+    "prospective_admission_state": "LEDGER_INELIGIBLE"
+  },
+  "original_driver_complete": false,
+  "independent_final_native_replay_complete": false,
+  "full_first_day_acceptance_claimed": false,
+  "production_deployed": false
+}

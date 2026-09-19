@@ -261,6 +261,20 @@ The full operational mirror is:
 `results/strategy_records/CN/aggressive_tech_manufacturing/trading_discipline.md`.
 # 每日研究风险监测合同
 
+Consumer revision 2026-09-07：日度Phase B与周度报告共用
+`scripts/export_cn_research_risk.py`；唯一公式实现为
+`quant_investor/strategy_records/research_risk.py`。原始入场证据缺失时，只有已封存的
+owner-trailing-anchor-policy-20260901-v1 明确授权的重置才可建立研究追踪起点；大族、
+东山、立昂微的起点为20260901，不补造历史买入。Policy SHA为
+`b313aa91e1f7ca1e8922b2d22f7735ceee3190675c2e8dab3955c69f0f1d342a`。
+政策baseline必须能沿已验证Store lineage衔接到当前记录；新entry/add、移除、成本/股数
+变化或公司行动使原anchor失效，不能按每次估值自动重置。缺严格交易日价格或调整因子
+发生变化时保持UNCONFIRMED/NON_EXECUTABLE，等待公司行动与成本口径复核。
+价格有效但实际持仓连续性过期时只输出历史持仓研究值，标注NON_EXECUTABLE_HOLDINGS_STALE。
+所有价格按既有policy使用CNY0.01 HALF_UP；moving stop等于review价，只触发研究复核。
+初始owner stop与移动保护独立计算；利润回吐100%表示浮盈全部回吐，不表示股价下跌100%。
+旧台账阈值只保留在audit字段，不展示为本轮可用阈值。此修订不授予任何新执行或持仓权限。
+
 本节是稳定的监测政策，放在交易纪律而不是交易笔记中。它不随每周数据更新而改写；只有
 监测项、来源优先级、状态语法、阈值或 authority 合同本身变化时，才升级本节和 automation
 prompt。普通日度/周度数据变化只生成本轮观察，不修改纪律或调度配置。

@@ -26,17 +26,23 @@ and compatible with the stable public CLI/API contracts.
 
 ## Recommended Local Checks
 
-Use a shell-safe expansion and select the relevant contract, system, factor,
-intelligence, mainline, migration, and CLI tests from the unified set:
+For a focused change, select the relevant existing tests in
+`tests/unit/test_unified_*.py` for the changed contract, system, factor,
+intelligence, mainline, migration, or CLI responsibility. Do not run the entire
+unified set merely to answer a status question or validate a documentation edit.
+
+When the full unified set is warranted, run this explicitly through Bash:
 
 ```bash
+bash <<'BASH'
 shopt -s nullglob
 unified_tests=(tests/unit/test_unified_*.py)
 if (( ${#unified_tests[@]} == 0 )); then
   echo "No unified runtime tests were found."
   exit 1
 fi
-pytest "${unified_tests[@]}" -v
+uv run pytest "${unified_tests[@]}" -v
+BASH
 ```
 
 For a broad change, run the full CI equivalent: `uv run pytest tests/unit -q`,

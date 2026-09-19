@@ -1,0 +1,23 @@
+{
+  "observed_at": "2026-09-18T13:49:46.801530+00:00",
+  "state": "EXACT_ORIGINAL_MACRO_INPUT_CONFLICT_CONFIRMED",
+  "original_target": "20260904",
+  "snapshot_ref": {
+    "path": "data/parquet/cn/_snapshots/20260905T163546Z.json",
+    "sha256": "90d348cf9dfca556afbedf20c044115c9c2116b6266f8de4311737350a177b76"
+  },
+  "top_coverage_date": "20260904",
+  "metadata_coverage_date": "20260903",
+  "metadata_coverage_keys": [
+    "coverage_trade_date",
+    "historical_repair_row_count",
+    "historical_repair_trade_dates"
+  ],
+  "native_error": "local_breadth_coverage_top_metadata_conflict",
+  "existing_retrospective_helper_applicable": false,
+  "reason": "Original snapshot has no metadata.capture_manifest_sha256; historical-repair metadata covers dates through20260903, not theSep4 daily-capture contract required by existing helper.",
+  "source_capture_binding_present": false,
+  "veto_cleared": false,
+  "canonical_modified": false,
+  "next": "Determine whether existing admitted Macro observations satisfy full-DAG lag policy before making historical recovery a production-wide blocker. If new Macro publication is required, use a reviewed exact typed recovery with original source custody; never copy top coverage into metadata."
+}

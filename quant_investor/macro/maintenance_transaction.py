@@ -1161,6 +1161,55 @@ def _execute_forward(
     }
 
 
+def _preflight_prepared_commit(
+    *,
+    prepared_path: str | Path,
+    expected_prepared_sha256: str,
+    expected_target_date: str,
+    market_pointer_path: str | Path,
+    expected_market_pointer_sha256: str,
+    pit_pointer_path: str | Path,
+    expected_pit_pointer_sha256: str,
+) -> dict[str, str]:
+    """Read-only gate before first INTENT; original commit still owns race checks."""
+    try:
+        target = datetime.strptime(expected_target_date, "%Y%m%d")
+    except (TypeError, ValueError) as exc:
+        raise MacroMaintenanceTransactionError("macro_preflight_target_invalid") from exc
+    if target.strftime("%Y%m%d") != expected_target_date:
+        raise MacroMaintenanceTransactionError("macro_preflight_target_invalid")
+    first_raw = None
+    for _ in range(2):
+        path, payload, raw = _load_prepared(prepared_path, expected_prepared_sha256)
+        if first_raw is not None and raw != first_raw:
+            raise MacroMaintenanceTransactionError("macro_preflight_prepared_changed")
+        first_raw = raw
+        if payload.get("authority_mode") != "canonical":
+            raise MacroMaintenanceTransactionError("macro_preflight_canonical_required")
+        if payload.get("target_date") != expected_target_date:
+            raise MacroMaintenanceTransactionError("macro_preflight_target_differs")
+        authorities = _prepared_authorities(path, payload)
+        _assert_authority_arguments(
+            authorities,
+            market_pointer_path=market_pointer_path,
+            expected_market_pointer_sha256=expected_market_pointer_sha256,
+            pit_pointer_path=pit_pointer_path,
+            expected_pit_pointer_sha256=expected_pit_pointer_sha256,
+        )
+        release = _prepared_component(path, payload, "release")
+        observations = _prepared_component(path, payload, "observations")
+        _revalidate_inputs(payload)
+        _revalidate_authorities(authorities, checkpoint="before_first_intent")
+        if _state(release, observations) != (
+            release["old_pointer_sha256"],
+            observations["old_pointer_sha256"],
+        ):
+            raise MacroMaintenanceTransactionError(
+                "macro_preflight_store_preimage_drift", status="PROMOTION_UNCERTAIN"
+            )
+    return {"prepared_path": str(path), "prepared_sha256": _sha(raw)}
+
+
 def commit_prepared_macro_transaction(
     *,
     prepared_path: str | Path,

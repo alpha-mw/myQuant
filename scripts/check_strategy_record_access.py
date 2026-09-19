@@ -97,6 +97,60 @@ class AllowRule:
 # or removing direct access requires a reviewed allow-table change.
 ALLOW_RULES: tuple[AllowRule, ...] = (
     AllowRule(
+        path="quant_investor/operations/catchup_binding.py",
+        operations=(),
+        reason=(
+            "Reads explicit SHA-bound predecessor EOD and immutable Store pointer evidence "
+            "to derive the canonical Store preimage; writes only fixed daily-production "
+            "recipe/request/binding artifacts through DailyJournal, with no canonical "
+            "Store/holdings mutations."
+        ),
+    ),
+    AllowRule(
+        path="scripts/render_cn_weekly_review.py",
+        operations=(),
+        reason=(
+            "Reads one checker-approved weekly v2 bundle and uses only private-temp "
+            "path validation and immutable document output helpers; no canonical "
+            "Store, holdings, archive, or pointer access/writes."
+        ),
+    ),
+    AllowRule(
+        path="quant_investor/intelligence/morning.py",
+        operations=(),
+        reason=(
+            "Verifies the registered Store pointer/catalog and holdings closure read-only; "
+            "research receipts are written under operations/morning_strategy, outside the Store."
+        ),
+    ),
+    AllowRule(
+        path="scripts/backfill_cn_daily_review.py",
+        operations=(),
+        reason=(
+            "Reads explicit SHA-bound historical catalog evidence and writes only a retrospective "
+            "operations/daily_reviews receipt; it cannot publish canonical records or holdings."
+        ),
+    ),
+    AllowRule(
+        path="scripts/prepare_cn_strategy_accounting.py",
+        operations=(),
+        reason=(
+            "Reads exact registered ONLINE/ARCHIVED members and the active Parquet closure; "
+            "writes only derived _accounting_store generations, transactions, pointer history "
+            "and its CAS pointer. No canonical record/archive/holdings mutation or trade authority."
+        ),
+    ),
+    AllowRule(
+        path="quant_investor/market/daily_factor_loop.py",
+        operations=(),
+        reason="Reads registered catalog and exact Parquet performance through Store APIs; no portfolio writes.",
+    ),
+    AllowRule(
+        path="quant_investor/market/daily_maintenance.py",
+        operations=(),
+        reason="Hashes the existing Store pointer only as a zero-write transient-veto recovery preimage.",
+    ),
+    AllowRule(
         path="quant_investor/automation/daily_runner.py",
         operations=(),
         reason="Reads the active unified generation and passes an explicit history strategy.",
@@ -181,9 +235,29 @@ ALLOW_RULES: tuple[AllowRule, ...] = (
         path="scripts/export_cn_weekly_review_evidence.py",
         operations=(),
         reason=(
-            "The scheduled weekly exporter consumes generation-bound stable Mainline "
-            "projections and has no direct Strategy Record Store filesystem access."
+            "The weekly exporter consumes registered Store closure and stable Mainline "
+            "projections; temporary report writes never mutate governed records."
         ),
+    ),
+    AllowRule(
+        path="scripts/export_cn_research_risk.py",
+        operations=(),
+        reason="Read-only exact Store/policy/Market resolver; only explicit private-tmp report output is writable.",
+    ),
+    AllowRule(
+        path="scripts/cn_weekly_review_v2.py",
+        operations=(),
+        reason="Independent non-authorizing date/period projection and exact Factor evidence reads; no writer.",
+    ),
+    AllowRule(
+        path="quant_investor/strategy_records/research_risk.py",
+        operations=(),
+        reason="Pure Decimal research threshold computation; no filesystem or authority operations.",
+    ),
+    AllowRule(
+        path="quant_investor/strategy_records/close_coverage.py",
+        operations=(),
+        reason="Pure complete-date coverage calculation used before the existing atomic close writer.",
     ),
     AllowRule(
         path="scripts/check_cn_weekly_review_evidence.py",
@@ -208,8 +282,234 @@ ALLOW_RULES: tuple[AllowRule, ...] = (
         reason=(
             "The manager-invoked offline batch writer prepares immutable transaction and "
             "record directories, then delegates the sole pointer CAS to publish_catalog; "
-            "it has no delete, legacy scan, broker, order, or trade path."
+            "it only removes its own unpublished pending files and has no record deletion, "
+            "legacy scan, broker, order, or trade path."
         ),
+    ),
+    AllowRule(
+        path="scripts/daily_production_store_adapter.py",
+        operations=(),
+        reason=(
+            "Fixed daily adapter delegates all record I/O to registered native readers "
+            "and consumes exact prepared-plan, retained pointer, catalog "
+            "and completion refs. Financial writes delegate only to the operation-locked "
+            "native close-through-latest writer; recovery delegates metadata-only proof "
+            "replay, never a new preimage or a separate CAS."
+        ),
+    ),
+    AllowRule(
+        path="scripts/daily_registered_recovery.py",
+        operations=(),
+        reason=(
+            "Registered DAG recovery validates original request/handoff/cutoff/native inputs "
+            "under strategy, day and Store locks, then delegates only committed metadata "
+            "recovery to the existing native owner with a pre-write custody/time guard. "
+            "After that guard it resumes only already-bound native inputs whose frozen Store "
+            "proof precludes a second CAS; no source acquisition or record-directory writer."
+        ),
+    ),
+    AllowRule(
+        path="quant_investor/cli/daily_sources.py",
+        operations=(),
+        reason="Routes configured inputs to pinned native producers; no direct record I/O.",
+    ),
+    AllowRule(
+        path="quant_investor/cli/morning_v2.py",
+        operations=(),
+        reason="Dispatches the installed Morning consumer using exact refs; no record writer.",
+    ),
+    AllowRule(
+        path="quant_investor/intelligence/corporate_reconciliation.py",
+        operations=(),
+        reason="Builds deterministic reconciliation reports without financial or threshold writes.",
+    ),
+    AllowRule(
+        path="quant_investor/intelligence/corporate_report_contract.py",
+        operations=(),
+        reason="Pure reconciliation payload validation; no record I/O.",
+    ),
+    AllowRule(
+        path="quant_investor/intelligence/morning_threshold_review.py",
+        operations=(),
+        reason="Pure threshold observations retain native formula ownership and no trade authority.",
+    ),
+    AllowRule(
+        path="quant_investor/intelligence/portfolio_state.py",
+        operations=(),
+        reason="Builds source-bound pre-close portfolio evidence; no native book mutation.",
+    ),
+    AllowRule(
+        path="quant_investor/intelligence/registered_transition.py",
+        operations=(),
+        reason="Pure registered BUY report separates accounting evidence from risk authority.",
+    ),
+    AllowRule(
+        path="quant_investor/operations/corporate_reconciliation.py",
+        operations=(),
+        reason="Replays exact historical corporate and book refs through native readers.",
+    ),
+    AllowRule(
+        path="quant_investor/operations/daily_preparation.py",
+        operations=(),
+        reason="Writes only immutable preparation and governed locator metadata; reads native books.",
+    ),
+    AllowRule(
+        path="quant_investor/operations/daily_preparation_contract.py",
+        operations=(),
+        reason="Pure date/request construction and preimage contracts; no record writer.",
+    ),
+    AllowRule(
+        path="quant_investor/operations/dashboard_evidence.py",
+        operations=(),
+        reason="Derives Dashboard evidence from exact native DAG source outputs; no record writer.",
+    ),
+    AllowRule(
+        path="quant_investor/operations/morning_risk_sources.py",
+        operations=(),
+        reason="Reads frozen EOD risk sources through native readers; cannot start producers.",
+    ),
+    AllowRule(
+        path="quant_investor/operations/portfolio_binding.py",
+        operations=(),
+        reason="Retains pre-close source copies and portfolio evidence only in the DAG journal.",
+    ),
+    AllowRule(
+        path="quant_investor/operations/prospective_sources.py",
+        operations=(),
+        reason="Reads exact source refs for custody times; does not infer or write financial state.",
+    ),
+    AllowRule(
+        path="quant_investor/operations/registered_dashboard.py",
+        operations=(),
+        reason="Replays frozen Corporate/C1 Store cross-proof without a financial writer.",
+    ),
+    AllowRule(
+        path="quant_investor/operations/registered_transition.py",
+        operations=(),
+        reason="Binds native registered transition evidence to the separate prior-day Decision.",
+    ),
+    AllowRule(
+        path="quant_investor/operations/research_corporate_inputs.py",
+        operations=(),
+        reason="Derives corporate wrapper bytes from exact sources without applying financial events.",
+    ),
+    AllowRule(
+        path="quant_investor/operations/research_cutoff_contract.py",
+        operations=(),
+        reason="Pure cutoff/ref/time grammar validation; no record I/O.",
+    ),
+    AllowRule(
+        path="quant_investor/operations/source_slot_inputs.py",
+        operations=(),
+        reason="Retains Calendar/source-plan metadata and reads native books; no financial writer.",
+    ),
+    AllowRule(
+        path="quant_investor/strategy_records/corporate_accounting.py",
+        operations=(),
+        reason="Attributes historical native transitions without applying corporate events.",
+    ),
+    AllowRule(
+        path="quant_investor/strategy_records/daily_event_source.py",
+        operations=(),
+        reason="Read-only standing-policy event source semantics; publication stays with the manager.",
+    ),
+    AllowRule(
+        path="quant_investor/strategy_records/event_receipts.py",
+        operations=(),
+        reason="Resolves native catalog receipt refs through existing readers; no writer.",
+    ),
+    AllowRule(
+        path="quant_investor/strategy_records/registered_event_contracts.py",
+        operations=(),
+        reason="Pure declared financial-fact validation; no broker or writer authority.",
+    ),
+    AllowRule(
+        path="quant_investor/strategy_records/risk_policy_contract.py",
+        operations=(),
+        reason="Pure owner risk-policy contracts; no policy or financial writes.",
+    ),
+    AllowRule(
+        path="scripts/daily_dashboard_sealed.py",
+        operations=(),
+        reason="Writes capture evidence only to the DAG journal; serving requires completed EOD.",
+    ),
+    AllowRule(
+        path="scripts/daily_morning_seal.py",
+        operations=(),
+        reason="Writes only Morning receipts after native replay; cannot mutate the native book.",
+    ),
+    AllowRule(
+        path="scripts/daily_source_inputs.py",
+        operations=(),
+        reason="Delegates to governed Event manager and benchmark owners; no direct record I/O.",
+    ),
+    AllowRule(
+        path="scripts/daily_store_adoption.py",
+        operations=(),
+        reason="Reads one proven committed native close; no rerun, financial writer or new CAS.",
+    ),
+    AllowRule(
+        path="scripts/registered_daily_event_sources.py",
+        operations=(),
+        reason=(
+            "Reads registered sources and constructs candidates; every registered directory/file "
+            "publication is owned by the locked manager. Retired writer rejects without I/O."
+        ),
+    ),
+    AllowRule(
+        path="quant_investor/operations/completion_corporate.py",
+        operations=(),
+        reason="Replays exact completed event and Store-plan refs using native encoding/readers; no Store writer.",
+    ),
+    AllowRule(
+        path="quant_investor/operations/corporate_actions.py",
+        operations=(),
+        reason="Reads registered historical events and frozen Market refs; publishes only non-executable coordinator evidence.",
+    ),
+    AllowRule(
+        path="quant_investor/operations/daily_status.py",
+        operations=(),
+        reason="Read-only journal projection verifies exact output refs, with native hashing for fixed-root Store outputs.",
+    ),
+    AllowRule(
+        path="quant_investor/operations/dashboard_replay_sources.py",
+        operations=(),
+        reason="Supplies exact retained committed Store/catalog sources during scoped Dashboard replay; no mutable-head fallback or writes.",
+    ),
+    AllowRule(
+        path="quant_investor/operations/native_bridge.py",
+        operations=(),
+        reason="Names the reviewed native manager in a closed verified-source import map; import-time business access is forbidden and tested.",
+    ),
+    AllowRule(
+        path="scripts/daily_completion_dashboard.py",
+        operations=(),
+        reason="Replays committed Store and paired Dashboard proof from exact completion refs; no financial publication.",
+    ),
+    AllowRule(
+        path="scripts/daily_dashboard_adapter.py",
+        operations=(),
+        reason="Consumes native committed Store proof and delegates derived Dashboard export; journal writes are outside canonical records.",
+    ),
+    AllowRule(
+        path="scripts/daily_dashboard_history.py",
+        operations=(),
+        reason="Reads exact retained Store/catalog/event evidence and creates only date-scoped derived Dashboard artifacts.",
+    ),
+    AllowRule(
+        path="scripts/daily_morning_consumer.py",
+        operations=("open",),
+        reason="Bounded read_bytes of the exact retained Store ledger after fixed-root, owner, link, mode and SHA checks; no producer or writer.",
+    ),
+    AllowRule(
+        path="scripts/daily_native_inputs.py",
+        operations=(),
+        reason="Checks immutable native Store plan and original preimages; fixed adapters own financial execution and direct writes are coordinator-only.",
+    ),
+    AllowRule(
+        path="scripts/daily_store_materialization.py",
+        operations=(),
+        reason="Uses registered catalog/holdings readers and the native plan-only producer; never commits Store state or replaces its pointer.",
     ),
 )
 

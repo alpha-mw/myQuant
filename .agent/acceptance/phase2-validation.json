@@ -1,0 +1,50 @@
+{
+  "phase": 2,
+  "status": "COMPLETED_LOCAL_VALIDATION",
+  "verified_at": "2026-09-09T06:41:17.474636+00:00",
+  "phase_owned_source_sha256": {
+    "quant_investor/operations/dependency_diagnostics.py": "5483a304ba2b2c27c05e7b4d4ab2b3aea568500639c556ceb58d3a2b47025f83",
+    "quant_investor/operations/core_pool.py": "9a9ee1612a258d85f7bf600982b9ad3dad894dd8fbcf1c7810f9a14d139a68d8",
+    "quant_investor/operations/daily_contract.py": "cabf522a62244d362329bcc842f99f586873f6c1fb70586e6b07ada0539720ff",
+    "quant_investor/operations/daily_runner.py": "1dd362a03bfaa4bb2fbbff6dcc5ecf8b114f1f1cd6a781e91e4ef9a2cde0871a",
+    "quant_investor/operations/status_projection.py": "026b0709c1c3d920f1319d207e6db864fb0dc6e98cf6d86bc987551924743735",
+    "quant_investor/operations/execution_controls.py": "662dbd640633772683a859f2db9bb629c3277f7bb2ee46f78ded9c5781208f0a",
+    "tests/unit/test_daily_evidence_dependency_diagnostics.py": "4fae9dd1221113bd3d59df70e77e5860dd0cbaadceb2c2aee7a8f4076210a395",
+    "tests/unit/test_daily_evidence_execution_controls.py": "b8f028a5ce0dd7003817028023d24627f8cafc27015422cee6a15100c1af2a84",
+    "tests/unit/_native_full_dag_scenario.py": "4c66d02464de9c5c0567993ffdbd67f9a6c63236876dc0eef8510aa95363aa76"
+  },
+  "focused_tests_prior_turn": {
+    "result": "135 passed in 26.78s",
+    "session_id": 40933,
+    "coverage": [
+      "dependency_diagnostics",
+      "core_bindings",
+      "execution_controls",
+      "loop_context",
+      "status_projection",
+      "runner",
+      "core_pool",
+      "dag_contract",
+      "execute_wiring",
+      "public_catchup"
+    ]
+  },
+  "post_import_cleanup_tests": {
+    "result": "16 passed in 2.32s",
+    "session_id": 40805,
+    "files": [
+      "tests/unit/test_daily_evidence_execution_controls.py"
+    ]
+  },
+  "static_checks": {
+    "flake8": "8 phase-owned source/test files passed",
+    "black": "9 phase-owned source/test/fixture files passed",
+    "mypy": "6 source files passed"
+  },
+  "legacy_helper_lint_limitation": "Pre-existing unused request_ref in _native_full_dag_scenario.py was not changed; the full helper is not included in phase flake8 pass.",
+  "new_diagnostic": "CORE_SOURCE_MISSING uses direct FileNotFoundError or exact SystemStorageError caused by FileNotFoundError; security subclasses are not downgraded.",
+  "frozen_native_producer_commit": "3c46cb36918ca00d4fb61707bcfc16ca06b5c2a1",
+  "frozen_native_excludes_phase1_and_phase2": true,
+  "unrelated_concurrent_changes_preserved": true,
+  "whole_goal_complete": false
+}

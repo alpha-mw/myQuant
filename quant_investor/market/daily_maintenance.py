@@ -18,6 +18,7 @@ import os
 from pathlib import Path
 import secrets
 import stat
+import sys
 import time as time_module
 from typing import Any, Final
 from zoneinfo import ZoneInfo
@@ -29,14 +30,20 @@ from .close_session_authority import (
     CloseSessionAuthorityResult,
     acquire_close_session_authority,
 )
-from .tushare_transport import TushareHttpsError
+from .tushare_transport import (
+    TushareHttpsError,
+    operation_provider_summary,
+    record_operation_provider_calls,
+)
 
 TIMEZONE: Final = "Asia/Shanghai"
 ATTEMPT_SLOTS: Final = ("1620", "1720", "1820", "2020")
 FINAL_SLOT: Final = "2020"
 STAGES: Final = ("PIT", "MARKET", "HISTORY", "FUNDAMENTAL", "MACRO_RELEASE")
 STAGE_STATUSES: Final = frozenset({"READY", "NO_ACTION", "RETRY_PENDING", "BLOCKED"})
-TERMINAL_FAILURES: Final = frozenset({"BLOCKED", "SAME_DAY_SLA_MISSED", "WRITE_VETO_ACTIVE"})
+TERMINAL_FAILURES: Final = frozenset(
+    {"BLOCKED", "PARTIAL", "IN_DOUBT", "SAME_DAY_SLA_MISSED", "WRITE_VETO_ACTIVE"}
+)
 _SLOT_STARTS: Final = (
     (time(16, 20), "1620"),
     (time(17, 20), "1720"),
@@ -134,6 +141,7 @@ class MaintenanceContext:
     prior_stage_results: tuple[Mapping[str, Any], ...] = ()
     scope_transition_request: Path | None = None
     expected_scope_transition_sha256: str = ""
+    historical_session_ref: dict[str, str] | None = None
 
 
 StageCallback = Callable[[MaintenanceContext], Mapping[str, Any]]
@@ -248,6 +256,11 @@ def _write_once(path: Path, raw: bytes) -> str:
             raise
     else:
         os.close(fd)
+    parent_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(parent_fd)
+    finally:
+        os.close(parent_fd)
     return hashlib.sha256(raw).hexdigest()
 
 
@@ -481,6 +494,31 @@ def _run_component(
     if callback is None:
         result = _missing_component(stage)
     else:
+        start_path = context.attempt_root / f"start-{stage}.json"
+        _write_once(
+            start_path,
+            _canonical_json_bytes(
+                {
+                    "state": "STAGE_STARTED",
+                    "stage": stage,
+                    "mode": context.mode,
+                    "target_date": context.target_date,
+                    "source_preimages": {
+                        relative: (
+                            _stable_pointer_sha(context.workspace_root / relative)
+                            if _path_present(context.workspace_root / relative)
+                            else "ABSENT"
+                        )
+                        for relative in (
+                            "data/parquet/cn/_latest.json",
+                            "data/parquet/cn/reference/stock_basic_membership_latest.json",
+                            "data/cn_universe/cn_index_components.json",
+                        )
+                    },
+                    "started_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                }
+            ),
+        )
         try:
             stage_context = replace(
                 context,
@@ -515,7 +553,7 @@ def _run_component(
 
 
 def _fundamental_health(context: MaintenanceContext) -> Mapping[str, Any]:
-    """Perform only the registered binding-aware Fundamental readback."""
+    """Read native health and retain research evidence without generation mutation."""
 
     from .fundamental_generation import load_fundamental_binding
 
@@ -536,7 +574,7 @@ def _fundamental_health(context: MaintenanceContext) -> Mapping[str, Any]:
     )
     if mixed and not successor_states_match:
         ready = False
-    return {
+    result: dict[str, Any] = {
         "status": "READY" if ready else "BLOCKED",
         "write_performed": False,
         "blockers": [] if ready else ["FUNDAMENTAL_BINDING_NOT_READY"],
@@ -551,6 +589,27 @@ def _fundamental_health(context: MaintenanceContext) -> Mapping[str, Any]:
             "legacy_direct_reader_provenance": binding.get("legacy_direct_reader_provenance"),
         },
     }
+    if ready and context.mode == "execute":
+        from .daily_fundamental_source import retain_fundamental_source
+
+        try:
+            result["evidence"]["research_source_ref"] = retain_fundamental_source(
+                context, expected_binding=binding
+            )
+            result["evidence"]["research_evidence_write_performed"] = True
+        except Exception as exc:
+            # Health and research source publication are separate capabilities.
+            # Missing source keeps the downstream research node fail-closed.
+            result["evidence"]["research_source_blockers"] = [
+                "FUNDAMENTAL_RESEARCH_SOURCE_PUBLICATION_FAILED"
+            ]
+            result["evidence"]["research_evidence_write_status"] = "UNCONFIRMED"
+            result["evidence"]["research_source_error_code"] = (
+                exc.code
+                if isinstance(exc, DailyMaintenanceError)
+                else "FUNDAMENTAL_RESEARCH_SOURCE_VALIDATION_FAILED"
+            )
+    return result
 
 
 def _system_usability(context: MaintenanceContext, callback: StatusCallback | None) -> bool | str:
@@ -603,12 +662,39 @@ def _write_veto(
 
 
 def _seal_attempt(
+    *,
+    attempt_root: Path,
+    payload: Mapping[str, Any],
+    state: Mapping[str, Any],
+    logical_claim_ref: Mapping[str, str],
+) -> dict[str, Any]:
+    claim_raw = _read_owner_file(Path(logical_claim_ref["path"]), code="LOGICAL_CLAIM_UNSAFE")
+    if hashlib.sha256(claim_raw).hexdigest() != logical_claim_ref["sha256"]:
+        raise DailyMaintenanceError("LOGICAL_CLAIM_CHANGED_BEFORE_SEAL")
+    return _seal_attempt_records(
+        attempt_root=attempt_root,
+        payload={**payload, "logical_claim_ref": dict(logical_claim_ref)},
+        state=state,
+    )
+
+
+def _seal_attempt_records(
     *, attempt_root: Path, payload: Mapping[str, Any], state: Mapping[str, Any]
 ) -> dict[str, Any]:
+    """Mechanical immutable serialization; owning wrappers establish authority."""
     state_path = attempt_root / "state.json"
     receipt_path = attempt_root / "attempt.json"
     state_sha = _write_once(state_path, _canonical_json_bytes(state))
     final_payload = dict(payload)
+    final_payload.update(operation_provider_summary())
+    for name, field in (
+        ("started.json", "started_ref"),
+        ("core-completion.json", "core_completion_ref"),
+    ):
+        record = attempt_root / name
+        if record.exists():
+            raw = _read_owner_file(record, code="ATTEMPT_RECORD_UNSAFE")
+            final_payload[field] = {"path": str(record), "sha256": hashlib.sha256(raw).hexdigest()}
     final_payload["state_ref"] = {
         "path": str(state_path),
         "sha256": state_sha,
@@ -618,7 +704,95 @@ def _seal_attempt(
         "path": str(receipt_path),
         "sha256": receipt_sha,
     }
+    _write_once(
+        attempt_root / "ended.json",
+        _canonical_json_bytes(
+            {
+                "state": "COMPLETED",
+                "workflow_status": final_payload["status"],
+                "receipt_ref": final_payload["attempt_receipt_ref"],
+                "ended_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            }
+        ),
+    )
     return final_payload
+
+
+def _stage_record(attempt: Path, stage: str, result: Mapping[str, Any]) -> dict[str, str]:
+    path = attempt / f"stage-{stage}.json"
+    raw = _canonical_json_bytes({"state": "STAGE_COMPLETED", "result": dict(result)})
+    return {"path": str(path), "sha256": _write_once(path, raw)}
+
+
+def _seal_core_checkpoint(
+    context: MaintenanceContext,
+    results: list[dict[str, Any]],
+    *,
+    logical_claim_ref: Mapping[str, str],
+) -> dict[str, str]:
+    claim_raw = _read_owner_file(Path(logical_claim_ref["path"]), code="LOGICAL_CLAIM_UNSAFE")
+    if hashlib.sha256(claim_raw).hexdigest() != logical_claim_ref["sha256"]:
+        raise DailyMaintenanceError("LOGICAL_CLAIM_CHANGED_BEFORE_CORE")
+    started = context.attempt_root / "started.json"
+    stages = [context.attempt_root / f"stage-{row['stage']}.json" for row in results]
+
+    def exact(path: Path) -> dict[str, str]:
+        return {
+            "path": str(path),
+            "sha256": hashlib.sha256(
+                _read_owner_file(path, code="CORE_CHECKPOINT_SOURCE_UNSAFE")
+            ).hexdigest(),
+        }
+
+    path = context.attempt_root / "core-completion.json"
+    payload = {
+        "schema_version": "cn-daily-maintenance-core.v1",
+        "logical_claim_ref": dict(logical_claim_ref),
+        "producer": "quant_investor.market.daily_maintenance",
+        "scope": "FACTOR_INPUTS_ONLY",
+        "other_authority": "NONE",
+        "mode": context.mode,
+        "target_date": context.target_date,
+        "status": "CORE_COMPLETE",
+        "maintenance_status": "IN_PROGRESS",
+        "started_ref": exact(started),
+        "stage_refs": [exact(p) for p in stages],
+        "stage_results": results,
+        "blockers": [],
+        "provider_activity": operation_provider_summary(),
+        "close_session_receipt_ref": {
+            "path": str(context.close_session_receipt_path),
+            "sha256": context.close_session_receipt_sha256,
+        },
+    }
+    if context.historical_session_ref is not None:
+        from .historical_session import (
+            CORE_SCHEMA,
+            read_historical_core,
+            validate_historical_core_timing,
+        )
+
+        try:
+            evidence = read_historical_core(
+                attempt_root=context.attempt_root,
+                proof_ref=context.historical_session_ref,
+                close_ref=payload["close_session_receipt_ref"],
+                started_ref=payload["started_ref"],
+                target=context.target_date,
+                read=lambda p, label: _read_owner_file(p, code="HISTORICAL_CORE_SOURCE_UNSAFE"),
+            )
+            sealed_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            validate_historical_core_timing(
+                observed_at=evidence["historical_session"]["observed_at"],
+                started_at=evidence["started_at"],
+                sealed_at=sealed_at,
+            )
+        except (OSError, ValueError, CloseSessionAuthorityError, TushareHttpsError) as exc:
+            raise DailyMaintenanceError("HISTORICAL_CORE_INVALID") from exc
+        payload["schema_version"] = CORE_SCHEMA
+        payload["historical_session_ref"] = dict(context.historical_session_ref)
+        payload["sealed_at"] = sealed_at
+    return {"path": str(path), "sha256": _write_once(path, _canonical_json_bytes(payload))}
 
 
 def _close_call_elapsed_ms(started_at: float) -> int:
@@ -751,6 +925,7 @@ def _transport_retry_evidence(
     return evidence
 
 
+@record_operation_provider_calls
 def run_cn_daily_maintenance(
     *,
     workspace_root: str | Path,
@@ -763,9 +938,29 @@ def run_cn_daily_maintenance(
     components: MaintenanceComponents | None = None,
     now: datetime | None = None,
     close_authority: Callable[..., CloseSessionAuthorityResult] = (acquire_close_session_authority),
+    core_completed: Callable[[Mapping[str, str]], Mapping[str, Any]] | None = None,
+    _expected_target_trade_date: str | None = None,
+    _expected_previous_trade_date: str | None = None,
+    _core_replay_completed: Callable[[Mapping[str, str]], Mapping[str, Any]] | None = None,
+    _historical_calendar_input: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run one locked orchestration attempt without owning component internals."""
 
+    if _core_replay_completed is not None and (
+        core_completed is None or not callable(_core_replay_completed)
+    ):
+        raise DailyMaintenanceError("DAILY_REPLAY_CALLBACK_REQUIRES_CORE")
+
+    if (
+        core_completed is not None
+        or _expected_target_trade_date is not None
+        or _historical_calendar_input is not None
+    ) and (
+        scope_transition_request
+        or expected_scope_transition_sha256
+        or retire_coverage_declaration_sha256
+    ):
+        raise DailyMaintenanceError("DAILY_MAINTENANCE_MODES_CONFLICT")
     if retire_coverage_declaration_sha256 and not scope_transition_request:
         raise DailyMaintenanceError("SCOPE_TRANSITION_REQUEST_REQUIRED_FOR_DECLARATION_RETIREMENT")
     if bool(scope_transition_request) != bool(expected_scope_transition_sha256):
@@ -788,7 +983,47 @@ def run_cn_daily_maintenance(
     if observed_now.tzinfo is None or observed_now.utcoffset() is None:
         raise DailyMaintenanceError("ATTEMPT_TIME_INVALID")
     local_now = observed_now.astimezone(ZoneInfo(TIMEZONE))
+    if _expected_target_trade_date is not None:
+        if mode != "execute" or _expected_target_trade_date != local_now.strftime("%Y%m%d"):
+            raise DailyMaintenanceError("REQUESTED_SESSION_RUN_DATE_MISMATCH")
+    if _expected_previous_trade_date is not None:
+        try:
+            previous = datetime.strptime(_expected_previous_trade_date, "%Y%m%d")
+            valid = (
+                previous.strftime("%Y%m%d") == _expected_previous_trade_date
+                and _expected_target_trade_date is not None
+                and _expected_previous_trade_date < _expected_target_trade_date
+            )
+        except (TypeError, ValueError):
+            valid = False
+        if not valid:
+            raise DailyMaintenanceError("REQUESTED_PREDECESSOR_ARGUMENT_INVALID")
     slot = resolve_attempt_slot(now=local_now, requested=attempt_slot)
+    historical = None
+    if _historical_calendar_input is not None:
+        from .historical_session import prepare_historical_maintenance_input
+        from quant_investor.system.errors import SystemStorageError
+
+        if (
+            mode != "execute"
+            or slot != "2020"
+            or _expected_target_trade_date is not None
+            or not callable(core_completed)
+            or not callable(_core_replay_completed)
+        ):
+            raise DailyMaintenanceError("HISTORICAL_MAINTENANCE_MODE_INVALID")
+        try:
+            historical = prepare_historical_maintenance_input(
+                workspace=workspace_root, value=_historical_calendar_input, now=local_now
+            )
+        except (
+            OSError,
+            ValueError,
+            CloseSessionAuthorityError,
+            TushareHttpsError,
+            SystemStorageError,
+        ) as exc:
+            raise DailyMaintenanceError("HISTORICAL_MAINTENANCE_INPUT_INVALID") from exc
     root = _owner_only_directory(Path(run_root), create=True)
     if components is None:
         from .daily_components import build_default_components
@@ -817,8 +1052,92 @@ def run_cn_daily_maintenance(
             "usable_for_investment_research": "UNCONFIRMED",
             "blockers": ["ALREADY_RUNNING"],
         }
+    attempt = None
     try:
+        from .maintenance_journal import DailyOperationJournal
+
+        if historical is not None:
+            historical["recheck"]()
+        journal = DailyOperationJournal(
+            root,
+            Path(workspace_root).resolve(),
+            now=local_now,
+            slot=slot,
+            mode=mode,
+            _historical_trade_date=(
+                historical["target_trade_date"] if historical is not None else None
+            ),
+        )
+        replay = journal.recover_or_replay()
+        if replay is not None:
+            if historical is not None:
+                if replay.get("logical_replay") != "VERIFIED_SAME_INPUT":
+                    return replay
+                from quant_investor.factors.production_rollover import (
+                    validate_daily_maintenance_receipt,
+                )
+
+                ref = replay.get("core_completion_ref")
+                if (
+                    type(ref) is not dict
+                    or replay.get("target_date") != historical["target_trade_date"]
+                    or ref.get("path")
+                    != str(
+                        Path(replay["attempt_receipt_ref"]["path"]).with_name(
+                            "core-completion.json"
+                        )
+                    )
+                ):
+                    raise DailyMaintenanceError("HISTORICAL_MAINTENANCE_REPLAY_BINDING_INVALID")
+                native = validate_daily_maintenance_receipt(
+                    workspace_root=workspace_root,
+                    receipt_path=ref["path"],
+                    expected_receipt_sha256=ref["sha256"],
+                )
+                if native["target_date"] != historical["target_trade_date"]:
+                    raise DailyMaintenanceError("HISTORICAL_MAINTENANCE_REPLAY_TARGET_INVALID")
+            if _expected_target_trade_date is not None:
+                if replay.get("logical_replay") != "VERIFIED_SAME_INPUT":
+                    # An unfinished transaction is not a finalized Calendar proof.
+                    # Preserve its native recovery disposition without a callback.
+                    return replay
+                from .maintenance_journal import _project_requested_replay
+
+                replay = _project_requested_replay(
+                    receipt=replay,
+                    requested_trade_date=_expected_target_trade_date,
+                    read=journal.read,
+                    error=DailyMaintenanceError,
+                    expected_previous_trade_date=_expected_previous_trade_date,
+                )
+                if (
+                    replay.get("requested_session_result", {}).get("classification")
+                    == "CONFIRMED_CLOSED"
+                ):
+                    return replay
+            if core_completed is not None and replay.get("core_completion_ref"):
+                replay_callback = _core_replay_completed or core_completed
+                replay["factor_loop"] = dict(replay_callback(replay["core_completion_ref"]))
+            return replay
         attempt = _attempt_root(root, now=local_now, slot=slot)
+        _write_once(
+            attempt / "started.json",
+            _canonical_json_bytes(
+                {
+                    "state": "STARTED",
+                    "mode": mode,
+                    "attempt_slot": slot,
+                    "started_at": local_now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "python": sys.executable,
+                    "import_origin": str(Path(__file__).resolve()),
+                    "implementation_sha256": hashlib.sha256(
+                        Path(__file__).read_bytes()
+                    ).hexdigest(),
+                    "authority": "NON_AUTHORIZING",
+                }
+            ),
+        )
+        journal.bind(attempt)
         active_veto = root / "WRITE_VETO.json"
         if mode == "execute" and _path_present(active_veto):
             veto_raw = _read_owner_file(active_veto, code="WRITE_VETO_UNSAFE")
@@ -842,196 +1161,251 @@ def run_cn_daily_maintenance(
                 },
                 "protected_surfaces": list(_PROTECTED_SURFACES),
             }
-            return _seal_attempt(attempt_root=attempt, payload=payload, state=payload)
+            return _seal_attempt(
+                attempt_root=attempt,
+                payload=payload,
+                state=payload,
+                logical_claim_ref=journal.claim_ref,
+            )
         transport_retry: dict[str, Any] | None = None
-        try:
-            close_attempts: list[dict[str, Any]] = []
-            retry_eligible = False
-            for close_attempt in (1, 2):
-                close_started_at = _MONOTONIC()
-                try:
-                    close_result = close_authority(now=local_now)
-                    raw_response = bytes(close_result.raw_response_bytes)
-                    raw_sha = hashlib.sha256(raw_response).hexdigest()
-                    close_receipt = dict(close_result.receipt)
-                    if close_receipt.get("raw_response_sha256") != raw_sha:
-                        raise CloseSessionAuthorityError("CLOSE_AUTHORITY_RAW_SHA_MISMATCH")
-                    target_date = close_receipt.get("target_trade_date")
-                    if (
-                        type(target_date) is not str
-                        or len(target_date) != 8
-                        or not target_date.isdigit()
-                    ):
-                        raise CloseSessionAuthorityError("CLOSE_AUTHORITY_TARGET_INVALID")
-                except TushareHttpsError as exc:
-                    elapsed_ms = _close_call_elapsed_ms(close_started_at)
-                    if exc.code == "TUSHARE_TRANSPORT_ERROR":
-                        event = _transport_failure_event(
-                            attempt=close_attempt,
-                            error=exc,
-                            fallback_elapsed_ms=elapsed_ms,
-                        )
-                        close_attempts.append(event)
-                        if close_attempt == 1:
-                            retry_eligible = (
-                                event["failure_class"] in _TRANSPORT_RETRY_ELIGIBLE_CLASSES
-                            )
-                            if retry_eligible:
-                                _SLEEP(_TRANSPORT_RETRY_DELAY_MS / 1000)
-                                continue
-                    elif close_attempts:
-                        close_attempts.append(
-                            _controlled_failure_event(
+        if historical is None:
+            try:
+                close_attempts: list[dict[str, Any]] = []
+                retry_eligible = False
+                for close_attempt in (1, 2):
+                    close_started_at = _MONOTONIC()
+                    try:
+                        close_result = journal.acquire(close_authority, now=local_now)
+                        raw_response = bytes(close_result.raw_response_bytes)
+                        raw_sha = hashlib.sha256(raw_response).hexdigest()
+                        close_receipt = dict(close_result.receipt)
+                        if close_receipt.get("raw_response_sha256") != raw_sha:
+                            raise CloseSessionAuthorityError("CLOSE_AUTHORITY_RAW_SHA_MISMATCH")
+                        target_date = close_receipt.get("target_trade_date")
+                        if (
+                            type(target_date) is not str
+                            or len(target_date) != 8
+                            or not target_date.isdigit()
+                        ):
+                            raise CloseSessionAuthorityError("CLOSE_AUTHORITY_TARGET_INVALID")
+                    except TushareHttpsError as exc:
+                        elapsed_ms = _close_call_elapsed_ms(close_started_at)
+                        if exc.code == "TUSHARE_TRANSPORT_ERROR":
+                            event = _transport_failure_event(
                                 attempt=close_attempt,
                                 error=exc,
-                                elapsed_ms=elapsed_ms,
+                                fallback_elapsed_ms=elapsed_ms,
                             )
-                        )
-                    if close_attempts:
-                        transport_retry = _transport_retry_evidence(
-                            attempts=close_attempts,
-                            retry_eligible=retry_eligible,
-                            terminal_outcome="FAILURE",
-                        )
-                    raise
-                except CloseSessionAuthorityError as exc:
-                    if close_attempts:
-                        close_attempts.append(
-                            _controlled_failure_event(
-                                attempt=close_attempt,
-                                error=exc,
-                                elapsed_ms=_close_call_elapsed_ms(close_started_at),
+                            close_attempts.append(event)
+                            if close_attempt == 1:
+                                retry_eligible = (
+                                    event["failure_class"] in _TRANSPORT_RETRY_ELIGIBLE_CLASSES
+                                )
+                                if retry_eligible:
+                                    _SLEEP(_TRANSPORT_RETRY_DELAY_MS / 1000)
+                                    continue
+                        elif close_attempts:
+                            close_attempts.append(
+                                _controlled_failure_event(
+                                    attempt=close_attempt,
+                                    error=exc,
+                                    elapsed_ms=elapsed_ms,
+                                )
                             )
-                        )
-                        transport_retry = _transport_retry_evidence(
-                            attempts=close_attempts,
-                            retry_eligible=retry_eligible,
-                            terminal_outcome="FAILURE",
-                        )
-                    raise
-                except Exception:
-                    if close_attempts:
-                        close_attempts.append(
-                            _generic_failure_event(
-                                attempt=close_attempt,
-                                elapsed_ms=_close_call_elapsed_ms(close_started_at),
+                        if close_attempts:
+                            transport_retry = _transport_retry_evidence(
+                                attempts=close_attempts,
+                                retry_eligible=retry_eligible,
+                                terminal_outcome="FAILURE",
                             )
-                        )
-                        transport_retry = _transport_retry_evidence(
-                            attempts=close_attempts,
-                            retry_eligible=retry_eligible,
-                            terminal_outcome="FAILURE",
-                        )
-                    raise
-                else:
-                    if close_attempts:
-                        close_attempts.append(
-                            _success_event(
-                                attempt=close_attempt,
-                                elapsed_ms=_close_call_elapsed_ms(close_started_at),
+                        raise
+                    except CloseSessionAuthorityError as exc:
+                        if close_attempts:
+                            close_attempts.append(
+                                _controlled_failure_event(
+                                    attempt=close_attempt,
+                                    error=exc,
+                                    elapsed_ms=_close_call_elapsed_ms(close_started_at),
+                                )
                             )
-                        )
-                        transport_retry = _transport_retry_evidence(
-                            attempts=close_attempts,
-                            retry_eligible=retry_eligible,
-                            terminal_outcome="SUCCESS",
-                        )
-                    break
-        except (CloseSessionAuthorityError, TushareHttpsError) as exc:
-            code = getattr(exc, "code", "CLOSE_AUTHORITY_FAILED")
-            retryable = code in {
-                "TUSHARE_API_ERROR",
-                "TUSHARE_HTTP_STATUS_ERROR",
-                "TUSHARE_TRANSPORT_ERROR",
-                "CLOSE_SESSION_NOT_AVAILABLE",
-                "CLOSE_CALENDAR_DATE_COVERAGE_INCOMPLETE",
-                "CLOSE_SESSION_TARGET_NOT_TODAY",
-                "CLOSE_CALENDAR_EMPTY",
-            }
-            status = (
-                "SAME_DAY_SLA_MISSED"
-                if retryable and slot == FINAL_SLOT
-                else "RETRY_PENDING" if retryable else "BLOCKED"
-            )
-            payload = {
-                "schema_version": "cn-daily-maintenance-attempt.v1",
-                "status": status,
-                "maintenance_status": status,
-                "same_day_status": status,
-                "fundamental_integrity_status": "UNCONFIRMED",
-                "fundamental_refresh_status": "HEALTH_ONLY",
-                "mode": mode,
-                "attempt_slot": slot,
-                "target_date": None,
-                "canonical_unchanged": True,
-                "usable_for_investment_research": "UNCONFIRMED",
-                "stage_results": [],
-                "blockers": [code],
-                "protected_surfaces": list(_PROTECTED_SURFACES),
-            }
-            if mode == "execute" and status == "BLOCKED":
-                veto_path, veto_sha = _write_veto(
-                    root,
-                    _transient_veto_payload(
-                        workspace_root=Path(workspace_root).expanduser().resolve(),
-                        attempt_root=attempt,
-                        local_now=local_now,
-                        slot=slot,
-                        blocker=code,
-                    ),
+                            transport_retry = _transport_retry_evidence(
+                                attempts=close_attempts,
+                                retry_eligible=retry_eligible,
+                                terminal_outcome="FAILURE",
+                            )
+                        raise
+                    except Exception:
+                        if close_attempts:
+                            close_attempts.append(
+                                _generic_failure_event(
+                                    attempt=close_attempt,
+                                    elapsed_ms=_close_call_elapsed_ms(close_started_at),
+                                )
+                            )
+                            transport_retry = _transport_retry_evidence(
+                                attempts=close_attempts,
+                                retry_eligible=retry_eligible,
+                                terminal_outcome="FAILURE",
+                            )
+                        raise
+                    else:
+                        if close_attempts:
+                            close_attempts.append(
+                                _success_event(
+                                    attempt=close_attempt,
+                                    elapsed_ms=_close_call_elapsed_ms(close_started_at),
+                                )
+                            )
+                            transport_retry = _transport_retry_evidence(
+                                attempts=close_attempts,
+                                retry_eligible=retry_eligible,
+                                terminal_outcome="SUCCESS",
+                            )
+                        break
+            except (CloseSessionAuthorityError, TushareHttpsError) as exc:
+                code = getattr(exc, "code", "CLOSE_AUTHORITY_FAILED")
+                retryable = code in {
+                    "TUSHARE_API_ERROR",
+                    "TUSHARE_HTTP_STATUS_ERROR",
+                    "TUSHARE_TRANSPORT_ERROR",
+                    "CLOSE_SESSION_NOT_AVAILABLE",
+                    "CLOSE_CALENDAR_DATE_COVERAGE_INCOMPLETE",
+                    "CLOSE_SESSION_TARGET_NOT_TODAY",
+                    "CLOSE_CALENDAR_EMPTY",
+                }
+                status = (
+                    "SAME_DAY_SLA_MISSED"
+                    if retryable and slot == FINAL_SLOT
+                    else "RETRY_PENDING" if retryable else "BLOCKED"
                 )
-                payload["write_veto_ref"] = {"path": veto_path, "sha256": veto_sha}
-            receipt_payload = dict(payload)
-            if transport_retry is not None:
-                receipt_payload["transport_retry"] = transport_retry
-            return _seal_attempt(
-                attempt_root=attempt,
-                payload=receipt_payload,
-                state=payload,
-            )
-        except Exception:
-            payload = {
-                "schema_version": "cn-daily-maintenance-attempt.v1",
-                "status": "BLOCKED",
-                "maintenance_status": "BLOCKED",
-                "same_day_status": "BLOCKED",
-                "fundamental_integrity_status": "UNCONFIRMED",
-                "fundamental_refresh_status": "HEALTH_ONLY",
-                "mode": mode,
-                "attempt_slot": slot,
-                "target_date": None,
-                "canonical_unchanged": True,
-                "usable_for_investment_research": "UNCONFIRMED",
-                "stage_results": [],
-                "blockers": ["CLOSE_AUTHORITY_EXCEPTION"],
-                "protected_surfaces": list(_PROTECTED_SURFACES),
-            }
-            if mode == "execute":
-                veto_path, veto_sha = _write_veto(
-                    root,
-                    _transient_veto_payload(
-                        workspace_root=Path(workspace_root).expanduser().resolve(),
-                        attempt_root=attempt,
-                        local_now=local_now,
-                        slot=slot,
-                        blocker="CLOSE_AUTHORITY_EXCEPTION",
-                    ),
+                payload = {
+                    "schema_version": "cn-daily-maintenance-attempt.v1",
+                    "status": status,
+                    "maintenance_status": status,
+                    "same_day_status": status,
+                    "fundamental_integrity_status": "UNCONFIRMED",
+                    "fundamental_refresh_status": "HEALTH_ONLY",
+                    "mode": mode,
+                    "attempt_slot": slot,
+                    "target_date": None,
+                    "canonical_unchanged": True,
+                    "usable_for_investment_research": "UNCONFIRMED",
+                    "stage_results": [],
+                    "blockers": [code],
+                    "protected_surfaces": list(_PROTECTED_SURFACES),
+                }
+                if mode == "execute" and status == "BLOCKED":
+                    veto_path, veto_sha = _write_veto(
+                        root,
+                        _transient_veto_payload(
+                            workspace_root=Path(workspace_root).expanduser().resolve(),
+                            attempt_root=attempt,
+                            local_now=local_now,
+                            slot=slot,
+                            blocker=code,
+                        ),
+                    )
+                    payload["write_veto_ref"] = {"path": veto_path, "sha256": veto_sha}
+                receipt_payload = dict(payload)
+                if transport_retry is not None:
+                    receipt_payload["transport_retry"] = transport_retry
+                return _seal_attempt(
+                    attempt_root=attempt,
+                    payload=receipt_payload,
+                    state=payload,
+                    logical_claim_ref=journal.claim_ref,
                 )
-                payload["write_veto_ref"] = {"path": veto_path, "sha256": veto_sha}
-            receipt_payload = dict(payload)
-            if transport_retry is not None:
-                receipt_payload["transport_retry"] = transport_retry
-            return _seal_attempt(
-                attempt_root=attempt,
-                payload=receipt_payload,
-                state=payload,
-            )
+            except Exception:
+                payload = {
+                    "schema_version": "cn-daily-maintenance-attempt.v1",
+                    "status": "BLOCKED",
+                    "maintenance_status": "BLOCKED",
+                    "same_day_status": "BLOCKED",
+                    "fundamental_integrity_status": "UNCONFIRMED",
+                    "fundamental_refresh_status": "HEALTH_ONLY",
+                    "mode": mode,
+                    "attempt_slot": slot,
+                    "target_date": None,
+                    "canonical_unchanged": True,
+                    "usable_for_investment_research": "UNCONFIRMED",
+                    "stage_results": [],
+                    "blockers": ["CLOSE_AUTHORITY_EXCEPTION"],
+                    "protected_surfaces": list(_PROTECTED_SURFACES),
+                }
+                if mode == "execute":
+                    veto_path, veto_sha = _write_veto(
+                        root,
+                        _transient_veto_payload(
+                            workspace_root=Path(workspace_root).expanduser().resolve(),
+                            attempt_root=attempt,
+                            local_now=local_now,
+                            slot=slot,
+                            blocker="CLOSE_AUTHORITY_EXCEPTION",
+                        ),
+                    )
+                    payload["write_veto_ref"] = {"path": veto_path, "sha256": veto_sha}
+                receipt_payload = dict(payload)
+                if transport_retry is not None:
+                    receipt_payload["transport_retry"] = transport_retry
+                return _seal_attempt(
+                    attempt_root=attempt,
+                    payload=receipt_payload,
+                    state=payload,
+                    logical_claim_ref=journal.claim_ref,
+                )
+        else:
+            historical["recheck"]()
+            raw_response = historical["raw"]
+            close_receipt = dict(historical["calendar"])
+            target_date = historical["target_trade_date"]
         raw_path = attempt / "close-session.raw.json"
         _write_once(raw_path, raw_response)
         close_receipt["attempt_slot"] = slot
         close_receipt["raw_response_path"] = str(raw_path)
         close_path = attempt / "close-session-receipt.json"
         close_sha = _write_once(close_path, _canonical_json_bytes(close_receipt))
+        _stage_record(
+            attempt,
+            "close-session",
+            {"receipt_ref": {"path": str(close_path), "sha256": close_sha}},
+        )
+        if _expected_target_trade_date is not None:
+            from .requested_session import requested_session_attempt_result
+
+            outcome = requested_session_attempt_result(
+                requested_trade_date=_expected_target_trade_date,
+                receipt=close_receipt,
+                raw=raw_response,
+                close_ref={"path": str(close_path), "sha256": close_sha},
+                mode=mode,
+                slot=slot,
+                protected_surfaces=list(_PROTECTED_SURFACES),
+                expected_previous_trade_date=_expected_previous_trade_date,
+            )
+            if outcome is not None:
+                if transport_retry is not None:
+                    outcome["transport_retry"] = transport_retry
+                return _seal_attempt(
+                    attempt_root=attempt,
+                    payload=outcome,
+                    state=outcome,
+                    logical_claim_ref=journal.claim_ref,
+                )
+        historical_ref = None
+        if historical is not None:
+            from .historical_session import build_historical_session, FILENAME
+
+            proof = build_historical_session(
+                requested_trade_date=target_date,
+                previous_trade_date=historical["previous_trade_date"],
+                calendar_bytes=_read_owner_file(close_path, code="HISTORICAL_CALENDAR_UNSAFE"),
+                raw=raw_response,
+            )
+            proof_path = attempt / FILENAME
+            historical_ref = {
+                "path": str(proof_path),
+                "sha256": _write_once(proof_path, _canonical_json_bytes(proof)),
+            }
         context = MaintenanceContext(
             workspace_root=Path(workspace_root).expanduser().resolve(),
             run_root=root,
@@ -1042,6 +1416,7 @@ def run_cn_daily_maintenance(
             close_session_receipt=close_receipt,
             close_session_receipt_path=close_path,
             close_session_receipt_sha256=close_sha,
+            historical_session_ref=historical_ref,
         )
         core_callbacks: tuple[tuple[str, StageCallback | None], ...] = (
             ("PIT", selected_components.pit),
@@ -1067,8 +1442,21 @@ def run_cn_daily_maintenance(
                     prior_results=stage_results,
                 )
             stage_results.append(result)
+            _stage_record(attempt, stage, result)
             core_halted = core_halted or result["status"] in {"BLOCKED", "RETRY_PENDING"}
         core_results = list(stage_results)
+        core_checkpoint = None
+        factor_result = None
+        if not core_halted and all(not row["blockers"] for row in core_results):
+            core_checkpoint = _seal_core_checkpoint(
+                context, core_results, logical_claim_ref=journal.claim_ref
+            )
+            if mode == "execute" and core_completed is not None:
+                try:
+                    factor_result = dict(core_completed(core_checkpoint))
+                except Exception as exc:
+                    factor_result = {"status": "BLOCKED", "blocker": type(exc).__name__}
+                _stage_record(attempt, "FACTOR_LOOP", factor_result)
         if core_halted:
             for stage in ("FUNDAMENTAL", "MACRO_RELEASE"):
                 stage_results.append(
@@ -1110,6 +1498,8 @@ def run_cn_daily_maintenance(
                     prior_results=core_results,
                 )
             stage_results.extend((fundamental_result, macro_result))
+            _stage_record(attempt, "FUNDAMENTAL", fundamental_result)
+            _stage_record(attempt, "MACRO_RELEASE", macro_result)
         fundamental_result = next(item for item in stage_results if item["stage"] == "FUNDAMENTAL")
         same_day_results = [item for item in stage_results if item["stage"] != "FUNDAMENTAL"]
         factor_core_results = [
@@ -1195,6 +1585,10 @@ def run_cn_daily_maintenance(
         }
         if transport_retry is not None:
             payload["transport_retry"] = transport_retry
+        if core_checkpoint is not None:
+            payload["core_completion_ref"] = core_checkpoint
+        if factor_result is not None:
+            payload["factor_loop"] = factor_result
         if mode == "execute" and core_hard_block:
             veto_path, veto_sha = _write_veto(
                 root,
@@ -1245,7 +1639,27 @@ def run_cn_daily_maintenance(
             "stage_states": {result["stage"]: result["status"] for result in stage_results},
             "blockers": blockers,
         }
-        return _seal_attempt(attempt_root=attempt, payload=payload, state=state)
+        return _seal_attempt(
+            attempt_root=attempt, payload=payload, state=state, logical_claim_ref=journal.claim_ref
+        )
+    except BaseException as exc:
+        if attempt is not None and not (attempt / "ended.json").exists():
+            _write_once(
+                attempt / "ended.json",
+                _canonical_json_bytes(
+                    {
+                        "state": "INTERRUPTED",
+                        "error_class": type(exc).__name__,
+                        "blocker_code": (
+                            exc.code
+                            if isinstance(exc, DailyMaintenanceError)
+                            else type(exc).__name__
+                        ),
+                        "ended_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    }
+                ),
+            )
+        raise
     finally:
         lock.__exit__(None, None, None)
 
@@ -1529,3 +1943,49 @@ __all__ = [
     "resolve_attempt_slot",
     "run_cn_daily_maintenance",
 ]
+
+
+def write_launcher_record(
+    *, run_root: str, receipt_id: str, phase: str, exit_code: int = 0
+) -> dict[str, Any]:
+    """Seal launcher start/end and bounded output refs, including pre-maintenance failures."""
+    import re
+
+    if not re.fullmatch(
+        r"slot-(1620|1720|1820|2020)-[0-9]{8}T[0-9]{6}Z-[0-9]+", receipt_id
+    ) or phase not in {"STARTED", "ENDED"}:
+        raise DailyMaintenanceError("LAUNCHER_RECORD_ID_INVALID")
+    root = _owner_only_directory(Path(run_root), create=True)
+    directory = _child_directory(_child_directory(root, "launcher_attempts"), receipt_id)
+    payload: dict[str, Any] = {
+        "schema_version": "cn-daily-launcher-attempt.v1",
+        "phase": phase,
+        "recorded_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "python": sys.executable,
+        "import_origin": str(Path(__file__).resolve()),
+        "authority": "NON_AUTHORIZING",
+    }
+    if phase == "ENDED":
+        payload["process_exit_code"] = exit_code
+        refs = []
+        for name in (
+            "started.json",
+            "recovery.stdout.json",
+            "recovery.stderr.log",
+            "maintenance.stdout.json",
+            "maintenance.stderr.log",
+            "veto-recovery.stdout.json",
+            "veto-recovery.stderr.log",
+        ):
+            path = directory / name
+            if path.exists():
+                raw = _read_owner_file(path, code="LAUNCHER_OUTPUT_UNSAFE")
+                refs.append({"path": str(path), "sha256": hashlib.sha256(raw).hexdigest()})
+        payload["output_refs"] = refs
+    path = directory / ("started.json" if phase == "STARTED" else "ended.json")
+    sha = _write_once(path, _canonical_json_bytes(payload))
+    return {
+        "launcher_receipt_ref": {"path": str(path), "sha256": sha},
+        "phase": phase,
+        "process_exit_code": exit_code if phase == "ENDED" else None,
+    }

@@ -1,0 +1,29 @@
+{
+  "observed_at": "2026-09-09T01:57:03.566161+00:00",
+  "status": "SOURCE_INTEGRATED",
+  "candidate_commit": "2f43b0b98b612c2adfdb806b3b10ead7f8370c2c",
+  "main_head_preserved": "68df456afdd5c333a36fdd7260d6b6fc52d33ce3",
+  "user_index_preserved": true,
+  "all_target_paths_match_candidate": true,
+  "non_target_source_preserved": true,
+  "preserved_parallel_changes": [
+    "quant_investor/market/pit_universe.py",
+    "scripts/research_historical_consumption.py"
+  ],
+  "changed_path_count": 287,
+  "patch": "/private/tmp/myquant-integration-20260909T013628Z/source-integration.patch",
+  "patch_sha256": "1db7cb8f237addbcac2df89d192afb9a3de1b3d62a2287b4d1ec6acc7878c7f8",
+  "preimage_snapshot": "/private/tmp/myquant-integration-20260909T013628Z/main-snapshot",
+  "excluded": "docs,local configuration,data and runtime artifacts",
+  "deployment_performed": false,
+  "goal_complete": false,
+  "verification": {
+    "candidate_focused_tests": "171 passed in 32.44s",
+    "candidate_access_review_tests": "33 passed in 4.41s",
+    "candidate_static_checks": "5 passed; 73 stable source files",
+    "main_focused_tests": "57 passed in 2.19s",
+    "main_access_governance": "34 reviewed callers passed",
+    "full_current_main_regression": "not yet run; earlier 3436-pass snapshot predates integration and later changes"
+  },
+  "durable_patch": "/Users/maxwell/mySpace/myQuant/.agent/integration/daily-evidence-source-integration.patch"
+}

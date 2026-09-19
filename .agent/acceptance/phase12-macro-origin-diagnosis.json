@@ -1,0 +1,40 @@
+{
+  "observed_at": "2026-09-13T02:24:03.033447+00:00",
+  "scope": "READ_ONLY_MACRO_COMPONENT_DIAGNOSIS",
+  "checks": [
+    {
+      "scope": "ORIGINAL",
+      "target_date": "20260904",
+      "cutoff_from_existing_evidence": "2026-09-06T02:58:55.917738+00:00",
+      "manifest_ref": {
+        "path": "data/parquet/cn/_snapshots/20260905T163546Z.json",
+        "sha256": "90d348cf9dfca556afbedf20c044115c9c2116b6266f8de4311737350a177b76"
+      },
+      "result": {
+        "status": "BLOCKED",
+        "error_type": "LocalMarketObservationError",
+        "error": "local_breadth_coverage_top_metadata_conflict"
+      }
+    },
+    {
+      "scope": "CURRENT",
+      "target_date": "20260911",
+      "cutoff_from_existing_evidence": "2026-09-11T14:04:28Z",
+      "manifest_ref": {
+        "path": "data/parquet/cn/_snapshots/20260911T135213Z.json",
+        "sha256": "e66af370e1b47c974001c2c15a1d4810d6d16c6931727836d55d627bd8684ecb"
+      },
+      "result": {
+        "status": "PASS",
+        "period_end": "2026-09-11",
+        "value": "11.544011544012"
+      }
+    }
+  ],
+  "original_parent_chain": "Native validated existing production chain passed, logical_as_of20260903",
+  "original_preparation": "Candidate release published; observation pointer remains parent; prepared directory empty; no commit-ready prepared receipt",
+  "main_veto_mutation": false,
+  "provider_calls": false,
+  "production_writes": false,
+  "full_macro_recovery_claim": false
+}

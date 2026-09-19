@@ -74,6 +74,12 @@ def _publish_attempt_receipt(
 ) -> Path:
     """Append one immutable refresh receipt without changing the serving selector."""
 
+    from quant_investor.operations.dashboard_replay_sources import (
+        require_live_dashboard_publication,
+    )
+
+    require_live_dashboard_publication()
+
     if status not in {"SUCCESS", "BLOCKED"}:
         raise DashboardInputError("dashboard_attempt_status_invalid")
     if not attempt_id or any(
@@ -209,6 +215,88 @@ def _restore(path: Path, previous: bytes | None) -> None:
 
 
 def publish_bundle(bundle: dict, json_path: Path, js_path: Path, project_root: Path) -> None:
+    from quant_investor.operations.dashboard_publication_guard import publication_scope
+
+    with publication_scope(project_root):
+        _publish_bundle_legacy(bundle, json_path, js_path, project_root)
+
+
+def publish_bundle_pair(
+    *,
+    v1_bundle: dict,
+    v2_bundle: dict,
+    v1_json_path: Path,
+    v1_js_path: Path,
+    v2_json_path: Path,
+    v2_js_path: Path,
+    project_root: Path,
+    _capability=None,
+) -> None:
+    from quant_investor.operations.dashboard_publication_guard import publication_scope
+
+    with publication_scope(project_root, _capability):
+        if _capability is None:
+            _publish_bundle_pair_legacy(
+                v1_bundle=v1_bundle,
+                v2_bundle=v2_bundle,
+                v1_json_path=v1_json_path,
+                v1_js_path=v1_js_path,
+                v2_json_path=v2_json_path,
+                v2_js_path=v2_js_path,
+                project_root=project_root,
+            )
+        else:
+            _publish_sealed_bundle_pair(
+                v1_bundle,
+                v2_bundle,
+                (v1_json_path, v1_js_path, v2_json_path, v2_js_path),
+                project_root,
+                _capability,
+            )
+
+
+def _publish_sealed_bundle_pair(v1, v2, paths, project, capability):
+    # Full retained native source replay has already produced this exact,
+    # lock-scoped capability; mutable current heads are not reselected here.
+    names = (
+        "cn_aggressive_dashboard.v1.json",
+        "cn_aggressive_dashboard.v1.js",
+        "cn_aggressive_dashboard.v2.json",
+        "cn_aggressive_dashboard.v2.js",
+    )
+    targets = [_require_output_path(project, path, name) for path, name in zip(paths, names)]
+    if v2.get("schema_version") != "cn_aggressive_dashboard.v2":
+        raise DashboardInputError("historical_dashboard_cannot_replace_current_selector")
+    errors = validate_bundle_shape(v1) + validate_v2_shape(v2)
+    if errors:
+        raise DashboardInputError("sealed_bundle_shape_invalid:" + ";".join(errors))
+    capability.validate_bytes(targets[0], _render_json(v1))
+    capability.validate_bytes(targets[2], _render_json(v2))
+    payloads = {path: capability.bytes_for(path) for path in targets}
+    previous = {path: path.read_bytes() if path.exists() else None for path in targets}
+    from cn_dashboard_v2_selector import _atomic_replace
+
+    try:
+        for path, raw in payloads.items():
+            if previous[path] != raw:
+                _atomic_replace(path, raw)
+        if any(path.read_bytes() != raw for path, raw in payloads.items()):
+            raise DashboardInputError("sealed_bundle_pair_readback_differs")
+    except Exception:
+        for path in reversed(targets):
+            _restore(path, previous[path])
+        raise
+
+
+def _publish_bundle_legacy(
+    bundle: dict, json_path: Path, js_path: Path, project_root: Path
+) -> None:
+
+    from quant_investor.operations.dashboard_replay_sources import (
+        require_live_dashboard_publication,
+    )
+
+    require_live_dashboard_publication()
     json_path = _require_output_path(project_root, json_path, "cn_aggressive_dashboard.v1.json")
     js_path = _require_output_path(project_root, js_path, "cn_aggressive_dashboard.v1.js")
     errors = validate_bundle_shape(bundle) + verify_source_refs(bundle, project_root)
@@ -252,7 +340,7 @@ def publish_bundle(bundle: dict, json_path: Path, js_path: Path, project_root: P
             raise
 
 
-def publish_bundle_pair(
+def _publish_bundle_pair_legacy(
     *,
     v1_bundle: dict,
     v2_bundle: dict,
@@ -264,6 +352,12 @@ def publish_bundle_pair(
 ) -> None:
     """Stage, validate, and transactionally replace both bundle versions."""
 
+    from quant_investor.operations.dashboard_replay_sources import (
+        require_live_dashboard_publication,
+    )
+
+    require_live_dashboard_publication()
+
     v1_json_path = _require_output_path(
         project_root, v1_json_path, "cn_aggressive_dashboard.v1.json"
     )
@@ -272,6 +366,9 @@ def publish_bundle_pair(
         project_root, v2_json_path, "cn_aggressive_dashboard.v2.json"
     )
     v2_js_path = _require_output_path(project_root, v2_js_path, "cn_aggressive_dashboard.v2.js")
+    if v2_bundle.get("schema_version") != "cn_aggressive_dashboard.v2":
+        raise DashboardInputError("historical_dashboard_cannot_replace_current_selector")
+
     v1_json_bytes = _render_json(v1_bundle)
     errors = (
         validate_bundle_shape(v1_bundle)
@@ -407,8 +504,38 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_HISTORY_INTEGRITY,
     )
     parser.add_argument("--generated-at", default=None)
+    parser.add_argument(
+        "--expected-trade-date",
+        default=None,
+        help="DAG close date YYYYMMDD; reject stale inputs before publication",
+    )
     parser.add_argument("--today", default=None, help="Testing override in YYYY-MM-DD format")
     return parser.parse_args()
+
+
+def require_expected_close_date(
+    project_root: Path, bundle: dict, v2_bundle: dict, expected_trade_date: str
+) -> None:
+    """Exact day guard; successful rendering alone does not prove daily continuity."""
+    from check_cn_dashboard_export import latest_market_close_date, latest_benchmark_close_date
+
+    try:
+        parsed = datetime.strptime(expected_trade_date, "%Y%m%d")
+    except (TypeError, ValueError) as exc:
+        raise DashboardInputError("DAG_EXPECTED_CLOSE_DATE_INVALID") from exc
+    if parsed.strftime("%Y%m%d") != expected_trade_date:
+        raise DashboardInputError("DAG_EXPECTED_CLOSE_DATE_INVALID")
+    expected = parsed.date().isoformat()
+    dates = {
+        "Market": latest_market_close_date(project_root),
+        "benchmark": latest_benchmark_close_date(project_root),
+        "Store": bundle.get("latest_data_date"),
+        "performance": bundle.get("portfolio", {}).get("performance_end_date"),
+        "mark": v2_bundle.get("freshness", {}).get("mark_as_of"),
+    }
+    mismatched = [name for name, value in dates.items() if value != expected]
+    if mismatched:
+        raise DashboardInputError("DASHBOARD_STALE:" + ",".join(mismatched))
 
 
 def main() -> int:
@@ -462,6 +589,8 @@ def main() -> int:
             generated_at=generated_at,
             publication_attempt_id=attempt_id,
         )
+        if getattr(args, "expected_trade_date", None) is not None:
+            require_expected_close_date(project_root, bundle, v2_bundle, args.expected_trade_date)
         publish_bundle_pair(
             v1_bundle=bundle,
             v2_bundle=v2_bundle,

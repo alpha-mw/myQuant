@@ -1,0 +1,20 @@
+{
+  "observed_at": "2026-09-14T22:38:09.195610+00:00",
+  "state": "NATIVE_EOD_SEALED_FINAL_REPLAY_PENDING",
+  "trade_date": "20260828",
+  "completion_ref": {
+    "path": "results/operations/daily_production/CN/20260828/completion.v1.json",
+    "sha256": "2bbd9f4f1318be1eb80602350e4e9d4fc017aa667d0c7fdc37c9c4941f01cd30"
+  },
+  "schema_version": "cn-daily-eod-completion.v2",
+  "terminal_ref_count_verified": 16,
+  "prospective_admission_state": "LEDGER_INELIGIBLE",
+  "prospective_ledger_ref": {
+    "path": "results/prospective/CN/20260828/evidence-ledger.v1.json",
+    "sha256": "d3da40384e93e96c7eb69398255829443576dd196a5933dcad4e68085de42a4c"
+  },
+  "native_validation_completed_at": "2026-08-28T13:20:00Z",
+  "full_stage_pass": false,
+  "synthetic": true,
+  "production_deployed": false
+}

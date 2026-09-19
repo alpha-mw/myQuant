@@ -1,0 +1,11 @@
+{
+  "scope": "CURRENT_SOURCE_LEGACY_COMPLETED_DECISION_NATIVE_REPLAY",
+  "completion_ref": {
+    "path": "results/operations/daily_production/CN/20260828/completion.v1.json",
+    "sha256": "b5f4e863dc7ac5cb4158c142868ee60862d6a06df2282753c3b9b4ee13a718b5"
+  },
+  "consumer_admission": false,
+  "validation_scope": "COMPLETED_DECISION_NATIVE_RECOMPILE",
+  "decision_report_added": false,
+  "seconds": 87.40035100001842
+}

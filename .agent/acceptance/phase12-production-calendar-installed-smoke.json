@@ -1,0 +1,40 @@
+{
+  "state": "PASS",
+  "scope": "INSTALLED_CALENDAR_COMPONENT_WITH_OFFLINE_HTTPS_AND_GUARD_TEST_SEAMS",
+  "commit": "a46e5508e4a48802e8eb741eaf7e5660c6d20539",
+  "import_origin": "/private/tmp/myquant-production-calendar-20260916T144348Z/release/installs/a46e5508e4a48802e8eb741eaf7e5660c6d20539-3ccd32bd290b4844e71dceca948d64ca2823512a3d27a443cb71d7ce0be34541/lib/python3.13/site-packages/quant_investor/__init__.py",
+  "installed_verifier_mocked": false,
+  "real_provider_calls": false,
+  "production_deployed": false,
+  "core_inputs_shape_only": true,
+  "full_eod_proof": false,
+  "morning_proof": false,
+  "phases": [
+    "CORE_READY",
+    "CAPTURE_SEALED",
+    "TRANSPORT_BOUND",
+    "FUTURE_BOUND"
+  ],
+  "next_open_session": "20260917",
+  "workspace": "/private/tmp/myquant-production-calendar-20260916T144348Z/production-calendar-offline-workspace",
+  "publication_ref": {
+    "path": "results/operations/daily_production/CN/20260916/calendar-future/publications/2e23e886e31ed59ecf1a11372e9d4b06814f47777e1054825bfccf81de50f975.json",
+    "sha256": "e2a0a1760c75fcbe1df8b96944aa7c17bb3cca0076970eb6266c0fab249556e7"
+  },
+  "transport_evidence_ref": {
+    "path": "results/operations/daily_production/CN/20260916/calendar-future/production-transport/622ed23e17a4da1402561ab38d623c2e4453dc8c92652173379fb1ad7650cc04.json",
+    "sha256": "738a669ffa1f3cb6cbf001918b0b602c9c57e11b58fa093c5ec55615b394fe09"
+  },
+  "finished_at": "2026-09-16T14:47:07.050311+00:00",
+  "native_proof_ref": {
+    "path": "results/operations/daily_production/CN/20260916/calendar-future/proofs/2e23e886e31ed59ecf1a11372e9d4b06814f47777e1054825bfccf81de50f975.json",
+    "sha256": "2e23e886e31ed59ecf1a11372e9d4b06814f47777e1054825bfccf81de50f975"
+  },
+  "receipt_ref": {
+    "path": "/private/tmp/myquant-production-calendar-20260916T144348Z/production-calendar-installed-smoke-proof.json",
+    "sha256": "cddaf245aeb4cbf0ca660596582fc8375cd724cd4db333271cc12e76908ab31d"
+  },
+  "exact_file_sha_readback": "PASS",
+  "source_scope": "a46e5508e4a48802e8eb741eaf7e5660c6d20539",
+  "full_goal_complete": false
+}

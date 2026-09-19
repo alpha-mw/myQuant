@@ -71,6 +71,27 @@ DEFAULT_MARKET_DATA_ROOT = Path("data")
 DEFAULT_METADATA_ROOT = Path("data/metadata")
 DEFAULT_UNIVERSES = ("hs300", "zz500", "zz1000")
 FULL_A_UNIVERSE_KEYS = {"full_a", "full_market", "all_a", "all", "full"}
+#: Research-only historical universe. Deliberately outside ``FULL_A_UNIVERSE_KEYS`` so
+#: it never inherits full_a's serving-set special case, and admissible only on an
+#: isolated market root and staging root.
+RESEARCH_HISTORICAL_UNIVERSE_KEY = "full_a_hist"
+
+
+class _NoDeclaredCoverage:
+    """Sentinel: this run declared no coverage intervals at all.
+
+    Distinct from ``None``, which means "use whatever the module global points
+    at". A replay that recovers an empty declaration path from bound evidence
+    must reproduce *no declaration*, not silently substitute production's.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return "NO_DECLARED_COVERAGE"
+
+
+NO_DECLARED_COVERAGE = _NoDeclaredCoverage()
 FULL_A_PHYSICAL_DIRECTORIES = ("hs300", "zz500", "zz1000", "other")
 
 SOURCE_TABLES = ("fina_indicator", "income", "balancesheet", "cashflow", "daily_basic", "forecast")
@@ -1039,7 +1060,7 @@ def _fetch_restated_rows(
                 delay = initial_backoff * (2 ** (attempt - 1))
                 if maximum_backoff > 0:
                     delay = min(delay, maximum_backoff)
-                sleep(delay)
+                time.sleep(delay)
     if response is None:
         _logger.warning(
             "restated %s vintage unavailable for %s after %d attempts: %s",
@@ -1582,7 +1603,39 @@ def build_fundamental_daily(
 
 
 def _legacy_asof_tie_winners(frame: pd.DataFrame) -> pd.DataFrame:
-    """Select the exact right-row winners used by the legacy PIT join."""
+    """Pick one right-hand row per availability date: the newest report period.
+
+    ``merge_asof`` takes the last right-hand row at or before each trade date, so
+    when several fiscal periods carry the same disclosure date exactly one of them
+    survives into the daily panel. The right answer is the newest period — that is
+    the report an investor reads that day — and this did not guarantee it: it
+    called ``sort_values("availability_date")`` with pandas' default quicksort,
+    which is unstable, then took ``keep="last"``. Among rows sharing a date the
+    winner was arbitrary.
+
+    That was survivable while few periods shared a disclosure date. Restated
+    vintages change the arithmetic, because a restatement republishes an old
+    period under a new announcement date: across the period table the share of
+    ``(ts_code, availability_date)`` groups holding more than one period rises
+    from 18.07% to 66.92% once restated vintages are fetched. Most of that is
+    absorbed by ``_drop_superseded_period_vintages``, which runs immediately
+    before this function, so what actually reaches here is 14.77% -> 17.40%.
+
+    The residue decided correctness. Measured as the share of daily rows not
+    carrying the newest report period knowable that day: the pre-restatement
+    panel served a stale period on 2.27% of rows, the restated build under the
+    unstable sort made that worse at 2.90%, and sorting on ``end_date`` as well
+    brings it to 0.00% — every one of 6,187,668 rows carries the newest period
+    its availability date allows. The stable mergesort keeps that reproducible
+    run to run.
+
+    Every figure here is measured against the generation the fundamental
+    pointer actually resolves to, by ``scratchpad/verify_restated_mart_v2.py``.
+    That qualifier is not decoration: ``data/parquet/cn/fundamental_daily/`` is
+    a stale June snapshot that no reader sees while a pointer exists, and
+    measuring against it once produced a plausible but wrong set of numbers for
+    this very docstring.
+    """
 
     if frame.empty:
         return frame
@@ -1591,13 +1644,21 @@ def _legacy_asof_tie_winners(frame: pd.DataFrame) -> pd.DataFrame:
         raise ValueError(f"reserved column present in asof input: {row_position}")
     working = frame.copy()
     working[row_position] = np.arange(len(working), dtype=np.int64)
+    sort_columns = [
+        column
+        for column in ("availability_date", "end_date")
+        if column in working.columns
+    ]
     winner_positions: list[int] = []
     for _symbol, group in working.groupby("ts_code", sort=False):
-        winners = group.sort_values("availability_date").drop_duplicates(
+        winners = group.sort_values(sort_columns, kind="mergesort").drop_duplicates(
             subset=["availability_date"],
             keep="last",
         )
         winner_positions.extend(int(value) for value in winners[row_position])
+    # Restore the caller's row order; merge_asof needs its right frame sorted by
+    # the join key, and the caller sorts it immediately after this returns.
+    winner_positions.sort()
     return working.iloc[winner_positions].drop(columns=[row_position])
 
 
@@ -2317,7 +2378,16 @@ def _resolve_symbols_from_parquet_universe(
                 for symbol in list(components.get("full_a", []) or [])
                 if normalize_ts_code(symbol) in serving_symbols
             ]
-            symbols.extend(scoped or sorted(serving_symbols))
+            if not scoped:
+                # Falling back to the whole serving set here was a fail-open: an empty
+                # intersection means the declared universe and the served bars disagree,
+                # and substituting every served symbol turns a scope error into a
+                # full-scope run. Refuse instead.
+                raise ValueError(
+                    "canonical components and served symbols do not intersect for "
+                    f"universe {normalized_universe}"
+                )
+            symbols.extend(scoped)
         else:
             symbols.extend(reader.list_symbols(universe_key=normalized_universe))
     return [symbol for symbol in dict.fromkeys(symbols) if symbol]
@@ -2613,10 +2683,27 @@ def _declared_coverage_intervals(
     history_end_dates: Mapping[str, str],
     membership_sha256: str,
     cutoff: str,
+    boundary_path: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Load exact intervals; legacy response-derived floors are not authority."""
+    """Load exact intervals; legacy response-derived floors are not authority.
 
-    path = DAILY_BASIC_COVERAGE_BOUNDARY_PATH
+    ``boundary_path`` lets an isolated root declare its own coverage intervals. The
+    fallback is read from the module global *at call time*, not captured as a default,
+    because tests monkeypatch the module attribute.
+
+    Without this, a run on an isolated root silently inherits the production
+    declaration: none of its symbols appear there, the scope filter yields nothing,
+    the empty set short-circuits validation without error, and the production file's
+    absolute path and SHA256 are then stamped into the isolated run's scope evidence.
+    """
+
+    if boundary_path is NO_DECLARED_COVERAGE:
+        return {
+            "daily_history_coverage_interval_path": "",
+            "daily_history_coverage_interval_source_sha256": "",
+            "daily_history_coverage_intervals": [],
+        }
+    path = Path(boundary_path) if boundary_path else DAILY_BASIC_COVERAGE_BOUNDARY_PATH
     if not path.is_absolute():
         path = Path.cwd().resolve(strict=True) / path
     if not path.is_file():
@@ -2686,6 +2773,67 @@ def _declared_coverage_intervals(
     }
 
 
+def _verify_zero_bar_admission(
+    *,
+    symbol: str,
+    admission: Any,
+    eligibility_start: pd.Timestamp,
+    eligibility_end: pd.Timestamp,
+) -> dict[str, Any]:
+    """Accept a bar-less identity only against verifying suspension evidence.
+
+    The evidence must be for this identity, cover exactly the window this
+    function computed independently, and carry no unexplained day. The document
+    proves an absence of trades; it never stands in for price coverage, so the
+    caller records empty bounds rather than substituting anything.
+    """
+    from .cn_research_suspension_evidence import (
+        SuspensionEvidenceError,
+        load_and_verify,
+        verify_suspension_evidence,
+    )
+
+    document = admission
+    if isinstance(admission, (str, Path)):
+        document = json.loads(Path(admission).read_text(encoding="utf-8"))
+    if not isinstance(document, Mapping):
+        raise ValueError(f"zero-bar admission evidence is unreadable: {symbol}")
+    window = dict(document.get("expected_window") or {})
+    expected_start = str(window.get("start") or "")
+    expected_end = str(window.get("end") or "")
+    if (
+        expected_start != eligibility_start.strftime("%Y%m%d")
+        or expected_end != eligibility_end.strftime("%Y%m%d")
+    ):
+        raise ValueError(
+            "zero-bar admission window does not match canonical eligibility: "
+            f"{symbol}"
+        )
+    try:
+        verified = verify_suspension_evidence(
+            document,
+            symbol=symbol,
+            expected_trade_dates=list(document.get("expected_trade_dates") or []),
+        )
+    except SuspensionEvidenceError as exc:
+        raise ValueError(f"zero-bar admission evidence rejected: {symbol}: {exc}") from exc
+    if verified.get("grants_price_coverage") or verified.get("grants_financial_coverage"):
+        raise ValueError(
+            f"zero-bar admission must not claim price or financial coverage: {symbol}"
+        )
+    return {
+        "symbol": symbol,
+        "expected_window": [expected_start, expected_end],
+        "verified_day_count": int(verified["verified_day_count"]),
+        "record_sha256": str(document.get("record_sha256") or ""),
+        # Recorded so a replay can re-verify from the same document rather than
+        # being told to trust this summary.
+        "evidence_path": str(admission) if isinstance(admission, (str, Path)) else "",
+        "grants_price_coverage": False,
+        "grants_financial_coverage": False,
+    }
+
+
 def _canonical_bar_history_bounds(
     pointer_payload: Mapping[str, Any],
     *,
@@ -2694,6 +2842,7 @@ def _canonical_bar_history_bounds(
     history_end_dates: Mapping[str, str],
     daily_start: str,
     as_of: str,
+    zero_bar_admissions: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, str], dict[str, str], dict[str, Any]]:
     table_root_value = str(pointer_payload.get("table_root") or "").strip()
     if not table_root_value:
@@ -2791,9 +2940,30 @@ def _canonical_bar_history_bounds(
         raise ValueError("canonical market bar dataset changed during read")
     first_dates: dict[str, str] = {}
     last_dates: dict[str, str] = {}
+    admissions = dict(zero_bar_admissions or {})
+    admitted_zero_bar: dict[str, Any] = {}
     for symbol in requested_symbols:
         if symbol not in first_bounds or symbol not in last_bounds:
-            raise ValueError(f"canonical market bar bounds missing symbol: {symbol}")
+            # An identity can be a genuine member of its window and still have
+            # no bar in it — suspended from its last trade until removal. That
+            # is admissible only against evidence covering every expected
+            # trading day; absent evidence it stays an error, because "no bars"
+            # and "no evidence of why" are the same thing from here.
+            admission = admissions.get(symbol)
+            if admission is None:
+                raise ValueError(
+                    f"canonical market bar bounds missing symbol: {symbol}"
+                )
+            verified = _verify_zero_bar_admission(
+                symbol=symbol,
+                admission=admission,
+                eligibility_start=eligibility_starts[symbol],
+                eligibility_end=eligibility_ends[symbol],
+            )
+            admitted_zero_bar[symbol] = verified
+            first_dates[symbol] = ""
+            last_dates[symbol] = ""
+            continue
         first = first_bounds[symbol]
         last = last_bounds[symbol]
         if (
@@ -2808,7 +2978,17 @@ def _canonical_bar_history_bounds(
         f"{symbol}|{first_dates[symbol]}|{last_dates[symbol]}"
         for symbol in requested_symbols
     ]
+    zero_bar_evidence: dict[str, Any] = {}
+    if admitted_zero_bar:
+        # Present only when an admission actually happened. Emitting an empty
+        # list unconditionally would add a field to every existing binding and
+        # change its hash, so an absent key means "no identity was admitted
+        # without bars" — which is the normal case.
+        zero_bar_evidence["canonical_bar_zero_bar_admissions"] = sorted(
+            admitted_zero_bar.values(), key=lambda entry: str(entry["symbol"])
+        )
     return first_dates, last_dates, {
+        **zero_bar_evidence,
         "canonical_bar_table_root": str(root),
         "canonical_bar_file_count": int(len(file_evidence_after)),
         "canonical_bar_files_sha256": canonical_json_sha256(file_evidence_after),
@@ -2828,6 +3008,8 @@ def build_canonical_scope_evidence(
     membership_path: str | Path,
     as_of: str,
     daily_start: str | None = None,
+    coverage_boundary_path: str | Path | None = None,
+    zero_bar_admissions: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Bind a provider rebuild to the exact canonical scope source and symbols."""
     from .scope_transition import assert_scope_readable
@@ -3081,6 +3263,7 @@ def build_canonical_scope_evidence(
             history_end_dates=history_end_dates,
             daily_start=requested_daily_start,
             as_of=requested_as_of,
+            zero_bar_admissions=zero_bar_admissions,
         )
     )
     eligibility_lines = [
@@ -3123,6 +3306,7 @@ def build_canonical_scope_evidence(
             history_end_dates=history_end_dates,
             membership_sha256=membership_sha256,
             cutoff=requested_as_of,
+            boundary_path=coverage_boundary_path,
         ),
     }
 
@@ -3130,6 +3314,9 @@ def build_canonical_scope_evidence(
 def _validate_canonical_scope_evidence(
     evidence: Mapping[str, Any],
     symbols: Sequence[str],
+    *,
+    coverage_boundary_path: str | Path | None = None,
+    zero_bar_admissions: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     required = {
         "canonical_path",
@@ -3165,6 +3352,26 @@ def _validate_canonical_scope_evidence(
     normalized = sorted(
         {normalize_ts_code(symbol) for symbol in symbols if normalize_ts_code(symbol)}
     )
+    # Evidence records which coverage declaration it was built against. Recover
+    # it rather than consulting the module global: rebuilding against a
+    # different declaration than the binding used would either report a
+    # difference as tampering, or — worse — let evidence bound to one
+    # declaration validate against another without complaint.
+    if coverage_boundary_path is None:
+        recorded_declaration = str(
+            evidence.get("daily_history_coverage_interval_path") or ""
+        ).strip()
+        coverage_boundary_path = recorded_declaration or NO_DECLARED_COVERAGE
+    if zero_bar_admissions is None:
+        # Same principle as the coverage declaration: the binding records which
+        # evidence admitted each bar-less identity, and the replay re-verifies
+        # that document instead of taking the recorded summary on trust.
+        recovered = {
+            str(entry.get("symbol")): str(entry.get("evidence_path") or "")
+            for entry in list(evidence.get("canonical_bar_zero_bar_admissions", []) or [])
+            if isinstance(entry, Mapping) and str(entry.get("evidence_path") or "")
+        }
+        zero_bar_admissions = recovered or None
     rebuilt = build_canonical_scope_evidence(
         normalized,
         canonical_path=str(evidence.get("canonical_path") or ""),
@@ -3174,6 +3381,12 @@ def _validate_canonical_scope_evidence(
         membership_path=str(evidence.get("canonical_membership_path") or ""),
         as_of=str(evidence.get("canonical_market_trade_date") or ""),
         daily_start=str(evidence.get("canonical_bar_daily_start") or ""),
+        # The rebuild has to consult the same coverage declaration the binding
+        # did. Falling back to the module global here would compare evidence
+        # built against an isolated root's declaration with evidence rebuilt
+        # against production's, and report the difference as tampering.
+        coverage_boundary_path=coverage_boundary_path,
+        zero_bar_admissions=zero_bar_admissions,
     )
     if _canonical_mapping_sha256(rebuilt) != _canonical_mapping_sha256(evidence):
         raise ValueError("canonical scope evidence changed after binding")
@@ -3191,6 +3404,51 @@ def _normalize_fetch_as_of(value: str) -> str:
     if pd.isna(parsed) or pd.Timestamp(parsed).strftime("%Y%m%d") != digits:
         raise ValueError("fundamental fetch as_of must be a valid YYYYMMDD date")
     return digits
+
+
+def _canonical_accepted_order(frame: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    """Put accepted rows in the one order a PIT replay will reproduce.
+
+    The promotion path re-runs ``_strict_pit_cutoff`` over the rows a run stored
+    and requires the result to be identical — same rows, same order, no
+    duplicates (``_revalidate_checkpoint_accepted_raw_v3``). Stored rows must
+    therefore be a fixed point of this ordering, and every path that assembles
+    them has to end here rather than sorting for itself.
+
+    That was not true once restatements arrived: the restated vintage was
+    appended to the primary rows with ``pd.concat`` and left at the end of the
+    frame, while a replay sorted it back into announcement order. Same rows,
+    different order — enough for ``assert_frame_semantics_equal`` to reject the
+    generation, and it rejected every restatement-bearing rebuild until this
+    was fixed.
+
+    Returns the ordered frame and the number of exact duplicate rows dropped,
+    so the caller can keep ``rows_deduplicated`` reconciling.
+    """
+    if frame.empty:
+        return frame.reset_index(drop=True), 0
+    sort_columns = [
+        column
+        for column in (
+            "ts_code",
+            "trade_date",
+            "ann_date",
+            "f_ann_date",
+            "end_date",
+            "update_flag",
+        )
+        if column in frame.columns
+    ]
+    ordered = frame
+    if sort_columns:
+        ordered = ordered.sort_values(
+            sort_columns,
+            kind="mergesort",
+            key=lambda values: values.astype("string"),
+        )
+    before_dedup = len(ordered)
+    ordered = ordered.drop_duplicates()
+    return ordered.reset_index(drop=True), int(before_dedup - len(ordered))
 
 
 def _strict_pit_cutoff(
@@ -3377,18 +3635,47 @@ def _strict_pit_cutoff(
 
     hard_counts = {name: int(mask.sum()) for name, mask in hard_masks.items()}
     if any(hard_counts.values()):
-        reason_by_counter = {
-            "rows_hard_invalid_availability_date": "invalid_availability_date",
-            "rows_hard_invalid_end_date": "invalid_end_date",
-            "rows_hard_invalid_end_after_availability": "end_after_availability",
-            "rows_hard_invalid_core_numeric": "invalid_core_values",
-        }
-        reason = next(
-            reason_by_counter[name]
-            for name in reason_by_counter
-            if hard_counts[name]
+        # These four defects are properties of a row, not of the response. A
+        # bad announcement date on one filing says nothing about the other
+        # filings in the same payload, so the row is dropped and the rest of
+        # the response is processed normally. The response-level defects —
+        # a missing ts_code, missing required columns, rows for a symbol we
+        # did not ask about — are handled by the early returns above and still
+        # void the whole request, because there the payload itself is not what
+        # was requested and no row in it can be trusted.
+        #
+        # Escalating a row defect to a request defect was not a stricter
+        # policy, only a broader one: on 2026-09-01 a single mis-stamped row
+        # in 603400.SH's fina_indicator (the 2026 半年报 dated ann_date=20260422,
+        # two months before the 20260630 period closed, duplicating a correctly
+        # dated row of identical values) discarded that symbol's other 18 rows
+        # and, through the promotion gate's requests_malformed check, blocked a
+        # 5,556-symbol rebuild. The offending row is excluded either way; only
+        # the blast radius differs.
+        #
+        # Recursing on the survivors keeps one implementation of the filtering
+        # that follows. The survivors carry no hard rows by construction, so the
+        # recursive call reports none and returns no malformed reason.
+        hard_any = pd.Series(False, index=frame.index, dtype=bool)
+        for mask in hard_masks.values():
+            hard_any |= mask
+        accepted, survivor_stats, survivor_reason = _strict_pit_cutoff(
+            frame.loc[~hard_any],
+            table=table,
+            symbol=symbol,
+            as_of=as_of,
         )
-        return malformed(reason, hard_counts)
+        if survivor_reason:  # pragma: no cover - defensive
+            raise AssertionError(
+                "row-level rejection left a malformed response: "
+                f"{symbol}/{table}: {survivor_reason}"
+            )
+        result = dict(survivor_stats)
+        result.update({name: int(value) for name, value in hard_counts.items()})
+        result["rows_hard_invalid"] = sum(hard_counts.values())
+        result["rows_received"] = received
+        result["rows_discarded_request_malformed"] = 0
+        return accepted, result, ""
 
     future_mask = selected_availability.gt(cutoff).fillna(False)
     missing_mask = missing_availability & ~future_mask
@@ -3422,29 +3709,10 @@ def _strict_pit_cutoff(
     stats["rows_filtered_future"] = int(future_mask.sum())
     stats["rows_filtered_missing_availability"] = int(missing_mask.sum())
     stats["rows_filtered_core_values"] = int(filtered_core.sum())
-    sort_columns = [
-        column
-        for column in (
-            "ts_code",
-            "trade_date",
-            "ann_date",
-            "f_ann_date",
-            "end_date",
-            "update_flag",
-        )
-        if column in accepted.columns
-    ]
-    if sort_columns:
-        accepted = accepted.sort_values(
-            sort_columns,
-            kind="mergesort",
-            key=lambda values: values.astype("string"),
-        )
-    before_dedup = len(accepted)
-    accepted = accepted.drop_duplicates()
-    stats["rows_deduplicated"] = int(before_dedup - len(accepted))
+    accepted, deduplicated = _canonical_accepted_order(accepted)
+    stats["rows_deduplicated"] = deduplicated
     stats["rows"] = int(len(accepted))
-    return accepted.reset_index(drop=True), stats, ""
+    return accepted, stats, ""
 
 
 def _zero_request_outcome_accounting() -> dict[str, int]:
@@ -3732,6 +4000,7 @@ def _build_endpoint_audit(
     *,
     policy: FundamentalEndpointAuditPolicy,
     daily_basic_empty_exception_symbols: Sequence[str] = (),
+    zero_bar_admitted_symbols: Sequence[str] = (),
 ) -> dict[str, Any]:
     normalized_symbols = sorted(
         {normalize_ts_code(symbol) for symbol in symbols if normalize_ts_code(symbol)}
@@ -3815,6 +4084,14 @@ def _build_endpoint_audit(
         for symbol in daily_basic_empty_exception_symbols
         if normalize_ts_code(symbol)
     }
+    # Kept distinct from the tail-gap exceptions above: those identities do have
+    # bars and belong in the coverage denominator; these have none at all and
+    # only reach here carrying verified evidence of why.
+    non_blocking_absent_zero_bar = {
+        normalize_ts_code(symbol)
+        for symbol in zero_bar_admitted_symbols
+        if normalize_ts_code(symbol)
+    }
     daily_history_incomplete_set: set[str] = set()
     for outcome in outcomes:
         if str(outcome.get("table") or "") != "daily_basic":
@@ -3847,8 +4124,19 @@ def _build_endpoint_audit(
         blockers.append("daily_basic_per_symbol_history_incomplete")
     endpoint_payload: dict[str, Any] = {}
     denominator = int(len(normalized_symbols))
+    # An identity admitted with no bars against verified evidence has no
+    # daily_basic to return. Counting it in the coverage denominator would make
+    # the ratio measure whether the market produced data it never produced. The
+    # threshold itself is untouched; only identities carrying verifying evidence
+    # leave the denominator, and the exclusion is published beside the ratio.
+    daily_basic_denominator = max(denominator - len(non_blocking_absent_zero_bar), 0)
     for table, counts in by_table.items():
-        success_ratio = counts["success"] / denominator if denominator else 0.0
+        table_denominator = (
+            daily_basic_denominator if table == "daily_basic" else denominator
+        )
+        success_ratio = (
+            counts["success"] / table_denominator if table_denominator else 0.0
+        )
         minimum = (
             float(policy.daily_basic_min_success_ratio)
             if table == "daily_basic"
@@ -3876,7 +4164,10 @@ def _build_endpoint_audit(
             else 0
         )
         endpoint_payload[table] = {
-            "request_denominator": denominator,
+            "request_denominator": table_denominator,
+            "zero_bar_admitted_excluded_from_denominator": (
+                sorted(non_blocking_absent_zero_bar) if table == "daily_basic" else []
+            ),
             "success": int(counts["success"]),
             "empty": int(counts["empty"]),
             "error": int(counts["error"]),
@@ -3958,14 +4249,24 @@ def _active_daily_tail_gap_exceptions(
 ) -> list[str]:
     scope = dict(scope_evidence or {})
     history_end_dates = dict(scope.get("history_end_dates", {}) or {})
-    return sorted(
-        {
-            normalize_ts_code(symbol)
-            for symbol in list(scope.get("non_blocking_absent_symbols", []) or [])
-            if normalize_ts_code(symbol)
-            and str(history_end_dates.get(normalize_ts_code(symbol)) or "") == as_of
-        }
+    exceptions = {
+        normalize_ts_code(symbol)
+        for symbol in list(scope.get("non_blocking_absent_symbols", []) or [])
+        if normalize_ts_code(symbol)
+        and str(history_end_dates.get(normalize_ts_code(symbol)) or "") == as_of
+    }
+    # An identity admitted with no bars against verified suspension evidence is
+    # expected to return an empty daily_basic — that is the state the evidence
+    # attests to. Admitting it here is not a threshold change: the ratio and the
+    # zero-tolerance count are untouched, and an identity without verifying
+    # evidence never reaches this set. Treating the empty response as a failure
+    # would instead force the run to demand trades the market never had.
+    exceptions.update(
+        normalize_ts_code(entry.get("symbol"))
+        for entry in list(scope.get("canonical_bar_zero_bar_admissions", []) or [])
+        if isinstance(entry, Mapping) and normalize_ts_code(entry.get("symbol"))
     )
+    return sorted(exceptions)
 
 
 def _canonical_json_file_bytes(payload: Mapping[str, Any]) -> bytes:
@@ -4853,6 +5154,8 @@ def _checkpoint_outcome_requires_refetch(
 def _fetch_tushare_tables(
     symbols: Sequence[str],
     *,
+    coverage_boundary_path: str | Path | None = None,
+    zero_bar_admissions: Mapping[str, Any] | None = None,
     years: int,
     as_of: str,
     workers: int,
@@ -4898,6 +5201,8 @@ def _fetch_tushare_tables(
         _validate_canonical_scope_evidence(
             canonical_scope_evidence,
             normalized_symbols,
+            coverage_boundary_path=coverage_boundary_path,
+            zero_bar_admissions=zero_bar_admissions,
         )
         if canonical_scope_evidence is not None
         else None
@@ -5155,6 +5460,22 @@ def _fetch_tushare_tables(
                             for key, value in restated_stats.items():
                                 if key in cutoff_stats:
                                     cutoff_stats[key] = int(cutoff_stats[key]) + int(value)
+                            if not restated.empty:
+                                # Appending left the restated vintage at the end
+                                # of the frame; the replay sorts it back into
+                                # announcement order. Store what the replay will
+                                # reproduce.
+                                accepted, merged_duplicates = (
+                                    _canonical_accepted_order(accepted)
+                                )
+                                if merged_duplicates:
+                                    cutoff_stats["rows"] = (
+                                        int(cutoff_stats["rows"]) - merged_duplicates
+                                    )
+                                    cutoff_stats["rows_deduplicated"] = (
+                                        int(cutoff_stats["rows_deduplicated"])
+                                        + merged_duplicates
+                                    )
                         outcome = {
                             "schema_version": FUNDAMENTAL_REQUEST_OUTCOME_SCHEMA,
                             "symbol": symbol,
@@ -5390,6 +5711,8 @@ def _fetch_tushare_tables(
         _validate_canonical_scope_evidence(
             validated_scope_evidence,
             normalized_symbols,
+            coverage_boundary_path=coverage_boundary_path,
+            zero_bar_admissions=zero_bar_admissions,
         )
     outcomes = attach_checkpoint_coverage(
         tables,
@@ -5434,6 +5757,16 @@ def _fetch_tushare_tables(
         outcomes,
         policy=audit_policy,
         daily_basic_empty_exception_symbols=sorted(audit_tail_gap_exceptions),
+        zero_bar_admitted_symbols=sorted(
+            normalize_ts_code(entry.get("symbol"))
+            for entry in list(
+                dict(validated_scope_evidence or {}).get(
+                    "canonical_bar_zero_bar_admissions", []
+                )
+                or []
+            )
+            if isinstance(entry, Mapping) and normalize_ts_code(entry.get("symbol"))
+        ),
     )
     manifest = {
         "schema_version": FUNDAMENTAL_PROVIDER_MANIFEST_SCHEMA,
@@ -5571,6 +5904,8 @@ def fetch_tushare_fundamental_full_rebuild(
     max_retry_backoff_seconds: float = 8.0,
     requests_per_second: float = 8.0,
     endpoint_audit_policy: FundamentalEndpointAuditPolicy | None = None,
+    coverage_boundary_path: str | Path | None = None,
+    zero_bar_admissions: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, pd.DataFrame], dict[str, Any]]:
     """Fetch an authoritative, resumable full-scope Tushare input bundle.
 
@@ -5595,6 +5930,8 @@ def fetch_tushare_fundamental_full_rebuild(
         membership_path=canonical_membership_path,
         as_of=requested_as_of,
         daily_start=requested_daily_start,
+        coverage_boundary_path=coverage_boundary_path,
+        zero_bar_admissions=zero_bar_admissions,
     )
     return _fetch_tushare_tables(
         normalized_symbols,
@@ -5603,6 +5940,8 @@ def fetch_tushare_fundamental_full_rebuild(
         workers=workers,
         pro=pro,
         canonical_scope_evidence=scope_evidence,
+        coverage_boundary_path=coverage_boundary_path,
+        zero_bar_admissions=zero_bar_admissions,
         checkpoint_root=checkpoint_root,
         checkpoint_batch_size=checkpoint_batch_size,
         max_attempts=max_attempts,
@@ -5623,6 +5962,9 @@ def run_cn_fundamental_maintenance(
     as_of: str = "",
     workers: int = 4,
     data_root: str | Path = DEFAULT_FUNDAMENTAL_ROOT,
+    market_data_root: str | Path = DEFAULT_MARKET_DATA_ROOT,
+    coverage_boundary_path: str | Path | None = None,
+    zero_bar_admissions: Mapping[str, Any] | None = None,
     raw_snapshot_root: str | Path = DEFAULT_RAW_SNAPSHOT_ROOT,
     reports_root: str | Path = DEFAULT_READINESS_ROOT,
     raw_input_dir: str | Path | None = None,
@@ -5805,8 +6147,6 @@ def run_cn_fundamental_maintenance(
             raise ValueError("authoritative full rebuild requires --allow-live")
         if raw_input_dir or raw_tables:
             raise ValueError("authoritative full rebuild cannot use offline raw input")
-        if [item.lower() for item in universe_list] != ["full_a"]:
-            raise ValueError("authoritative full rebuild requires universes=full_a")
         _normalize_fetch_as_of(as_of)
         if (
             canonical_scope_path is None
@@ -5826,9 +6166,30 @@ def run_cn_fundamental_maintenance(
         staging_pointer = staging_base / "_fundamental_latest.json"
         if staging_pointer.exists() or staging_pointer.is_symlink():
             raise ValueError("authoritative full rebuild staging pointer already exists")
+        # The universe gate runs *after* the isolation evidence above, not before it: a
+        # named research universe is admissible only on a staging root already proven
+        # distinct from the canonical fundamental root. Checking it earlier would reject
+        # the named key before that proof exists.
+        requested_universes = [item.lower() for item in universe_list]
+        if requested_universes != ["full_a"]:
+            if requested_universes != [RESEARCH_HISTORICAL_UNIVERSE_KEY]:
+                raise ValueError(
+                    "authoritative full rebuild requires universes=full_a or "
+                    f"universes={RESEARCH_HISTORICAL_UNIVERSE_KEY}"
+                )
+            # Not a relaxation: the research key carries its own scope artefact whose
+            # symbol set and SHA256 are computed independently. Vouching for it with
+            # full_a's count or SHA is precisely what this branch exists to prevent, so
+            # it is refused unless the market root is isolated too.
+            if _resolve_data_base(market_data_root).expanduser().resolve() == (
+                DEFAULT_MARKET_DATA_ROOT.expanduser().resolve(strict=True)
+            ):
+                raise ValueError(
+                    "research historical universe requires an isolated market data root"
+                )
     try:
         scope_symbols = _resolve_symbols_from_parquet_universe(
-            DEFAULT_MARKET_DATA_ROOT,
+            market_data_root,
             universe_list,
         )
         scope_error = ""
@@ -5890,6 +6251,8 @@ def run_cn_fundamental_maintenance(
                     retry_backoff_seconds=float(retry_backoff_seconds),
                     max_retry_backoff_seconds=float(max_retry_backoff_seconds),
                     requests_per_second=float(requests_per_second),
+                    coverage_boundary_path=coverage_boundary_path,
+                    zero_bar_admissions=zero_bar_admissions,
                 )
             else:
                 tables, fetch_manifest = _fetch_tushare_tables(

@@ -1,0 +1,37 @@
+{
+  "scope": "EXACT_SOURCE_COMPARISON_NOT_CAUSAL_PROOF",
+  "files": {
+    "quant_investor/system/validation.py": {
+      "hashes": {
+        "prior_c3": "3338b945723f68500b3b97ce10ad293dc4c2efef45979e390d610805f4886a57",
+        "failed_d2": "3338b945723f68500b3b97ce10ad293dc4c2efef45979e390d610805f4886a57",
+        "new_a46": "3338b945723f68500b3b97ce10ad293dc4c2efef45979e390d610805f4886a57"
+      },
+      "identical": true
+    },
+    "quant_investor/factors/governance/contextual.py": {
+      "hashes": {
+        "prior_c3": "4645b32dbfeedcab1fc2a23b5ee8cb1ba20a46f4d1b3b77fed0f3cafcc814c9b",
+        "failed_d2": "4645b32dbfeedcab1fc2a23b5ee8cb1ba20a46f4d1b3b77fed0f3cafcc814c9b",
+        "new_a46": "4645b32dbfeedcab1fc2a23b5ee8cb1ba20a46f4d1b3b77fed0f3cafcc814c9b"
+      },
+      "identical": true
+    },
+    "quant_investor/factors/governance/store.py": {
+      "hashes": {
+        "prior_c3": "4b697b150a1124ec07043098222de7b7c2af6cc3cce47708c9dfbe22b87163d8",
+        "failed_d2": "4b697b150a1124ec07043098222de7b7c2af6cc3cce47708c9dfbe22b87163d8",
+        "new_a46": "4b697b150a1124ec07043098222de7b7c2af6cc3cce47708c9dfbe22b87163d8"
+      },
+      "identical": true
+    },
+    "tests/unit/test_unified_factor_store_contextual.py": {
+      "hashes": {
+        "prior_c3": "f522118e25b3e349c3f8f0996643ae1b50e3dc70ea1e96077fc31f64aa6cebb0",
+        "failed_d2": "f522118e25b3e349c3f8f0996643ae1b50e3dc70ea1e96077fc31f64aa6cebb0",
+        "new_a46": "f522118e25b3e349c3f8f0996643ae1b50e3dc70ea1e96077fc31f64aa6cebb0"
+      },
+      "identical": true
+    }
+  }
+}

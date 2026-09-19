@@ -1,0 +1,27 @@
+{
+  "observed_at": "2026-09-17T06:37:08.203764+00:00",
+  "case": 9,
+  "state": "CURRENT_INSTALLED_REPEAT_PASS",
+  "runtime_commit": "5060dee2d4b39b50a735393d056ebe5adb4efe3b",
+  "proof_ref": {
+    "path": "/private/tmp/myquant-canonical-scan-20260916T152008Z/configured-repeat-proof.json",
+    "sha256": "974551d6c25c9b1f6ac2da465a0c943dbdacc77fc844682f4ca15f7abd0ab3b0"
+  },
+  "stage": {
+    "stage": "repeat",
+    "exit_code": 0,
+    "seconds": 6314.92,
+    "log": "/private/tmp/myquant-canonical-scan-20260916T152008Z/configured-successor-repeat.log"
+  },
+  "completion_ref": {
+    "path": "results/operations/daily_production/CN/20260827/completion.v1.json",
+    "sha256": "18f3b67149b23c9f153994d900efcc99d6c8e0e0618e3518b9f275c07f64d6fd"
+  },
+  "execution_state": "NO_ACTION",
+  "business_state": "COMPLETE",
+  "workspace_unchanged_during_repeat": true,
+  "producer_and_financial_calls_forbidden": true,
+  "synthetic": true,
+  "production_deployed": false,
+  "full_goal_complete": false
+}

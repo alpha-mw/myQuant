@@ -1,0 +1,20 @@
+{
+  "observed_at": "2026-09-15T07:21:19.723710+00:00",
+  "child_pid": 3772,
+  "trade_date": "20260831",
+  "input_refs": [
+    {
+      "path": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/factor-workspace/results/operations/daily_production/CN/20260831/inputs/decision-recipe-cad809c190c17ceaa9921fe8a63044f792ffb5b055fe7987b78e8860b853c369.json",
+      "sha256": "cad809c190c17ceaa9921fe8a63044f792ffb5b055fe7987b78e8860b853c369"
+    },
+    {
+      "path": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/factor-workspace/results/operations/daily_production/CN/20260831/inputs/native-inputs-c2a5e807bdf21ef1825449b233085b2f7f7bc1f9323697d677053dd28591031e.json",
+      "sha256": "c2a5e807bdf21ef1825449b233085b2f7f7bc1f9323697d677053dd28591031e"
+    }
+  ],
+  "execution_json_count_observed": 126,
+  "scope": "ARTIFACT_PRESENCE_AND_BYTES_ONLY",
+  "downstream_terminal_completion_proven": false,
+  "synthetic": true,
+  "production_deployed": false
+}

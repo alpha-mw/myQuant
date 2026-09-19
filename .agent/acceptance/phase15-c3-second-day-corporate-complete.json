@@ -1,0 +1,11 @@
+{
+  "observed_at": "2026-09-14T21:48:02.828931+00:00",
+  "state": "SUCCEEDED",
+  "trade_date": "20260828",
+  "terminal_ref": {
+    "path": "results/operations/daily_production/CN/20260828/nodes/corporate_action_recon/4a4d38367cf8cdc33a4e1b223b397ebf12a6f96c63e1f87f59990ac5167955ad/attempt-0001/terminal.json",
+    "sha256": "cf63c149b721e17d8dd91dc2b30e3ebc324dbd492e2607241b62ba47921c3863"
+  },
+  "attempt": 1,
+  "target_eod_complete": false
+}

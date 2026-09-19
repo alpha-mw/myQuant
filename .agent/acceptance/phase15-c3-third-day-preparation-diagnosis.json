@@ -1,0 +1,35 @@
+{
+  "observed_at": "2026-09-15T03:13:59.293971+00:00",
+  "child_pid": 3772,
+  "signal_count": 2,
+  "active_day": "20260831",
+  "phase": "CONFIGURED_SOURCE_PREPARATION_COMPLETED_TARGET_REPLAY",
+  "caller": "successor.run:211 -> configured_source_inputs:402 -> _inspect:307 -> _completed_target:158 -> automatic_catchup_resolution._replay:92 -> completion ledger replay -> verify_materialized_inputs -> Theme/Core",
+  "trace_ref": {
+    "path": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/configured-successor-20260831-source-preparation.stack.txt",
+    "sha256": "8ddb0bc13b6650f7bbdc05bf1afd38d7c6b4ee73bafe04e4ba593817dcc3d578"
+  },
+  "synthetic": true,
+  "production_deployed": false,
+  "third_day_complete": false,
+  "do_not_repeat_signal_for_same_phase": true,
+  "static_source_findings": {
+    "configured_source_inputs": "_inspect at402 before lock and414 after lock; both can reach _completed_target307 and replay158 for retained automatic request",
+    "automatic_request_branch": "Native replay plus verify_completed_edge; edge helper reads Calendar and recorded native inputs, no direct native replay invocation in helper",
+    "dynamic_invocation_count": "UNCONFIRMED; sampled stack402 does not prove later position",
+    "sources": [
+      {
+        "path": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/repository/scripts/daily_source_inputs.py",
+        "sha256": "7dbec17f02292c6f8fc67a3b42da35a615f3aac8e083429f25a5df542e00b74b"
+      },
+      {
+        "path": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/repository/quant_investor/operations/automatic_catchup_resolution.py",
+        "sha256": "b3faefa6913545974dceff88f5abbf8581ecc6ad653ade82db26adf430e03a68"
+      },
+      {
+        "path": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/repository/quant_investor/operations/catchup_binding.py",
+        "sha256": "19f48b299f67af02bc38ca47c59c02d504d822b8476407408c107fe701d60cf6"
+      }
+    ]
+  }
+}

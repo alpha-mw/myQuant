@@ -10,7 +10,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import hashlib
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Mapping
+from functools import partial
 
 from quant_investor.cli.input import read_exact_request
 from quant_investor.cli.output import CommandError
@@ -530,14 +531,16 @@ def factor_production_signal(*, workspace_root: str, factor_id: str) -> dict[str
     }
 
 
-def factor_production_observe(*, workspace_root: str) -> dict[str, Any]:
+def factor_production_observe(
+    *, workspace_root: str, recover_history: bool = False
+) -> dict[str, Any]:
     """Register immutable LOW/W80 observations for the verified active head."""
 
     from quant_investor.factors.production_observation import (
         register_factor_production_observations,
     )
 
-    return register_factor_production_observations(workspace_root)
+    return register_factor_production_observations(workspace_root, recover_history=recover_history)
 
 
 def _factor_activation_projection(
@@ -1177,94 +1180,78 @@ def research_compile_evidence(
     return compile_evidence(**values)
 
 
-def research_compile_daily(
-    *, workspace_root: str, request_path: str, expected_request_sha256: str
-) -> dict[str, Any]:
-    """Compile one exact, offline, inactive daily Intelligence closure."""
-
-    from quant_investor.factors.production_authority import (
-        assert_factor_production_pointer,
-        read_factor_production_research_inputs,
-    )
-    from quant_investor.intelligence import (
-        build_factor_research_rank,
-        compile_daily_intelligence,
-    )
-
-    _, document = _request(
+def _daily_source_document(workspace_root: str, reference: Any, *, code: str) -> dict[str, Any]:
+    row = _exact_fields(reference, {"path", "sha256"}, code=code)
+    _, loaded = _request(
         workspace_root=workspace_root,
-        request_path=request_path,
-        expected_request_sha256=expected_request_sha256,
+        request_path=row["path"],
+        expected_request_sha256=row["sha256"],
     )
-    base_fields = {
-        "as_of",
-        "expected_factor_pointer_sha256",
-        "industry_source",
-        "low_observation_path",
-        "low_observation_sha256",
-        "policy",
-        "strategy_id",
-        "theme_source",
-        "w80_observation_path",
-        "w80_observation_sha256",
-    }
-    if type(document) is not dict or frozenset(document) not in {
-        frozenset(base_fields),
-        frozenset(base_fields | {"company_evidence"}),
-    }:
-        raise CommandError("RESEARCH_COMPILE_DAILY_REQUEST_INVALID")
-    values = dict(document)
-    company_evidence = values.pop("company_evidence", None)
-    _, low_observation = _request(
-        workspace_root=workspace_root,
-        request_path=values.pop("low_observation_path"),
-        expected_request_sha256=values.pop("low_observation_sha256"),
-    )
-    _, w80_observation = _request(
-        workspace_root=workspace_root,
-        request_path=values.pop("w80_observation_path"),
-        expected_request_sha256=values.pop("w80_observation_sha256"),
-    )
-    expected_pointer = values.pop("expected_factor_pointer_sha256")
-    snapshot = read_factor_production_research_inputs(
-        workspace_root,
-        expected_pointer_sha256=expected_pointer,
-    )
-    rank = build_factor_research_rank(
-        snapshot=snapshot,
-        observations=[low_observation, w80_observation],
-        policy=values["policy"],
-        as_of=values["as_of"],
-    )
+    return loaded
 
-    def source_document(reference: Any, *, code: str) -> dict[str, Any]:
-        row = _exact_fields(reference, {"path", "sha256"}, code=code)
-        _, loaded = _request(
-            workspace_root=workspace_root,
-            request_path=row["path"],
-            expected_request_sha256=row["sha256"],
+
+class _DailySourceFileError(CommandError):
+    """Internal file diagnosis; inherited public JSON remains unchanged."""
+
+    def __init__(self, code: str, *, source_failure: str):
+        if source_failure not in {"SAFE_SOURCE_MISSING", "SAFE_SOURCE_SHA_MISMATCH"}:
+            raise ValueError("native source failure category invalid")
+        self.source_failure = source_failure
+        super().__init__(code)
+
+
+def _confirmed_daily_source_failure(
+    workspace: Path, reference: dict, raw: bytes | None
+) -> str | None:
+    """One descriptor-safe confirmation on an already failed native read."""
+    from quant_investor.system.storage import SecureSystemStorage
+    from quant_investor.system.errors import SystemStorageError, SystemNotFound
+
+    try:
+        checked = SecureSystemStorage(str(workspace)).read_workspace_file_bytes(
+            reference["path"], maximum_bytes=512 * 1024 * 1024
         )
-        return loaded
+    except FileNotFoundError:
+        return "SAFE_SOURCE_MISSING" if raw is None else None
+    except SystemStorageError as exc:
+        missing = type(exc) is SystemNotFound or (
+            type(exc) is SystemStorageError and isinstance(exc.__cause__, FileNotFoundError)
+        )
+        return "SAFE_SOURCE_MISSING" if missing and raw is None else None
+    except (OSError, ValueError):
+        return None
+    return "SAFE_SOURCE_SHA_MISMATCH" if raw is not None and checked.data == raw else None
 
-    workspace = Path(workspace_root).resolve(strict=True)
 
-    def source_file(reference: Any, *, code: str) -> tuple[Path, bytes, dict[str, str]]:
-        row = _exact_fields(reference, {"path", "sha256"}, code=code)
-        relative = Path(str(row["path"]))
-        if relative.is_absolute():
-            raise CommandError(code)
-        try:
-            resolved = (workspace / relative).resolve(strict=True)
-            resolved.relative_to(workspace)
-            raw = read_stable_regular_file(resolved, label=code)
-        except (OSError, ValueError) as exc:
-            raise CommandError(code) from exc
-        observed = hashlib.sha256(raw).hexdigest()
-        if observed != row["sha256"]:
-            raise CommandError(code)
-        return resolved, raw, {"path": relative.as_posix(), "sha256": observed}
+def _daily_source_file(
+    workspace: Path, reference: Any, *, code: str
+) -> tuple[Path, bytes, dict[str, str]]:
+    row = _exact_fields(reference, {"path", "sha256"}, code=code)
+    relative = Path(str(row["path"]))
+    if relative.is_absolute():
+        raise CommandError(code)
+    try:
+        resolved = (workspace / relative).resolve(strict=True)
+        resolved.relative_to(workspace)
+        raw = read_stable_regular_file(resolved, label=code)
+    except (OSError, ValueError) as exc:
+        if type(exc) is FileNotFoundError:
+            reason = _confirmed_daily_source_failure(workspace, row, None)
+            if reason is not None:
+                raise _DailySourceFileError(code, source_failure=reason) from exc
+        raise CommandError(code) from exc
+    observed = hashlib.sha256(raw).hexdigest()
+    if observed != row["sha256"]:
+        reason = _confirmed_daily_source_failure(workspace, row, raw)
+        if reason is not None:
+            raise _DailySourceFileError(code, source_failure=reason)
+        raise CommandError(code)
+    return resolved, raw, {"path": relative.as_posix(), "sha256": observed}
 
-    companies = [row["symbol"] for row in rank["payload"]["pool_rows"]]
+
+def _daily_industry_projection(
+    values: dict[str, Any], companies: list[str], source_document: Callable[..., dict[str, Any]]
+) -> dict[str, Any] | None:
     industry_source = values.pop("industry_source")
     if industry_source is None:
         industry_projection = None
@@ -1312,8 +1299,15 @@ def research_compile_daily(
             companies=sorted(companies, key=lambda item: item.encode("ascii")),
             as_of=values["as_of"],
         )
+    return industry_projection
 
-    theme_source = values.pop("theme_source")
+
+def _daily_theme_projection(
+    values: dict[str, Any], companies: list[str], source_document: Callable[..., dict[str, Any]]
+) -> dict[str, Any] | None:
+    from quant_investor.intelligence.theme_sources import split_theme_source
+
+    theme_source, _, _ = split_theme_source(values.pop("theme_source"))
     if theme_source is None:
         theme_projection = None
     else:
@@ -1384,6 +1378,225 @@ def research_compile_daily(
             ).hexdigest()
         ):
             raise CommandError("RESEARCH_DAILY_THEME_COMPANY_SET_MISMATCH")
+    return theme_projection
+
+
+def _daily_fundamental_source(
+    evidence_values: Mapping[str, Any],
+    source_file: Callable[..., tuple[Path, bytes, dict[str, str]]],
+    *,
+    workspace: Path | None = None,
+    decision_as_of: str | None = None,
+    include_native_time: bool = False,
+) -> tuple[Any, dict[str, Any]]:
+    fundamental_values = _exact_fields(
+        evidence_values["fundamental_source"],
+        {"available_at", "daily_parquet", "pointer"},
+        code="RESEARCH_DAILY_FUNDAMENTAL_SOURCE_INVALID",
+    )
+    _pointer_path, _pointer_raw, _pointer_ref = source_file(
+        fundamental_values["pointer"],
+        code="RESEARCH_DAILY_FUNDAMENTAL_SOURCE_INVALID",
+    )
+    try:
+        pointer = parse_json_bytes(
+            _pointer_raw,
+            label="registered Fundamental pointer",
+            require_canonical=False,
+        )
+    except Exception as exc:
+        raise CommandError("RESEARCH_DAILY_FUNDAMENTAL_SOURCE_INVALID") from exc
+    _daily_path, _daily_raw, daily_ref = source_file(
+        fundamental_values["daily_parquet"],
+        code="RESEARCH_DAILY_FUNDAMENTAL_SOURCE_INVALID",
+    )
+    native_known_at = None
+    generation = pointer.get("generation_id")
+    metadata = pointer.get("metadata")
+    binding_ready = (
+        isinstance(metadata, dict) and metadata.get("binding_aware_research_ready") is True
+    )
+    if pointer.get("schema_version") is not None:
+        if pointer["schema_version"] != "cn-fundamental-pointer.v1" or workspace is None:
+            raise CommandError("RESEARCH_DAILY_FUNDAMENTAL_SOURCE_INVALID")
+        from quant_investor.market.fundamental_generation import inspect_fundamental_pointer_bytes
+
+        try:
+            data_root = workspace / "data/parquet/cn"
+            verified = inspect_fundamental_pointer_bytes(
+                data_root,
+                pointer_bytes=_pointer_raw,
+                expected_pointer_sha256=_pointer_ref["sha256"],
+            )["pointer"]
+            binding = verified.get("derivation_binding", {})
+            binding_ready = binding.get("binding_aware_research_ready") is True
+            from quant_investor.intelligence.fundamental_time import bind_native_availability
+
+            native_known_at = bind_native_availability(
+                fundamental_values["available_at"], verified, as_of=decision_as_of
+            )
+            daily_path = data_root / verified["tables"]["fundamental_daily"]
+            if (
+                daily_path.resolve(strict=True) != _daily_path.resolve(strict=True)
+                or verified["manifest"]["tables"]["fundamental_daily"]["sha256"]
+                != daily_ref["sha256"]
+            ):
+                raise ValueError("Fundamental daily source is not the bound generation table")
+        except Exception as exc:
+            raise CommandError("RESEARCH_DAILY_FUNDAMENTAL_SOURCE_INVALID") from exc
+    if (
+        pointer.get("status") != "OK"
+        or type(generation) is not str
+        or generation not in daily_ref["path"]
+        or type(metadata) is not dict
+        or not binding_ready
+        or metadata.get("gate2_passed") is not True
+    ):
+        raise CommandError("RESEARCH_DAILY_FUNDAMENTAL_SOURCE_INVALID")
+    import pandas as pd
+
+    from io import BytesIO
+
+    fundamental_frame = pd.read_parquet(BytesIO(_daily_raw))
+    fundamental_source = {
+        "available_at": fundamental_values["available_at"],
+        "path": daily_ref["path"],
+        "sha256": daily_ref["sha256"],
+    }
+    if include_native_time:
+        fundamental_source["native_known_at"] = native_known_at
+    return fundamental_frame, fundamental_source
+
+
+def _daily_macro_evidence(
+    macro_risk: Any,
+    source_file: Callable[..., tuple[Path, bytes, dict[str, str]]],
+    workspace: Path,
+    rank: Mapping[str, Any],
+    values: Mapping[str, Any],
+) -> tuple[Any, ...]:
+    market_risk_artifact = None
+    macro_ready_ref: dict[str, str] | None = None
+    macro_ready_projection: dict[str, Any] | None = None
+    if macro_risk is not None:
+        macro_values = _exact_fields(
+            macro_risk,
+            {"classification", "source"},
+            code="RESEARCH_DAILY_MACRO_RISK_INVALID",
+        )
+        _macro_path, macro_raw, macro_ref = source_file(
+            macro_values["source"],
+            code="RESEARCH_DAILY_MACRO_RISK_INVALID",
+        )
+        try:
+            macro_document = parse_json_bytes(
+                macro_raw,
+                label="registered Macro risk source",
+                require_canonical=False,
+            )
+        except Exception as exc:
+            raise CommandError("RESEARCH_DAILY_MACRO_RISK_INVALID") from exc
+        classification = macro_values["classification"]
+        blocker_codes: list[str]
+        if classification == "PIPELINE_DATA_VETO":
+            if (
+                type(macro_document) is not dict
+                or macro_document.get("schema_version")
+                != "cn-daily-maintenance-macro-write-veto.v1"
+                or macro_document.get("blockers") != ["MACRO_RELEASE_CONTRACT_BLOCKED"]
+            ):
+                raise CommandError("RESEARCH_DAILY_MACRO_RISK_INVALID")
+            blocker_codes = list(macro_document["blockers"])
+        elif classification == "CANONICAL_MACRO_READY":
+            from quant_investor.macro.readiness_closure import (
+                MacroReadinessClosureError,
+                verify_current_macro_readiness_closure,
+            )
+
+            try:
+                macro_ready_projection = verify_current_macro_readiness_closure(
+                    workspace_root=workspace,
+                    closure=macro_document,
+                    expected_target_date=rank["payload"]["signal_date"],
+                    decision_as_of=values["as_of"],
+                )
+            except MacroReadinessClosureError as exc:
+                raise CommandError("RESEARCH_DAILY_MACRO_RISK_INVALID") from exc
+            macro_ready_ref = dict(macro_ref)
+            blocker_codes = []
+        else:
+            raise CommandError("RESEARCH_DAILY_MACRO_RISK_INVALID")
+        from quant_investor.intelligence.daily_evidence import (
+            build_market_risk_evidence,
+        )
+
+        market_risk_artifact = build_market_risk_evidence(
+            source_path=macro_ref["path"],
+            source_sha256=macro_ref["sha256"],
+            blocker_codes=blocker_codes,
+            classification=classification,
+            as_of=values["as_of"],
+        )
+    return market_risk_artifact, macro_ready_ref, macro_ready_projection
+
+
+def _daily_exposure_evidence(
+    exposure_rows: Any,
+    values: Mapping[str, Any],
+    source_file: Callable[..., tuple[Path, bytes, dict[str, str]]],
+) -> list[dict[str, Any]]:
+    exposure_evidence: list[dict[str, Any]] = []
+    if type(exposure_rows) is not list:
+        raise CommandError("RESEARCH_DAILY_COMPANY_EVIDENCE_INVALID")
+    from quant_investor.intelligence.daily_evidence import (
+        build_company_source_evidence,
+    )
+
+    for row in exposure_rows:
+        exposure = _exact_fields(
+            row,
+            {
+                "available_at",
+                "company_code",
+                "primary_theme_id",
+                "source",
+                "source_page",
+                "source_type",
+                "theme_revenue_share",
+            },
+            code="RESEARCH_DAILY_COMPANY_EVIDENCE_INVALID",
+        )
+        _resolved, _raw, source_ref = source_file(
+            exposure["source"],
+            code="RESEARCH_DAILY_COMPANY_EVIDENCE_INVALID",
+        )
+        exposure_evidence.append(
+            build_company_source_evidence(
+                company=exposure["company_code"],
+                source_type=exposure["source_type"],
+                source_path=source_ref["path"],
+                source_sha256=source_ref["sha256"],
+                available_at=exposure["available_at"],
+                metrics={
+                    "primary_theme_id": exposure["primary_theme_id"],
+                    "theme_revenue_share": exposure["theme_revenue_share"],
+                },
+                source_page=exposure["source_page"],
+                created_at=values["as_of"],
+            )
+        )
+    return exposure_evidence
+
+
+def _daily_company_evidence(
+    company_evidence: Any,
+    values: Mapping[str, Any],
+    source_file: Callable[..., tuple[Path, bytes, dict[str, str]]],
+    workspace: Path,
+    rank: Mapping[str, Any],
+    *,
+    focus_scope: bool = False,
+) -> tuple[Any, ...]:
     exposure_evidence: list[dict[str, Any]] = []
     fundamental_frame = None
     fundamental_source = None
@@ -1398,145 +1611,153 @@ def research_compile_daily(
             raise CommandError("RESEARCH_DAILY_COMPANY_EVIDENCE_INVALID")
         evidence_values = dict(company_evidence)
         macro_risk = evidence_values.pop("macro_risk", None)
-        exposure_rows = evidence_values["exposure_rows"]
-        if type(exposure_rows) is not list:
-            raise CommandError("RESEARCH_DAILY_COMPANY_EVIDENCE_INVALID")
-        from quant_investor.intelligence.daily_evidence import (
-            build_company_source_evidence,
+        exposure_evidence = _daily_exposure_evidence(
+            evidence_values["exposure_rows"], values, source_file
+        )
+        if focus_scope:
+            from quant_investor.intelligence.pcb_ai_hardware import partition_exposure_evidence
+
+            exposure_evidence, _ = partition_exposure_evidence(
+                exposure_evidence, [row["symbol"] for row in rank["payload"]["pool_rows"]]
+            )
+        fundamental_frame, fundamental_source = _daily_fundamental_source(
+            evidence_values, source_file, workspace=workspace, decision_as_of=values["as_of"]
+        )
+        market_risk_artifact, macro_ready_ref, macro_ready_projection = _daily_macro_evidence(
+            macro_risk, source_file, workspace, rank, values
         )
 
-        for row in exposure_rows:
-            exposure = _exact_fields(
-                row,
-                {
-                    "available_at",
-                    "company_code",
-                    "primary_theme_id",
-                    "source",
-                    "source_page",
-                    "source_type",
-                    "theme_revenue_share",
-                },
-                code="RESEARCH_DAILY_COMPANY_EVIDENCE_INVALID",
-            )
-            _resolved, _raw, source_ref = source_file(
-                exposure["source"],
-                code="RESEARCH_DAILY_COMPANY_EVIDENCE_INVALID",
-            )
-            exposure_evidence.append(
-                build_company_source_evidence(
-                    company=exposure["company_code"],
-                    source_type=exposure["source_type"],
-                    source_path=source_ref["path"],
-                    source_sha256=source_ref["sha256"],
-                    available_at=exposure["available_at"],
-                    metrics={
-                        "primary_theme_id": exposure["primary_theme_id"],
-                        "theme_revenue_share": exposure["theme_revenue_share"],
-                    },
-                    source_page=exposure["source_page"],
-                    created_at=values["as_of"],
-                )
-            )
-        fundamental_values = _exact_fields(
-            evidence_values["fundamental_source"],
-            {"available_at", "daily_parquet", "pointer"},
-            code="RESEARCH_DAILY_FUNDAMENTAL_SOURCE_INVALID",
-        )
-        _pointer_path, _pointer_raw, _pointer_ref = source_file(
-            fundamental_values["pointer"],
-            code="RESEARCH_DAILY_FUNDAMENTAL_SOURCE_INVALID",
-        )
-        try:
-            pointer = parse_json_bytes(
-                _pointer_raw,
-                label="registered Fundamental pointer",
-                require_canonical=False,
-            )
-        except Exception as exc:
-            raise CommandError("RESEARCH_DAILY_FUNDAMENTAL_SOURCE_INVALID") from exc
-        daily_path, _daily_raw, daily_ref = source_file(
-            fundamental_values["daily_parquet"],
-            code="RESEARCH_DAILY_FUNDAMENTAL_SOURCE_INVALID",
-        )
-        generation = pointer.get("generation_id")
-        metadata = pointer.get("metadata")
-        if (
-            pointer.get("status") != "OK"
-            or type(generation) is not str
-            or generation not in daily_ref["path"]
-            or type(metadata) is not dict
-            or metadata.get("binding_aware_research_ready") is not True
-            or metadata.get("gate2_passed") is not True
-        ):
-            raise CommandError("RESEARCH_DAILY_FUNDAMENTAL_SOURCE_INVALID")
-        import pandas as pd
+    return (
+        exposure_evidence,
+        fundamental_frame,
+        fundamental_source,
+        market_risk_artifact,
+        macro_ready_ref,
+        macro_ready_projection,
+    )
 
-        fundamental_frame = pd.read_parquet(daily_path)
-        fundamental_source = {
-            "available_at": fundamental_values["available_at"],
-            "path": daily_ref["path"],
-            "sha256": daily_ref["sha256"],
-        }
-        if macro_risk is not None:
-            macro_values = _exact_fields(
-                macro_risk,
-                {"classification", "source"},
-                code="RESEARCH_DAILY_MACRO_RISK_INVALID",
-            )
-            _macro_path, macro_raw, macro_ref = source_file(
-                macro_values["source"],
-                code="RESEARCH_DAILY_MACRO_RISK_INVALID",
-            )
-            try:
-                macro_document = parse_json_bytes(
-                    macro_raw,
-                    label="registered Macro risk source",
-                    require_canonical=False,
-                )
-            except Exception as exc:
-                raise CommandError("RESEARCH_DAILY_MACRO_RISK_INVALID") from exc
-            classification = macro_values["classification"]
-            blocker_codes: list[str]
-            if classification == "PIPELINE_DATA_VETO":
-                if (
-                    type(macro_document) is not dict
-                    or macro_document.get("schema_version")
-                    != "cn-daily-maintenance-macro-write-veto.v1"
-                    or macro_document.get("blockers") != ["MACRO_RELEASE_CONTRACT_BLOCKED"]
-                ):
-                    raise CommandError("RESEARCH_DAILY_MACRO_RISK_INVALID")
-                blocker_codes = list(macro_document["blockers"])
-            elif classification == "CANONICAL_MACRO_READY":
-                from quant_investor.macro.readiness_closure import (
-                    MacroReadinessClosureError,
-                    verify_current_macro_readiness_closure,
-                )
 
-                try:
-                    macro_ready_projection = verify_current_macro_readiness_closure(
-                        workspace_root=workspace,
-                        closure=macro_document,
-                        expected_target_date=rank["payload"]["signal_date"],
-                        decision_as_of=values["as_of"],
-                    )
-                except MacroReadinessClosureError as exc:
-                    raise CommandError("RESEARCH_DAILY_MACRO_RISK_INVALID") from exc
-                macro_ready_ref = dict(macro_ref)
-                blocker_codes = []
-            else:
-                raise CommandError("RESEARCH_DAILY_MACRO_RISK_INVALID")
-            from quant_investor.intelligence.daily_evidence import (
-                build_market_risk_evidence,
-            )
+def _compile_daily_request_document(
+    document, *, workspace_root, request_path, expected_request_sha256
+):
+    if (
+        isinstance(document, dict)
+        and document.get("schema_version") == "cn-daily-research-request.v2"
+    ):
+        from quant_investor.operations.research_request import load_research_request
 
-            market_risk_artifact = build_market_risk_evidence(
-                source_path=macro_ref["path"],
-                source_sha256=macro_ref["sha256"],
-                blocker_codes=blocker_codes,
-                classification=classification,
-                as_of=values["as_of"],
+        path = Path(request_path)
+        if path.is_absolute():
+            path = path.relative_to(Path(workspace_root).resolve(strict=True))
+        return load_research_request(
+            workspace=workspace_root,
+            reference={"path": path.as_posix(), "sha256": expected_request_sha256},
+        )["document"]
+    return document
+
+
+def research_compile_daily(
+    *, workspace_root: str, request_path: str, expected_request_sha256: str
+) -> dict[str, Any]:
+    """Compile one exact, offline, inactive daily Intelligence closure."""
+
+    from quant_investor.factors.production_authority import (
+        FactorProductionStore,
+        assert_factor_production_pointer,
+        read_factor_production_research_inputs,
+    )
+    from quant_investor.intelligence import (
+        build_factor_research_rank,
+        compile_daily_intelligence,
+    )
+
+    _, document = _request(
+        workspace_root=workspace_root,
+        request_path=request_path,
+        expected_request_sha256=expected_request_sha256,
+    )
+    document = _compile_daily_request_document(
+        document,
+        workspace_root=workspace_root,
+        request_path=request_path,
+        expected_request_sha256=expected_request_sha256,
+    )
+    base_fields = {
+        "as_of",
+        "expected_factor_pointer_sha256",
+        "industry_source",
+        "low_observation_path",
+        "low_observation_sha256",
+        "policy",
+        "strategy_id",
+        "theme_source",
+        "w80_observation_path",
+        "w80_observation_sha256",
+    }
+    if type(document) is not dict or frozenset(document) not in {
+        frozenset(base_fields),
+        frozenset(base_fields | {"company_evidence"}),
+        frozenset(base_fields | {"expected_trade_date"}),
+        frozenset(base_fields | {"company_evidence", "expected_trade_date"}),
+    }:
+        raise CommandError("RESEARCH_COMPILE_DAILY_REQUEST_INVALID")
+    values = dict(document)
+    company_evidence = values.pop("company_evidence", None)
+    historical_date = values.pop("expected_trade_date", None)
+    if "expected_trade_date" in document and type(historical_date) is not str:
+        raise CommandError("RESEARCH_COMPILE_DAILY_HISTORICAL_DATE_INVALID")
+    _, low_observation = _request(
+        workspace_root=workspace_root,
+        request_path=values.pop("low_observation_path"),
+        expected_request_sha256=values.pop("low_observation_sha256"),
+    )
+    _, w80_observation = _request(
+        workspace_root=workspace_root,
+        request_path=values.pop("w80_observation_path"),
+        expected_request_sha256=values.pop("w80_observation_sha256"),
+    )
+    expected_pointer = values.pop("expected_factor_pointer_sha256")
+
+    def selected_snapshot() -> dict:
+        if historical_date is not None:
+            return FactorProductionStore(workspace_root).read_historical_research_inputs(
+                expected_pointer_sha256=expected_pointer, expected_trade_date=historical_date
             )
+        return read_factor_production_research_inputs(
+            workspace_root, expected_pointer_sha256=expected_pointer
+        )
+
+    snapshot = selected_snapshot()
+    rank = build_factor_research_rank(
+        snapshot=snapshot,
+        observations=[low_observation, w80_observation],
+        policy=values["policy"],
+        as_of=values["as_of"],
+    )
+
+    source_document = partial(_daily_source_document, workspace_root)
+
+    workspace = Path(workspace_root).resolve(strict=True)
+
+    source_file = partial(_daily_source_file, workspace)
+
+    companies = [row["symbol"] for row in rank["payload"]["pool_rows"]]
+    from quant_investor.intelligence.theme_sources import split_theme_source
+
+    focus_scope = split_theme_source(values["theme_source"])[2]
+    industry_projection = _daily_industry_projection(values, companies, source_document)
+
+    theme_projection = _daily_theme_projection(values, companies, source_document)
+    (
+        exposure_evidence,
+        fundamental_frame,
+        fundamental_source,
+        market_risk_artifact,
+        macro_ready_ref,
+        macro_ready_projection,
+    ) = _daily_company_evidence(
+        company_evidence, values, source_file, workspace, rank, focus_scope=focus_scope
+    )
 
     result = compile_daily_intelligence(
         rank=rank,
@@ -1550,7 +1771,6 @@ def research_compile_daily(
     )
     if macro_ready_ref is not None:
         from quant_investor.macro.readiness_closure import (
-            MacroReadinessClosureError,
             verify_current_macro_readiness_closure,
         )
 
@@ -1574,10 +1794,10 @@ def research_compile_daily(
             raise CommandError("RESEARCH_DAILY_MACRO_RISK_INVALID") from exc
         if observed_ref != macro_ready_ref or rechecked != macro_ready_projection:
             raise CommandError("RESEARCH_DAILY_MACRO_RISK_DRIFT")
-    assert_factor_production_pointer(
-        workspace_root,
-        expected_pointer_sha256=expected_pointer,
-    )
+    if historical_date is not None:
+        selected_snapshot()
+    else:
+        assert_factor_production_pointer(workspace_root, expected_pointer_sha256=expected_pointer)
     return result
 
 
@@ -1614,32 +1834,89 @@ def research_publish_policy(*, workspace_root: str) -> dict[str, Any]:
 
 
 def research_morning_strategy(
-    *, workspace_root: str, request_path: str, expected_request_sha256: str
+    *,
+    workspace_root: str,
+    request_path: str,
+    expected_request_sha256: str,
+    release_repository_root: str | None = None,
+    release_install_input_path: str | None = None,
+    expected_release_install_input_sha256: str | None = None,
 ) -> dict[str, Any]:
-    """Validate or seal one exact scheduled-slot snapshot closure."""
-
-    from quant_investor.intelligence import run_morning_strategy
-
+    """Route the exact v2 schema through the installed consumer; preserve legacy v1."""
     _, document = _request(
         workspace_root=workspace_root,
         request_path=request_path,
         expected_request_sha256=expected_request_sha256,
     )
+    group = (
+        release_repository_root,
+        release_install_input_path,
+        expected_release_install_input_sha256,
+    )
+    if document.get("schema_version") in {
+        "morning-strategy-request.v2",
+        "morning-strategy-request.v3",
+    }:
+        if not all(type(item) is str and item for item in group):
+            raise CommandError("MORNING_V2_RELEASE_ARGUMENTS_REQUIRED")
+        from quant_investor.cli.morning_v2 import run_morning_v2
+
+        return run_morning_v2(
+            workspace=workspace_root,
+            request=document,
+            request_ref={"path": request_path, "sha256": expected_request_sha256},
+            release_repository_root=release_repository_root or "",
+            release_install_input_path=release_install_input_path or "",
+            expected_release_install_input_sha256=expected_release_install_input_sha256 or "",
+        )
+    if any(item is not None for item in group):
+        raise CommandError("MORNING_V1_RELEASE_ARGUMENTS_FORBIDDEN")
+    if "schema_version" in document:
+        raise CommandError("MORNING_REQUEST_SCHEMA_UNSUPPORTED")
+    from quant_investor.intelligence import run_morning_strategy
+
     return run_morning_strategy(workspace_root=workspace_root, request=document)
 
 
 def research_morning_cutover(
-    *, workspace_root: str, request_path: str, expected_request_sha256: str
+    *,
+    workspace_root: str,
+    request_path: str,
+    expected_request_sha256: str,
+    release_repository_root: str | None = None,
+    release_install_input_path: str | None = None,
+    expected_release_install_input_sha256: str | None = None,
 ) -> dict[str, Any]:
-    """Seal one exact 20:20 morning cutover/rollback decision."""
-
-    from quant_investor.intelligence import evaluate_morning_cutover
-
+    """Explicit v1/v2 recommendation routing, without scheduler application."""
     _, document = _request(
         workspace_root=workspace_root,
         request_path=request_path,
         expected_request_sha256=expected_request_sha256,
     )
+    if document.get("schema_version") == "morning-strategy-cutover-request.v2":
+        from quant_investor.cli.morning_cutover import run_morning_cutover_v2
+
+        return run_morning_cutover_v2(
+            workspace=workspace_root,
+            request_path=request_path,
+            expected_request_sha256=expected_request_sha256,
+            release_repository_root=release_repository_root,
+            release_install_input_path=release_install_input_path,
+            expected_release_install_input_sha256=expected_release_install_input_sha256,
+        )
+    if "schema_version" in document:
+        raise CommandError("MORNING_CUTOVER_SCHEMA_UNSUPPORTED")
+    if any(
+        v is not None
+        for v in (
+            release_repository_root,
+            release_install_input_path,
+            expected_release_install_input_sha256,
+        )
+    ):
+        raise CommandError("MORNING_CUTOVER_V1_RELEASE_ARGUMENTS_FORBIDDEN")
+    from quant_investor.intelligence import evaluate_morning_cutover
+
     return evaluate_morning_cutover(workspace_root=workspace_root, request=document)
 
 
@@ -1753,6 +2030,7 @@ def research_publish_pool(
     store = DailyResearchPoolStore(workspace_root)
     return store.publish(
         rank=rank,
+        observations=[low, w80],
         expected_policy_sha256=values["expected_policy_sha256"],
         policy_path=values["policy_path"],
         before_publish=lambda: assert_factor_production_pointer(

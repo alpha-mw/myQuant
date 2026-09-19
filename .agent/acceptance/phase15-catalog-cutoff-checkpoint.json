@@ -1,0 +1,27 @@
+{
+  "observed_at": "2026-09-13T21:00:50.084390+00:00",
+  "state": "CURRENT_INSTALLED_CATALOG_CUTOFF_SEALED_EOD_PENDING",
+  "root": "/private/tmp/myquant-configured-catalog-20260913T202622Z",
+  "producer_commit": "bf078d3235de3ade1379e8082d5d4a49e109f7d5",
+  "synthetic": true,
+  "cutoff_ref": {
+    "path": "results/operations/daily_production/CN/20260827/executions/6e226f204ef60f759a21c46c37366d359ed5c4614fb8632780f9a1757db48ea7/research-cutoff.v1.json",
+    "sha256": "347fce914b62b0cc0d255a8808714c7bff96d11a00834f85e72ffd75fefda6b6"
+  },
+  "source_bundle_ref": {
+    "path": "results/operations/daily_production/CN/20260827/executions/6e226f204ef60f759a21c46c37366d359ed5c4614fb8632780f9a1757db48ea7/inputs/acquired-sources.v1.json",
+    "sha256": "7bb98b9452227d63cecffb3254df65e75194fc10d97dbb52f4c26e63e9d40bec"
+  },
+  "selected_exposure_rows": 102,
+  "projection_sha256s": {
+    "exposure": "f28fd5ac69562c652bac679facb5209c4772d83a2f72ac948c4a2b688e090869",
+    "fundamental": "af031df5961b7dce7cf0f75768527cf541f85ee258f19d6ba451a823ad9f9762",
+    "industry": "3c73c715e1501c5ad61bb0edc6b931bbb7157ebaa3b15fa71d53a06a2c4a4995",
+    "macro": "1d4ae0b7462ba4be628c67ca7b50263631886cb5b784e75a9db11e71a7302cfe",
+    "theme": "e755e59471c2c1700d72ff06d6675525ef0a08b0c36d5cbfe312936725887cb5"
+  },
+  "as_of": "2026-08-27T13:20:00Z",
+  "sealed_at": "2026-08-27T13:20:00Z",
+  "prospective": false,
+  "full_goal_complete": false
+}

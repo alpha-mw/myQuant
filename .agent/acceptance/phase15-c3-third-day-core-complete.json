@@ -1,0 +1,101 @@
+{
+  "observed_at": "2026-09-15T06:14:00.085914+00:00",
+  "child_pid": 3772,
+  "trade_date": "20260831",
+  "state": "CORE_SEVEN_NODES_SUCCEEDED",
+  "verified_terminal_refs": {
+    "calendar": {
+      "path": "results/operations/daily_production/CN/20260831/nodes/calendar/9249a2a57019a85944b86101f310944d22f1057e28fa9bf73a120f77bd0063ed/attempt-0001/terminal.json",
+      "sha256": "b6140e8e546ca25aee31a29b4613e69d6fcc9229b4c4fcf6aa7b33c21652a5ed"
+    },
+    "market": {
+      "path": "results/operations/daily_production/CN/20260831/nodes/market/ecb71bc4c0518c84aaf12ad86483b947a35a4130eca74db94d4a8cdce83c1142/attempt-0001/terminal.json",
+      "sha256": "532cacbb666291d4315b587ebff17186c2073cc41279d27ca05e9eb491253d9a"
+    },
+    "pit": {
+      "path": "results/operations/daily_production/CN/20260831/nodes/pit/215b83d2daea56136f3af82796506bc69d4a1340fc732ab3434f930a2c3eb0d1/attempt-0001/terminal.json",
+      "sha256": "75e8661f2fa71b09ba708e7fa8352ccbb2c33450c87c5f58e455823a1c66514d"
+    },
+    "factor": {
+      "path": "results/operations/daily_production/CN/20260831/nodes/factor/f434ec1c1510146bb0c2a5f72d2407fd88fd3951cd563f1cd3a6460bfa010aef/attempt-0001/terminal.json",
+      "sha256": "3385ac1f16c3b5ceea56cfa5a147dfc34f185ae61b7a7ca8b8883b689fac1199"
+    },
+    "low_observation": {
+      "path": "results/operations/daily_production/CN/20260831/nodes/low_observation/b93874669092cc4eed7401676f8682901a90577fd57a584f115507cb977bc143/attempt-0001/terminal.json",
+      "sha256": "fd65797cb767cf405fd32770263a7791eae769ea408d7496523726235d0d7d7e"
+    },
+    "w80_observation": {
+      "path": "results/operations/daily_production/CN/20260831/nodes/w80_observation/836128c866cbcfb44cf90024dacd0d259e1ed80f83df067994c591e182cf45a0/attempt-0001/terminal.json",
+      "sha256": "91d1edb0029ed9e7cbb32d07a63a7ee5d7977e429bb6b9f22ae7d7361c918237"
+    },
+    "top100": {
+      "path": "results/operations/daily_production/CN/20260831/nodes/top100/2e9eb76994d62ea120d7bced24eb1aef8e3fe38ca03ebda6a05f7995350aca8e/attempt-0001/terminal.json",
+      "sha256": "8352d33e22bd847058c934a5fc8fc8f43777eb6ece0bf275548aed49d79fe509"
+    }
+  },
+  "verified_top100_output_refs": {
+    "factor_research_rank.json": {
+      "path": "results/intelligence/research_pool/aggressive_tech_manufacturing/2026-08-31/factor_research_rank.json",
+      "sha256": "02055b05aec75e342b0d95c3ac20e18f74c378ba7504a88f5df1b68abce2219b"
+    },
+    "manifest.json": {
+      "path": "results/intelligence/research_pool/aggressive_tech_manufacturing/2026-08-31/manifest.json",
+      "sha256": "b3ca1f6700b0caced56348e533483bf019e63f9b3dbb8d5aa996580635c53a4d"
+    },
+    "publish_receipt.json": {
+      "path": "results/intelligence/research_pool/aggressive_tech_manufacturing/2026-08-31/publish_receipt.json",
+      "sha256": "94a4e961760bd42769d9dd47ec22ddf93baf94a3bc500c656bf8caedd7316ac8"
+    },
+    "selected_symbols.json": {
+      "path": "results/intelligence/research_pool/aggressive_tech_manufacturing/2026-08-31/selected_symbols.json",
+      "sha256": "259cf502fa2391cdf22061c19f8d21dc2b99dcde227fde14a6e5cc4c6e3801ae"
+    },
+    "top100.parquet": {
+      "path": "results/intelligence/research_pool/aggressive_tech_manufacturing/2026-08-31/top100.parquet",
+      "sha256": "efc338687d56884ddf9c4467e367b41108e50cebb39fb0c5786e3fc810d3d1ea"
+    }
+  },
+  "core_handoff_exists": true,
+  "intermediate_downstream_states": {
+    "corporate_action_recon": {
+      "state": "BLOCKED",
+      "blocking_reason": "INPUT_MISSING"
+    },
+    "dashboard": {
+      "state": "SKIPPED",
+      "blocking_reason": "UPSTREAM_INCOMPLETE"
+    },
+    "decision": {
+      "state": "SKIPPED",
+      "blocking_reason": "UPSTREAM_INCOMPLETE"
+    },
+    "exposure": {
+      "state": "SKIPPED",
+      "blocking_reason": "UPSTREAM_INCOMPLETE"
+    },
+    "fundamental": {
+      "state": "BLOCKED",
+      "blocking_reason": "INPUT_MISSING"
+    },
+    "industry": {
+      "state": "BLOCKED",
+      "blocking_reason": "INPUT_MISSING"
+    },
+    "macro": {
+      "state": "BLOCKED",
+      "blocking_reason": "INPUT_MISSING"
+    },
+    "store": {
+      "state": "SKIPPED",
+      "blocking_reason": "UPSTREAM_INCOMPLETE"
+    },
+    "theme": {
+      "state": "BLOCKED",
+      "blocking_reason": "INPUT_MISSING"
+    }
+  },
+  "outer_driver_terminal": false,
+  "third_day_eod_verified": false,
+  "synthetic": true,
+  "production_deployed": false
+}

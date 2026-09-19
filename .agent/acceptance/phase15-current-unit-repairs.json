@@ -1,0 +1,41 @@
+{
+  "status": "BASELINE_FAILURES_REPAIRED_AND_FOCUSED_VALIDATED",
+  "observed_at": "2026-09-13T11:09:41.131518+00:00",
+  "baseline": {
+    "passed": 4532,
+    "failed": 7,
+    "skipped": 3,
+    "seconds": 2954.97,
+    "log": ".agent/acceptance/phase15-current-unit-20260913T101052Z.log",
+    "source_freeze_readback": ".agent/acceptance/phase15-current-unit-source-readback.json"
+  },
+  "resolved_failure_count": 7,
+  "focused_fixture_result": "15 passed in 2.05s",
+  "fixture_log": ".agent/acceptance/phase15-repaired-fixture-tests.log",
+  "pending": null,
+  "pending_session": null,
+  "production_guards_weakened": false,
+  "full_goal_complete": false,
+  "release_install_result": {
+    "session": 83136,
+    "result": "1 passed in 236.67s",
+    "log": ".agent/acceptance/phase15-release-install-recheck.log",
+    "scope": "ISOLATED_CURRENT_SOURCE_BUILD_INSTALL_EXACT_ORIGIN_AND_SYNTHETIC_OPERATOR",
+    "production_deployment": false
+  },
+  "final_entire_unit_suite_rerun": false,
+  "current_file_sha256": {
+    "quant_investor/strategy_records/risk_policy_contract.py": "3ebf97ba68045a9993ef8881dfe63f1ac3e2c47147cb8196f530a713b2dccc85",
+    "tests/unit/test_initial_stop_policy_compatibility.py": "e2d4e0588ae845a5376fb637bd17bcd11a225f525af171d1504cf80f8fa26f22",
+    "tests/unit/test_morning_threshold_review.py": "d72640730b9e415643e1cf57c1d9a8a1785258274fd4ca7b08c7e53b19e5e76f",
+    "tests/unit/test_daily_evidence_store_adapter.py": "d43d13093f66f036cd14bbf1a15604d8066b9d86e4855af9b1766ed08a2ad3b3",
+    "tests/unit/test_daily_evidence_store_plan.py": "b7be1b1d503334d88c989b39beee9336a901efdfbdc55433e261f2e97223bc85",
+    "tests/unit/test_cn_weekly_factor_consumer.py": "88524c9c723b9cb95fd8cf1840a4b8459b8d923a4ea0bc85f9f97e4e1ee14589",
+    "tests/unit/test_unified_release_install.py": "894e59578109fb32d8150138eea515c1a3e0eee0a268574f5950bd8b7d326fa5"
+  },
+  "causes": {
+    "store_fixture": "Incomplete mocked Market/Store inputs replaced by existing NativeStoreFixture; production readers unchanged.",
+    "weekly_fixture": "Aug20 raw Calendar and Aug24 retargeted receipt were inconsistent; generate complete synthetic Aug24 pair through native acquisition.",
+    "release_fixture": "Offline builder defaults to isolated empty cache; test explicitly supplies existing dependency cache via supported UV_CACHE_DIR, preserving caller override and offline mode."
+  }
+}

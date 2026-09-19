@@ -1,0 +1,40 @@
+{
+  "observed_at": "2026-09-16T20:34:14.440518+00:00",
+  "case": 8,
+  "state": "INSTALLED_MECHANICAL_PREFLIGHT_PASS_FULL_POSITIVE_REPLAY_STILL_REQUIRED",
+  "prior_failure": "readonly_replay_guard takes no positional arguments",
+  "prior_status_sha256": "bf072386b330da9322380f8316c419c0c448dddc05e52f4e54521faf8973dbf9",
+  "prior_log_sha256": "85f08caff3a06be907efaf07499058926e1300a2383eadcab66ba4a998f5cdda",
+  "preflight": {
+    "state": "PREFLIGHT_PASS",
+    "fresh_positive_full_native_replay_performed": false,
+    "case8_acceptance_claimed": false,
+    "cases": [
+      {
+        "node": "market",
+        "routing": {
+          "wrapper_calls": 530,
+          "target_redirects": 2,
+          "successful_physical_reads": 2,
+          "non_target_redirects": 0,
+          "recursive_calls": 0,
+          "restored": true
+        }
+      },
+      {
+        "node": "pit",
+        "routing": {
+          "wrapper_calls": 530,
+          "target_redirects": 2,
+          "successful_physical_reads": 2,
+          "non_target_redirects": 0,
+          "recursive_calls": 0,
+          "restored": true
+        }
+      }
+    ]
+  },
+  "preflight_log_sha256": "11300e8bfe98ae36f5101f3b7f899df8386bb57aa2c13abb507fc513979e5275",
+  "runtime_changed": false,
+  "new_helper_sha256": "8af1381de882856cf32b1ac7e47a695b0a248940bb1038a23ce23b46784111ad"
+}

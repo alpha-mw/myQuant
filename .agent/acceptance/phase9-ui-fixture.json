@@ -1,0 +1,12 @@
+{
+  "scope": "UI_AND_NATIVE_PUBLISHER_WITH_OUTER_EOD_ADMISSION_SEAM",
+  "synthetic": true,
+  "root": "/private/var/folders/cp/539tc5k549l2jzdy90ptl6cm0000gn/T/phase9-source-collector-wjzs0w1g",
+  "publication_ref": {
+    "path": "results/operations/daily_production/CN/20260828/dashboard/serving-publication.v2.json",
+    "sha256": "208aee2c24c143f96a7e465caf7ce16064151a9c459b7a95df4b5c533db77668"
+  },
+  "entry": "/private/var/folders/cp/539tc5k549l2jzdy90ptl6cm0000gn/T/phase9-source-collector-wjzs0w1g/portfolio_dashboard/index.html",
+  "native_source_collector_receipt": ".agent/acceptance/phase9-native-draft-evidence.json",
+  "full_native_eod_proof": false
+}

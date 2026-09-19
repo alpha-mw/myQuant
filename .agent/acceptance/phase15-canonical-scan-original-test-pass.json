@@ -1,0 +1,21 @@
+{
+  "state": "PASS",
+  "root": "/private/tmp/myquant-canonical-scan-20260916T152008Z",
+  "commit": "5060dee2d4b39b50a735393d056ebe5adb4efe3b",
+  "scope": "ORIGINAL_CONTEXTUAL_TEST_FROZEN_SOURCE",
+  "native_limit_seconds": 180,
+  "timeout_changed": false,
+  "profile_enabled": false,
+  "started_at": "2026-09-16T15:21:25.193840+00:00",
+  "pid": 45363,
+  "exit_code": 0,
+  "finished_at": "2026-09-16T15:32:02.722172+00:00",
+  "log_sha256": "39349d703f3d1b4e9c3c68e91b6f8f3a2e7a2390690412ab7a1d2e42410e6245",
+  "test_result": "1 passed, 1 warning in 637.17s",
+  "scope_note": "Full original test including native fixture construction; the contextual child still had the original180-second limit. Not the entire unit suite.",
+  "log_ref": {
+    "path": "/private/tmp/myquant-canonical-scan-20260916T152008Z/contextual-original-test/pytest.log",
+    "sha256": "39349d703f3d1b4e9c3c68e91b6f8f3a2e7a2390690412ab7a1d2e42410e6245"
+  },
+  "full_goal_complete": false
+}

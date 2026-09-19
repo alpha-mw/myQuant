@@ -1,0 +1,17 @@
+{
+  "observed_at": "2026-09-14T20:07:40.940203+00:00",
+  "state": "NATIVE_SECOND_DAY_FACTOR_ROLLOVER_RUNNING",
+  "child_pid": 29285,
+  "trade_date": "20260828",
+  "signals_sent_current_child": 3,
+  "trace_ref": {
+    "path": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/configured-successor-20260828-factor-rollover.stack.txt",
+    "sha256": "8399ad340539e7d5dc51eb91a2a702f0461ad334fe7774c64894ada7343cd230"
+  },
+  "path": "run_upstream_catchup -> execute_daily_recipe -> run_cn_daily_maintenance -> daily_factor_loop.advance -> factor_production_rollover -> prepare_factor_production -> recompute_factor_production_signals",
+  "synthetic": true,
+  "real_provider_calls": false,
+  "production_deployed": false,
+  "factor_publication_proven": false,
+  "target_eod_complete": false
+}

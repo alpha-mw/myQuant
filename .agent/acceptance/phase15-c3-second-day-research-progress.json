@@ -1,0 +1,41 @@
+{
+  "observed_at": "2026-09-14T21:40:35.938580+00:00",
+  "node_states": {
+    "calendar": "SUCCEEDED",
+    "exposure": "SUCCEEDED",
+    "factor": "SUCCEEDED",
+    "fundamental": "SUCCEEDED",
+    "industry": "SUCCEEDED",
+    "low_observation": "SUCCEEDED",
+    "macro": "SUCCEEDED",
+    "market": "SUCCEEDED",
+    "pit": "SUCCEEDED",
+    "theme": "SUCCEEDED",
+    "top100": "SUCCEEDED",
+    "w80_observation": "SUCCEEDED"
+  },
+  "verified_terminal_refs": {
+    "industry": {
+      "path": "results/operations/daily_production/CN/20260828/nodes/industry/2aa9e82e3296ca7e25f9fa8f75dd0ca3cbab132984d0c810b4b3c6e735db8fd9/attempt-0001/terminal.json",
+      "sha256": "f64dee8b547d65d1a8215a5615431f7c8e4f3a08b84798b7f37c27970b0de800"
+    },
+    "theme": {
+      "path": "results/operations/daily_production/CN/20260828/nodes/theme/ba40a9f445cd02152444a6c623b5ab93f154f96e13654bcf8ed8d721c61d9fb6/attempt-0001/terminal.json",
+      "sha256": "6fc781f10450e8999d2b7a7407a0abec881de246f0b5f3ba7d53bdfb4ebb3aea"
+    },
+    "exposure": {
+      "path": "results/operations/daily_production/CN/20260828/nodes/exposure/b1ff67a6edbab083be09d722ed1f24b00295600960b7309d6eacbd4ea9f84211/attempt-0001/terminal.json",
+      "sha256": "5e839358bcfd6e4977f7126bdd8bec2d28f0cbff20fc125d1155b1d4ff0fcba3"
+    },
+    "fundamental": {
+      "path": "results/operations/daily_production/CN/20260828/nodes/fundamental/94916fb6cf7b6aa577dc02688a296f3989fbdc171de72e7793ea030068198620/attempt-0001/terminal.json",
+      "sha256": "7a7fdadfddf36eee4c275da60c02558f5f2d5b2e65d8d786e548cd337d9b10cb"
+    },
+    "macro": {
+      "path": "results/operations/daily_production/CN/20260828/nodes/macro/5918dda6e2de14b96d42e0755b23cc354b57d0abc78e5cf8d1b3b475aa1f4fc1/attempt-0001/terminal.json",
+      "sha256": "bf3e5a793693e357bc3c8dd3acba2f6474bede990ea52ae2759c385db13973c1"
+    }
+  },
+  "target_eod_proven": false,
+  "synthetic": true
+}

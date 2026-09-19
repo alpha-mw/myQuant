@@ -211,12 +211,20 @@ results/intelligence/research_pool/aggressive_tech_manufacturing/YYYY-MM-DD/
   manifest.json
   publish_receipt.json
   selected_symbols.json
+  top100.parquet
 ```
 
 Publication uses an owner-only same-filesystem sibling staging directory and a
 native atomic no-replace directory rename. There is no active/current/latest
-pointer or mtime resolver. Exact replay returns `NO_ACTION`; any different or
-unsafe existing closure blocks without replacement.
+pointer or mtime resolver. Exact replay returns `NO_ACTION` with
+`publication_state=ALREADY_SUCCEEDED`; any different or unsafe existing closure
+raises `RESEARCH_POOL_CONFLICT` without replacement. New publications use
+`daily_research_tabular_pool_manifest`, including the exact table SHA and source
+bindings. `generated_at` is actual first-publication time, retained on repeats;
+the rank retains its separate source-derived timestamp. Table readback checks
+the original SHA, exact 100-row order and decimal schema. Original four-leaf
+legacy publications remain readable, but cannot satisfy a new tabular publication
+or be upgraded in place.
 
 Provider capture, scheduled routing, System assembly/activation, Mainline
 candidate publication, I6 portfolio construction, and Paper execution remain
@@ -224,6 +232,47 @@ separate later phases. The policy and pool writers own only their exact
 research-only roots.
 
 ### PROJECT_ENV Theme replay
+
+The daily producer also supports `cn-daily-theme-acquisition.v2` for the required
+PCB / AI hardware focus evidence. Its exact fields are:
+
+```json
+{
+  "schema_version": "cn-daily-theme-acquisition.v2",
+  "provider_priority": ["TUSHARE_DC", "TUSHARE_TDX"],
+  "fallback_mode": "NATIVE_DC_PARTITION_FALLBACK",
+  "maximum_companies": 100,
+  "special_company_keyset": ["002384.SZ", "002463.SZ"]
+}
+```
+
+Bind this policy through the existing execution recipe's `theme_acquisition_ref`.
+The same daily claim covers the ordinary pool and a separate two-company focus
+capture, with DC primary and an independently derived registered TDX fallback
+for each scope. The v2 handoff binds both scopes and the exact retained PIT
+selection, manifest and membership bytes. It is written as `handoff.v2.json`;
+the policy's bytes select this filename, without discovery or fallback.
+
+Pinned source input may instead use `cn-daily-theme-evidence-source.v2` with
+exactly `schema_version`, `pool` and `pcb_ai_hardware`. Both non-null scopes use
+the existing six DC/TDX source-reference fields. A null `pcb_ai_hardware` records
+explicit missing focus data; it does not silently disable the requirement.
+
+Theme publishes the ordinary artifact and the named output ref
+`pcb_ai_hardware_membership`. Exposure publishes ordinary evidence and
+`pcb_ai_hardware_evidence`, retaining both companies even when sources are
+missing. Membership, industry, economic exposure, source refs and completeness
+confidence remain separate. Topic labels do not establish company membership or
+revenue exposure. Missing focus evidence leaves Exposure PARTIAL and prevents a
+complete EOD claim while retaining the report. Ordinary Top100 rank, selection,
+Theme/Exposure facts and Decision inputs remain independent of out-of-pool focus
+facts. Overlapping companies must have matching native membership; conflicts are
+reported explicitly.
+
+V1 source, capture and materialization receipts remain readable. V1 does not
+prove the two-company focus requirement. New partial research input revisions
+still use existing journal gates and require exactly false authority fields;
+successful terminals and old day claims cannot be rebound.
 
 After one v2 Top100 is immutably published, the release-owned Theme replay
 entrypoint builds the exact ASCII-sorted DC plan from that pool, captures DC as
@@ -252,7 +301,7 @@ TDX member endpoint may return industry or broad-index identities in addition
 to concepts; they remain sealed in raw partitions, while projection admits
 only IDs present in the exact same-date captured TDX concept registry.
 
-## 09:45 daily snapshot strategy
+## Legacy v1 09:45 daily snapshot strategy
 
 `research morning-strategy` extends the same stable research lane; it does not
 create a second data or investment system. The automation first captures one
@@ -336,3 +385,251 @@ cross-product of hours and minutes. During `DUAL_RUN`, the existing `automation`
 ID is the 09:45 primary and a distinct temporary `cn-evening-review-fallback`
 retains the former 21:00 prompt. Promotion pauses that fallback; rollback
 resumes it. No duplicate data DAG is created.
+
+### Low-frequency evidence freshness (Phase 5)
+
+New Fundamental and Macro source recipes declare
+`freshness_contract: low-frequency-source-freshness.v1` and publish the named
+`low_frequency_source_freshness` output alongside their original artifacts.
+Recipes recorded without this selector retain their legacy output shapes during
+immutable replay; unknown selector values reject.
+
+The report classifies each required company or registered Macro indicator as
+`FRESH`, `ACCEPTABLE_LAG`, `STALE_WARNING`, or `MISSING`. It records selected
+snapshot/period dates, original availability, physical source refs, exact policy
+limits, warnings and critical missing codes. Unknown source dates remain null.
+Status readback exposes the recorded summary after output SHA validation; it does
+not rebuild evidence, change node state or certify EOD completion.
+
+Fundamental selection filters the entire cohort at the decision date before
+choosing snapshots or computing percentiles. Conflicting same-company/date rows
+reject. Registered source availability cannot predate verified native derivation
+or exceed the decision cutoff. Whole-second source envelopes round availability
+up; the report retains the original timestamp. The existing quarterly registry
+band (currently 180 days) produces a warning only. No maximum-age veto, score
+weight or minimum-coverage threshold is changed. Missing eligible company rows
+or existing native minimum-coverage failures produce critical missing reports.
+
+Macro reports use native vintage/source priority and both registered availability
+age and period-lag limits. Individual indicator/history/coverage diagnostics
+remain warnings; no admissible required Macro observations is critical missing.
+Historical replay reads the exact frozen observation pointer and generation
+bound by the validated readiness closure, preserving native schema, observer
+flags, table/manifest hashes, row count, content-set and retained evidence checks.
+It never substitutes a current pointer. Fresh production admission still checks
+canonical readiness and the existing live veto.
+
+A critical missing report is captured before the source node returns
+`PARTIAL / INPUT_MISSING`. Warning-only reports preserve source success and
+native Decision compilation. Decision receives the original company/risk
+artifacts; the freshness report grants no portfolio, Paper, broker or execution
+authority. Completed-source replay regenerates the selected recipe's exact
+report and named refs, and rejects forged states, bytes or output mappings.
+
+### Decision v2 and pre-close portfolio context (Phase 6)
+
+New materializations emit `cn-daily-native-inputs.v3`, which adds the required
+non-null `decision_recipe_ref` to v2. Its exact
+`cn-daily-decision-recipe.v2` profile binds the original research request, native
+Store plan and `research_portfolio_state`. The report policy is the compiled
+`native-five-state-source-completeness.v1` string; caller policy knobs reject.
+Existing immutable native inputs v1/v2 keep their legacy two-output Decision
+shape and do not gain a report during replay.
+
+Immediately after Store plan preparation, materialization retains the exact
+current Store preimage under the existing day journal and verifies its native
+catalog, active record, ledger/manual and plan hashes, then double-checks the
+selected pointer. It does not change holdings, cash, cost basis or Store state.
+Subsequent replay reads retained bytes, even after the Store head advances.
+Economic valuation date, native record seal, pointer publication and actual
+custody remain separate. The source effective date must precede the decision
+session; invalid temporal ordering rejects. A valid late seal/publication or
+custody is `LATE_RECORDED`, with explicit source/custody reason codes and
+`prospective=false`; it is factual retrospective context.
+
+The new Decision adapter retains the unchanged native compiler and research
+capture, then publishes exactly:
+
+```text
+results/intelligence/decision/aggressive_tech_manufacturing/YYYYMMDD/decision.v2.json
+```
+
+The report has the eight fixed source bindings `factor`, `top100`, `theme`,
+`industry`, `exposure`, `fundamental`, `macro` and `portfolio`. Each binding has
+artifact refs, physical path/SHA refs, `COMPLETE/PARTIAL/MISSING` status and reasons.
+Each Top100 row has its original native Decision state/ref, `HELD/NOT_HELD`
+membership, evidence refs, native blockers/reasons and source-completeness
+confidence. The five native states remain unchanged; the report introduces no
+ADD/HOLD/REDUCE/EXIT policy or trading instruction. Out-of-pool holdings remain in
+the portfolio context and receive no fabricated Decision.
+
+Confidence is `COMPLETE_SOURCE_BOUND`, `PARTIAL_SOURCE_BOUND` or `MISSING`, based
+on required evidence. It is independent of the Decision label and is not a return
+probability. Verified NO_MEMBERSHIP and LOW exposure are complete negative
+evidence. Native adequate-but-partial Fundamental coverage, advisory freshness
+warnings and late portfolio context cap completeness without changing investment
+thresholds or source-node admission. All report and portfolio authorities remain
+false; the native compiler evidence bundle is unchanged.
+
+A v3 Decision terminal has exactly `capture`, `result`, `decision.v2.json` and
+`decision_report_capture`. The side capture is
+`cn-daily-decision-report-capture.v2` at
+`results/operations/daily_production/CN/YYYYMMDD/research/decision-reports/<request_key>/capture.v2.json`.
+It binds the recipe, original native capture/result, portfolio, report, research
+cutoff and actual capture time. Identical writes are idempotent; differing bytes
+at the dated report path conflict. Recovery after report publication or after side
+capture revalidates original sources and preserves saved creation/capture times.
+
+The report's timing label describes portfolio source/custody. Its actual creation
+and side-capture delivery times remain visible separately. Standalone artifacts
+always have `prospective=false`. Whole-DAG ledger validation remains authoritative:
+a late portfolio is retrospective even if delivery later meets another deadline,
+and actual Decision terminal/capture timing still bounds report delivery.
+
+### Event closure integrity and historical provenance (Phase 7 prerequisite)
+
+Native event v1 closure, generation and pointer objects now share exact validation
+across builders, publication, current readback, ancestor readback and frozen replay.
+A valid recomputed hash does not excuse extra fields, invalid timestamps, nonempty
+financial dimensions or authority flags. Closure seal cannot precede owner cutoff;
+the cutoff's Shanghai date must match the event date, and generation time cannot
+precede a closure seal. Valid timezone offsets/subseconds retain original text.
+
+Corporate adapter preparation verifies registered event ancestry once and retains
+exact pointer bytes in its day recipe. Subsequent probes and completed replay use
+those bytes through the native frozen-generation decoder. Missing, corrupt or
+advanced current event heads do not change an already retained source selection.
+Generation/path/hash/clock corruption still rejects.
+
+Physical policy and owner-declaration refs use bounded native file reads with exact
+SHA, owner checks and no symlink aliases; native repository policy mode 0644 remains
+readable without changing file permissions. A source receipt beginning with
+`catalog:<generation>#receipt:<id>` is resolved as native catalog metadata, not as
+a filename. Only the three registered catalog filenames in the exact named
+generation are considered; ambiguity rejects. The resolver checks the native
+catalog, one exact no-action receipt, its semantic SHA/date/checkpoint/authority,
+and the independently SHA-bound owner's explicit empty-event row. It does not
+select a current Store pointer or grant new financial authority.
+
+All seven event dimensions must still be explicitly closed empty for the standing
+no-position-change close. Nonempty fills, cash movement, corporate actions or
+manual changes cannot be relabeled empty. Their governed application/reconciliation
+and Phase8 named-action evidence remain separate unfinished requirements; this
+repair does not modify positions, cash or owner thresholds.
+
+### Adopting an already completed native close
+
+New native batch preparation retains the exact pre-close Store pointer in its
+transaction's `source-pointer.v1.json` before staging or CAS. The original plan
+schema, fingerprint and financial receipt hashes remain unchanged. A repeated
+planner call for an already closed day returns internal `PLAN_ADOPTED` only after
+the exact original plan, registered commit, all non-Store preimages and complete
+source/committed/completion custody pass native validation. It performs no second
+financial close or metadata recovery.
+
+Materialization keeps the original plan and pre-close portfolio; actual new
+custody time is not backdated. Later replay validates those immutable files and
+does not select today's Store pointer. Missing or corrupt retained source blocks
+adoption even when the current holdings look plausible. A legacy completed close
+without source custody retains its existing registered read-only proof, but cannot
+become a new adopted materialization. Partial legacy commit custody cannot trigger
+financial execution. Other manual records and nonempty financial event application
+remain outside this verified adoption path.
+
+### Full-window corporate reconciliation
+
+Execution recipe v3 requires an explicit `corporate_action_context_ref` and selects
+`materialization.v3.json`, native inputs v4 and corporate recipe v2. Legacy inputs
+retain their prior corporate projection. The context binds the exact existing
+owner tracking policy and optional normalized named-event/owner-review documents;
+missing documents mean missing evidence. Exact shapes are in
+`docs/plans/phase08_corporate_reconciliation.md`.
+
+The corporate node reads the frozen pre-close book and every Calendar/Market
+session from the tracking start through the target date. It reports every factor
+transition and keeps source-declared split, dividend, rights, bonus and conversion
+events separate from observed market adjustments. It never infers an entitlement
+or posting from the factor ratio. Registered before/after records and an exact
+native application link establish observed account deltas; mixed or zero-delta
+transitions cannot be attributed to a single event. A supplied owner declaration
+is assessed independently and does not revise a policy or create executable
+thresholds.
+
+Named outputs are `financial_events`, `event_generation` and `reconciliation`.
+The report retains exact sources and actual first custody time; late custody is
+excluded from prospective ledger eligibility. Repeated preparation and completed
+replay use retained evidence. A declared current-day action contradicting the
+standing empty-event closure produces `CORPORATE_ACTION_UNRECONCILED`, keeps the
+corporate node blocked and prevents the no-action Store writer.
+
+Local validation includes synthetic native dividend and split postings. It is
+not evidence that the canonical Zijin action has been reconciled, nor that new
+scheduled inputs have been deployed. Its actual source/financial/owner evidence
+must be supplied and verified before a reconciliation claim; the existing risk
+veto remains in place.
+
+## Completed-EOD Dashboard publication
+
+Execution recipe v4 / materialization v4 / native inputs v5 select
+`native-eod-first.v1`. The Dashboard node captures the financial pair and five
+exact DAG source bindings. Current serving publication occurs only after native
+EOD replay succeeds, under the private Dashboard publication lock. The completed
+head advances monotonically; legacy exporters cannot overwrite the new mode.
+
+Serving intent binds six data files. A post-readback selector-commit binds the
+actual selector clock and both selector byte forms. The final serving receipt is
+separate from the EOD hash. A partial publish returns an incomplete public result
+without a public completion ref; the exact locally sealed EOD remains available
+for diagnosis. Resume recovers serving evidence without rerunning producers.
+
+After native valid-through, the UI retains a dated historical snapshot marked
+STALE. It does not represent current holdings. Unproven leftover selector files
+cannot establish pre-expiry success. An existing valid pre-expiry selector-commit
+may support a missing historical receipt without changing its original clocks.
+Read-only status validates the same complete record/byte closure as publication
+replay and distinguishes expired recorded publications. EOD replay itself does
+not depend on serving files or the mutable completed head.
+
+## DAG-bound Morning v2 and v3
+
+The installed `research morning-strategy` route also accepts the exact v2 and v3
+request schemas. V2 preserves its existing quote-scope and report behavior. V3 is
+the owner-threshold consumer: its request adds `threshold_policy_refs` with
+exactly `trailing` and `initial_stop`, each a physical path/SHA reference to an
+existing owner policy. `owner_policy_ref` still names the quote-scope policy.
+This route does not create or modify owner policies.
+
+V3 requires an exact completed prior EOD using native-input v4 or v5, its native
+next-open-session proof, and matching same-day quote capture/raw bytes. It replays
+Store/Market/Event/Calendar/Corporate/Decision evidence from frozen refs. Both v4
+and v5 Store replay use complete frozen commit proof. Morning never runs
+maintenance, repairs producers, selects a replacement EOD, or reads serving
+Dashboard state. Missing upstream admission returns
+`MORNING_UPSTREAM_DAG_INCOMPLETE` and bounded failing node ids when available.
+
+REPLAY and PREFLIGHT are read-only and return deterministic `report_markdown`
+plus an exact threshold review. Retain those report bytes at
+`results/operations/morning_strategy/CN/<day>/0945-strategy.v3.md`, with private
+Morning directories, then invoke SEAL with that exact output ref. A successful
+v3 receipt is `0945-run.v3.json`. SEAL and historical readback rebuild the report
+and verify its complete content, policy refs and threshold-review hash. Repeated
+SEAL keeps original receipt bytes and time; historical readback does not enter
+live PREFLIGHT. V3 receipts are recognized by the existing cutover recommendation
+path; that path still does not apply a scheduler change.
+
+Trailing prices/peaks come only from strict closes through the prior EOD, using
+the existing owner formula. A different Morning trailing-policy ref remains
+unusable until an EOD reconciliation binds it. Initial stops have independent
+position, lifecycle, adjustment and time checks. Both owner effective time and
+confirmation must precede the quote. A newly effective stop cannot invent a
+prior-close breach; same-day activation needs the original Calendar close-clock
+evidence. The configured price remains disclosed when the calculation is blocked.
+
+Intraday touching is `WARNING_NOT_BREACH`, never an EOD breach or a new peak.
+A prior-close confirmed stop breach keeps its owner-confirmation requirement even
+when the next quote recovers. Missing or unconfigured thresholds remain explicit;
+extra quote-only symbols never gain a position or an anchor. No threshold carries
+execution authority. V3 receipt `review_summary_state` distinguishes a complete
+research review from a partial one; receipt operation completion does not imply
+that every stock has usable thresholds. Synthetic and replay reports identify
+their provenance and do not count as live/unattended success evidence.

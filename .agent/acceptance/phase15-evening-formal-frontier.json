@@ -1,0 +1,19 @@
+{
+  "observed_at": "2026-09-14T15:40:19.037883+00:00",
+  "scope": "READ_ONLY_FORMAL_STORE_AND_EVENT_FRONTIER",
+  "active_record_id": "20260904_110322-b02",
+  "store_valuation_date": "2026-09-03",
+  "latest_event_closure_date": "2026-09-03",
+  "refs": {
+    "/Users/maxwell/mySpace/myQuant/results/strategy_records/CN/aggressive_tech_manufacturing/_record_store/current.v1.json": "f037197e370c09e824e97da9ce1ac86c0687def67ca7dd32d211fee2170e913c",
+    "/Users/maxwell/mySpace/myQuant/results/strategy_records/CN/aggressive_tech_manufacturing/_event_store/current.v1.json": "3ab06e301cf197ee33b242f27c42d6a18f063a07c2860d3f9682662ca03349a9"
+  },
+  "selected_heads_unchanged": true,
+  "changed_since_morning": {
+    "/Users/maxwell/mySpace/myQuant/results/strategy_records/CN/aggressive_tech_manufacturing/_record_store/current.v1.json": false,
+    "/Users/maxwell/mySpace/myQuant/results/strategy_records/CN/aggressive_tech_manufacturing/_event_store/current.v1.json": false
+  },
+  "subsequent_actual_owner_facts": "UNCONFIRMED",
+  "synthetic_acceptance_does_not_close_formal_gaps": true,
+  "full_goal_complete": false
+}

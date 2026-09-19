@@ -1,0 +1,51 @@
+{
+  "observed_at": "2026-09-14T05:53:38.040697+00:00",
+  "state": "NEW_INSTALLED_EXACT_RETAINED_INPUT_PREFLIGHT_PASS",
+  "candidate_root": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z",
+  "candidate_commit": "c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b",
+  "import_origin": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/release/installs/c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b-4cbacd3bf7a64560fb8a6cb1611556f36edb7f1ceb509f07106c7c426bd099de/lib/python3.13/site-packages/quant_investor/__init__.py",
+  "installed_verification": {
+    "state": "PASS",
+    "release_ref": {
+      "artifact_id": "unified-release-d53c7a872f7c3c61b0c56e89bea1c30fb7cea5e9e36a7d33b5228af44fe51c73",
+      "byte_sha256": "30c6a7216b1f2886afccc2b6c35cd15ab575578c3bc368c34997e16d1c2823d1",
+      "contract_sha256": "c498d7d2294e79d458d948adbbc2b9a2a227d5ca811365e92863d1e6b9a84953",
+      "kind": "system.release",
+      "semantic_sha256": "51d916296a40a61e7911aea4007e7514f6cb133dedd1f3d4a755542e78abd60d"
+    },
+    "source_archive_sha256": "de65ca260bb9957c7d354db17598b5732c7bc29c0af24f2dba92584548244a37",
+    "wheel_sha256": "4cbacd3bf7a64560fb8a6cb1611556f36edb7f1ceb509f07106c7c426bd099de",
+    "code_tree_sha256": "6017cbac524880efd8e8614e915cf4b07a5d5dfa6d9a8b80366462600188c590",
+    "installed_code_manifest_sha256": "28dc57a5fc161fba9eddc323425a23911ddaf9647a200c5e6e00cdae6dd4d1ed",
+    "contract_catalog_sha256": "bf33e0e64f9c316edf78ba6289535e2d7c39311a4c1feac70ce2da43afc981fb",
+    "import_origin": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/release/installs/c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b-4cbacd3bf7a64560fb8a6cb1611556f36edb7f1ceb509f07106c7c426bd099de/lib/python3.13/site-packages/quant_investor/__init__.py"
+  },
+  "original_root": "/private/tmp/myquant-configured-catalog-20260913T202622Z",
+  "original_runtime_commit": "bf078d3235de3ade1379e8082d5d4a49e109f7d5",
+  "request_ref": {
+    "path": "results/operations/daily_production/CN/20260828/preparation/deb3a8278fca35a7cb3e56d81a1b35da2c190fa1709f16a5d211bf9634568779/request.json",
+    "sha256": "77d10bc50c8d82c63e97b02813e06e8edb23cc287b3b1e3edf3b393b0ea5ba16"
+  },
+  "collection_ref": {
+    "path": "results/operations/daily_production/CN/20260828/preparation/deb3a8278fca35a7cb3e56d81a1b35da2c190fa1709f16a5d211bf9634568779/objects/collection.json",
+    "sha256": "21e546f1410a9f331ef6ce2072eb17f552a4f976a5c9c00d11c6590182c99bee"
+  },
+  "template_dates": [
+    "20260828"
+  ],
+  "read_source_count": 16,
+  "dashboard_roles": [
+    "benchmark_ref",
+    "risk_free_ref"
+  ],
+  "strict_governance_reader_still_refuses_0644": true,
+  "original_bytes_identity_modes_times_unchanged": true,
+  "target_business_nodes_still_not_started": true,
+  "old_release_launch_gate": "EXPECTED_OLD_REQUEST_CURRENT_INSTALL_ORIGIN_MISMATCH",
+  "new_release_requires_new_uninterrupted_fixture": true,
+  "full_automatic_admission_or_eod_replay": false,
+  "original_request_resealed": false,
+  "old_installation_hotpatched": false,
+  "production_deployed": false,
+  "full_goal_complete": false
+}

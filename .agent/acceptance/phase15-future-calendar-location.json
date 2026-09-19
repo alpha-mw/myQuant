@@ -1,0 +1,8 @@
+{
+  "root": "/private/tmp/myquant-future-calendar-20260916T114925Z",
+  "state": "INSTALLED_VERIFIED",
+  "commit": "58a8c15919eaa5d9df063117d1bd40741eca5fcc",
+  "import_origin": "/private/tmp/myquant-future-calendar-20260916T114925Z/release/installs/58a8c15919eaa5d9df063117d1bd40741eca5fcc-1d070e1874304e2a90bb595886b6296fe72158b26e4547afc0eae2626898c287/lib/python3.13/site-packages/quant_investor/__init__.py",
+  "build_retry_reason": "initial empty offline cache; reused verified local uv cache",
+  "production_deployed": false
+}

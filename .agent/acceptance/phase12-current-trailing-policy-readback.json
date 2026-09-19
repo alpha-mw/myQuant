@@ -1,0 +1,13 @@
+{
+  "state": "CURRENT_INSTALLED_NATIVE_TRAILING_POLICY_CONTRACT_PASS",
+  "observed_at": "2026-09-14T06:07:36.540826+00:00",
+  "policy_ref": {
+    "path": "results/policies/risk/aggressive_tech_manufacturing/trailing-anchor.v1/owner-trailing-anchor-policy-20260901-v1.json",
+    "sha256": "b313aa91e1f7ca1e8922b2d22f7735ceee3190675c2e8dab3955c69f0f1d342a"
+  },
+  "anchor_count": 7,
+  "policy_bytes_and_identity_recheck": "PASS",
+  "actual_lifecycle_custody_or_execution_eligibility_claimed": false,
+  "policy_written": false,
+  "runtime_commit": "c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b"
+}

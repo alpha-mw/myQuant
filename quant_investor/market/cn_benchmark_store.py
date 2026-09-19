@@ -9,16 +9,19 @@ manifest and Parquet series have been written and read back.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from contextlib import contextmanager
 import csv
 from datetime import date, datetime, timezone
 import fcntl
 import hashlib
 import io
 import json
+import math
 import os
 from pathlib import Path
 import re
 import secrets
+import stat
 from typing import Any, Final
 
 import pyarrow as pa
@@ -119,7 +122,7 @@ def _normalize_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
             close = float(raw.get("close"))
         except (TypeError, ValueError) as exc:
             raise CNBenchmarkStoreError("benchmark close is invalid") from exc
-        if not close > 0:
+        if not math.isfinite(close) or not close > 0:
             raise CNBenchmarkStoreError("benchmark close is not positive")
         coverage = str(raw.get("coverage") or "exact_close")
         value_date = date.fromisoformat(str(raw.get("value_date") or day.isoformat()))
@@ -267,7 +270,186 @@ def publish_generation(
     expected_pointer_sha256: str,
     acquisition_receipt_ref: Mapping[str, Any],
 ) -> dict[str, Any]:
+    """Publish using the same lock shared by governed compatibility publication."""
+    with publication_scope(root) as scope:
+        return _publish_generation_locked(
+            root,
+            rows=rows,
+            generation_id=generation_id,
+            captured_at=captured_at,
+            expected_pointer_sha256=expected_pointer_sha256,
+            acquisition_receipt_ref=acquisition_receipt_ref,
+            _scope=scope,
+        )
+
+
+_PUBLICATION_KEY = object()
+
+
+class _PublicationScope:
+    def __init__(self, root, descriptor, key):
+        if key is not _PUBLICATION_KEY:
+            raise CNBenchmarkStoreError("benchmark publication scope invalid")
+        self.root, self.descriptor, self.active = root, descriptor, True
+        info = os.fstat(descriptor)
+        self.identity = (info.st_dev, info.st_ino)
+
+    def __reduce__(self):
+        raise TypeError("benchmark publication scopes cannot be serialized")
+
+    def require(self, root):
+        if not self.active or Path(root).resolve() != self.root:
+            raise CNBenchmarkStoreError("benchmark publication scope is not active")
+        opened = os.fstat(self.descriptor)
+        named = os.stat(self.root / ".latest.lock", follow_symlinks=False)
+        if any(
+            not stat.S_ISREG(x.st_mode)
+            or x.st_uid != os.geteuid()
+            or x.st_nlink != 1
+            or stat.S_IMODE(x.st_mode) != 0o600
+            for x in (opened, named)
+        ) or any((x.st_dev, x.st_ino) != self.identity for x in (opened, named)):
+            raise CNBenchmarkStoreError("benchmark publication lock changed or unsafe")
+
+
+@contextmanager
+def publication_scope(root: Path):
     root = root.resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(
+        root / ".latest.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600
+    )
+    scope = _PublicationScope(root, descriptor, _PUBLICATION_KEY)
+    try:
+        scope.require(root)
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        scope.require(root)
+        yield scope
+        scope.require(root)
+    finally:
+        scope.active = False
+        os.close(descriptor)
+
+
+def _write_compatibility(scope, workspace, rows):
+    root = Path(workspace).resolve(strict=True)
+    if scope.root != root / "data/parquet/cn/benchmarks":
+        raise CNBenchmarkStoreError("benchmark compatibility scope mismatch")
+    scope.require(scope.root)
+    # Fixed workspace destination. Reuse descriptor-directory and file checks;
+    # no user-selected serving path or symlink target is accepted.
+    from quant_investor.operations.daily_preparation import Sources
+    from quant_investor.system.errors import SystemNotFound
+
+    relative = "portfolio_dashboard/inputs/cn_index_benchmark.csv"
+    io = Sources(str(root))
+    raw = compatibility_csv_bytes(rows)
+    try:
+        existing = io._read(relative).data
+    except (FileNotFoundError, SystemNotFound):
+        existing = None
+    if existing == raw:
+        return False
+    parent, leaf, _ = _CompatibilityStorage(str(root))._parent(relative, create=True)
+    temporary = ".benchmark-" + secrets.token_hex(12)
+    try:
+        fd = os.open(
+            temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=parent
+        )
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+        scope.require(scope.root)
+        os.replace(temporary, leaf, src_dir_fd=parent, dst_dir_fd=parent)
+        os.fsync(parent)
+    finally:
+        try:
+            os.unlink(temporary, dir_fd=parent)
+        except FileNotFoundError:
+            pass
+        os.close(parent)
+    if io._read(relative).data != raw:
+        raise CNBenchmarkStoreError("benchmark compatibility readback mismatch")
+    return True
+
+
+def _compatibility_storage_type():
+    from quant_investor.operations.journal_storage import JournalStorage
+    from quant_investor.system.errors import SystemSecurityError
+
+    class CompatibilityStorage(JournalStorage):
+        @staticmethod
+        def _path(value):
+            if value != "portfolio_dashboard/inputs/cn_index_benchmark.csv":
+                raise SystemSecurityError("benchmark compatibility path invalid")
+            return Path(value)
+
+    return CompatibilityStorage
+
+
+_CompatibilityStorage = _compatibility_storage_type()
+
+
+def publish_generation_with_compatibility(
+    *,
+    workspace_root: Path,
+    rows,
+    generation_id,
+    captured_at,
+    expected_pointer_sha256,
+    acquisition_receipt_ref,
+):
+    """Adopt only an exact candidate, and publish its projection under the same lock."""
+    root = Path(workspace_root).resolve(strict=True) / "data/parquet/cn/benchmarks"
+    with publication_scope(root) as scope:
+        before = pointer_sha256(root)
+        loaded = _publish_generation_locked(
+            root,
+            rows=rows,
+            generation_id=generation_id,
+            captured_at=captured_at,
+            expected_pointer_sha256=expected_pointer_sha256,
+            acquisition_receipt_ref=acquisition_receipt_ref,
+            _scope=scope,
+            _adopt=True,
+        )
+        changed = _write_compatibility(scope, workspace_root, loaded["rows"])
+        if pointer_sha256(root) != loaded["pointer_sha256"]:
+            raise CNBenchmarkStoreError("benchmark pointer changed before compatibility completion")
+        return {
+            **loaded,
+            "no_action": before == loaded["pointer_sha256"] and not changed,
+            "compatibility_repaired": changed and before == loaded["pointer_sha256"],
+        }
+
+
+def repair_current_compatibility(*, workspace_root: Path, expected_pointer_sha256: str):
+    """Repair only this exact current projection; immutable generation bytes stay intact."""
+    root = Path(workspace_root).resolve(strict=True) / "data/parquet/cn/benchmarks"
+    with publication_scope(root) as scope:
+        loaded = load_generation(root)
+        if loaded["pointer_sha256"] != expected_pointer_sha256:
+            raise CNBenchmarkCASMismatch("benchmark compatibility preimage mismatch")
+        changed = _write_compatibility(scope, workspace_root, loaded["rows"])
+        if pointer_sha256(root) != expected_pointer_sha256:
+            raise CNBenchmarkStoreError("benchmark pointer changed during compatibility repair")
+        return {"pointer_sha256": expected_pointer_sha256, "changed": changed}
+
+
+def _publish_generation_locked(
+    root: Path,
+    *,
+    rows: Sequence[Mapping[str, Any]],
+    generation_id: str,
+    captured_at: str,
+    expected_pointer_sha256: str,
+    acquisition_receipt_ref: Mapping[str, Any],
+    _scope,
+    _adopt: bool = False,
+) -> dict[str, Any]:
+    root = root.resolve()
+    _scope.require(root)
     if _GENERATION.fullmatch(generation_id) is None:
         raise CNBenchmarkStoreError("benchmark generation ID is invalid")
     if (
@@ -334,31 +516,25 @@ def publish_generation(
         }
     )
     pointer_raw = canonical_json_bytes(pointer)
-    root.mkdir(parents=True, exist_ok=True)
-    lock = root / ".latest.lock"
-    descriptor = os.open(lock, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
-    try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
-        observed = pointer_sha256(root)
-        if observed != expected_pointer_sha256:
-            raise CNBenchmarkCASMismatch(
-                f"benchmark pointer CAS mismatch: expected {expected_pointer_sha256}, observed {observed}"
-            )
+    _scope.require(root)
+    observed = pointer_sha256(root)
+    if observed == expected_pointer_sha256:
         temporary = root / f"._latest.tmp-{os.getpid()}-{secrets.token_hex(4)}"
-        fd = os.open(
-            temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600
-        )
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         try:
-            os.write(fd, pointer_raw)
-            os.fsync(fd)
+            with os.fdopen(fd, "wb", closefd=False) as handle:
+                handle.write(pointer_raw)
+                handle.flush()
+                os.fsync(fd)
         finally:
             os.close(fd)
         os.replace(temporary, root / "_latest.json")
-    finally:
-        os.close(descriptor)
+    elif not (_adopt and observed == _sha256(pointer_raw)):
+        raise CNBenchmarkCASMismatch("benchmark pointer is neither expected preimage nor candidate")
     loaded = load_generation(root)
     if loaded["pointer"] != pointer:
         raise CNBenchmarkStoreError("benchmark pointer readback mismatch")
+    _scope.require(root)
     return {**loaded, "pointer_sha256": _sha256(pointer_raw)}
 
 

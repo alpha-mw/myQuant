@@ -1,0 +1,10 @@
+{
+  "state": "PASS",
+  "started_at": "2026-09-18T13:39:48.694713+00:00",
+  "commit": "5060dee2d4b39b50a735393d056ebe5adb4efe3b",
+  "activation": false,
+  "provider_calls": false,
+  "pid": 96852,
+  "exit_code": 0,
+  "finished_at": "2026-09-18T13:40:18.518463+00:00"
+}

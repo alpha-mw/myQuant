@@ -1,0 +1,54 @@
+{
+  "observed_at": "2026-09-14T03:38:16.601454+00:00",
+  "case": 4,
+  "state": "TEST_BOUNDARY_ASSERTION_REPAIRED_RETAINED_RECOVERY_RUNNING",
+  "root": "/private/tmp/myquant-configured-missing-store-20260914T012539Z",
+  "original_driver_status": {
+    "state": "FAIL",
+    "case": 4,
+    "root": "/private/tmp/myquant-configured-missing-store-20260914T012539Z",
+    "producer_commit": "bf078d3235de3ade1379e8082d5d4a49e109f7d5",
+    "started_at": "2026-09-14T01:33:38.770240+00:00",
+    "production_deployed": false,
+    "exit_code": 1,
+    "finished_at": "2026-09-14T03:22:22.094281+00:00",
+    "helper_drift": []
+  },
+  "original_failed_handle": 28287,
+  "failure_classification": "TEST_EXPECTED_DURABLE_FAILED_BUT_NATIVE_JOURNAL_RETAINS_RUNNING_IN_DOUBT",
+  "native_behavior_changed": false,
+  "original_source_pointer_behavior": "Decision materialization retains source-pointer before financial publication; validated it natively and required exact original-current-head bytes. Only committed-pointer and completion must be absent.",
+  "validation": {
+    "runner_tests_passed": 7,
+    "runner_tests_seconds": 9.18,
+    "black": "PASS",
+    "selected_flake8": "PASS",
+    "parent_child_syntax": "PASS",
+    "actual_retained_status_pair": "PASS",
+    "actual_native_source_pointer_and_commit_absence": "PASS"
+  },
+  "fixed_source_sha256": {
+    "tests/unit/_native_missing_store_case.py": "4e2acb972f01c49b7bc3f1193a5979060b872a812c7e62c0b8cf45c31cf86e70",
+    "tests/unit/test_daily_evidence_runner.py": "8400d35b9db9817c0f26302a1862ef83ad5e7a928d6a5edecf4289a916a8b0b0",
+    ".agent/acceptance/run_missing_store_acceptance.py": "6d791ce3c0584d4c4f1e173d9fd9c28bc7dd7efd3f6841791196b3487c747a30"
+  },
+  "original_pinned_helpers_preserved": true,
+  "checkpoint_ref": {
+    "path": "/private/tmp/myquant-configured-missing-store-20260914T012539Z/missing-store-interruption.json",
+    "sha256": "9387b7effb348cb4a22ef8e80562d48f4b76bd6dcd755220ed8996c55cf9a8ff"
+  },
+  "original_public_result_not_reconstructed": true,
+  "new_handle": 6375,
+  "new_driver_status": {
+    "state": "RUNNING",
+    "case": 4,
+    "root": "/private/tmp/myquant-configured-missing-store-20260914T012539Z",
+    "producer_commit": "bf078d3235de3ade1379e8082d5d4a49e109f7d5",
+    "started_at": "2026-09-14T03:35:11.299870+00:00",
+    "production_deployed": false,
+    "continued_from_retained_test_failure": true,
+    "child_pid": 93409
+  },
+  "full_case_proof": false,
+  "production_deployed": false
+}

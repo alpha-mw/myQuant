@@ -42,6 +42,14 @@ holdings, cash-without-event, broker, order or trade authority.
 The command computes all missing open dates through the required close date. A
 missing middle date causes zero Store mutation for the whole batch.
 
+The same pure `analyze_close_coverage` calculation is used before both dry-run
+and execute preparation. It enumerates event closure, each held-security close,
+and all three exact benchmark closes for every required date. Missing inputs
+return all independent blockers in the manager's structured `coverage` error;
+no record/plan/Store write occurs. A Calendar ending before current Market is
+blocked, never an empty-backlog no-op. This does not authorize generating missing
+event declarations or substituting benchmark data.
+
 Before mutation it writes one frozen plan containing all preimage SHAs, output
 paths, IDs and effective timestamps. New catch-up records use the versioned ID
 `YYYYMMDD_HHMMSS-bNN`; old minute IDs and the fixed 2026-08-21 late-publication

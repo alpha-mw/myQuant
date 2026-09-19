@@ -1,0 +1,51 @@
+{
+  "observed_at": "2026-09-14T07:12:14.676873+00:00",
+  "state": "NATIVE_RETAINED_RECOVERY_DISPATCH_COMPLETE_FINAL_INDEPENDENT_REPLAY_PENDING",
+  "root": "/private/tmp/myquant-configured-missing-store-20260914T012539Z",
+  "runtime_commit": "bf078d3235de3ade1379e8082d5d4a49e109f7d5",
+  "handle": 6375,
+  "child_pid": 93409,
+  "result_ref": {
+    "path": "/private/tmp/myquant-configured-missing-store-20260914T012539Z/missing-store-resumed-result.json",
+    "sha256": "388a0b47f719e5c93a332d35de3d8c4e687cbd27f05c7e918bead7f2ab455119"
+  },
+  "result": {
+    "schema_version": "cn-daily-production-result.v1",
+    "action": "EXECUTE",
+    "target_trade_date": "20260827",
+    "execution_state": "SUCCEEDED",
+    "business_state": "COMPLETE",
+    "days": [
+      {
+        "trade_date": "20260827",
+        "execution_state": "SUCCEEDED",
+        "business_state": "COMPLETE",
+        "completion_ref": {
+          "path": "results/operations/daily_production/CN/20260827/completion.v1.json",
+          "sha256": "00acab0a55c4c0d6c71d01623059b288f3663bde23078e4f33c234ba46228888"
+        }
+      }
+    ],
+    "authority": {
+      "broker": false,
+      "order": false,
+      "trade": false,
+      "actual_holdings_mutation": false,
+      "system": false,
+      "mainline": false
+    }
+  },
+  "completion_ref": {
+    "path": "results/operations/daily_production/CN/20260827/completion.v1.json",
+    "sha256": "00acab0a55c4c0d6c71d01623059b288f3663bde23078e4f33c234ba46228888"
+  },
+  "completion_schema": "cn-daily-eod-completion.v2",
+  "completion_exact_bytes_sha_verified": true,
+  "native_completion_status": "SUCCEEDED",
+  "synthetic": true,
+  "final_case4_proof_pending": true,
+  "exact_cas_count_final_assertion_pending": true,
+  "original_test_failure_disclosure_preserved": true,
+  "production_deployed": false,
+  "full_goal_complete": false
+}

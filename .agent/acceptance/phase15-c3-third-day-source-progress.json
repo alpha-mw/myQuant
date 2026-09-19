@@ -1,0 +1,13 @@
+{
+  "observed_at": "2026-09-15T02:58:29.707766+00:00",
+  "child_pid": 3772,
+  "trade_date": "20260831",
+  "state": "INITIAL_PRIOR_REPLAY_RETURNED_MACRO_SOURCE_PREPARATION_PASS",
+  "evidence": "PASS 20260831 configured-native-macro-source",
+  "log_path": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/configured-successor-20260831.log",
+  "log_snapshot_sha256": "05ba99a717d4c9dd9e8d761cd63ceee2e439b568238a99529e0b3ba689976ec5",
+  "control_flow_basis": "Pinned successor.run validates previous completion before macro source preparation.",
+  "third_day_eod_verified": false,
+  "synthetic": true,
+  "production_deployed": false
+}

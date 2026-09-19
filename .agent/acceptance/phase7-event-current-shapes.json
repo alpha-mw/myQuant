@@ -1,0 +1,113 @@
+[
+  {
+    "root": "results/strategy_records/CN/aggressive_tech_manufacturing/_event_store",
+    "present": true,
+    "pointer_keys": [
+      "broker_order_trade_authority",
+      "content_sha256",
+      "generation",
+      "generation_id",
+      "previous_pointer_sha256",
+      "schema_id",
+      "trade_dates"
+    ],
+    "generation_keys": [
+      "broker_order_trade_authority",
+      "closures",
+      "content_sha256",
+      "generated_at",
+      "generation_id",
+      "late_event_behavior",
+      "policy_ref",
+      "schema_id",
+      "trade_dates"
+    ],
+    "closure_keysets": [
+      [
+        "actual_holdings_mutation_authority",
+        "broker_order_trade_authority",
+        "cash_mutation_authority",
+        "content_sha256",
+        "cutoff_at",
+        "dimensions",
+        "late_event_behavior",
+        "owner_declaration_ref",
+        "policy_ref",
+        "schema_id",
+        "sealed_at",
+        "source_receipt_ref",
+        "status",
+        "trade_date"
+      ]
+    ],
+    "dates": [
+      "2026-08-24",
+      "2026-08-25",
+      "2026-08-26",
+      "2026-08-27",
+      "2026-08-28",
+      "2026-08-31",
+      "2026-09-01",
+      "2026-09-02",
+      "2026-09-03"
+    ],
+    "bad_seal_order": 0,
+    "generation_precedes_seal": 0,
+    "symbolic_receipt_count": 4
+  },
+  {
+    "root": "/private/tmp/myquant-final-source-native-20260909T030031Z/factor-workspace/results/strategy_records/CN/aggressive_tech_manufacturing/_event_store",
+    "present": true,
+    "pointer_keys": [
+      "broker_order_trade_authority",
+      "content_sha256",
+      "generation",
+      "generation_id",
+      "previous_pointer_sha256",
+      "schema_id",
+      "trade_dates"
+    ],
+    "generation_keys": [
+      "broker_order_trade_authority",
+      "closures",
+      "content_sha256",
+      "generated_at",
+      "generation_id",
+      "late_event_behavior",
+      "policy_ref",
+      "schema_id",
+      "trade_dates"
+    ],
+    "closure_keysets": [
+      [
+        "actual_holdings_mutation_authority",
+        "broker_order_trade_authority",
+        "cash_mutation_authority",
+        "content_sha256",
+        "cutoff_at",
+        "dimensions",
+        "late_event_behavior",
+        "owner_declaration_ref",
+        "policy_ref",
+        "schema_id",
+        "sealed_at",
+        "source_receipt_ref",
+        "status",
+        "trade_date"
+      ]
+    ],
+    "dates": [
+      "2026-08-24",
+      "2026-08-25",
+      "2026-08-26",
+      "2026-08-27",
+      "2026-08-28",
+      "2026-08-31",
+      "2026-09-01",
+      "2026-09-02"
+    ],
+    "bad_seal_order": 0,
+    "generation_precedes_seal": 0,
+    "symbolic_receipt_count": 0
+  }
+]

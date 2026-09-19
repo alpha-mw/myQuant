@@ -1,0 +1,43 @@
+{
+  "observed_at": "2026-09-12T19:03:54.498324+00:00",
+  "result": "PASS",
+  "root": "/private/var/folders/cp/539tc5k549l2jzdy90ptl6cm0000gn/T/phase11-historical-dashboard-cy9gr74k",
+  "routing_root": "/private/var/folders/cp/539tc5k549l2jzdy90ptl6cm0000gn/T/phase11-native-routing-st0wze18",
+  "routing": {
+    "maintenance_mode": "HISTORICAL",
+    "dashboard_mode": "HISTORICAL_CAPTURE",
+    "publication_policy": "CURRENT_OBSERVED_CLOSE_ONLY"
+  },
+  "original_wrong_mode_reproduced": "DASHBOARD_STALE:benchmark",
+  "benchmark_tail": "2026-08-31",
+  "historical_mark_date": "2026-08-28",
+  "synthetic": true,
+  "full_native_eod_admission": false,
+  "native_financial_and_five_source_collector": true,
+  "outputs": {
+    "capture": {
+      "path": "results/operations/daily_production/CN/20260828/dashboard/capture.v1.json",
+      "sha256": "e2b03808bd11c64a370b9aae643a53c8e8c1257ea6ae9d9b829a36c904278459"
+    },
+    "v1": {
+      "path": "results/operations/daily_production/CN/20260828/dashboard/objects/7f4e984690653303c341f42ab56dd4c5d09cbe6cc8e13f4f62a3dfb6ff24775b.bin",
+      "sha256": "7f4e984690653303c341f42ab56dd4c5d09cbe6cc8e13f4f62a3dfb6ff24775b"
+    },
+    "v2": {
+      "path": "results/operations/daily_production/CN/20260828/dashboard/objects/dd4d32f80a58c432a599fe788562e6f4165a59e6e4d17178ffe5ea822435aba6.bin",
+      "sha256": "dd4d32f80a58c432a599fe788562e6f4165a59e6e4d17178ffe5ea822435aba6"
+    },
+    "daily_evidence": {
+      "path": "results/operations/daily_production/CN/20260828/dashboard/daily-evidence-00b401273d2368e98f63699a9862af5b407e7ef7a442b499553d0d0fd7fbdfad.json",
+      "sha256": "00b401273d2368e98f63699a9862af5b407e7ef7a442b499553d0d0fd7fbdfad"
+    }
+  },
+  "serving_files_written": false,
+  "repeat_unchanged": true,
+  "old_failed_job_recovered": false,
+  "limitations": [
+    "Native Store/Market/financial renderer and source collector exercised",
+    "Retained synthetic Factor/Theme/Decision artifacts and explicit journal wrappers",
+    "Not an installed full DAG or live financial run"
+  ]
+}

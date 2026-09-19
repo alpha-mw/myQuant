@@ -1,0 +1,103 @@
+{
+  "status": "RESEARCH_FAILURE_BOUNDARIES_LOCALLY_VALIDATED",
+  "phase13_complete": false,
+  "phase14_complete": false,
+  "full_goal_complete": false,
+  "scope": "Reviewed fixed research input diagnoses; diagnostic only, no new retry/write authority",
+  "review": {
+    "architect": "dag_architect APPROVE_WITH_CHANGES; all 8 amendments accepted",
+    "critic": "morning_replay_critic APPROVE",
+    "plan": "docs/plans/phase13_research_failure_mapping.md"
+  },
+  "new_reason_count": 54,
+  "test_runs": [
+    {
+      "session": 64622,
+      "role": "pre-change baseline",
+      "passed": 53,
+      "seconds": 28.7
+    },
+    {
+      "session": 10121,
+      "role": "first diagnostic/custody regression",
+      "passed": 56,
+      "seconds": 3.74
+    },
+    {
+      "session": 98543,
+      "role": "runner/research/cutoff/status regression",
+      "passed": 101,
+      "seconds": 37.77
+    },
+    {
+      "session": 61127,
+      "role": "extended diagnostic/security boundary checks",
+      "passed": 39,
+      "seconds": 1.86
+    },
+    {
+      "session": 20716,
+      "role": "new native declared JSON negatives",
+      "passed": 2,
+      "seconds": 0.98
+    },
+    {
+      "session": 84889,
+      "role": "native cutoff/source/materialization/Exposure/Focus/low-frequency/Macro/CLI regression",
+      "passed": 75,
+      "seconds": 285.96
+    },
+    {
+      "session": 73331,
+      "role": "final research source and diagnostic tests after preserving wrong-pool-kind validation precedence",
+      "passed": 41,
+      "seconds": 25.42
+    }
+  ],
+  "test_count_note": "Overlapping runs are not summed. Final 41 checks cover final source guard change; 75-case batch overlaps that small guard edit, so it is not a byte-frozen installed-source proof.",
+  "static_checks": {
+    "mypy": "10 source files PASS; final research_sources recheck PASS",
+    "black": "11 files PASS",
+    "flake8": "10 sources and diagnostic test PASS; public unified CLI complexity <=10 PASS",
+    "non_required_diagnostic": "An initial extra operations complexity check reported existing broad functions over10 (runner adds narrow catch); no unrelated refactor or CI waiver introduced."
+  },
+  "evidence": [
+    "Real missing wrapper, wrong SHA before JSON decode, malformed wrapper/declared JSON, wrong bundle day and retained cutoff errors use exact types",
+    "Actual ResearchFileReadback failure reaches runner and downstream leaf diagnostics without adapter writer call",
+    "Constructor failure rethrows without changing existing RUNNING start or fabricating a node attempt",
+    "Existing post-write and durable RUNNING/FAILED/SUCCEEDED tests pass",
+    "Native public CLI stdout JSON and exit2 unchanged; internal file category not serialized",
+    "Safe native missing/SHA classification requires one descriptor-safe confirmation; unsupported labels and security/race/ambiguous failures stay generic"
+  ],
+  "limitations": [
+    "Not every producer/projector error is classified; unknown security/race/combined failures remain generic deliberately",
+    "Successful0644 native Parquet unchanged; SHA failures on0644 inputs that stricter secure confirmation rejects stay generic",
+    "Native source tests use isolated synthetic fixtures and documented outer seams; no live provider or actual OOS claim",
+    "Phase14 production evaluator still does not consume the daily ledger; draft is unreviewed",
+    "Pre-Phase13 installed snapshot eaa60b2d7522db887d387ea99c47a7961c1257a0 does not cover this source change",
+    "Main financial state, Macro veto, scheduler/deployment, owner policy and production active pointers unchanged"
+  ],
+  "next": "Finalize Phase14 versioned evaluator admission contract around actual production-settle and full-native daily selector; Architect then Critic, implement and validate. Preserve broader Phase12/15 and historical financial fact gaps.",
+  "validated_at": "2026-09-13T03:30:34.973167+00:00",
+  "runtime_source_sha256": {
+    "quant_investor/cli/unified.py": "18c58d932129dfd09941d41581f6159698ee59cd3d3566e2debf7ab942932a92",
+    "quant_investor/operations/daily_runner.py": "80d603d4ab346cd8a3330d48939c6254b751c1d80b2010a481b301e766c79aae",
+    "quant_investor/operations/dependency_diagnostics.py": "db817e4efcef75908786311033b35da29d1c238b89158ca94d41570473acf335",
+    "quant_investor/operations/research_request.py": "3dba74d0b856e5c4905f36d03c94bfedbc9ada1b0568e2cefca817f55df2b3f1",
+    "quant_investor/operations/research_sources.py": "0cedfc30990c8a99f5011a9ded1c528741aa5aca0bfd2e08ea21e647e36e8772",
+    "quant_investor/operations/research_projection.py": "88399edf9ecce6f3705a1e6937bf246ef3e21ef248997255fb4d62006e20e00c",
+    "quant_investor/operations/research_cutoff.py": "1a461fcef9fe622048cfc15df51a83dbe7d468b9b97a9e74dcfd9bd741e12e04",
+    "quant_investor/operations/research_cutoff_contract.py": "4630e3ed03fcfc25a37c427c65d25e36f8a1e531bdbb0a2a7cf9bdcf79b9fb0d",
+    "quant_investor/operations/research_source_bundle.py": "61bdcb829b6865aba511a41191060c2c26fc1043018dd650b0aedcf47075c20b",
+    "quant_investor/operations/research_file_readback.py": "f16fdb6e449e9292cdf7dc354054426355abcbf01e599405a33835b14d06f173"
+  },
+  "test_source_sha256": {
+    "tests/unit/test_daily_evidence_research_diagnostics.py": "2fa44d89728e6abacec9d036b5368e0902594c74980b363e989cd339e9403c56"
+  },
+  "plan_and_register_sha256": {
+    "docs/plans/phase13_research_failure_mapping.md": "bf6823b4a677b7f752e12f4ae6929f735d0c8ec943073bd1858b2805ba8e69ca",
+    "docs/plans/phase13_14_remaining_audit.md": "bb2d5468fa5ffaf8e93b143a25ea8deebd628070d355dc42850e9c5631d3a76a",
+    "docs/plans/phase14_evaluator_ledger_design.md": "8c78d1ab5e5b852765a6d14935ef00bf9c4d74e417ced6f5ae47887f17ed9ca8",
+    "docs/plans/phase00_15_execution_register.md": "12280ee1e5f563fba8a925c9bbfa6793402e75d17a41a579f1fdc77751810a8f"
+  }
+}

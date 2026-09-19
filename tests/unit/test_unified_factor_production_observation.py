@@ -183,3 +183,25 @@ def test_registry_fails_closed_when_same_date_path_binds_different_signal(
     _FakeStore.inputs = changed
     with pytest.raises(FactorGovernanceError, match="immutable path conflicts"):
         _register_factor_production_observations("/workspace", registered_at="2026-08-20T13:00:01Z")
+
+
+def test_partial_registration_recovery_keeps_actual_sibling_registration_time(monkeypatch):
+    _FakeStore.files = {}
+    _FakeStore.inputs = _inputs()
+    monkeypatch.setattr(observation_module, "FactorProductionStore", _FakeStore)
+    _register_factor_production_observations("/workspace", registered_at="2026-08-20T13:00:00Z")
+    low_path = "results/factors/observations/2026/08/20/LOW.json"
+    w80_path = "results/factors/observations/2026/08/20/W80.json"
+    original = _FakeStore.files[low_path]
+    del _FakeStore.files[w80_path]  # Inject a process exit before the sibling publication.
+    result = _register_factor_production_observations(
+        "/workspace", registered_at="2026-08-21T12:00:00Z"
+    )
+    assert result["created_count"] == 1
+    assert _FakeStore.files[low_path] == original
+    assert (
+        validate_factor_production_observation(_FakeStore.files[w80_path])["payload"][
+            "registered_at"
+        ]
+        == "2026-08-21T12:00:00Z"
+    )

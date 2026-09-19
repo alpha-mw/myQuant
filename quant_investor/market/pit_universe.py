@@ -753,6 +753,49 @@ def build_pit_universe_mask(
     return output
 
 
+def build_pit_universe_mask_with_reasons(
+    symbols: Sequence[str],
+    dates: Sequence[str | date | datetime],
+    records: Sequence[PITUniverseRecord] | Mapping[str, PITUniverseRecord],
+    *,
+    required: bool = False,
+) -> tuple[list[list[bool]], list[list[str]]]:
+    """``build_pit_universe_mask`` plus the per-cell reason it decided on.
+
+    The mask alone cannot say *why* a cell was excluded, and a bundle mask is a
+    bool matrix by contract, so the reason cannot ride inside it. Returning the
+    reasons alongside lets a caller attribute every exclusion to evidence
+    instead of asserting that the shapes merely differ.
+
+    This is deliberately a sibling rather than a change to
+    ``build_pit_universe_mask``: that function's ``list[list[bool]]`` return is
+    what ``MatrixDataBundle`` accepts, and widening it in place would break both
+    the bundle contract and its existing callers.
+    """
+    by_symbol = records if isinstance(records, Mapping) else records_by_symbol(records)
+    mask: list[list[bool]] = []
+    reasons: list[list[str]] = []
+    for symbol in symbols:
+        normalized_symbol = normalize_symbol(symbol)
+        mask_row: list[bool] = []
+        reason_row: list[str] = []
+        for current_date in dates:
+            status = evaluate_listing_status(
+                by_symbol.get(normalized_symbol),
+                symbol=normalized_symbol,
+                as_of=current_date,
+            )
+            if status.reason == REASON_MISSING_PIT_RECORD and not required:
+                mask_row.append(True)
+                reason_row.append(f"{status.reason}:failed_open")
+            else:
+                mask_row.append(bool(status.in_universe and status.research_eligible))
+                reason_row.append(str(status.reason))
+        mask.append(mask_row)
+        reasons.append(reason_row)
+    return mask, reasons
+
+
 def build_pit_delisted_field(
     symbols: Sequence[str],
     dates: Sequence[str | date | datetime],

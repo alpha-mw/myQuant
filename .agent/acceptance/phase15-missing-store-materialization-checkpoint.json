@@ -1,0 +1,24 @@
+{
+  "observed_at": "2026-09-14T02:20:11.834102+00:00",
+  "case": 4,
+  "root": "/private/tmp/myquant-configured-missing-store-20260914T012539Z",
+  "state": "NATIVE_MATERIALIZATION_PRESENT_DOWNSTREAM_AND_RECOVERY_PENDING",
+  "materialization_ref": {
+    "path": "results/operations/daily_production/CN/20260827/executions/cc5659ce621f5f3c870658a157bf6dd5c2e09ede0df30c4e604e74036d5e771e/materialization.v5.json",
+    "sha256": "25d6859f0f1bc2935b600296939e51febdba939e59caff5e83f2375f637b6af1"
+  },
+  "materialization_schema": "cn-daily-materialization.v5",
+  "cutoff_ref": {
+    "path": "results/operations/daily_production/CN/20260827/executions/cc5659ce621f5f3c870658a157bf6dd5c2e09ede0df30c4e604e74036d5e771e/research-cutoff.v1.json",
+    "sha256": "fc3b4a388da45d0f8d18ca3a27c10ed96b6155cce4491cf940c689bdd10257bd"
+  },
+  "native_inputs_ref": {
+    "path": "results/operations/daily_production/CN/20260827/executions/cc5659ce621f5f3c870658a157bf6dd5c2e09ede0df30c4e604e74036d5e771e/inputs/native-4c281c37ea8e8f90443fbe0cadabe2de61d7a1bee63e1664e2f2e47d564589a0.json",
+    "sha256": "4c281c37ea8e8f90443fbe0cadabe2de61d7a1bee63e1664e2f2e47d564589a0"
+  },
+  "native_inputs_schema": "cn-daily-native-inputs.v6",
+  "trade_date": "20260827",
+  "scope": "PUBLISHED_MATERIALIZATION_CUTOFF_AND_NATIVE_INPUT_BYTE_BINDINGS",
+  "full_case_proof": false,
+  "production_deployed": false
+}

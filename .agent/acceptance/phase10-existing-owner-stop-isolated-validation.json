@@ -1,0 +1,49 @@
+{
+  "status": "ISOLATED_FIX_VALIDATED_AWAITING_INTEGRATION",
+  "observed_at": "2026-09-13T10:44:17.165173+00:00",
+  "isolated_copy": "/var/folders/cp/539tc5k549l2jzdy90ptl6cm0000gn/T/myquant-owner-stop-fix-wja0v4na",
+  "files": {
+    "quant_investor/strategy_records/risk_policy_contract.py": {
+      "original_exists": true,
+      "original_sha256": "fd559bcb72cce62101e8cbff3f8b9179642e2fc56f90b085ed21ca9006dec763",
+      "prepared_sha256": "3ebf97ba68045a9993ef8881dfe63f1ac3e2c47147cb8196f530a713b2dccc85"
+    },
+    "tests/unit/test_initial_stop_policy_compatibility.py": {
+      "original_exists": false,
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "prepared_sha256": "e2d4e0588ae845a5376fb637bd17bcd11a225f525af171d1504cf80f8fa26f22"
+    },
+    "tests/unit/test_morning_threshold_review.py": {
+      "original_exists": true,
+      "original_sha256": "aa395d62a9348208793134239243226dc7722de61e27b57eb3293b4f205b6653",
+      "prepared_sha256": "d72640730b9e415643e1cf57c1d9a8a1785258274fd4ca7b08c7e53b19e5e76f"
+    }
+  },
+  "tests": [
+    {
+      "session": 36476,
+      "result": "57 passed in 11.69s",
+      "scope": "policy profile and native synthetic Morning threshold"
+    },
+    {
+      "session": 16380,
+      "result": "40 passed in 8.94s",
+      "scope": "Morning v3 consumer/receipt and legacy Morning"
+    }
+  ],
+  "actual_policy_read": {
+    "status": "PASS",
+    "rows": 2,
+    "sha256": "11eb7018ff6abde2d276c7b997e0e61e2cd6b170407872734bb8d407b334c178",
+    "bytes_and_mtime_unchanged": true
+  },
+  "static": {
+    "flake8": "PASS",
+    "mypy": "PASS:1source",
+    "black": "final assertions formatted; exact patch regenerated"
+  },
+  "initial_test_failure": "incorrect test expectation: native synthetic quote49.50 exceeds stop35.32, so comparison must be CLEAR; corrected after reading actual fixture",
+  "main_source_changed": false,
+  "full_eod_morning_verified": false,
+  "financial_writes": false
+}

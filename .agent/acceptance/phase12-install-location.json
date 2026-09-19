@@ -1,0 +1,30 @@
+{
+  "root": "/private/tmp/myquant-cutoff-installed-20260913T020706Z",
+  "state": "INSTALLED_NATIVE_ONE_DAY_REPEAT_PASSED",
+  "receipt": {
+    "synthetic_test_environment": true,
+    "repository": "/private/tmp/myquant-cutoff-installed-20260913T020706Z/repository",
+    "release_root": "/private/tmp/myquant-cutoff-installed-20260913T020706Z/release",
+    "release_input": "/private/tmp/myquant-cutoff-installed-20260913T020706Z/release-input.json",
+    "python": "/private/tmp/myquant-cutoff-installed-20260913T020706Z/release/installs/eaa60b2d7522db887d387ea99c47a7961c1257a0-f5d679aa330d10da832a8efc0d664d76726f81f6515195d3bf79f62a47bf997f/bin/python",
+    "commit": "eaa60b2d7522db887d387ea99c47a7961c1257a0",
+    "runtime_verification": {
+      "state": "PASS",
+      "release_ref": {
+        "artifact_id": "unified-release-ebcb4ae8964be171260731888f98aed1f08aa589366f6bdc9672e16665210a7b",
+        "byte_sha256": "e2015e341bc525dd92a5e693529dbe66f7fe22f656387cd57b71b392c572287c",
+        "contract_sha256": "c498d7d2294e79d458d948adbbc2b9a2a227d5ca811365e92863d1e6b9a84953",
+        "kind": "system.release",
+        "semantic_sha256": "71dd401fac3302724d33aa1c9436a3c056c0ca7c754a4243b25dc40ba6b0bb69"
+      },
+      "source_archive_sha256": "06d01464a4239dd5329d27b0eea6c3391222ae1c0e6b2ebb034423493754482c",
+      "wheel_sha256": "f5d679aa330d10da832a8efc0d664d76726f81f6515195d3bf79f62a47bf997f",
+      "code_tree_sha256": "89ba0d5219239c3461475d0efa06b118ea16c7514bbc92df2a29cc142355ee54",
+      "installed_code_manifest_sha256": "3f20d9d6b8fddcd378728a56bc160661954a67f9897f6572a0e5e9c09bc37587",
+      "contract_catalog_sha256": "d896af55c8e959711e0ab1804b50b4d9266904bcec815dbdcb5cd1e4ffa3593d",
+      "import_origin": "/private/tmp/myquant-cutoff-installed-20260913T020706Z/release/installs/eaa60b2d7522db887d387ea99c47a7961c1257a0-f5d679aa330d10da832a8efc0d664d76726f81f6515195d3bf79f62a47bf997f/lib/python3.13/site-packages/quant_investor/__init__.py"
+    },
+    "full_dag_proof": false,
+    "production_deployed": false
+  }
+}

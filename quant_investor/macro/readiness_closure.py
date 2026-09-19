@@ -716,9 +716,15 @@ def verify_current_macro_readiness_closure(
         or observations.get("generation_id") != pointers["observations"]["generation_id"]
     ):
         raise MacroReadinessClosureError("MACRO_READINESS_SEMANTIC_POSTCHECK_FAILED")
-    projection = {
+    return _readiness_projection(value)
+
+
+def _readiness_projection(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Deterministic display of an already validated closure; no current admission."""
+    pointers = value["frozen_pointers"]
+    return {
         "closure_sha256": _sha(canonical_json_bytes(value)),
-        "target_date": target,
+        "target_date": value["target_date"],
         "available_at": value["available_at"],
         "pointer_sha256": {
             name: pointers[name]["frozen_ref"]["sha256"]
@@ -726,7 +732,6 @@ def verify_current_macro_readiness_closure(
         },
         "veto_state": value["veto_lifecycle"]["state"],
     }
-    return projection
 
 
 def seal_macro_readiness_closure(
@@ -745,10 +750,13 @@ def seal_macro_readiness_closure(
     )
     raw = canonical_json_bytes(closure)
     digest = _sha(raw)
-    parent = root / CLOSURE_ROOT / closure["target_date"]
-    parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(root / CLOSURE_ROOT, 0o700)
-    os.chmod(parent, 0o700)
+    from quant_investor.intelligence._common import IntelligenceError
+    from quant_investor.intelligence.storage import _store_parent
+
+    try:
+        parent = _store_parent(root, ("intelligence", "macro_readiness", closure["target_date"]))
+    except IntelligenceError as exc:
+        raise MacroReadinessClosureError("MACRO_READINESS_CLOSURE_DIRECTORY_UNSAFE") from exc
     path = parent / f"{digest}.json"
     try:
         descriptor = os.open(

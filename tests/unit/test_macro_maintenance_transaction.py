@@ -146,6 +146,7 @@ def _fixture(
     *,
     authority_mode: str = "canonical",
     observation_dependency: bool = False,
+    input_bindings: dict | None = None,
 ):
     market = _private(tmp_path / "market")
     market_pointer = market / "_latest.json"
@@ -191,6 +192,7 @@ def _fixture(
         expected_pit_pointer_sha256=_sha(pit_raw),
         authority_mode=authority_mode,
         target_date="20260819",
+        input_bindings=input_bindings,
     )
     journal = _private(tmp_path / "journal")
     return {

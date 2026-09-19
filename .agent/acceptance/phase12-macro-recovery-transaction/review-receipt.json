@@ -1,0 +1,19 @@
+{
+  "state": "ARCHITECT_AND_CRITIC_CORRECTIONS_INCORPORATED",
+  "plan_ref": {
+    "path": "docs/plans/phase12_macro_two_chunk_recovery.md",
+    "sha256": "856a78b1c33e41a15f68e84f6271a726e66e8a83a22d40c8f97328350e403870"
+  },
+  "architect": "APPROVE_WITH_CHANGES",
+  "critic": "APPROVE_WITH_CHANGES_WITH_NATIVE_PRECLEAR_GATE_CLARIFIED",
+  "corrections_closed": [
+    "native terminal journal and pointer checks",
+    "exact live request inventory",
+    "native preclear expected archive-absent refusal plus pointer/input checks",
+    "deterministic actual terminalSHA clear reason",
+    "intrinsic retrospective READY afterclear; no backdated live readiness"
+  ],
+  "user_execution_confirmation": "PENDING",
+  "live_calls": false,
+  "canonical_writes": false
+}

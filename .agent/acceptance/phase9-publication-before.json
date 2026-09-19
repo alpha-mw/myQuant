@@ -1,0 +1,42 @@
+{
+  "observed_at": "2026-09-12T05:01:42.635792+00:00",
+  "scope": "ISOLATED_NATIVE_DASHBOARD_BEFORE_EOD_SEAL",
+  "synthetic": true,
+  "root": "/private/var/folders/cp/539tc5k549l2jzdy90ptl6cm0000gn/T/phase9-before-publication-f4f2im7a",
+  "trade_date": "20260828",
+  "selector_status": "UPDATED",
+  "eod_completion_exists": false,
+  "native_dashboard_outcome": "SUCCEEDED",
+  "published_files": [
+    {
+      "path": "portfolio_dashboard/private/generated/cn_aggressive_dashboard.v1.json",
+      "sha256": "7f4c67dc954450f14ac7bdbb55fdec8232eb39d28fabcfa31fba46e42b92e0b0"
+    },
+    {
+      "path": "portfolio_dashboard/private/generated/cn_aggressive_dashboard.v1.js",
+      "sha256": "a5a863fa24e99ab26caee4b1c582b9151eddae76d303c77c24e862b6890f1f8b"
+    },
+    {
+      "path": "portfolio_dashboard/private/generated/cn_aggressive_dashboard.v2.json",
+      "sha256": "b76dcb29efb74e4097f6e5c49253f0e5871a98cb512b719c6b96aa9f4b09974a"
+    },
+    {
+      "path": "portfolio_dashboard/private/generated/cn_aggressive_dashboard.v2.js",
+      "sha256": "249db98ebd3308fc5a226f000b1e60f7300d100ba578e3c35a8618f16c19c4cb"
+    },
+    {
+      "path": "portfolio_dashboard/private/generated/cn_aggressive_dashboard_selector.v2.json",
+      "sha256": "e5074a28817e63f2623eea902175d963032d415fa6ee4423dcced9b1a08aeec8"
+    },
+    {
+      "path": "portfolio_dashboard/private/generated/cn_aggressive_dashboard_selector.v2.js",
+      "sha256": "cc2fc2837c3729a3d23bf691983bb0da833ba43dd0042d31f5db952d662ceb3e"
+    }
+  ],
+  "limitations": [
+    "Native Store and Dashboard components; unrelated Factor/research nodes not executed",
+    "Represents the publisher-return/pre-EOD-seal boundary, not a forged full-day receipt"
+  ],
+  "live_provider_calls": 0,
+  "real_account_mutations": 0
+}

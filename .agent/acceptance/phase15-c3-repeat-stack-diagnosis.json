@@ -1,0 +1,39 @@
+{
+  "observed_at": "2026-09-14T16:26:02.962069+00:00",
+  "pid": 18868,
+  "active_step": "repeat",
+  "signal_count": 1,
+  "trace_ref": {
+    "path": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/configured-successor-repeat.stack.txt",
+    "sha256": "4babdb72ef36c936f3caa668a680b82fe70fc41f179f55015181ab9362690515"
+  },
+  "frames": [
+    "  File \"/private/tmp/myquant-catchup-input-mode-20260914T054810Z/release/installs/c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b-4cbacd3bf7a64560fb8a6cb1611556f36edb7f1ceb509f07106c7c426bd099de/lib/python3.13/site-packages/quant_investor/factors/governance/bootstrap.py\", line 419 in _strict_components",
+    "  File \"/private/tmp/myquant-catchup-input-mode-20260914T054810Z/release/installs/c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b-4cbacd3bf7a64560fb8a6cb1611556f36edb7f1ceb509f07106c7c426bd099de/lib/python3.13/site-packages/quant_investor/factors/governance/bootstrap.py\", line 442 in compute_bootstrap_signals",
+    "  File \"/private/tmp/myquant-catchup-input-mode-20260914T054810Z/release/installs/c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b-4cbacd3bf7a64560fb8a6cb1611556f36edb7f1ceb509f07106c7c426bd099de/lib/python3.13/site-packages/quant_investor/factors/governance/production_authority.py\", line 1528 in _recompute_loaded_sources",
+    "  File \"/private/tmp/myquant-catchup-input-mode-20260914T054810Z/release/installs/c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b-4cbacd3bf7a64560fb8a6cb1611556f36edb7f1ceb509f07106c7c426bd099de/lib/python3.13/site-packages/quant_investor/factors/governance/production_authority.py\", line 3088 in _deep_replay_source_closure",
+    "  File \"/private/tmp/myquant-catchup-input-mode-20260914T054810Z/release/installs/c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b-4cbacd3bf7a64560fb8a6cb1611556f36edb7f1ceb509f07106c7c426bd099de/lib/python3.13/site-packages/quant_investor/factors/governance/production_authority.py\", line 3300 in replay_factor_production_recomputation_evidence",
+    "  File \"/private/tmp/myquant-catchup-input-mode-20260914T054810Z/release/installs/c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b-4cbacd3bf7a64560fb8a6cb1611556f36edb7f1ceb509f07106c7c426bd099de/lib/python3.13/site-packages/quant_investor/factors/governance/production_authority.py\", line 3487 in replay_factor_production_generation",
+    "  File \"/private/tmp/myquant-catchup-input-mode-20260914T054810Z/release/installs/c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b-4cbacd3bf7a64560fb8a6cb1611556f36edb7f1ceb509f07106c7c426bd099de/lib/python3.13/site-packages/quant_investor/factors/production_authority.py\", line 3012 in _deep_validate_factor_closure",
+    "  File \"/private/tmp/myquant-catchup-input-mode-20260914T054810Z/release/installs/c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b-4cbacd3bf7a64560fb8a6cb1611556f36edb7f1ceb509f07106c7c426bd099de/lib/python3.13/site-packages/quant_investor/factors/production_authority.py\", line 3887 in _verify_pointer_lineage",
+    "  File \"/private/tmp/myquant-catchup-input-mode-20260914T054810Z/release/installs/c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b-4cbacd3bf7a64560fb8a6cb1611556f36edb7f1ceb509f07106c7c426bd099de/lib/python3.13/site-packages/quant_investor/factors/production_authority.py\", line 3749 in verify_active",
+    "  File \"/private/tmp/myquant-catchup-input-mode-20260914T054810Z/release/installs/c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b-4cbacd3bf7a64560fb8a6cb1611556f36edb7f1ceb509f07106c7c426bd099de/lib/python3.13/site-packages/quant_investor/factors/production_authority.py\", line 4063 in read_observation_history",
+    "  File \"/private/tmp/myquant-catchup-input-mode-20260914T054810Z/release/installs/c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b-4cbacd3bf7a64560fb8a6cb1611556f36edb7f1ceb509f07106c7c426bd099de/lib/python3.13/site-packages/quant_investor/factors/production_authority.py\", line 4210 in read_historical_research_inputs",
+    "  File \"/private/tmp/myquant-catchup-input-mode-20260914T054810Z/release/installs/c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b-4cbacd3bf7a64560fb8a6cb1611556f36edb7f1ceb509f07106c7c426bd099de/lib/python3.13/site-packages/quant_investor/operations/core_pool.py\", line 133 in snapshot",
+    "  File \"/private/tmp/myquant-catchup-input-mode-20260914T054810Z/release/installs/c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b-4cbacd3bf7a64560fb8a6cb1611556f36edb7f1ceb509f07106c7c426bd099de/lib/python3.13/site-packages/quant_investor/operations/core_pool.py\", line 258 in pool_arguments",
+    "  File \"/private/tmp/myquant-catchup-input-mode-20260914T054810Z/release/installs/c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b-4cbacd3bf7a64560fb8a6cb1611556f36edb7f1ceb509f07106c7c426bd099de/lib/python3.13/site-packages/quant_investor/operations/theme_core_binding.py\", line 78 in bind_theme_acquisition",
+    "  File \"/private/tmp/myquant-catchup-input-mode-20260914T054810Z/release/installs/c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b-4cbacd3bf7a64560fb8a6cb1611556f36edb7f1ceb509f07106c7c426bd099de/lib/python3.13/site-packages/quant_investor/operations/theme_handoff_readback.py\", line 23 in read_theme_handoff",
+    "  File \"/private/tmp/myquant-catchup-input-mode-20260914T054810Z/release/installs/c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b-4cbacd3bf7a64560fb8a6cb1611556f36edb7f1ceb509f07106c7c426bd099de/lib/python3.13/site-packages/quant_investor/operations/research_source_bundle.py\", line 313 in _verify_origins",
+    "  File \"/private/tmp/myquant-catchup-input-mode-20260914T054810Z/release/installs/c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b-4cbacd3bf7a64560fb8a6cb1611556f36edb7f1ceb509f07106c7c426bd099de/lib/python3.13/site-packages/quant_investor/operations/research_source_bundle.py\", line 248 in __init__",
+    "  File \"/private/tmp/myquant-catchup-input-mode-20260914T054810Z/release/installs/c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b-4cbacd3bf7a64560fb8a6cb1611556f36edb7f1ceb509f07106c7c426bd099de/lib/python3.13/site-packages/quant_investor/operations/research_cutoff.py\", line 274 in read_cutoff_inputs",
+    "  File \"/private/tmp/myquant-catchup-input-mode-20260914T054810Z/release/installs/c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b-4cbacd3bf7a64560fb8a6cb1611556f36edb7f1ceb509f07106c7c426bd099de/lib/python3.13/site-packages/quant_investor/operations/research_request.py\", line 42 in load_research_request",
+    "  File \"/private/tmp/myquant-catchup-input-mode-20260914T054810Z/release/installs/c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b-4cbacd3bf7a64560fb8a6cb1611556f36edb7f1ceb509f07106c7c426bd099de/lib/python3.13/site-packages/quant_investor/operations/completion_macro.py\", line 69 in replay_completed_macro",
+    "  File \"/private/tmp/myquant-catchup-input-mode-20260914T054810Z/release/installs/c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b-4cbacd3bf7a64560fb8a6cb1611556f36edb7f1ceb509f07106c7c426bd099de/lib/python3.13/site-packages/quant_investor/operations/completion_decision.py\", line 57 in replay_completed_decision",
+    "  File \"/private/tmp/myquant-catchup-input-mode-20260914T054810Z/repository/scripts/daily_completion_replay.py\", line 17 in replay_native_completion",
+    "  File \"/private/tmp/myquant-catchup-input-mode-20260914T054810Z/repository/scripts/daily_production.py\", line 151 in dispatch_daily_request",
+    "  File \"/private/tmp/myquant-catchup-input-mode-20260914T054810Z/successor-validation-helpers/_native_configured_boundary_checks.py\", line 82 in run"
+  ],
+  "source_or_data_changed": false,
+  "process_restarted": false,
+  "terminal_proof": false
+}

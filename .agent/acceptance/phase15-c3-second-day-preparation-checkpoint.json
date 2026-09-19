@@ -1,0 +1,49 @@
+{
+  "observed_at": "2026-09-14T18:14:44.158177+00:00",
+  "state": "PREPARATION_SOURCES_MATERIALIZING",
+  "trade_date": "20260828",
+  "runtime_commit": "c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b",
+  "child_pid": 29285,
+  "observed_refs": [
+    {
+      "path": "results/operations/daily_production/CN/20260828/preparation/1335469cd918f263243cf08e8d972e99c4ae41f2a22cc7085a7b2f590ebcdc32/commitment.v1.json",
+      "sha256": "469a662f77d9d4220e0d6165075fa8ad60cbd9071b61d4ca4b3428da5683be66"
+    },
+    {
+      "path": "results/operations/daily_production/CN/20260828/preparation/1335469cd918f263243cf08e8d972e99c4ae41f2a22cc7085a7b2f590ebcdc32/objects/collection.json",
+      "sha256": "6b1a54f0cf0866bd2b198112cc1cd195e2647006b1895987701a5fb9ba0f784b"
+    },
+    {
+      "path": "results/operations/daily_production/CN/20260828/preparation/1335469cd918f263243cf08e8d972e99c4ae41f2a22cc7085a7b2f590ebcdc32/objects/recipe.json",
+      "sha256": "dca062da1d118a7f7577d6d1550717431bbeb6eddf819992c9d56a361972f5c2"
+    },
+    {
+      "path": "results/operations/daily_production/CN/20260828/preparation/1335469cd918f263243cf08e8d972e99c4ae41f2a22cc7085a7b2f590ebcdc32/request.json",
+      "sha256": "aa50a3f2ef4f484fde335ab821394d330f272a522a43cde1b76601bf7fbda24b"
+    },
+    {
+      "path": "results/operations/daily_production/CN/20260828/preparation/1335469cd918f263243cf08e8d972e99c4ae41f2a22cc7085a7b2f590ebcdc32/sources/calendar-capture.v1.json",
+      "sha256": "938efa58e6f0ec67dde3463122d538c0da4c9436c68057c9ad1d9c5860e2037d"
+    },
+    {
+      "path": "results/operations/daily_production/CN/20260828/preparation/1335469cd918f263243cf08e8d972e99c4ae41f2a22cc7085a7b2f590ebcdc32/sources/calendar-request-1.json",
+      "sha256": "8ecdd4cd917e8c5e90297f291babf967e3e825c0c3865267a12a51d43512b186"
+    },
+    {
+      "path": "results/operations/daily_production/CN/20260828/preparation/1335469cd918f263243cf08e8d972e99c4ae41f2a22cc7085a7b2f590ebcdc32/sources/calendar.json",
+      "sha256": "a7bcec0196aed1d10888469942ddfe5fda05230494b23a12db96b10eadd666bf"
+    },
+    {
+      "path": "results/operations/daily_production/CN/20260828/preparation/1335469cd918f263243cf08e8d972e99c4ae41f2a22cc7085a7b2f590ebcdc32/sources/calendar.raw.json",
+      "sha256": "6d3244bcb4f5a5791de7e8dd5339e1fc64df6b86c529adca145a6285e7245c28"
+    },
+    {
+      "path": "results/operations/daily_production/CN/20260828/preparation/1335469cd918f263243cf08e8d972e99c4ae41f2a22cc7085a7b2f590ebcdc32/sources/plan.v1.json",
+      "sha256": "23d2d6c5e009c0e6da3b16291fa12ed4b9ab41d378d018e77bc7b072af3ae645"
+    }
+  ],
+  "full_request_proven": false,
+  "target_eod_proven": false,
+  "synthetic": true,
+  "production_deployed": false
+}

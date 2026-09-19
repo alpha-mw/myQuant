@@ -1,0 +1,13 @@
+{
+  "scope": "READ_ONLY_NATIVE_CURRENT_MACRO_CLOSURE_ADMISSION",
+  "terminal_ref": {
+    "path": "data/private/macro_recovery_transactions/macro-catchup-20260903-v1/journals/macro-catchup-20260903-v1/0007-terminal.json",
+    "sha256": "4b1e2ca474691e84b9c22f44f7840b99704c391daf3c91b27488881b7c940dcd"
+  },
+  "source_target": "20260903",
+  "requested_operational_target": "20260918",
+  "canonical_writes": false,
+  "state": "BLOCKED",
+  "error_type": "MacroReadinessClosureError",
+  "error": "MACRO_READINESS_LIVE_VETO_PRESENT"
+}

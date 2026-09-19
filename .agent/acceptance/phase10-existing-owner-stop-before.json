@@ -1,0 +1,15 @@
+{
+  "observed_at": "2026-09-13T10:30:58.359691+00:00",
+  "validation": "FAIL",
+  "reason_code": "MORNING_STOP_POLICY_ROW_INVALID",
+  "policy_ref": {
+    "path": "results/policies/risk/aggressive_tech_manufacturing/initial-risk-stop.v1/owner-stop-policy-20260828-v1.json",
+    "sha256": "11eb7018ff6abde2d276c7b997e0e61e2cd6b170407872734bb8d407b334c178"
+  },
+  "policy_mtime_ns": 1787898828767197324,
+  "supported_row_count": 1,
+  "unsupported_row_count": 1,
+  "unsupported_profile": "CONFIRMED_OWNER_REVALIDATION",
+  "policy_written": false,
+  "plan": "docs/plans/phase10_existing_owner_stop_compatibility.md"
+}

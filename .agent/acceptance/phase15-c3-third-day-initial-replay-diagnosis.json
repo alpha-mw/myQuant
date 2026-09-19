@@ -1,0 +1,17 @@
+{
+  "observed_at": "2026-09-15T02:42:27.599364+00:00",
+  "child_pid": 3772,
+  "signal_count": 1,
+  "active_day": "20260831",
+  "replayed_previous_day": "20260828",
+  "phase": "INITIAL_INDEPENDENT_PREVIOUS_COMPLETION_REPLAY",
+  "caller": "_native_configured_successor.run:110 -> replay_native_completion:20 -> corporate action replay -> Decision recipe -> research inputs -> Theme/Core -> historical Factor inputs",
+  "trace_ref": {
+    "path": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/configured-successor-20260831-initial-replay.stack.txt",
+    "sha256": "7f9c848dd7203f8273ce0b9237fc8dde1a08837c985c15b1a34ec826ecc27e77"
+  },
+  "synthetic": true,
+  "production_deployed": false,
+  "do_not_repeat_signal_for_same_phase": true,
+  "third_day_complete": false
+}

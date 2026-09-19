@@ -1,0 +1,76 @@
+{
+  "status": "PASS",
+  "scope": "Current native pool writer and readback using exact frozen native synthetic rank/observation outputs; not a current whole-DAG or installed release proof.",
+  "workspace": "/private/tmp/myquant-phase3-native-pool-4clqyqxq",
+  "rank_source": "/private/tmp/myquant-final-source-native-20260909T030031Z/factor-workspace/results/intelligence/research_pool/aggressive_tech_manufacturing/2026-08-27/factor_research_rank.json",
+  "rank_sha256": "9e31568ee6bfc6896b84189e899793fedeb917db0836175f8b91d55253f379e9",
+  "frozen_producer": "3c46cb36918ca00d4fb61707bcfc16ca06b5c2a1",
+  "read_source_sha_mtime": {
+    "/private/tmp/myquant-final-source-native-20260909T030031Z/factor-workspace/results/policies/research/aggressive_tech_manufacturing/v2.json": [
+      "e76ac718a855864b40628d2683b52040559a7b21354b8a2e2e9db8d87da8c9db",
+      1788923399583080074
+    ],
+    "/private/tmp/myquant-final-source-native-20260909T030031Z/factor-workspace/results/factors/observations/2026/08/27/LOW.json": [
+      "09584bacc6d90a6ca33e89ec22a0f00e437b535283bcb99dc32d99b80afd1439",
+      1788923383526023622
+    ],
+    "/private/tmp/myquant-final-source-native-20260909T030031Z/factor-workspace/results/factors/observations/2026/08/27/W80.json": [
+      "ec7a789ba73e762963445ba6c1bfb8dd8d367555dfc26750c1ce687fa1862e0f",
+      1788923383528118814
+    ]
+  },
+  "first": {
+    "command_status": "PUBLISHED",
+    "publication_state": "SUCCEEDED",
+    "manifest_path": "results/intelligence/research_pool/aggressive_tech_manufacturing/2026-08-27/manifest.json",
+    "manifest_sha256": "77256a80d3580156ec6a6ba1078a2523e4b9107d14f431540d79f25a63b40c34",
+    "pool_root": "results/intelligence/research_pool/aggressive_tech_manufacturing/2026-08-27",
+    "receipt_path": "results/intelligence/research_pool/aggressive_tech_manufacturing/2026-08-27/publish_receipt.json",
+    "receipt_sha256": "d01475479695b5756ea8bfa21a93f2f3be346f720308fb91351cfed687bed4ad",
+    "signal_date": "20260827",
+    "strategy_id": "aggressive_tech_manufacturing",
+    "research_only": true,
+    "production": false,
+    "grants_trading_authority": false
+  },
+  "repeat": {
+    "command_status": "NO_ACTION",
+    "publication_state": "ALREADY_SUCCEEDED",
+    "manifest_path": "results/intelligence/research_pool/aggressive_tech_manufacturing/2026-08-27/manifest.json",
+    "manifest_sha256": "77256a80d3580156ec6a6ba1078a2523e4b9107d14f431540d79f25a63b40c34",
+    "pool_root": "results/intelligence/research_pool/aggressive_tech_manufacturing/2026-08-27",
+    "receipt_path": "results/intelligence/research_pool/aggressive_tech_manufacturing/2026-08-27/publish_receipt.json",
+    "receipt_sha256": "d01475479695b5756ea8bfa21a93f2f3be346f720308fb91351cfed687bed4ad",
+    "signal_date": "20260827",
+    "strategy_id": "aggressive_tech_manufacturing",
+    "research_only": true,
+    "production": false,
+    "grants_trading_authority": false
+  },
+  "native_output_refs": {
+    "factor_research_rank.json": {
+      "path": "results/intelligence/research_pool/aggressive_tech_manufacturing/2026-08-27/factor_research_rank.json",
+      "sha256": "9e31568ee6bfc6896b84189e899793fedeb917db0836175f8b91d55253f379e9"
+    },
+    "manifest.json": {
+      "path": "results/intelligence/research_pool/aggressive_tech_manufacturing/2026-08-27/manifest.json",
+      "sha256": "77256a80d3580156ec6a6ba1078a2523e4b9107d14f431540d79f25a63b40c34"
+    },
+    "publish_receipt.json": {
+      "path": "results/intelligence/research_pool/aggressive_tech_manufacturing/2026-08-27/publish_receipt.json",
+      "sha256": "d01475479695b5756ea8bfa21a93f2f3be346f720308fb91351cfed687bed4ad"
+    },
+    "selected_symbols.json": {
+      "path": "results/intelligence/research_pool/aggressive_tech_manufacturing/2026-08-27/selected_symbols.json",
+      "sha256": "5e4aa4f63b71f1b3ab5195c731387f15d253bd36d33739f4acdbcb4f4e26e0eb"
+    },
+    "top100.parquet": {
+      "path": "results/intelligence/research_pool/aggressive_tech_manufacturing/2026-08-27/top100.parquet",
+      "sha256": "20b8a92e92cdf7be3efe5b570421215219cbe183001aed077c0dad1c43ecb16a"
+    }
+  },
+  "all_repeat_sha_mtime_unchanged": true,
+  "original_frozen_pool_unchanged": true,
+  "live_provider_calls": 0,
+  "whole_goal_complete": false
+}

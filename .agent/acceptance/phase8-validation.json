@@ -1,0 +1,69 @@
+{
+  "generated_at": "2026-09-12T04:57:10.689558+00:00",
+  "status": "COMPLETED_LOCAL_VALIDATION",
+  "scope": "PHASE8_VERSIONED_CORPORATE_RECONCILIATION",
+  "review": "Architect amendments accepted; Critic APPROVE after exact timing/precedence amendments",
+  "final_tests": {
+    "session": 77793,
+    "passed": 174,
+    "failed": 0,
+    "seconds": 11.41
+  },
+  "static": {
+    "mypy_source_files": 16,
+    "black_files": 25,
+    "new_implementation_complexity_limit": 10,
+    "new_implementation_flake8_files": 6,
+    "integration_and_test_lint": "PASS max-line-length100"
+  },
+  "evidence": [
+    ".agent/acceptance/phase8-native-corporate-after.json",
+    ".agent/acceptance/phase8-native-window-after.json"
+  ],
+  "sources": {
+    "quant_investor/contracts/builtins.py": "7d913c3c15fbedc66ac0bfd941c274de0f5dd97d298ebae1fcfc06c61968b812",
+    "quant_investor/strategy_records/corporate_contracts.py": "9535965c5faa7d148b0218a43f8a5a8fbdea58501a2ceb88c7bdbe9cea9612fe",
+    "quant_investor/strategy_records/corporate_accounting.py": "b2efb0bc8d0b2ef0a2604925b6cda313ef4c617b82153694fdb27611c5179960",
+    "quant_investor/intelligence/corporate_reconciliation.py": "34501cc2fa4ff2564ab6d3b0e280dd7c7987e319b4068dd3718bac7f5202e7a1",
+    "quant_investor/intelligence/corporate_report_contract.py": "00e98782d835dd7242e034c3872413595287192575db2dd52358cf582d13f6fa",
+    "quant_investor/operations/corporate_adapter.py": "c02c0284461c575c1a4712095784741e43951298abeca4ebc9981e6cce05c3a5",
+    "quant_investor/operations/corporate_reconciliation.py": "91663f053961a8effeac862c039bba92485c982070ce98a959076862b9531ba0",
+    "quant_investor/operations/completion_corporate.py": "b993dac508d6a4d65eb1a893252bd911e5843a326eb1d814a413674a8db544e0",
+    "quant_investor/operations/completion_decision.py": "e80ad64773314ce3d697ec8c56cd007a831434461f06277c4a114740c09f7e6d",
+    "quant_investor/operations/decision_recipe.py": "4da7dfe28467918e98d84cc91080909eb300c17afc7cdc9c8ce79a54b91c82b4",
+    "quant_investor/operations/execution_recipe.py": "a4115fd4504e7135835d24e1e6038537bcd587e6e86f511ea99ab5dcc9292cfc",
+    "quant_investor/operations/materialization_contract.py": "d05afd749566116dc2832c945e38c3578f7097f9aa8f88c68915c098cbf8c892",
+    "quant_investor/operations/native_input_contract.py": "a8b4184132d35343cfef353d1cfae91cd2d8f1b58bb5a0958e73e5f67a10b998",
+    "quant_investor/operations/prospective_timing.py": "e21f595212bacc05eebf9813cb4aa1a1e7a9a7664db13fbc18cb5575f0633cf8",
+    "quant_investor/operations/research_materialization.py": "69a3eaf47adb0c5b05e39f626535daaa50502c5bff14c7e8b51f8fbb9e32b345",
+    "scripts/daily_materialization.py": "1165a72dc59dc8ac3a405a2571f12b6b043b38a363b24143b595e8447b406f35",
+    "scripts/daily_native_inputs.py": "8ce678610a8f002aaaa4998aae73bd34cdb516532b088988106cc1297606ab27",
+    "scripts/daily_native_registry.py": "3bf817a8bb82b1234edd6ef398ef045b1bfb25e53ee14b7c65dae69ccfbfac65",
+    "scripts/daily_ledger.py": "91e635e5c386272a5e28e95ec2a233af512b3f4c72c8ba4bff3da021ece9c992",
+    "scripts/daily_ledger_replay.py": "9562bfe3d038598a8b3224c1a564ebc077eeb5a3c47e790026ca90619e38f06b",
+    "tests/unit/_native_corporate_fixture.py": "bbf14e6e10edf1978812959357df30c05456f2db1a8f04a07274fb2459776097",
+    "tests/unit/_native_daily_store_fixture.py": "3d7421694cbdb4752b18bc165f9559b051beb496ffe409829874dd098e74f06d",
+    "tests/unit/test_corporate_source_contracts.py": "72e55ab44a13e630650cce4633e820b3ddff2480a442471d63fd39d6f637e72a",
+    "tests/unit/test_daily_evidence_corporate_reconciliation.py": "b58206126f3b36946bfec8c2d88d059f09724bdcaedc1aaa6f2c08ff5d33e187",
+    "tests/unit/test_daily_evidence_materialization_contract.py": "5cfda5b69319aea25ea8e27073b836b3f79bb2b7b0df152d95d72f4971e6915c",
+    "scripts/daily_completion.py": "7a04213b4f558b403baac1514c201ca4f8678d5257f80b292b880f1a78081337"
+  },
+  "verification_boundaries": [
+    "Native dividend and split accounting/owner source declarations are explicitly synthetic, executed through native registered records",
+    "Materialization v3/native v4/corporate completed replay use real native components with controlled outer handoff and EOD-admission seams",
+    "Fixed-DAG Store-block test uses real corporate node and fixture unrelated adapters",
+    "Canonical Zijin window is retrospective from retained Sep11 Market bytes; no original Sep03PIT or real reconciliation claim",
+    "Normalized events are source declarations; raw announcement refs are retained but issuer identity is not independently authenticated",
+    "No current-source installed full DAG, scheduled deployment, actual holdings/cash/policy/threshold mutation or live provider call"
+  ],
+  "post_validation_followup": {
+    "observed_at": "2026-09-12T05:15:56.915428+00:00",
+    "finding": "Exact EOD native-adapter admission map still selected legacy CorporateActionAdapter for new profile",
+    "fix": "Select exact CorporateReconciliationAdapter only when loaded corporate_action_context_ref is present; keep legacy exact-type rejection",
+    "session": 14932,
+    "passed": 22,
+    "failed": 0,
+    "seconds": 10.03,
+    "scope": "Focused EOD control-type gate plus native corporate regressions, not full installed EOD"
+  }
+}

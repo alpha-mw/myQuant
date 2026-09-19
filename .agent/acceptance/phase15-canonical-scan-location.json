@@ -1,0 +1,9 @@
+{
+  "root": "/private/tmp/myquant-canonical-scan-20260916T152008Z",
+  "state": "INSTALLED_VERIFIED",
+  "pid": 43162,
+  "production_deployed": false,
+  "commit": "5060dee2d4b39b50a735393d056ebe5adb4efe3b",
+  "import_origin": "/private/tmp/myquant-canonical-scan-20260916T152008Z/release/installs/5060dee2d4b39b50a735393d056ebe5adb4efe3b-42a7933da56d08cfe3dcc1ccf5fd14cb7deadbea94b77423d2d74d8602602c7a/lib/python3.13/site-packages/quant_investor/__init__.py",
+  "finished_at": "2026-09-16T15:20:33.242331+00:00"
+}

@@ -1,0 +1,87 @@
+{
+  "observed_at": "2026-09-12T22:40:11.947365+00:00",
+  "status": "MISSING_ONLY_EXPOSURE_COMPONENT_COMPLETED_LOCAL_VALIDATION",
+  "phase12_complete": false,
+  "full_goal_complete": false,
+  "new_profile_public_integration_complete": false,
+  "architect": "APPROVE_WITH_CHANGES; ordinary missing-only native rebuild; original source/Decision guards retained",
+  "critic": "APPROVE after exact selector/API and focus allowlist amendments",
+  "source_refs": [
+    {
+      "path": "quant_investor/operations/exposure_completion.py",
+      "sha256": "51cd4906ca59e790e79b07e046e781455648ff2f9ad2e61590a5d5bb7d276dc0"
+    },
+    {
+      "path": "quant_investor/operations/research_projection.py",
+      "sha256": "70e11735c4cff4f9a2b384d4b11b4186d6afe71e1155bea1f6d502cb33905df4"
+    }
+  ],
+  "test_refs": [
+    {
+      "path": "tests/unit/test_daily_evidence_exposure_completion.py",
+      "sha256": "bf278cd407c495036f004844ee31893f5115a11af82841aa537a531c0a768168"
+    },
+    {
+      "path": "tests/unit/test_daily_evidence_focus_sources.py",
+      "sha256": "51fb047cba7073f2438ef49a984b5160ce5ecc9178aee31207b1750787217a0a"
+    },
+    {
+      "path": "tests/unit/test_daily_evidence_focus_readback.py",
+      "sha256": "df830ea64204f0451142be244ce7db04841b1a0d027a64676ca1ceee6aef8b69"
+    },
+    {
+      "path": "tests/unit/test_daily_evidence_low_frequency.py",
+      "sha256": "deadecb12f576be7720f290f369e0ccd3c334637d33554fe1c3b7b671ec7d7d5"
+    }
+  ],
+  "final_validation": {
+    "session": 3730,
+    "exit_code": 0,
+    "result": "59 passed, 2 skipped, 2 deselected in 19.05s",
+    "selection": "new Exposure component; focus source/replay; legacy low-frequency projection profile; excludes two expensive native 100-company focus parameterizations"
+  },
+  "legacy_native_source_validation": {
+    "session": 66614,
+    "exit_code": 2,
+    "result": "2 passed in 167.10s before interruption",
+    "completed_tests": [
+      "test_daily_evidence_research_sources.py::test_native_dc_projection_is_separate_from_missing_industry",
+      "test_daily_evidence_research_sources.py::test_native_industry_adapter_replays_complete_membership_sources"
+    ],
+    "disposition": "Stopped after those unaffected large source cases completed while entering expensive focus integration; remaining relevant fast cases included in final selection. Not a full selected-suite pass."
+  },
+  "static": {
+    "mypy": "PASS, 2 source files",
+    "black": "PASS, 3 Python files",
+    "flake8": "PASS, 3 Python files"
+  },
+  "selector": {
+    "field": "source_completion_policy",
+    "value": "native-optional-exposure-missing.v1",
+    "absent": "legacy unchanged",
+    "other_values": "typed rejection",
+    "existing_public_requests": "cannot enable selector until reviewed new request/native-input profile is wired"
+  },
+  "exercised": [
+    "independent native Exposure projection replay and exact original-byte equality",
+    "finite ordinary and focus missing-only classification",
+    "unknown policy, projection mutation, companies/SHA/Theme/source/future/duplicate negatives",
+    "focus membership conflict and evidenced zero-share hard failure",
+    "focus raw facts without membership remain explicitly unqualified",
+    "both focus companies and original partial report bytes retained",
+    "native compiler with actual PAPER_CANDIDATE fixture, then INSUFFICIENT_EVIDENCE when revenue evidence removed",
+    "native Decision and all false authorities unchanged by classifier"
+  ],
+  "test_seams": [
+    "pure compiler uses explicitly synthetic native rank/Industry/Theme/Fundamental/Macro artifacts; not a real market claim",
+    "new physical-source tests use exact synthetic capture/file refs and native parsers/projectors",
+    "completed-EOD focus replay tests retain existing outer completion/core admission seams"
+  ],
+  "not_claimed": [
+    "new profile enabled in public daily launcher",
+    "timing commitment writer completed",
+    "installed or live whole-DAG success",
+    "actual financial state or automation changed"
+  ],
+  "next_required": "Finalize exact cutoff commitment layout and version wiring using the Architect native source-time reader table; Critic review then implement timing/portfolio recovery and request integration."
+}

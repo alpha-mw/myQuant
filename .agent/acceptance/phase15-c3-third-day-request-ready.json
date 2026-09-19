@@ -1,0 +1,40 @@
+{
+  "observed_at": "2026-09-15T03:56:59.642807+00:00",
+  "child_pid": 3772,
+  "trade_date": "20260831",
+  "state": "REQUEST_READY_NATIVE_DISPATCH_STARTED",
+  "request_ref": {
+    "path": "results/operations/daily_production/CN/20260831/preparation/1335469cd918f263243cf08e8d972e99c4ae41f2a22cc7085a7b2f590ebcdc32/request.json",
+    "sha256": "47b277657ae1aa90fd817ee3d618abdf92fc92ba2d3804d2a2eec86f8fba27b8"
+  },
+  "config_ref": {
+    "path": "configured-inputs/source-config.json",
+    "sha256": "1335469cd918f263243cf08e8d972e99c4ae41f2a22cc7085a7b2f590ebcdc32"
+  },
+  "verified_refs": {
+    "calendar_ref": {
+      "path": "results/operations/daily_production/CN/20260831/preparation/1335469cd918f263243cf08e8d972e99c4ae41f2a22cc7085a7b2f590ebcdc32/sources/calendar.json",
+      "sha256": "d4630c8f1e9c642fd800fa130153b6515fae8a4fefc40b146305764a4e7f141c"
+    },
+    "raw_calendar_ref": {
+      "path": "results/operations/daily_production/CN/20260831/preparation/1335469cd918f263243cf08e8d972e99c4ae41f2a22cc7085a7b2f590ebcdc32/sources/calendar.raw.json",
+      "sha256": "523c7e6d651baff9008d7c2658b17e9fb04ce576e2d2ac13912f7f102095bb4f"
+    },
+    "recipe_ref": {
+      "path": "results/operations/daily_production/CN/20260831/preparation/1335469cd918f263243cf08e8d972e99c4ae41f2a22cc7085a7b2f590ebcdc32/objects/collection.json",
+      "sha256": "c4a90b3aedd3a1368b1e7ea685e4047870682b414cfcce2e8c3e63664d89a819"
+    },
+    "release_install_ref": {
+      "path": "configured-inputs/installation.json",
+      "sha256": "c0a485747ac3bcd2ed60e1d6f3e1b1a2e54867d2644865f1bb2dfd3d07cf4e13"
+    }
+  },
+  "exact_ref_bytes_sha_verified": true,
+  "log_evidence": [
+    "PASS 20260831 configured-source-result",
+    "START native full replay 20260828 call 1"
+  ],
+  "synthetic": true,
+  "production_deployed": false,
+  "third_day_eod_verified": false
+}

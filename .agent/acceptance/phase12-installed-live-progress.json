@@ -1,0 +1,41 @@
+{
+  "observed_at": "2026-09-13T02:41:00.447367+00:00",
+  "root": "/private/tmp/myquant-cutoff-installed-20260913T020706Z",
+  "producer_commit": "eaa60b2d7522db887d387ea99c47a7961c1257a0",
+  "process": {
+    "pid": 67484,
+    "state": "RUNNING",
+    "command": [
+      "/private/tmp/myquant-cutoff-installed-20260913T020706Z/release/installs/eaa60b2d7522db887d387ea99c47a7961c1257a0-f5d679aa330d10da832a8efc0d664d76726f81f6515195d3bf79f62a47bf997f/bin/python",
+      "-I",
+      "/private/tmp/myquant-cutoff-installed-20260913T020706Z/run-cutoff-proof.py",
+      "/private/tmp/myquant-cutoff-installed-20260913T020706Z/repository/tests/unit/_native_cutoff_installed_scenario.py",
+      "/private/tmp/myquant-cutoff-installed-20260913T020706Z",
+      "/Users/maxwell/mySpace/myQuant/.venv/lib/python3.13/site-packages"
+    ]
+  },
+  "tool_session": 46315,
+  "native_node_states": {
+    "calendar": "SUCCEEDED",
+    "corporate_action_recon": "SUCCEEDED",
+    "dashboard": "SUCCEEDED",
+    "decision": "SUCCEEDED",
+    "exposure": "SUCCEEDED",
+    "factor": "SUCCEEDED",
+    "fundamental": "SUCCEEDED",
+    "industry": "SUCCEEDED",
+    "low_observation": "SUCCEEDED",
+    "macro": "SUCCEEDED",
+    "market": "SUCCEEDED",
+    "pit": "SUCCEEDED",
+    "store": "SUCCEEDED",
+    "theme": "SUCCEEDED",
+    "top100": "SUCCEEDED",
+    "w80_observation": "SUCCEEDED"
+  },
+  "completion_file_exists": false,
+  "full_eod_proven": false,
+  "production_deployed": false,
+  "real_provider_calls": false,
+  "scope": "INTERMEDIATE_LIVE_INSTALLED_SYNTHETIC_RUN"
+}

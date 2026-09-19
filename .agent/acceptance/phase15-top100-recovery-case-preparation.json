@@ -1,0 +1,31 @@
+{
+  "state": "PREPARED_STATIC_VALIDATION_ONLY",
+  "observed_at": "2026-09-13T20:45:14.394252+00:00",
+  "case": 3,
+  "trade_date": "20260903",
+  "placement": "After five normal synthetic dates and their following Morning; separate from uninterrupted-five-day evidence",
+  "entry": "Same native configured source preparation and automatic dispatch",
+  "fault": "Top100 native files committed, then DailyJournal.finish interrupted before a terminal receipt",
+  "recovery": "Exact original request; native Factor preparation and Top100 publisher forbidden on resume",
+  "invariants": [
+    "original Factor pointer bytes/mtime",
+    "original Factor generation file inventory",
+    "original Top100 output bytes/mtime",
+    "same Factor terminal ref",
+    "Top100 successful terminal after recovery",
+    "full EOD/native replay checked by successor caller"
+  ],
+  "interruption_checkpoint": "written before recovery, outside financial workspace; retained on recovery failure",
+  "source_sha256": {
+    "tests/unit/_native_top100_recovery_case.py": "a5bd1168e0c73448db62303cb1f5576acbe3a7c153c03eda5a21db9a313c1d86",
+    "tests/unit/_native_configured_successor.py": "8441b41a9dc19c0fb34fbee4c4fe9282597c61d25b9b1a662fa19a12bf75f0f4",
+    ".agent/acceptance/run_configured_successors.py": "21e6be68478824c609d6c655d6f5b0d55947929b2899ed8669f7404f97ee520f"
+  },
+  "validation": {
+    "Black": "PASS",
+    "severe_and_unused_import_lint": "PASS",
+    "parent_and_child_syntax": "PASS",
+    "native_execution": "NOT_STARTED"
+  },
+  "full_goal_complete": false
+}

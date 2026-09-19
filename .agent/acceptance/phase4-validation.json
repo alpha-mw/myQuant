@@ -1,0 +1,73 @@
+{
+  "phase": 4,
+  "status": "COMPLETED_LOCAL_VALIDATION",
+  "verified_at": "2026-09-11T14:52:47.543864+00:00",
+  "source_sha256": {
+    "quant_investor/factors/production_pit.py": "dc52d69808d8bab3f43b85650b87db9338b531210abdc98abdc152e31f962860",
+    "quant_investor/intelligence/pcb_ai_hardware.py": "4b3a552bb13704bebc1e5389cf155148343ae43837f15d5c43c24a02f504f74b",
+    "quant_investor/intelligence/theme_sources.py": "caf433cc266247ac6e6379cc9c6264b836120ec9d357123ba17ba41872ec8baf",
+    "quant_investor/operations/research_recipes.py": "41218e7dfb638a98d66a18e701986855385878545a213f65f02c49b2edf13969",
+    "quant_investor/operations/research_projection.py": "e1b9c6da38996dfdd191a2dfbe49f5557dae9f51e0dfbf7da0e8116206e875f6",
+    "quant_investor/operations/research_sources.py": "d4a0d7875bdf1d2c1784a9e757d4de4dd472dd3b0af45b5f4488116b3a0b57ca",
+    "quant_investor/operations/research_materialization.py": "3d4ce0d91272e33f651bffbd5a4ed002e157d1b9d00a05bf8fb7845d2b86d326",
+    "quant_investor/operations/completion_research.py": "c1170bf2fa7326202daed9d9a3d1f6c903f9284b8b9c0ee31618a1fb6f08a634",
+    "quant_investor/operations/completion_decision.py": "eb6fa35945fd23f501899d04cbe375862cc067c6d530ccdb0325b21160dcd5f8",
+    "quant_investor/operations/theme_acquisition.py": "7ca1593558606f4ddc2fcdd5d9d6fa3767437fe280ccabf7e09331d9084aad65",
+    "quant_investor/operations/theme_core_binding.py": "8d465a3adc55756c7427dc668d938151a9fb49c4247feebcbc27a1dd9c23f158",
+    "quant_investor/operations/theme_capture_stage.py": "f3b5eb9cd7f08f58f8cdf63d45c3576443f92ae5262c8d8f6b2adca3bab7843f",
+    "quant_investor/operations/theme_handoff.py": "2c751efe4523ae45f47baded965971139d96d87f486f1383ccfae8bdbfcd0eaf",
+    "quant_investor/operations/theme_handoff_publish.py": "c5c987a839fa295e778dad01bc0ef229d86bd5fd770e26e08b6b7561740f84ae",
+    "quant_investor/operations/theme_handoff_readback.py": "c638d3e7f40fc3489739823ef90a7ec1861ef2b137a67b9c1e1afbe7f25c5dbd",
+    "quant_investor/operations/materialization_contract.py": "6c7caa0aa6ebc519dd79ed59fad42804afedcebafca8309fba0e9f8be37255f0",
+    "quant_investor/operations/ledger_readback.py": "942ee86a10728e8e95bd942c5064aaa8cb025c4b394477e4d237028c42be45ac",
+    "quant_investor/operations/prospective_sources.py": "4bd670537687df9b9eaf980c328f5b60c74b0b64f7773bcc2417d0b9013b14ed",
+    "quant_investor/operations/journal_revisions.py": "01f7c91ddede4521cbdea5b92d20676939fa8ffde31f2ddd75ebbe976caeea6f",
+    "quant_investor/cli/unified.py": "9cad9775ec938e674b00027d147be909a56ff9794c227cc64c175ef9317e0796",
+    "scripts/daily_materialization.py": "13d57c5411828dafc7b234f972870906078aeff50dfd7d23a6fde9dfb2668c9e",
+    "scripts/daily_completion.py": "51fa895a7e9cad4ad11b021c0a502c6d6d39a92df605d1565a99766b7a0fd2da",
+    "scripts/daily_ledger.py": "df20c19e1d1feed03912d1aa26cbbe560452183e3eb2a3de823e348b95cdabff",
+    "quant_investor/contracts/builtins.py": "bdc3c38c051e39c4acbdabbe099de73af29d64908c6e0883d8d780e7d5372d0c",
+    "tests/unit/test_daily_evidence_focus_sources.py": "51fb047cba7073f2438ef49a984b5160ce5ecc9178aee31207b1750787217a0a",
+    "tests/unit/test_daily_evidence_focus_acquisition.py": "c23ec4db1ff77a7b2d7d10f8d156cfbc29581595a09775027add60b3657030c0",
+    "tests/unit/test_daily_evidence_focus_readback.py": "accc282466ce409833c3f140312f4070640e08d91b70880114c79b457fb9d874",
+    "tests/unit/test_daily_evidence_focus_revisions.py": "53e0a7b34dae63775d18a78e7bf7bd0f4bf3d073c4d2893ee528aff912b6a906",
+    "tests/unit/test_daily_evidence_focus_pit.py": "723a73e62361ed0c2d648e7dc846f6c04cccd9dd9be50f640a7bb68f930ff66a",
+    "tests/unit/test_daily_evidence_materialization_contract.py": "0bbc670b6c6e61e580f0b2e7df93cecf6af83ff6e1c7f0a8b75c1e2ba6172b61",
+    "tests/unit/test_daily_evidence_theme_core_binding.py": "e20f2c4f79494972670f36cbaf9e9f6fc00ee6f9ea7b26634aae112d66e4ae46",
+    "tests/unit/test_daily_evidence_acquired_theme_materialization.py": "edb394b29c65a9eee9963d2426ffd22c9f0833c5a22e4125ea3c3f3e5a045604",
+    "tests/unit/test_daily_evidence_prospective_sources.py": "ee5546995505c1520ccff4ad1b95f116b5126a3e3c079c1a622a911078959ef9",
+    "tests/unit/test_daily_evidence_theme_capture_stage.py": "c6f89b3d54350b1f625fabcbc9412d60430e8334d700f574b3947f2da318641a"
+  },
+  "tests": [
+    {
+      "session_id": 7251,
+      "result": "4 passed in 534.68s",
+      "scope": "native 100-company Theme/Exposure adapters plus source wrappers; complete and missing focus data, outer PIT selection controlled"
+    },
+    {
+      "session_id": 87006,
+      "result": "142 passed, 2 deselected in 100.40s",
+      "scope": "focus/PIT/acquisition/handoff/materialization/replay/revision/ledger/legacy regressions; two previously passed slow native 100-company cases excluded"
+    },
+    {
+      "session_id": 39067,
+      "result": "10 passed, 2 deselected in 3.08s",
+      "scope": "focus/revision/ref readback after behavior-preserving CI complexity extraction"
+    }
+  ],
+  "static_checks": {
+    "mypy": "23 current source files passed",
+    "flake8": "changed source/test files passed; intelligence/CLI max-complexity=10 passed",
+    "black": "32 files passed"
+  },
+  "native_source_proof": ".agent/acceptance/phase4-pit-baseline.json",
+  "native_providers_called": false,
+  "deployed": false,
+  "limitations": [
+    "Native source-adapter tests use a controlled outer Factor/PIT admission seam; retained PIT extraction has separate native proof.",
+    "Completed-reader ref mapping uses a controlled deterministic projector; native projection and adapter execution are exercised separately.",
+    "Current installed whole-DAG/v2 acceptance and final repository-wide CI remain Phase15 gates.",
+    "Historical Dashboard failure remains preserved and unresolved; unrelated existing weekly maintenance fixture failure remains disclosed."
+  ],
+  "whole_goal_complete": false
+}

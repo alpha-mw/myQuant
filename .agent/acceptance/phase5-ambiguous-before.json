@@ -1,0 +1,155 @@
+{
+  "scope": "isolated native builder on identical unordered row sets; no provider or publication",
+  "source_rows": 3,
+  "same_date_conflicting_rows": 2,
+  "row_order_changes_selected_value": true,
+  "results": [
+    {
+      "selected_fin_roe": "2.000000000000",
+      "assessment": {
+        "assessment_id": "0be50956886b9d4bb87bff87169a1d9914ed0afb413d0c994ea1e51b2c6527ad",
+        "authority": {
+          "broker": false,
+          "execution": false,
+          "factor_governance_write": false,
+          "llm_control": false,
+          "mainline_activation": false,
+          "order": false,
+          "portfolio_activation": false,
+          "provider": false,
+          "selector_write": false,
+          "trade": false
+        },
+        "production": false,
+        "research_only": true,
+        "run_state": "INACTIVE",
+        "as_of": "2026-08-28T13:30:00Z",
+        "blocker_codes": [],
+        "company_code": "002463.SZ",
+        "component_rows": [
+          {
+            "component": "business_quality",
+            "score": "0.666666666667",
+            "status": "AVAILABLE",
+            "weight": "0.200000000000"
+          },
+          {
+            "component": "earnings_quality",
+            "score": "1.000000000000",
+            "status": "AVAILABLE",
+            "weight": "0.200000000000"
+          },
+          {
+            "component": "growth_durability",
+            "score": "1.000000000000",
+            "status": "AVAILABLE",
+            "weight": "0.200000000000"
+          },
+          {
+            "component": "industry_cycle",
+            "score": null,
+            "status": "MISSING",
+            "weight": "0.200000000000"
+          },
+          {
+            "component": "valuation",
+            "score": "1.000000000000",
+            "status": "AVAILABLE",
+            "weight": "0.200000000000"
+          }
+        ],
+        "coverage": "0.800000000000",
+        "effective_score": "0.916666666667",
+        "industry_assessment_ref": null,
+        "minimum_coverage": "0.600000000000",
+        "raw_score": "0.733333333333",
+        "score_present": true,
+        "source_refs": [
+          {
+            "artifact_id": "9de548540288a0c95ae2caabedeb477968ac993cd471ef064e403ae0febcde45",
+            "byte_sha256": "00af57fac32ed24ad31338cf1e688d84d1cb9efcfc585c072c6d0c436d485252",
+            "contract_sha256": "b755f6f20fafe0eea6383d7d12db6e97cfbaa53239bfb970552e5c16d6d4673e",
+            "kind": "company_source_evidence",
+            "semantic_sha256": "68714ad7af414642b66afd62600d6e69fc4e197651c3fded8fb5b13672e36972"
+          }
+        ],
+        "status": "PARTIAL",
+        "theme_assessment_ref": null
+      }
+    },
+    {
+      "selected_fin_roe": "1.000000000000",
+      "assessment": {
+        "assessment_id": "0be50956886b9d4bb87bff87169a1d9914ed0afb413d0c994ea1e51b2c6527ad",
+        "authority": {
+          "broker": false,
+          "execution": false,
+          "factor_governance_write": false,
+          "llm_control": false,
+          "mainline_activation": false,
+          "order": false,
+          "portfolio_activation": false,
+          "provider": false,
+          "selector_write": false,
+          "trade": false
+        },
+        "production": false,
+        "research_only": true,
+        "run_state": "INACTIVE",
+        "as_of": "2026-08-28T13:30:00Z",
+        "blocker_codes": [],
+        "company_code": "002463.SZ",
+        "component_rows": [
+          {
+            "component": "business_quality",
+            "score": "0.333333333333",
+            "status": "AVAILABLE",
+            "weight": "0.200000000000"
+          },
+          {
+            "component": "earnings_quality",
+            "score": "0.000000000000",
+            "status": "AVAILABLE",
+            "weight": "0.200000000000"
+          },
+          {
+            "component": "growth_durability",
+            "score": "0.000000000000",
+            "status": "AVAILABLE",
+            "weight": "0.200000000000"
+          },
+          {
+            "component": "industry_cycle",
+            "score": null,
+            "status": "MISSING",
+            "weight": "0.200000000000"
+          },
+          {
+            "component": "valuation",
+            "score": "0.000000000000",
+            "status": "AVAILABLE",
+            "weight": "0.200000000000"
+          }
+        ],
+        "coverage": "0.800000000000",
+        "effective_score": "0.083333333333",
+        "industry_assessment_ref": null,
+        "minimum_coverage": "0.600000000000",
+        "raw_score": "0.066666666667",
+        "score_present": true,
+        "source_refs": [
+          {
+            "artifact_id": "ce4f7d90ce9ade613eff05d94bc07877a42b33a5551e803fc67796dc493635db",
+            "byte_sha256": "e1aefa98f4a294c0cfe021450cbb842368280ab8c44668f14e3901ddc7c87f6a",
+            "contract_sha256": "b755f6f20fafe0eea6383d7d12db6e97cfbaa53239bfb970552e5c16d6d4673e",
+            "kind": "company_source_evidence",
+            "semantic_sha256": "a05542c6967b1482e93cb3ec24d068f879fa77dc6a123311d9e6c6b365bddfa6"
+          }
+        ],
+        "status": "PARTIAL",
+        "theme_assessment_ref": null
+      }
+    }
+  ],
+  "whole_goal_complete": false
+}

@@ -1,0 +1,70 @@
+{
+  "observed_at": "2026-09-14T06:21:16.843233+00:00",
+  "state": "CURRENT_ASSETS_RESPONSIVE_HTTP_BROWSER_QA_PASS",
+  "browser": "Real headed Chrome via Playwright CLI",
+  "runtime_asset_basis": "c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b",
+  "source_manifest": "output/playwright/phase15-responsive/source-manifest.json",
+  "asset_count": 9,
+  "exact_asset_match_current_and_G": true,
+  "synthetic_data": true,
+  "full_native_eod_admission": false,
+  "metrics": [
+    {
+      "width": 390,
+      "height": 844,
+      "documentWidth": 375,
+      "bodyWidth": 375,
+      "registeredVisible": true,
+      "registeredText": "REGISTERED TRANSACTIONS\n\n登记成交与收盘估值\n\n交易日 · 2026-08-25\n\n用户登记的持仓变动\n\n1 只股票有已登记买入；证据来自用户申报，券商账单尚待核对。\n\n申报于 2026/8/25 10:02:00；登记于 2026/8/25 20:20:00（北京时间）。\n\n系统完成的收盘估值\n\n已完成正式收盘估值；收盘环节新增成交 0 笔、订单 0 笔、成交回报 0 笔。现金和持仓承接登记后的账本。\n\n截至这份日终记录，变动持仓的止损和跟踪策略仍待复核，未取得执行资格。\n\n股票代码\t变动类型\t变动前股数\t增加股数\t变动后股数\t新增成本（含费）\t风险状态\n300308.SZ\t新增持仓\t0\t+100\t100\t¥2,205.02\t策略待复核",
+      "table": {
+        "width": 313,
+        "scrollWidth": 535
+      },
+      "overflow": []
+    },
+    {
+      "width": 768,
+      "height": 1024,
+      "documentWidth": 753,
+      "bodyWidth": 753,
+      "registeredVisible": true,
+      "registeredRows": "300308.SZ\t新增持仓\t0\t+100\t100\t¥2,205.02\t策略待复核",
+      "table": {
+        "width": 655,
+        "scrollWidth": 655
+      }
+    }
+  ],
+  "keyboard_skip_link": {
+    "focus": {
+      "tag": "A",
+      "text": "跳至业绩记录",
+      "href": "#record"
+    },
+    "activation": {
+      "hash": "#record",
+      "active": "BODY",
+      "recordTop": 90.046875
+    }
+  },
+  "narrow_table_horizontal_gesture": {
+    "scrollLeft": 222.5,
+    "scrollWidth": 535,
+    "clientWidth": 313
+  },
+  "console_errors": 0,
+  "console_warnings": 0,
+  "visual_reviewed_screenshots": {
+    "viewport-390.png": "f1f08e479da999ef13753856b1052778203e96a458e665e1806809be0eb5c28a",
+    "registered-390.png": "a4a5d2d1e9df1a1b5110cadc62b3630e40fbfa1f508f8459c8e29a62269bd2f0",
+    "registered-scrolled-390.png": "fc473b6d1efe65ed326a208b286816a1c81abae5fc98cbb0ba9b27575d5d5bbe",
+    "registered-768.png": "d52583ab7499cc93d0a7cab55751d428737bf6c7629d8fd5e48c1e9fe1142389"
+  },
+  "browser_session_closed": true,
+  "preview_server_handle": 73745,
+  "preview_server_exit_code": 0,
+  "file_browser_policy_block_preserved": true,
+  "runtime_source_changes": [],
+  "actual_account_changes": [],
+  "full_goal_complete": false
+}

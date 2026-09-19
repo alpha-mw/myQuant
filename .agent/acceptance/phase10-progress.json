@@ -1,0 +1,52 @@
+{
+  "observed_at": "2026-09-12T17:48:12.885419+00:00",
+  "status": "COMPLETED_LOCAL_VALIDATION",
+  "full_phase10_complete": false,
+  "full_goal_complete": false,
+  "review": "Architect seven amendments accepted; Critic APPROVE",
+  "checks": [
+    {
+      "session": 26862,
+      "passed": 63,
+      "scope": "shared policy/corporate/weekly native risk regressions"
+    },
+    {
+      "session": 82232,
+      "passed": 55,
+      "scope": "legacy Morning contract/consumer/receipt/seal/history"
+    },
+    {
+      "session": 97532,
+      "passed": 27,
+      "scope": "v3 risk, native-source consumer/CLI, report/receipt/history; outer EOD/calendar/live provenance explicitly controlled"
+    }
+  ],
+  "native_source_reader": ".agent/acceptance/phase10-frozen-risk-reader.json",
+  "sources": {
+    "quant_investor/strategy_records/risk_policy_contract.py": "fd559bcb72cce62101e8cbff3f8b9179642e2fc56f90b085ed21ca9006dec763",
+    "quant_investor/operations/morning_risk_sources.py": "2bb0b358042914d41556b4fb4483bbfacea4dc5f5d733684afaa228201eb7f00",
+    "quant_investor/intelligence/morning_threshold_review.py": "1eafcaeb04c44bd9ebd653a0b33c49775c65cdf701eb6e156dc8e2cf5cd51ab3",
+    "quant_investor/operations/morning_contract.py": "f2e37ef3f4f8e53a1318fde9cea53457e89d6fe54980d686a360592a3178da57",
+    "quant_investor/operations/morning_report.py": "f9b3028e954aec8c94368e7d19c6e26b4839f81d6e17e8a20a3523c8ee0fd79f",
+    "quant_investor/operations/morning_receipt.py": "bd2f4c9d699554f54be1079d43034e91c01496b63be477125135ea9ee56c695f",
+    "scripts/daily_morning_consumer.py": "b9bdcfe1b0b55d89b597dccc09c67289e876bbb39e91ce2356ce0efbe8e862c6",
+    "scripts/daily_morning_seal.py": "9bd429df7dce4f1a884ca00645df6f3279b70a986ddfc352988a1c7d3e8562d4",
+    "scripts/daily_morning_history.py": "bf56f9f0be363be8ae21c4497b3ff5de54ff7a1548ccf82538b9b47020deef8d",
+    "quant_investor/cli/morning_v2.py": "7259e0a50bc1f79793434e94d98b235978d344a0127d0f2b28ae1d314637a86c",
+    "scripts/daily_morning_cutover.py": "d40ab703553f6098fa066073ff4d0b0ba2b7ea769ba35ed275b0bf0a3da0f58b",
+    "tests/unit/_native_morning_threshold_fixture.py": "6ecbea1e5043e6038d642ec2274de20d8cd76e58386830d5d787c2a20dd54f5a",
+    "tests/unit/test_morning_threshold_review.py": "976f95c0625464e1f8145257b6c6c83f2ac338d13b2787373504d7001a978f9e",
+    "tests/unit/test_morning_v3_consumer.py": "0c64eaee52c574469127c0930e0b718c4f79754a2d45842b5ac8f2a0029b8106",
+    "tests/unit/test_morning_v3_receipt.py": "26efbab9f477f9c9232f0b058af2a5fcf5b176bee61489ca349baec293538399"
+  },
+  "remaining": [
+    "Full native EOD/Decision and next-Calendar admission are explicit controlled boundaries in component fixtures",
+    "Positive SEAL/history fixtures also control live provenance and clock; no real live receipt claim",
+    "Current-source installed full-DAG/Morning and consecutive-day proof remain Phase15; actual automation migration remains Phase12"
+  ],
+  "real_policy_changes": 0,
+  "real_account_changes": 0,
+  "live_providers": 0,
+  "deployment_changes": 0,
+  "validation_receipt": ".agent/acceptance/phase10-validation.json"
+}

@@ -1,0 +1,123 @@
+{
+  "observed_at": "2026-09-13T21:53:42.951850+00:00",
+  "state": "ALL16_NATIVE_DAY_NODES_SUCCEEDED_FINAL_SEAL_PENDING",
+  "synthetic": true,
+  "root": "/private/tmp/myquant-configured-catalog-20260913T202622Z",
+  "producer_commit": "bf078d3235de3ade1379e8082d5d4a49e109f7d5",
+  "node_refs": {
+    "pit": {
+      "state": "SUCCEEDED",
+      "ref": {
+        "path": "results/operations/daily_production/CN/20260827/nodes/pit/6008501304fa1ede1227b36fc5ba923439cb7beeb47e0ec78135fad7d7286646/attempt-0001/terminal.json",
+        "sha256": "0fd8204aac05fd1332e0a0ab37eb09f1551c8533950426c106bd24cd662ec344"
+      }
+    },
+    "exposure": {
+      "state": "SUCCEEDED",
+      "ref": {
+        "path": "results/operations/daily_production/CN/20260827/nodes/exposure/78bb91f2ac19b4257c28f44f4be9be39223ee638accd851cd9c0cdf1a15c5099/attempt-0001/terminal.json",
+        "sha256": "8db0922e914d65933c33ddd8fc0ba9e72fa5f21bdce379906afb104429a4bd49"
+      }
+    },
+    "calendar": {
+      "state": "SUCCEEDED",
+      "ref": {
+        "path": "results/operations/daily_production/CN/20260827/nodes/calendar/f90af9d37855553461e059346edf8cdf54ac663b0f86c4cd531ae37e40418218/attempt-0001/terminal.json",
+        "sha256": "85538e4cc838e37c814c6a6b46981b8eba22745850d2eece90c6c0308ef403c5"
+      }
+    },
+    "corporate_action_recon": {
+      "state": "SUCCEEDED",
+      "ref": {
+        "path": "results/operations/daily_production/CN/20260827/nodes/corporate_action_recon/7e93acedb18bb8f6cd2bc730e96acf91470a8cf64a3190c517d13dc275703efd/attempt-0001/terminal.json",
+        "sha256": "4f6e9b34187fe7388c659058e43e1436218519ab7ec211e435a0d4ad3653beea"
+      }
+    },
+    "factor": {
+      "state": "SUCCEEDED",
+      "ref": {
+        "path": "results/operations/daily_production/CN/20260827/nodes/factor/1c9b1929ee51e0769627fe9b3014d8df1acfa9c6bd40685baa477fd4018aacfd/attempt-0001/terminal.json",
+        "sha256": "b5e9d5f888f96555f0ab659af9f86b78e21366051a5eddab2d2a8ef287bc3bb0"
+      }
+    },
+    "fundamental": {
+      "state": "SUCCEEDED",
+      "ref": {
+        "path": "results/operations/daily_production/CN/20260827/nodes/fundamental/2dab66c2514cba4d1a5cdeb3a56453a702f4224fd41277a59773a68bb932157d/attempt-0001/terminal.json",
+        "sha256": "867299b4d18e88737d9eb3ad09209bfa9b8ac1bb708838de2794c54fd2ca5e83"
+      }
+    },
+    "dashboard": {
+      "state": "SUCCEEDED",
+      "ref": {
+        "path": "results/operations/daily_production/CN/20260827/nodes/dashboard/44d54b9043cb30902c5a19fbcd2fceaec92bce2be7459ff528123b56bbcb42d4/attempt-0001/terminal.json",
+        "sha256": "6b988748795c86f11693e174b56ec000ac5967529af86bf8198fd81a3fe760ad"
+      }
+    },
+    "top100": {
+      "state": "SUCCEEDED",
+      "ref": {
+        "path": "results/operations/daily_production/CN/20260827/nodes/top100/e104a29e1bba60ecc529c60dd50d1a33b8c5ccc59fe7e3e53e3143dbb3cdb1a2/attempt-0001/terminal.json",
+        "sha256": "5a9a32646e703ef34f15ab7595b33df8cb9225a277d1d1245829f1448c1b5a63"
+      }
+    },
+    "macro": {
+      "state": "SUCCEEDED",
+      "ref": {
+        "path": "results/operations/daily_production/CN/20260827/nodes/macro/d299ebde1960cb8a6c4fbdc7f2a3d9a39d740063a0ed31b30c6e73dc4087faf2/attempt-0001/terminal.json",
+        "sha256": "755f8c1986ae768e32cf308f61f937fa6c24ca8ad329ef14ed355ae37cdc4751"
+      }
+    },
+    "theme": {
+      "state": "SUCCEEDED",
+      "ref": {
+        "path": "results/operations/daily_production/CN/20260827/nodes/theme/20b920cae075a4b9a67ee75cbe856123f11b70a478781c80e1c138d11bc71685/attempt-0001/terminal.json",
+        "sha256": "37c7089752071115bcb093644cf1648dd2ace05b4b97a7351dd642c3c74f8c87"
+      }
+    },
+    "industry": {
+      "state": "SUCCEEDED",
+      "ref": {
+        "path": "results/operations/daily_production/CN/20260827/nodes/industry/b110b12f1cf156e87df14ebf81107bb7759819f56f810cc74e7b81593f9f3c3b/attempt-0001/terminal.json",
+        "sha256": "1b2c7733f67d95f0c5c83dc1fce0baefcef26dad2b405f9c1df797bb415211d9"
+      }
+    },
+    "decision": {
+      "state": "SUCCEEDED",
+      "ref": {
+        "path": "results/operations/daily_production/CN/20260827/nodes/decision/199d40af1b165d1c600835c5c83d85c843f35b6d515b47a48c36149f8a3c1255/attempt-0001/terminal.json",
+        "sha256": "6beb3ce21993bc9b46825cff1617df125815e11b967f2fad7e9e4e2ce9fbf7c4"
+      }
+    },
+    "market": {
+      "state": "SUCCEEDED",
+      "ref": {
+        "path": "results/operations/daily_production/CN/20260827/nodes/market/72e61e7a3c4e8dbd7cc2ff8f082aa8e60c33c9d566dd2ecce942b261e7cb1d59/attempt-0001/terminal.json",
+        "sha256": "d6736d700953dfbb1f6b76daa1491497e853b348c2b0fe9e4df1538b40b8f376"
+      }
+    },
+    "w80_observation": {
+      "state": "SUCCEEDED",
+      "ref": {
+        "path": "results/operations/daily_production/CN/20260827/nodes/w80_observation/e0ba3b0923b7bdd39f78fe7fc24ee4b1822335b29dd1fc5fe70349b9a25c1983/attempt-0001/terminal.json",
+        "sha256": "80960a5158778aad5923099d592035bf95eb9047de4d857ec0f70fac2c4dc166"
+      }
+    },
+    "store": {
+      "state": "SUCCEEDED",
+      "ref": {
+        "path": "results/operations/daily_production/CN/20260827/nodes/store/0f49ff31d33efbd17de38e4784b28a0b021cc2024f974e11220d5724a9fc9d03/attempt-0001/terminal.json",
+        "sha256": "285ab23dc4ca38811323baf3887115b8f835edfa244a06aba4bba8f02c459fb2"
+      }
+    },
+    "low_observation": {
+      "state": "SUCCEEDED",
+      "ref": {
+        "path": "results/operations/daily_production/CN/20260827/nodes/low_observation/1591be4567f16b23eb61fdf52935cea0debb7cde9c8498ff410662a7b8542742/attempt-0001/terminal.json",
+        "sha256": "7bd54080960ec53b0eb1e8d6892d89b0393e93ba132db519a5e737d303b41fcf"
+      }
+    }
+  },
+  "eod_completion_exists": false,
+  "full_goal_complete": false
+}

@@ -1,0 +1,24 @@
+2026-09-14 15:15:06 +0800 Sleep               	Entering Sleep state due to 'Clamshell Sleep':TCPKeepAlive=active Using Batt (Charge:100%) 1019 secs 
+2026-09-14 15:32:07 +0800 Sleep               	Entering Sleep state due to 'Sleep Service Back to Sleep':TCPKeepAlive=active Using Batt (Charge:100%) 949 secs  
+2026-09-14 15:47:59 +0800 Sleep               	Entering Sleep state due to 'Sleep Service Back to Sleep':TCPKeepAlive=active Using Batt (Charge:100%) 1041 secs 
+2026-09-14 16:05:39 +0800 Sleep               	Entering Sleep state due to 'Sleep Service Back to Sleep':TCPKeepAlive=active Using Batt (Charge:100%) 989 secs  
+2026-09-14 16:22:27 +0800 Sleep               	Entering Sleep state due to 'Sleep Service Back to Sleep':TCPKeepAlive=active Using Batt (Charge:100%) 528 secs  
+2026-09-14 16:31:15 +0800 Wake                	Wake from Deep Idle [CDNVA] : due to smc.sysState.Wake(0x70070000) lid SMC.OutboxNotEmpty RTP.multi-touch/HID Activity Using BATT (Charge:100%)           
+2026-09-14 17:08:45 +0800 Sleep               	Entering Sleep state due to 'Clamshell Sleep':TCPKeepAlive=active Using Batt (Charge:87%) 1071 secs 
+2026-09-14 17:26:38 +0800 Sleep               	Entering Sleep state due to 'Sleep Service Back to Sleep':TCPKeepAlive=active Using Batt (Charge:87%) 1009 secs 
+2026-09-14 17:43:29 +0800 Sleep               	Entering Sleep state due to 'Sleep Service Back to Sleep':TCPKeepAlive=active Using Batt (Charge:87%) 1063 secs 
+2026-09-14 18:01:14 +0800 Sleep               	Entering Sleep state due to 'Sleep Service Back to Sleep':TCPKeepAlive=active Using Batt (Charge:87%) 1006 secs 
+2026-09-14 18:18:02 +0800 Sleep               	Entering Sleep state due to 'Sleep Service Back to Sleep':TCPKeepAlive=active Using Batt (Charge:87%) 1049 secs 
+2026-09-14 18:35:33 +0800 Sleep               	Entering Sleep state due to 'Sleep Service Back to Sleep':TCPKeepAlive=active Using Batt (Charge:87%) 1045 secs 
+2026-09-14 18:53:00 +0800 Sleep               	Entering Sleep state due to 'Sleep Service Back to Sleep':TCPKeepAlive=active Using Batt (Charge:87%) 959 secs  
+2026-09-14 19:09:04 +0800 Sleep               	Entering Sleep state due to 'Maintenance Sleep':TCPKeepAlive=active Using Batt (Charge:87%) 8 secs    
+2026-09-14 19:09:17 +0800 Sleep               	Entering Sleep state due to 'Maintenance Sleep':TCPKeepAlive=active Using Batt (Charge:87%) 963 secs  
+2026-09-14 19:25:22 +0800 Sleep               	Entering Sleep state due to 'Sleep Service Back to Sleep':TCPKeepAlive=active Using Batt (Charge:86%) 941 secs  
+2026-09-14 19:41:05 +0800 Sleep               	Entering Sleep state due to 'Sleep Service Back to Sleep':TCPKeepAlive=active Using Batt (Charge:86%) 972 secs  
+2026-09-14 19:57:19 +0800 Sleep               	Entering Sleep state due to 'Sleep Service Back to Sleep':TCPKeepAlive=active Using Batt (Charge:86%) 760 secs  
+2026-09-14 20:10:04 +0800 Sleep               	Entering Sleep state due to 'Maintenance Sleep':TCPKeepAlive=active Using Batt (Charge:86%) 1075 secs 
+2026-09-14 20:28:01 +0800 Sleep               	Entering Sleep state due to 'Sleep Service Back to Sleep':TCPKeepAlive=active Using Batt (Charge:86%) 1070 secs 
+2026-09-14 20:45:53 +0800 Sleep               	Entering Sleep state due to 'Sleep Service Back to Sleep':TCPKeepAlive=active Using Batt (Charge:86%) 1064 secs 
+2026-09-14 21:03:39 +0800 Sleep               	Entering Sleep state due to 'Sleep Service Back to Sleep':TCPKeepAlive=active Using Batt (Charge:86%) 440 secs  
+2026-09-14 21:11:04 +0800 Sleep               	Entering Sleep state due to 'Maintenance Sleep':TCPKeepAlive=active Using Batt (Charge:86%) 306 secs  
+2026-09-14 21:16:10 +0800 Wake                	Wake from Deep Idle [CDNVA] : due to smc.sysState.Wake(0x70070000) lid SMC.OutboxNotEmpty RTP.multi-touch/HID Activity Using BATT (Charge:86%)           

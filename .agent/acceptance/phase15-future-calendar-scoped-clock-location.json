@@ -1,0 +1,7 @@
+{
+  "root": "/private/tmp/myquant-future-calendar-scoped-clock-20260916T125157Z",
+  "state": "INSTALLED_VERIFIED",
+  "commit": "d2b2398cbf675026984e19518ca2759d7344812d",
+  "import_origin": "/private/tmp/myquant-future-calendar-scoped-clock-20260916T125157Z/release/installs/d2b2398cbf675026984e19518ca2759d7344812d-30e57f2a4c7595924303f0af381e1f34a8b5310d2d7b8119a5b222161108eeb2/lib/python3.13/site-packages/quant_investor/__init__.py",
+  "production_deployed": false
+}

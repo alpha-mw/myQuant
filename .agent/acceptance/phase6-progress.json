@@ -1,0 +1,107 @@
+{
+  "phase": 6,
+  "status": "IMPLEMENTED_PENDING_FINAL_LOCAL_VALIDATION",
+  "recorded_at": "2026-09-12T02:38:18.507234+00:00",
+  "plan": "docs/plans/phase06_decision_portfolio_binding.md",
+  "review": "Architect amendments accepted; Critic final APPROVE on 2026-09-12",
+  "implemented": [
+    "Shared native frozen Store pointer-bytes decoder; native holdings helper extracted",
+    "Registered pre-close portfolio state with exact accounting identity, economic/seal/publication/custody clocks and late non-prospective status",
+    "Exact decision recipe/native inputs v3, legacy v1/v2 preserved",
+    "Eight-domain source/ref collector; native five-state report; immutable dated report and actual-time side capture",
+    "Materializer/registry/Decision adapter/completed replay integrated; late portfolio excluded from prospective ledger"
+  ],
+  "evidence": [
+    {
+      "session": 38683,
+      "passed": 31,
+      "seconds": 0.86,
+      "scope": "portfolio timing/identity, native snapshot and owning holdings helper"
+    },
+    {
+      "session": 48646,
+      "passed": 2,
+      "seconds": 1.29,
+      "scope": "actual native three-day backlog and CAS crash recovery"
+    },
+    {
+      "session": 70464,
+      "passed": 4,
+      "seconds": 1.17,
+      "scope": "native plan/preimage custody, later-head replay, interruption and forged state"
+    },
+    {
+      "session": 33348,
+      "passed": 16,
+      "seconds": 4.09,
+      "scope": "native inputs/registry and portfolio binding"
+    },
+    {
+      "session": 45354,
+      "passed": 6,
+      "seconds": 366.69,
+      "scope": "native compiler/portfolio/report publication and crash cases with explicit outer CLI/source-collector seams; before subsequent ref-cache/extra ref guards"
+    },
+    {
+      "session": 41138,
+      "passed": 1,
+      "seconds": 23.37,
+      "scope": "same-source native report publication after ref guards/cache"
+    },
+    {
+      "session": 16643,
+      "passed": 41,
+      "seconds": 3.55,
+      "scope": "legacy materialization/ledger replay after correcting typed fixtures"
+    },
+    {
+      "session": 44730,
+      "passed": 36,
+      "seconds": 3.73,
+      "scope": "portfolio and native input/registry after custody guard"
+    },
+    {
+      "session": 16912,
+      "passed": 25,
+      "seconds": 1.39,
+      "scope": "recipe/profile and late-portfolio prospective exclusion"
+    }
+  ],
+  "native_component_receipts": [
+    ".agent/acceptance/phase6-portfolio-baseline.json",
+    ".agent/acceptance/phase6-native-portfolio-state.json",
+    ".agent/acceptance/phase6-native-source-binding.json"
+  ],
+  "current_running": {
+    "session": 70405,
+    "scope": "four crash/forgery report tests after ref guards/cache"
+  },
+  "known_unrelated_failure": "Two test_daily_evidence_store_plan synthetic fixtures return an empty Market manifest and fail at derived_serving_root before the changed holdings helper. Actual native backlog/CAS tests pass. Do not weaken the market check.",
+  "limitations": [
+    "Report publication tests isolate outer Factor/CLI admission and DecisionSources.collect; native compiler, native Store portfolio and file writers/readbacks run",
+    "Real retained legacy source collector validates 234 refs then rejects missing new freshness reports; this is not a new v3 whole-DAG success",
+    "New materialization v3/current-source full native installed acceptance and final complete Phase6 local selection remain"
+  ],
+  "file_sha256": {
+    "quant_investor/strategy_records/store.py": "9f677c64aedf2a2b01d1ae707fec85e41e3e99d07f0f2c95355b8149b4a88291",
+    "quant_investor/strategy_records/holdings.py": "0f3a19fe88f0f16a247e52a2473487062004818ba16138407c79d38d05ff33d6",
+    "scripts/cn_official_close_batch.py": "ef6036db53b2ced1717a8d77c6593b3bf077c2da52aa29d6c1d72f354a062ad1",
+    "quant_investor/intelligence/portfolio_state.py": "becab562371906fd2987c92d3f149d2b1e5844051fee589eef0af82370856c22",
+    "quant_investor/intelligence/decision_report.py": "649d8d765939df8b326822d6ccdb76106dd90a3c157df978b3a4537b13551050",
+    "quant_investor/intelligence/storage.py": "f185ac77c42df6afe244fef14ed8df23b18a78581c355ed40d29bb60b718faac",
+    "quant_investor/contracts/builtins.py": "071db1acea2f61264647e6248e062dc2521374df19b81dca55d4833b2e1b321b",
+    "quant_investor/operations/portfolio_binding.py": "635865562d051eafb51c89fa9b1d47ea2fbce36aeb13bfd40f9db3c05543ebf6",
+    "quant_investor/operations/decision_recipe.py": "042e2cd18ce16275f933da7e16715049d1d4d2b37d5c232d7d41d6106856e874",
+    "quant_investor/operations/decision_sources.py": "a240242204d348854f51bd17ea0ef5be2569a641274eaee5f67962447ba1480d",
+    "quant_investor/operations/decision_publication.py": "d1f955e4110c69af75b5d9b15173b101483396015c628bc79b7fb76b6e9b204e",
+    "quant_investor/operations/research_decision.py": "f269f43b71ef52360e27a35293c3739fd1f39c523bf4bf89834eb117afb299dd",
+    "quant_investor/operations/completion_decision.py": "f2e593c1d6969de107572d144a0d8f716f743d9da70e7381025274b7abadc150",
+    "quant_investor/operations/native_input_contract.py": "93836b8916f1bc68451a84a462221b875843942d462615cd79aeb478e158c515",
+    "quant_investor/operations/prospective_timing.py": "fc4088bfc12597f7f1d489a2eb0e0587b88bfd02486fb285c881c7d6039c2eab",
+    "scripts/daily_native_inputs.py": "40c805c20f5eab6e07fd28bdbf529d56342e7d3fc0791fe3122dad14823a2639",
+    "scripts/daily_native_registry.py": "cae287eebcc2db80735dc21e4ec22d6142f73330f3d4eb5860f4911ff67ad403",
+    "scripts/daily_materialization.py": "536a42a5fb7f3190974e66517b927a3017a2c1a31ea2357741dc139c65f29d6b",
+    "scripts/daily_ledger.py": "65d33b2eedf3a18ea290801094445ea4ddc9355113953c706dd8ef5de82029be",
+    "scripts/daily_ledger_replay.py": "27acb1db2ae77e3a3473e0223857e674a750da97bc80b997fc3dccaf44ad3e34"
+  }
+}

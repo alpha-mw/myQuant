@@ -23,6 +23,7 @@ from typing import Any, Mapping, Sequence
 import pandas as pd
 
 from quant_investor.market.market_data_store import MarketDataStore
+from .historical_session import SCHEMA as HISTORICAL_SCHEMA
 
 CAPTURE_SCHEMA = "cn-market-daily-capture.v1"
 ENDPOINT_SCHEMA = "cn-market-provider-response.v1"
@@ -447,6 +448,9 @@ def _load_target_authority(
     if actual != expected:
         raise MarketDailyCaptureBlocked(["target_authority_sha256_mismatch"])
     payload = _json_object(raw, label="target_authority")
+    if payload.get("schema_version") == HISTORICAL_SCHEMA:
+        proof = _load_historical_authority(path, raw)
+        return proof, raw, actual, proof["requested_trade_date"]
     if payload.get("schema_version") != TARGET_AUTHORITY_SCHEMA:
         raise MarketDailyCaptureBlocked(["target_authority_schema_invalid"])
     status = str(payload.get("status") or "").strip().upper()
@@ -468,6 +472,19 @@ def _load_target_authority(
         if _sha256(provider_raw) != raw_response_sha:
             raise MarketDailyCaptureBlocked(["target_authority_raw_response_sha256_mismatch"])
     return payload, raw, actual, target
+
+
+def _load_historical_authority(path: str | Path, proof_raw: bytes) -> dict[str, Any]:
+    from .historical_session import HistoricalSessionError, read_historical_fileset
+    from .close_session_authority import CloseSessionAuthorityError
+    from .tushare_transport import TushareHttpsError
+
+    try:
+        return read_historical_fileset(path=path, proof_raw=proof_raw, read=_stable_regular_bytes)
+    except HistoricalSessionError as exc:
+        raise MarketDailyCaptureBlocked([str(exc)]) from exc
+    except (OSError, ValueError, CloseSessionAuthorityError, TushareHttpsError) as exc:
+        raise MarketDailyCaptureBlocked(["historical_authority_invalid"]) from exc
 
 
 def _authority_open_trade_dates(payload: Mapping[str, Any]) -> list[str]:
@@ -518,6 +535,16 @@ def _authorized_target_window(
     parent_latest_complete_trade_date: str,
     same_target_rebind: bool,
 ) -> tuple[list[str], str]:
+    if authority.get("schema_version") == HISTORICAL_SCHEMA:
+        if (
+            authority_target != authority.get("requested_trade_date")
+            or requested_target_trade_dates is None
+            or list(requested_target_trade_dates) != [authority_target]
+            or parent_latest_complete_trade_date != authority.get("previous_trade_date")
+            or same_target_rebind is not False
+        ):
+            raise MarketDailyCaptureBlocked(["historical_authority_window_invalid"])
+        return [authority_target], parent_latest_complete_trade_date
     if requested_target_trade_dates is None:
         if same_target_rebind:
             raise MarketDailyCaptureBlocked(["same_target_rebind_window_required"])
@@ -1035,6 +1062,11 @@ def capture_market_daily(
         authority, authority_raw, authority_sha, target = _load_target_authority(
             target_authority_path, expected_target_authority_sha256
         )
+        if (
+            authority.get("schema_version") == HISTORICAL_SCHEMA
+            and type(same_target_rebind) is not bool
+        ):
+            raise MarketDailyCaptureBlocked(["historical_authority_window_invalid"])
         ordered_targets, parent_date = _authorized_target_window(
             authority=authority,
             authority_target=target,
@@ -1213,7 +1245,7 @@ def replay_market_daily_capture(
     same_target_rebind = manifest.get("same_target_rebind", False)
     if type(same_target_rebind) is not bool:
         raise MarketDailyCaptureBlocked(["same_target_rebind_schema_invalid"])
-    if parent_date:
+    if parent_date or target_payload.get("schema_version") == HISTORICAL_SCHEMA:
         replayed_targets, replayed_parent = _authorized_target_window(
             authority=target_payload,
             authority_target=target,

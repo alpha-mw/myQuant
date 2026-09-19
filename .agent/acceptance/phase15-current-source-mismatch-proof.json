@@ -1,0 +1,44 @@
+{
+  "case": 8,
+  "synthetic": true,
+  "producer_commit": "bf078d3235de3ade1379e8082d5d4a49e109f7d5",
+  "installed_import_origin": "/private/tmp/myquant-configured-catalog-20260913T202622Z/release/installs/bf078d3235de3ade1379e8082d5d4a49e109f7d5-2a873556ff8305a6ad4d318959c3af1398743228c874da2fdac22dbe30196bb2/lib/python3.13/site-packages/quant_investor/__init__.py",
+  "completion_ref": {
+    "path": "results/operations/daily_production/CN/20260827/completion.v1.json",
+    "sha256": "a67133c2735471808e73eb89201483ada7ccf53456a2e9e9785e075503e98027"
+  },
+  "fixture_workspace": "/private/tmp/myquant-configured-catalog-20260913T202622Z/source-mismatch-validation-workspace",
+  "copied_native_file_count": 314,
+  "positive_baseline": "ALL16_JOURNAL_OUTPUT_BYTES_AND_CORE_HANDOFF",
+  "positive_core_scope": "SELECTED_CORE_JOURNAL_AND_OUTPUT_BYTES",
+  "full_positive_native_replay_claimed": false,
+  "fault": "ONE_PHYSICAL_OUTPUT_BYTE_SUFFIX_NO_REFERENCE_RESEALING",
+  "cases": [
+    {
+      "node": "market",
+      "original_output_ref": {
+        "path": "results/factors/objects/factor.production_market_input/7fb37340a270898ce16696229252235f231f117cc608924e5f7b3060c779dda4.json",
+        "sha256": "7fb37340a270898ce16696229252235f231f117cc608924e5f7b3060c779dda4"
+      },
+      "corrupt_sha256": "a8b6d492f7d0a70165d04cd1c5f45963c87102fa5cd2531eb3b07983e07123fa",
+      "status_state": "STALE",
+      "status_reason": "DAILY_STATUS_OUTPUT_SHA_MISMATCH",
+      "full_eod_entry_rejection": "EOD_READBACK_TERMINAL_CHANGED:market",
+      "entry_read_only": true
+    },
+    {
+      "node": "pit",
+      "original_output_ref": {
+        "path": "results/factors/objects/factor.production_market_pit_selection/44aeeb31b0ccc83b599b41ba6b4beb4c4b703b8bd3fa1eb7d3d156b6d7b5b2e2.json",
+        "sha256": "44aeeb31b0ccc83b599b41ba6b4beb4c4b703b8bd3fa1eb7d3d156b6d7b5b2e2"
+      },
+      "corrupt_sha256": "3a5f962fcf6e0308aa980cd15890152f67eb58323a765b47c3d43897925b83a5",
+      "status_state": "STALE",
+      "status_reason": "DAILY_STATUS_OUTPUT_SHA_MISMATCH",
+      "full_eod_entry_rejection": "EOD_READBACK_TERMINAL_CHANGED:pit",
+      "entry_read_only": true
+    }
+  ],
+  "original_selected_evidence_unchanged": true,
+  "production_deployed": false
+}

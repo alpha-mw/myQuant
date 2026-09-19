@@ -1,0 +1,26 @@
+{
+  "state": "PREPARED_NOT_RUN",
+  "case": 8,
+  "runtime_commit": "5060dee2d4b39b50a735393d056ebe5adb4efe3b",
+  "architect": "APPROVE_WITH_CHANGES_INCORPORATED",
+  "critic": "APPROVE",
+  "routing_tests_passed": 2,
+  "fault_scope": "PHYSICAL_OUTPUT_WITH_EXACT_NATIVE_READ_ROUTING_TEST_SEAM",
+  "positive_full_native_replay_required": true,
+  "business_runtime_modified": false,
+  "waiting_for": "CURRENT_FIRST_DAY_DRIVER_PASS_AND_FULL_NATIVE_PROOF",
+  "refs": [
+    {
+      "path": ".agent/acceptance/current_source_mismatch_reader_case.py",
+      "sha256": "7c95f4d8eade9cc7e28806b680ae59c742998eb790ded96f9e6c993cc775f46b"
+    },
+    {
+      "path": ".agent/acceptance/test_current_source_mismatch_reader_case.py",
+      "sha256": "c01c63528ecb7f95b29404c4efceef4a784d764bee38086b26ea2cc5d1558aa9"
+    },
+    {
+      "path": ".agent/acceptance/run_current_source_mismatch_case.py",
+      "sha256": "0155eaf600382b7c802ad642fbcaafb6854d94ca5c47a56c206991ae03d86aa2"
+    }
+  ]
+}

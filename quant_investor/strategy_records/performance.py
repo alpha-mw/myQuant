@@ -1333,6 +1333,135 @@ def validate_cash_flow_artifact(
     return amount
 
 
+def _exact_finalization_decimal(value: Any, *, label: str) -> Decimal:
+    """Compare source identities without money/quantity rounding."""
+    if isinstance(value, bool) or value is None:
+        raise StrategyRecordStoreError(f"official finalization {label} is not a decimal")
+    try:
+        result = Decimal(str(value))
+    except (InvalidOperation, ValueError) as exc:
+        raise StrategyRecordStoreError(f"official finalization {label} is not a decimal") from exc
+    if not result.is_finite():
+        raise StrategyRecordStoreError(f"official finalization {label} is not finite")
+    return result
+
+
+def _finalization_positions(record: Mapping[str, Any]) -> dict[str, tuple[Decimal, ...]]:
+    positions = record.get("positions")
+    if not isinstance(positions, list) or not positions:
+        raise StrategyRecordStoreError("official finalization positions are missing")
+    result: dict[str, tuple[Decimal, ...]] = {}
+    for row in positions:
+        if not isinstance(row, Mapping):
+            raise StrategyRecordStoreError("official finalization position is invalid")
+        symbol = row.get("symbol")
+        if (
+            not isinstance(symbol, str)
+            or re.fullmatch(r"[0-9]{6}\.(SH|SZ|BJ)", symbol) is None
+            or symbol in result
+        ):
+            raise StrategyRecordStoreError("official finalization symbol is invalid or duplicated")
+        values = tuple(
+            _exact_finalization_decimal(row.get(key), label=key)
+            for key in ("shares", "avg_cost", "cost_basis")
+        )
+        if any(value <= 0 for value in values) or values[0] != values[0].to_integral_value():
+            raise StrategyRecordStoreError("official finalization position quantities are invalid")
+        result[symbol] = values
+    return result
+
+
+def _validate_official_finalization(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    source: Mapping[str, Any],
+    target: Mapping[str, Any],
+    new_shas: Mapping[str, str],
+    post_flow_unit_count: Decimal | None,
+    external_flow_amount: Decimal,
+    allow_same_date_correction: bool,
+) -> None:
+    if (
+        len(rows) < 2
+        or not isinstance(source, Mapping)
+        or not isinstance(target, Mapping)
+        or allow_same_date_correction is not False
+        or post_flow_unit_count is not None
+        or _exact_finalization_decimal(external_flow_amount, label="new external flow") != 0
+    ):
+        raise StrategyRecordStoreError("official finalization mode or parent is invalid")
+    previous = rows[-1]
+    if (
+        source.get("record") != previous["record_id"]
+        or source.get("data_date") != previous["valuation_date"]
+        or source.get("source_record") != rows[-2]["record_id"]
+        or rows[-2]["valuation_date"] >= previous["valuation_date"]
+        or source.get("official_valuation") is not False
+        or source.get("funding_correction") is not None
+        or source.get("execution_kind") != "applied_effective_ledger"
+        or previous["evidence_kind"] != "REGISTERED_APPLIED_TRADES"
+    ):
+        raise StrategyRecordStoreError("official finalization intraday source is not bound")
+    expected_profile = {
+        "source_record": source["record"],
+        "data_date": source["data_date"],
+        "execution_kind": "carry_forward",
+        "execution_status": "no_action_carry_forward_official_valuation",
+        "valuation_status": "OFFICIAL_STRICT_MARKET_CLOSE_COMPLETE",
+        "price_basis": "strict_parquet_market_close_hash_bound",
+        "publication_class": BATCH_CATCH_UP_OFFICIAL_VALUATION,
+    }
+    identifier = target.get("record")
+    match = _RECORD_ID.fullmatch(identifier) if isinstance(identifier, str) else None
+    if (
+        any(target.get(key) != value for key, value in expected_profile.items())
+        or target.get("official_valuation") is not True
+        or target.get("valuation_completeness_passed") is not True
+        or any(
+            key not in target or target[key] is not None
+            for key in ("funding", "funding_correction")
+        )
+        or match is None
+        or match.group("ordinal") is None
+        or identifier == source["record"]
+    ):
+        raise StrategyRecordStoreError("official finalization target profile is invalid")
+    for source_key, row_key in (
+        ("manual_manifest_sha256", "manual_manifest_sha256"),
+        ("ledger_sha256", "ledger_parquet_sha256"),
+        ("financial_state_sha256", "financial_state_sha256"),
+    ):
+        if (
+            _require_sha(source.get(source_key), label="finalization source SHA")
+            != previous[row_key]
+        ):
+            raise StrategyRecordStoreError("official finalization source SHA differs")
+        if (
+            _require_sha(target.get(source_key), label="finalization target SHA")
+            != new_shas[row_key]
+        ):
+            raise StrategyRecordStoreError("official finalization target SHA differs")
+    source_accounting, target_accounting = source.get("accounting"), target.get("accounting")
+    if not isinstance(source_accounting, Mapping) or not isinstance(target_accounting, Mapping):
+        raise StrategyRecordStoreError("official finalization accounting is missing")
+    for key, row_key in (
+        ("cash_after", "cash_cny"),
+        ("market_value_after", "equity_market_value_cny"),
+        ("total_value_after", "raw_nav_cny"),
+        ("portfolio_pnl_after", "portfolio_pnl_cny"),
+    ):
+        if money(source_accounting.get(key), label="finalization source accounting") != money(
+            previous[row_key], label="finalization parent accounting"
+        ):
+            raise StrategyRecordStoreError("official finalization source accounting differs")
+    if _exact_finalization_decimal(
+        source_accounting.get("cash_after"), label="source cash"
+    ) != _exact_finalization_decimal(target_accounting.get("cash_after"), label="target cash"):
+        raise StrategyRecordStoreError("official finalization cash changed")
+    if _finalization_positions(source) != _finalization_positions(target):
+        raise StrategyRecordStoreError("official finalization holdings identity changed")
+
+
 def extend_performance_rows(
     existing_rows: Sequence[Mapping[str, Any]],
     *,
@@ -1343,13 +1472,32 @@ def extend_performance_rows(
     post_flow_unit_count: Decimal | None = None,
     external_flow_amount: Decimal = Decimal("0.0000"),
     allow_same_date_correction: bool = False,
+    official_close_source: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """Append or explicitly replace one registered financial-state row."""
+    """Append, correct, or finalize one exactly bound registered intraday row.
+
+    Finalization is a pure transformation of native validated projections. The
+    calling Store writer still owns source custody, registration and publication.
+    """
 
     if not existing_rows:
         raise StrategyRecordStoreError("performance extension has no parent series")
     validate_performance_rows(existing_rows)
     rows = [dict(row) for row in existing_rows]
+    if official_close_source is not None:
+        _validate_official_finalization(
+            rows,
+            source=official_close_source,
+            target=strict_record,
+            new_shas={
+                "manual_manifest_sha256": manual_manifest_sha256,
+                "ledger_parquet_sha256": ledger_parquet_sha256,
+                "financial_state_sha256": financial_state_sha256,
+            },
+            post_flow_unit_count=post_flow_unit_count,
+            external_flow_amount=external_flow_amount,
+            allow_same_date_correction=allow_same_date_correction,
+        )
     record_id = strict_record.get("record")
     valuation_date = strict_record.get("data_date")
     accounting = strict_record.get("accounting")
@@ -1429,7 +1577,7 @@ def extend_performance_rows(
     if valuation_date < previous["valuation_date"]:
         raise StrategyRecordStoreError("performance valuation date moved backwards")
     if valuation_date == previous["valuation_date"]:
-        if not allow_same_date_correction:
+        if not allow_same_date_correction and official_close_source is None:
             raise StrategyRecordStoreError("SAME_DATE_PERFORMANCE_CONFLICT")
         rows[-1] = new_row
     else:

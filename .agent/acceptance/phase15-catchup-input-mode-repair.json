@@ -1,0 +1,44 @@
+{
+  "observed_at": "2026-09-14T05:55:30.351967+00:00",
+  "state": "READER_REPAIR_IMPLEMENTED_LOCAL_AND_INSTALLED_VERIFIED",
+  "architect": "APPROVE",
+  "critic": "APPROVE",
+  "plan": "docs/plans/phase15_catchup_dashboard_input_modes.md",
+  "runtime_file_count": 7,
+  "source_sha256": {
+    "quant_investor/operations/_source_bytes.py": "d396a4b4d471a3202485a3b605257938466c6621f25354bf9faf84473860a548",
+    "quant_investor/operations/catchup_binding.py": "19f48b299f67af02bc38ca47c59c02d504d822b8476407408c107fe701d60cf6",
+    "quant_investor/operations/daily_preparation.py": "0ed47a5b3e180638e22c9c70515badaa36d97f59d3e88b62c7fb80ae5e0d3a03",
+    "quant_investor/operations/automatic_catchup_resolution.py": "b3faefa6913545974dceff88f5abbf8581ecc6ad653ade82db26adf430e03a68",
+    "quant_investor/cli/daily_prepare.py": "46e4bc0b1fe4210132b5378c7a9f9f7e1b442d4e207bd1c3de4077bf3e81cf57",
+    "scripts/daily_launch_inspection.py": "f2da44e9b369086ed9679db63c705a5d82d8e56e9948ea0c9203bdfa98a5a929",
+    "scripts/daily_catchup.py": "6a5b0a2823a7338672706e138fc1b9e25429598b73f563abfdbe8af71181fc6e",
+    "tests/unit/test_catchup_dashboard_input_modes.py": "101c44cbb0da32b2c815d7b6eb0d4068f7fa2b777d5a62dd009e73f466bd5f6d",
+    "tests/unit/test_daily_preparation.py": "b1560924b050433765bec5fae1c35c379958b17963eec97f1f526a529d3c1a14",
+    "tests/unit/test_registered_automatic_recovery.py": "6f1696a67d6586ea8bae538cb9d4a6aa64c16090f5ffa2dc270bab49968513ee"
+  },
+  "validation": {
+    "focused_tests": 249,
+    "seconds": 93.8,
+    "log": ".agent/acceptance/phase15-catchup-input-mode-tests.log",
+    "black": "PASS",
+    "selected_flake8": "PASS",
+    "mypy_5_files": "PASS",
+    "strategy_record_access_65_callers": "PASS",
+    "installed_preflight": ".agent/acceptance/phase15-catchup-input-mode-installed-final.json"
+  },
+  "candidate_runtime_commit": "c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b",
+  "candidate_root": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z",
+  "old_E_hotpatched": false,
+  "old_request_new_runtime_admission": "REFUSED_EXACT_RUNNING_RELEASE_ORIGIN_MISMATCH",
+  "new_five_day_acceptance": "STARTED_NOT_COMPLETE",
+  "F_recovery_not_restarted": true,
+  "full_goal_complete": false,
+  "production_deployed": false,
+  "verification_harness_diagnostics": {
+    "initial_local_check": "reader passed; nonexistent DailyJournal.status call corrected to native read_daily_status",
+    "first_installed_check": "reader passed; diagnostic script missing repository/scripts import path",
+    "second_installed_check": "reader and exact old-release refusal passed; late script import path changed serving projection during before/after status comparison",
+    "final_check": "canonical script import context established before both snapshots; exact full status equality and input identity checks PASS"
+  }
+}

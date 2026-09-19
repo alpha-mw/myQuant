@@ -1,0 +1,61 @@
+{
+  "observed_at": "2026-09-13T02:56:28.561056+00:00",
+  "status": "INSTALLED_NATIVE_V6_ONE_DAY_AND_EXACT_REPEAT_PASSED",
+  "full_goal_complete": false,
+  "phase12_complete": false,
+  "fixture_root": "/private/tmp/myquant-cutoff-installed-20260913T020706Z",
+  "producer_commit": "eaa60b2d7522db887d387ea99c47a7961c1257a0",
+  "source_archive_sha256": "06d01464a4239dd5329d27b0eea6c3391222ae1c0e6b2ebb034423493754482c",
+  "wheel_sha256": "f5d679aa330d10da832a8efc0d664d76726f81f6515195d3bf79f62a47bf997f",
+  "installed_import_origin": "/private/tmp/myquant-cutoff-installed-20260913T020706Z/release/installs/eaa60b2d7522db887d387ea99c47a7961c1257a0-f5d679aa330d10da832a8efc0d664d76726f81f6515195d3bf79f62a47bf997f/lib/python3.13/site-packages/quant_investor/__init__.py",
+  "current_runtime_source_files_compared": 468,
+  "current_runtime_source_drift": [],
+  "installation_verification": "PASS",
+  "native_input_schema": "cn-daily-native-inputs.v6",
+  "materialization_schema": "cn-daily-materialization.v5",
+  "completion_schema": "cn-daily-eod-completion.v2",
+  "completion_ref": {
+    "path": "results/operations/daily_production/CN/20260827/completion.v1.json",
+    "sha256": "093b213133cee8c333a566823ee2b6ec8620f6e7fc7b9e9506cd1e7f1e0d8afe"
+  },
+  "validation_completed_at": "2026-09-13T02:41:14Z",
+  "prospective_admission_state": "LEDGER_INELIGIBLE",
+  "native_pipeline_proof": {
+    "path": "/private/tmp/myquant-cutoff-installed-20260913T020706Z/native-cutoff-installed-proof.json",
+    "sha256": "667d2d5106a0e40bd94369293ecb3d15313953f39a3da5c6b0a25f45cb20d995"
+  },
+  "repeat_proof": {
+    "path": "/private/tmp/myquant-cutoff-installed-20260913T020706Z/native-cutoff-installed-repeat-proof.json",
+    "sha256": "67a4c903027b1b5141eb1c72ec8250d9caaaf6b30fde05d00bab965ecb4b9152"
+  },
+  "repeat": {
+    "execution_state": "NO_ACTION",
+    "protected_files": 1439,
+    "bytes_and_mtimes_unchanged": true,
+    "provider_calls": false,
+    "network_calls": false,
+    "journal_writes": false
+  },
+  "sessions": {
+    "install": 93568,
+    "full_native": 46315,
+    "completed_repeat": 85481
+  },
+  "limitations": [
+    "synthetic data/provider transport and core/cutoff clocks; not real-time OOS",
+    "downstream request assembled after native Core; initial pre-Core daily provisioning and scheduler bootstrap not established",
+    "one native day, not current-source consecutive five-day proof",
+    "native Factor/Core and release verifier unmocked; internal installed composition entry, not live scheduled public execution",
+    "portfolio UI worktree assets are outside this Python runtime snapshot comparison; prior UI QA limitation remains",
+    "production install/tasks/main financial data unchanged"
+  ],
+  "production_deployed": false,
+  "real_provider_calls": false,
+  "remaining": [
+    "daily input/source provisioning and initial bootstrap",
+    "owner historical change facts and main Macro governed recovery",
+    "existing scheduler cutover/readback and independent unattended receipt",
+    "Phase13 producer taxonomy mapping, Phase14 evaluator-ledger connection",
+    "final full CI/UI/current-source five-day acceptance"
+  ]
+}

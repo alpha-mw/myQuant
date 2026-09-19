@@ -1,0 +1,75 @@
+{
+  "observed_at": "2026-09-13T23:31:00.524366+00:00",
+  "root": "/private/tmp/myquant-configured-catalog-20260913T202622Z",
+  "producer_commit": "bf078d3235de3ade1379e8082d5d4a49e109f7d5",
+  "synthetic": true,
+  "validation_scope": "SHA_BOUND_NATIVE_NODE_OUTPUT_READBACK_FULL_RUN_PENDING",
+  "completion_ref": {
+    "path": "results/operations/daily_production/CN/20260827/completion.v1.json",
+    "sha256": "a67133c2735471808e73eb89201483ada7ccf53456a2e9e9785e075503e98027"
+  },
+  "all16_nodes_succeeded": true,
+  "case5": {
+    "state": "NATIVE_DAILY_STORE_COMMIT_OBSERVED",
+    "completion_ref": {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/_record_store/daily_close_transactions/daily-close-20260827-baa281b3c3ee9b67/completion.v1.json",
+      "sha256": "b94fd8c15c809e5fa0669a534ca2ac44dce3f098e774871dd3e35ba101b1905a"
+    },
+    "manual_ref": {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260827_212000-b04/manual_execution_manifest.json",
+      "sha256": "490d2bc79c13b972301c58f9ae688c03dad38db0ab455f668a45af15095834f4"
+    },
+    "trade_date": "20260827",
+    "trade_count": 0,
+    "order_count": 0,
+    "fill_count": 0,
+    "source_record": "20260827_212000-b03",
+    "record_timestamp": "20260827_212000-b04",
+    "five_day_continuity_pending": true
+  },
+  "case7": {
+    "state": "NATIVE_FUNDAMENTAL_WARNING_AND_DECISION_SUCCESS_OBSERVED",
+    "freshness_ref": {
+      "path": "results/operations/daily_production/CN/20260827/research/artifacts/925b284887f1eb30cd094860f873c7ed4467f1809e4f87bb7ebebb8fd05dbcb4.json",
+      "sha256": "925b284887f1eb30cd094860f873c7ed4467f1809e4f87bb7ebebb8fd05dbcb4"
+    },
+    "decision_ref": {
+      "path": "results/intelligence/decision/aggressive_tech_manufacturing/20260827/decision.v2.json",
+      "sha256": "2a7503ce347b7c099e3c7d37a621ce97b2eed872d2dcf1fd606f5261f377b6d7"
+    },
+    "freshness_state": "STALE_WARNING",
+    "policy": {
+      "blocking_after_days": null,
+      "effect": "WARNING_ONLY",
+      "fundamental_policy": "ADVISORY_NO_FIXED_MAXIMUM",
+      "threshold_source": "macro.registry.PERIOD_MAX_LAG_DAYS.quarterly",
+      "warning_after_days": 180
+    },
+    "warning_entry_count": 100,
+    "decision_rows_with_warning": 100,
+    "critical_missing_codes": [],
+    "decision_blocker_codes": [],
+    "warning_source_bound_in_decision": true
+  },
+  "case6": {
+    "state": "NOT_EXERCISED_BY_THIS_NORMAL_DAY",
+    "reconciliation_ref": {
+      "path": "results/operations/daily_production/CN/20260827/corporate-actions/reconciliation-8a3eeff495bc1a0c56ac2e8a7278404f85cc48a33fd98e4a3ed7f08ddbf3be53.json",
+      "sha256": "8a3eeff495bc1a0c56ac2e8a7278404f85cc48a33fd98e4a3ed7f08ddbf3be53"
+    },
+    "financial_events_ref": {
+      "path": "results/operations/daily_production/CN/20260827/corporate-actions/3a6c7c9bea2ca99e4f6e418a13a02925a3c940a7aade7ef8c73acf4def7e123b.json",
+      "sha256": "3a6c7c9bea2ca99e4f6e418a13a02925a3c940a7aade7ef8c73acf4def7e123b"
+    },
+    "company_count": 7,
+    "named_event_count": 0,
+    "adjustment_states": [
+      "NO_ADJUSTMENT_FACTOR_CHANGE"
+    ],
+    "reason": "No unresolved corporate action was supplied; a NON_EXECUTABLE threshold alone does not exercise Case6."
+  },
+  "selected_evidence_unchanged": true,
+  "independent_full_run_proof": false,
+  "full_goal_complete": false,
+  "production_deployed": false
+}

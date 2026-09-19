@@ -1,0 +1,70 @@
+{
+  "producer_commit": "3c46cb36918ca00d4fb61707bcfc16ca06b5c2a1",
+  "checks": {
+    "fatal-flake8": {
+      "chunk_id": "554d2e",
+      "wall_time_seconds": 0.000001041,
+      "exit_code": 0,
+      "original_token_count": 1,
+      "output": "0\n"
+    },
+    "stable-flake8": {
+      "chunk_id": "4a4738",
+      "wall_time_seconds": 6.25e-7,
+      "exit_code": 0,
+      "original_token_count": 0,
+      "output": ""
+    },
+    "stable-black": {
+      "chunk_id": "bd2722",
+      "wall_time_seconds": 0.000001042,
+      "exit_code": 0,
+      "original_token_count": 15,
+      "output": "All done! ✨ 🍰 ✨\n73 files would be left unchanged.\n"
+    },
+    "stable-mypy": {
+      "chunk_id": "258aa6",
+      "wall_time_seconds": 8.33e-7,
+      "exit_code": 0,
+      "original_token_count": 11,
+      "output": "Success: no issues found in 73 source files\n"
+    },
+    "requirements": {
+      "chunk_id": "a36020",
+      "wall_time_seconds": 0.000001375,
+      "exit_code": 0,
+      "original_token_count": 12,
+      "output": "requirements.txt is in sync with pyproject.toml\n"
+    },
+    "access-governance": {
+      "chunk_id": "b9cf87",
+      "wall_time_seconds": 5.83e-7,
+      "exit_code": 1,
+      "original_token_count": 36,
+      "output": "strategy-record access governance failed:\n- unexplained access: quant_investor/operations/catchup_binding.py operations=[] target_lines=[30]\n"
+    },
+    "frozen_access": {
+      "chunk_id": "39cca4",
+      "wall_time_seconds": 0.000002541,
+      "exit_code": 0,
+      "original_token_count": 16,
+      "output": "strategy-record access governance passed: 35 reviewed callers\n"
+    },
+    "main_access": {
+      "chunk_id": "c7224f",
+      "wall_time_seconds": 7.08e-7,
+      "exit_code": 0,
+      "original_token_count": 16,
+      "output": "strategy-record access governance passed: 35 reviewed callers\n"
+    },
+    "access_tests": {
+      "chunk_id": "76afe4",
+      "wall_time_seconds": 5e-7,
+      "exit_code": 0,
+      "original_token_count": 25,
+      "output": ".......                                                                  [100%]\n7 passed in 7.26s\n"
+    }
+  },
+  "source_delta": "audit-only-source-delta.json",
+  "note": "Original frozen scanner failure retained; reviewed current scanner passes against frozen tracked source and main."
+}

@@ -1,0 +1,53 @@
+{
+  "observed_at": "2026-09-15T05:53:16.999479+00:00",
+  "child_pid": 3772,
+  "trade_date": "20260831",
+  "states": {
+    "calendar": {
+      "state": "SUCCEEDED",
+      "attempt": 1
+    },
+    "factor": {
+      "state": "SUCCEEDED",
+      "attempt": 1
+    },
+    "low_observation": {
+      "state": "SUCCEEDED",
+      "attempt": 1
+    },
+    "market": {
+      "state": "SUCCEEDED",
+      "attempt": 1
+    },
+    "pit": {
+      "state": "SUCCEEDED",
+      "attempt": 1
+    }
+  },
+  "verified_terminal_refs": {
+    "calendar": {
+      "path": "results/operations/daily_production/CN/20260831/nodes/calendar/9249a2a57019a85944b86101f310944d22f1057e28fa9bf73a120f77bd0063ed/attempt-0001/terminal.json",
+      "sha256": "b6140e8e546ca25aee31a29b4613e69d6fcc9229b4c4fcf6aa7b33c21652a5ed"
+    },
+    "factor": {
+      "path": "results/operations/daily_production/CN/20260831/nodes/factor/f434ec1c1510146bb0c2a5f72d2407fd88fd3951cd563f1cd3a6460bfa010aef/attempt-0001/terminal.json",
+      "sha256": "3385ac1f16c3b5ceea56cfa5a147dfc34f185ae61b7a7ca8b8883b689fac1199"
+    },
+    "low_observation": {
+      "path": "results/operations/daily_production/CN/20260831/nodes/low_observation/b93874669092cc4eed7401676f8682901a90577fd57a584f115507cb977bc143/attempt-0001/terminal.json",
+      "sha256": "fd65797cb767cf405fd32770263a7791eae769ea408d7496523726235d0d7d7e"
+    },
+    "market": {
+      "path": "results/operations/daily_production/CN/20260831/nodes/market/ecb71bc4c0518c84aaf12ad86483b947a35a4130eca74db94d4a8cdce83c1142/attempt-0001/terminal.json",
+      "sha256": "532cacbb666291d4315b587ebff17186c2073cc41279d27ca05e9eb491253d9a"
+    },
+    "pit": {
+      "path": "results/operations/daily_production/CN/20260831/nodes/pit/215b83d2daea56136f3af82796506bc69d4a1340fc732ab3434f930a2c3eb0d1/attempt-0001/terminal.json",
+      "sha256": "75e8661f2fa71b09ba708e7fa8352ccbb2c33450c87c5f58e455823a1c66514d"
+    }
+  },
+  "status_snapshot_sha256": "73cd9e03bffa823e29225f5b838f84ef633da3788c86059accf1ef6040293bc2",
+  "synthetic": true,
+  "third_day_eod_verified": false,
+  "production_deployed": false
+}

@@ -1,0 +1,19 @@
+{
+  "observed_at": "2026-09-15T06:15:54.125313+00:00",
+  "child_pid": 3772,
+  "signal_count": 4,
+  "trade_date": "20260831",
+  "phase": "MATERIALIZE_DAILY_INPUTS_PREVIOUS_EOD_REPLAY",
+  "caller": "execute_daily_recipe315 -> finish231 -> resume176 -> materialize_daily_inputs905 -> replay_completed_ledger -> verify_materialized_inputs -> Theme/Core recheck",
+  "trace_ref": {
+    "path": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/configured-successor-20260831-post-core.stack.txt",
+    "sha256": "8119cb2e482d619e566cd1545d90b458ab4286b3a2176ae48cf5a85320ce2511"
+  },
+  "replay_observer_call_number": null,
+  "reason": "daily_materialization alias not covered by dispatch replay observer; do not equate observed call count with total calls",
+  "core_nodes_succeeded": 7,
+  "third_day_eod_verified": false,
+  "synthetic": true,
+  "production_deployed": false,
+  "do_not_repeat_signal_for_same_phase": true
+}

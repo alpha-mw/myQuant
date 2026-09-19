@@ -1,0 +1,66 @@
+{
+  "observed_at": "2026-09-14T16:40:19.806547+00:00",
+  "classification": "READ_ONLY_PERFORMANCE_DIAGNOSIS",
+  "runtime_commit": "c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b",
+  "source_refs": [
+    {
+      "path": "scripts/daily_completion_replay.py",
+      "sha256": "1fae7fab2f729e9c310eb01e5e8803e6798fcd1fc11d0e5157a593dd93b00a8a",
+      "matches_frozen_repository": true
+    },
+    {
+      "path": "quant_investor/operations/completion_decision.py",
+      "sha256": "a9e9ba09869ecfd627d688ff8f45c19be2589c79712c03962b220ba79983a37a",
+      "matches_frozen_repository": true
+    },
+    {
+      "path": "quant_investor/operations/completion_research.py",
+      "sha256": "a8911a0b55e13cdcea7019006a6399aa59f4e2588d542d59c5ecba57e0aaa1dc",
+      "matches_frozen_repository": true
+    },
+    {
+      "path": "quant_investor/operations/completion_macro.py",
+      "sha256": "1b045cd0ac245cf5b92170b5b99528c3b4f9357d19c753cc69306df4c3bc2784",
+      "matches_frozen_repository": true
+    },
+    {
+      "path": "quant_investor/operations/research_request.py",
+      "sha256": "d437b3df46a2a3a400ea00403858ab151747fd65ddd8bfa634e2d48d936daaef",
+      "matches_frozen_repository": true
+    },
+    {
+      "path": "quant_investor/operations/core_pool.py",
+      "sha256": "4cd17bf910d8eb357d1533ae99e179aa6b0568295a9aacbe6a1d50d66ac312b4",
+      "matches_frozen_repository": true
+    }
+  ],
+  "findings": [
+    "One replay_native_completion directly calls Decision, Corporate, Dashboard, then v2 Ledger replay.",
+    "Decision loads its research request, then calls research-source replay and Macro replay; both independently load the same native research request reference.",
+    "The previously captured current-repeat stack proves at least one Macro request load reaches native Factor historical recomputation."
+  ],
+  "limitations": [
+    "Static call multiplicity is not a measured dynamic invocation count or total timing attribution.",
+    "No terminal repeat result exists at observation; neither success nor absence of a loop is proven.",
+    "No running process, source code, validation gate, or pinned helper was changed."
+  ],
+  "status": {
+    "state": "RUNNING",
+    "active_step": "repeat",
+    "child_pid": 18868
+  },
+  "process_snapshot": "  PID  PPID  ELAPSED      TIME STAT\n18868 18867 01:14:16  74:06.96 R   \n",
+  "prior_trace_ref": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/configured-successor-repeat.stack.txt",
+  "next_action": "Retain current finite chain; inspect terminal repeat result before any runtime optimization that would invalidate this version-scoped acceptance.",
+  "native_sample": {
+    "path": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/configured-repeat-performance-sample.txt",
+    "sha256": "18c2f991ce1b3aa2a6fa8044eb981fa2f65a33d351cd8b8951ffbf235e5b51d8",
+    "duration_seconds": 1,
+    "interval_milliseconds": 10,
+    "main_thread_samples": 85,
+    "physical_footprint": "1.1G",
+    "peak_physical_footprint": "1.8G",
+    "interpretation": "Main thread sampled in Python interpreter execution; Arrow worker threads sampled waiting. C-level symbols do not identify Python source phase or prove termination.",
+    "no_additional_same_phase_sampling_planned": true
+  }
+}

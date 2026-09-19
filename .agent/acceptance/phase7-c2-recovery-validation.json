@@ -1,0 +1,125 @@
+{
+  "schema_version": "local-validation-receipt.v1",
+  "checkpoint": "phase7-c2-registered-committed-package-recovery",
+  "recorded_at": "2026-09-13T17:04:08.382886+00:00",
+  "status": "IMPLEMENTED_LOCAL_VALIDATION",
+  "goal_status": "ACTIVE_NOT_COMPLETE",
+  "source_sha256": {
+    "scripts/daily_registered_recovery.py": "6384ccfdeafbafb166528cd05042f69b57921d16d2173eb6ff27687738812211",
+    "quant_investor/operations/registered_recovery_source.py": "f32daa48f0c55692321f4c4dab3908ee4003e567ea05f32db6ba2bf0c57f1218",
+    "scripts/cn_official_close_batch.py": "5a10c39b8e606a68c99a7a9a6f88a34203aff3af418cf17c9a5fec41e1f568f7",
+    "scripts/daily_materialization.py": "2192630306b540de8301f76cc3d8dd4caa0677998b0964e515d9b762186abb53",
+    "scripts/daily_production.py": "f10319352661a2e98b9a7b2dc9169f187df02f7fff277db11b4a229c7d398765",
+    "quant_investor/operations/native_bridge.py": "08c63663bff404823683f0e3de690c5191184c94876fa80d99430586c094acc3",
+    "tests/unit/test_registered_recovery.py": "a0e6a9f89f371262fb2d2363bf26b33f2890e34fc81c7e1949a7d4ee6e1a2089",
+    "tests/unit/test_registered_recovery_source.py": "e788f08b06408cb742bb2903a88959dffe464458d1628a29db83bcb7a7a3cee3",
+    "tests/unit/test_registered_recovery_dispatch.py": "db6f2102ac920c4de1a41ea90df7410b63f1ce88159e1bfe0e030d33cd49fb1e",
+    "tests/unit/test_registered_automatic_origin.py": "5b3803a2ffd2c74c269074a9b7e787692bd1006d9d3141455821c005dd361e1e",
+    "tests/unit/test_daily_evidence_production_dispatch.py": "95d950133037fe9378ad52c8ed5583eda36a4c5a3d1d471e2dc99b76c804078e",
+    "scripts/check_strategy_record_access.py": "4557c73171e3c9cdf43ec703a65f15b2dced3f298e0ddfe218cf4a4db7f016bd",
+    "docs/plans/phase07_registered_recovery.md": "92d90666ab3ce60671ff8f5f4f36278325a386d6ef1b48beddb954f223a65f46",
+    "docs/plans/phase00_15_execution_register.md": "8127c7cc16236612b4e5e8f45b6bea977a18e050eb9a28b9c5b0dcf4f1dfe9ae"
+  },
+  "checks": [
+    {
+      "scope": "Final related regression; slow native full-package scenario separately verified",
+      "passed": 122,
+      "deselected": 1,
+      "seconds": 51.89,
+      "session_id": 95398,
+      "exit_code": 0,
+      "log": ".agent/acceptance/phase7-c2-recovery-final-regression.log"
+    },
+    {
+      "scope": "Native recovery package, original fractional chronology and C1 metadata owner",
+      "passed": 12,
+      "seconds": 101.04,
+      "session_id": 15031,
+      "exit_code": 0,
+      "log": ".agent/acceptance/phase7-c2-recovery-native.log"
+    },
+    {
+      "scope": "Final under-lock changed-source, mismatched native commit and clock-regression refusal",
+      "passed": 3,
+      "seconds": 2.76,
+      "session_id": 81958,
+      "exit_code": 0,
+      "log": ".agent/acceptance/phase7-c2-recovery-write-guard.log"
+    },
+    {
+      "scope": "Original configured preparation/locator and distinct source/Core Calendar roles",
+      "passed": 6,
+      "seconds": 9.66,
+      "session_id": 15748,
+      "exit_code": 0,
+      "log": ".agent/acceptance/phase7-c2-recovery-source.log"
+    },
+    {
+      "scope": "Public EXECUTE/RESUME, prior production and bootstrap dispatch",
+      "passed": 49,
+      "seconds": 1.37,
+      "session_id": 95977,
+      "exit_code": 0,
+      "log": ".agent/acceptance/phase7-c2-recovery-dispatch.log"
+    },
+    {
+      "scope": "Black",
+      "files": 12,
+      "status": "PASS"
+    },
+    {
+      "scope": "mypy",
+      "source_files": 6,
+      "status": "PASS"
+    },
+    {
+      "scope": "Owned runtime/test flake8 at max100",
+      "files": 10,
+      "status": "PASS"
+    },
+    {
+      "scope": "Native owner severe flake8 E9,F63,F7,F82",
+      "status": "PASS"
+    },
+    {
+      "scope": "Strategy-record access governance",
+      "reviewed_callers": 36,
+      "status": "PASS"
+    }
+  ],
+  "counts_overlap": true,
+  "implemented": [
+    "exact original request/retained recipe/handoff2-or4/cutoff2/materialization6/native7/C1 plan and CAS proof",
+    "source configuration preparation, capture, native plan and linked REQUEST_AVAILABLE locator replay",
+    "all-lock pre-metadata source/native/time guard using actual native recovery observation",
+    "EXECUTE and RESUME recovery through the existing native owner and original EOD input",
+    "native source modes and C1 JSON encoding preserved; fractional physical-read times preserved"
+  ],
+  "native_financial_assertions": [
+    "actual CAS interrupted before pointer-copy and completion metadata",
+    "missing original materialization prevents any repair",
+    "successful recovery adds exactly committed-pointer.v1.json and completion.v2.json",
+    "existing financial and input file hashes and mtimes unchanged",
+    "second financial CAS forbidden",
+    "repeat changes no metadata and forwards the exact same native input"
+  ],
+  "test_seams": [
+    "The complete package fixture controls original Core/Factor/focus-PIT/installation and outer prior EOD admission; registered accounting/Calendar/five-domain research/cutoff/materialization/C1 proof are native synthetic data.",
+    "Final EOD runner is explicitly controlled and returns PARTIAL; full EOD/Morning convergence is not claimed.",
+    "Source helper tests use a minimal already-admitted plan view; native C1 plan/proof admission is separately exercised by the complete package test.",
+    "Final write-guard fault tests isolate package admission while using real strategy/day/Store locks and native C1 metadata recovery."
+  ],
+  "not_claimed": [
+    "automatic ACTIVE cross-day recovery routing",
+    "launcher inspection v3",
+    "expired-publication completed_eod_refs and lease retirement",
+    "installed full DAG",
+    "live provider or brokerage use",
+    "continuous unattended acceptance",
+    "whole Phase0-15 completion"
+  ],
+  "known_outside_scope_lint": [
+    "Unrelated native-owner unused imports and one long line remain; existing governance-table long reason strings remain. Full CI is still a later gate."
+  ],
+  "remaining_plan": "docs/plans/phase07_registered_recovery.md"
+}

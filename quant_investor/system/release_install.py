@@ -9,6 +9,7 @@ broker, order, portfolio, or Strategy Record authority.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextlib import nullcontext
 import ctypes
 from datetime import datetime, timezone
 import errno
@@ -472,7 +473,9 @@ def _verify_install_root(path: Path, repository_root: Path) -> None:
     raise SystemSecurityError("release install root is inside the source checkout")
 
 
-def _probe_install(python: Path, install_root: Path, repository_root: Path) -> dict[str, Any]:
+def _probe_install(
+    python: Path, install_root: Path, repository_root: Path, *, read_only: bool = False
+) -> dict[str, Any]:
     probe = (
         "import json, pathlib, quant_investor; "
         "from quant_investor.contracts import contract_catalog_sha256; "
@@ -489,13 +492,46 @@ def _probe_install(python: Path, install_root: Path, repository_root: Path) -> d
         "PYTHONHASHSEED": "0",
         "PYTHONPATH": "",
     }
-    with tempfile.TemporaryDirectory(prefix="release-probe-") as directory:
+    command = [str(python), "-I", "-c", probe]
+    if read_only:
+        cache = install_root / (".readonly-probe-cache-" + secrets.token_hex(16))
+        if os.path.lexists(cache):
+            raise SystemSecurityError("read-only probe cache path already exists")
+        guard = """import sys, os
+def _guard(event, args):
+    if event == 'open':
+        mode = args[1] if len(args) > 1 else None
+        flags = args[2] if len(args) > 2 and isinstance(args[2], int) else 0
+        write_flags = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
+        if (isinstance(mode, str) and any(c in mode for c in 'wax+')) or flags & write_flags:
+            raise RuntimeError('ARCHIVE_PROBE_WRITE_FORBIDDEN')
+    mutations = {'os.mkdir','os.remove','os.rmdir','os.rename','os.link','os.symlink',
+                 'os.chmod','os.chown','os.utime','subprocess.Popen'}
+    if event in mutations or event.startswith('socket.'):
+        raise RuntimeError('ARCHIVE_PROBE_MUTATION_OR_NETWORK_FORBIDDEN')
+sys.addaudithook(_guard)
+"""
+        command = [
+            str(python),
+            "-I",
+            "-B",
+            "-X",
+            "pycache_prefix=" + str(cache),
+            "-c",
+            guard + probe,
+        ]
+    location = (
+        nullcontext(str(install_root))
+        if read_only
+        else tempfile.TemporaryDirectory(prefix="release-probe-")
+    )
+    with location as directory:
         cwd = Path(directory).resolve(strict=True)
         if cwd == repository_root or repository_root in cwd.parents:
             raise SystemSecurityError("release probe cwd overlaps source checkout")
         try:
             completed = subprocess.run(
-                [str(python), "-I", "-c", probe],
+                command,
                 cwd=cwd,
                 env=environment,
                 stdin=subprocess.DEVNULL,
@@ -1240,10 +1276,11 @@ def publish_release_install_input(  # noqa: C901 - validates custody before publ
     }
 
 
-def verify_release_install_input(  # noqa: C901
+def _verify_release_install_input(  # noqa: C901
     raw: bytes,
     *,
     repository_root: str | os.PathLike[str],
+    read_only_probe: bool,
 ) -> dict[str, Any]:
     """Deeply replay exact release/install evidence supplied on stdin."""
 
@@ -1314,7 +1351,11 @@ def verify_release_install_input(  # noqa: C901
         raise SystemSecurityError("release interpreter cannot be read") from exc
     if _sha256(python_raw) != payload["python_executable_sha256"]:
         raise SystemPreconditionError("release interpreter identity differs")
-    probe = _probe_install(python, install_root, root)
+    probe = (
+        _probe_install(python, install_root, root, read_only=True)
+        if read_only_probe
+        else _probe_install(python, install_root, root)
+    )
     origin = Path(probe["import_origin"]).resolve(strict=True)
     if origin != Path(payload["import_origin"]).resolve(strict=True):
         raise SystemPreconditionError("installed import origin differs")
@@ -1340,6 +1381,22 @@ def verify_release_install_input(  # noqa: C901
         "contract_catalog_sha256": probe["contract_catalog_sha256"],
         "import_origin": str(origin),
     }
+
+
+def verify_release_install_input(
+    raw: bytes, *, repository_root: str | os.PathLike[str]
+) -> dict[str, Any]:
+    """Deep native verification with the original live-install probe behavior."""
+    return _verify_release_install_input(
+        raw, repository_root=repository_root, read_only_probe=False
+    )
+
+
+def verify_archived_release_install_input(
+    raw: bytes, *, repository_root: str | os.PathLike[str]
+) -> dict[str, Any]:
+    """Identical deep evidence checks, using a no-write historical import probe."""
+    return _verify_release_install_input(raw, repository_root=repository_root, read_only_probe=True)
 
 
 def verify_running_release_install_input(  # noqa: C901 - exact live process closure

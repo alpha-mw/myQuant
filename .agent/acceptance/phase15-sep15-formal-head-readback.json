@@ -1,0 +1,20 @@
+{
+  "observed_at": "2026-09-15T02:13:24.749899+00:00",
+  "scope": "READ_ONLY_FORMAL_HEAD_BYTES_COMPARISON",
+  "previous_native_frontier_ref": ".agent/acceptance/phase15-evening-formal-frontier.json",
+  "heads": [
+    {
+      "path": "/Users/maxwell/mySpace/myQuant/results/strategy_records/CN/aggressive_tech_manufacturing/_record_store/current.v1.json",
+      "sha256": "f037197e370c09e824e97da9ce1ac86c0687def67ca7dd32d211fee2170e913c",
+      "unchanged_since_previous": true
+    },
+    {
+      "path": "/Users/maxwell/mySpace/myQuant/results/strategy_records/CN/aggressive_tech_manufacturing/_event_store/current.v1.json",
+      "sha256": "3ab06e301cf197ee33b242f27c42d6a18f063a07c2860d3f9682662ca03349a9",
+      "unchanged_since_previous": true
+    }
+  ],
+  "subsequent_actual_owner_facts": "UNCONFIRMED",
+  "synthetic_acceptance_does_not_close_formal_gaps": true,
+  "full_goal_complete": false
+}

@@ -1,0 +1,9 @@
+{
+  "state": "INSTALLED_VERIFIED",
+  "case": 4,
+  "root": "/private/tmp/myquant-current-case4-20260916T173928Z",
+  "commit": "5060dee2d4b39b50a735393d056ebe5adb4efe3b",
+  "pid": 15374,
+  "production_deployed": false,
+  "finished_at": "2026-09-16T17:39:53.269016+00:00"
+}

@@ -45,7 +45,10 @@ def _quote_capture(
     provider_time: str = "09:45:00",
 ) -> tuple[str, str]:
     raw_path = tmp_path / f"data/private/cn_public_quotes/{run_date}/sina-0945/raw.gb18030.txt"
-    raw = b"provider raw bytes"
+    fields = ["Test", "49.00", "48.50", "49.50", "50.00", "48.00", "0", "0", "100", "1000"]
+    fields.extend(["0"] * 20)
+    fields.extend([f"{run_date[:4]}-{run_date[4:6]}-{run_date[6:]}", provider_time, "00"])
+    raw = f'var hq_str_sz002463="{",".join(fields)}";\n'.encode("gb18030")
     raw_sha = _write(raw_path, raw)
     capture = {
         "schema_version": morning.SINA_CAPTURE_SCHEMA,
@@ -707,3 +710,52 @@ def test_missing_current_morning_restores_evening_fallback(tmp_path: Path, monke
 
     assert result["next_schedule_state"] == "DUAL_RUN"
     assert result["schedule_action"] == "RESUME_2100_FALLBACK_KEEP_0945_RESUME_2130"
+
+
+@pytest.mark.parametrize("field,value", [("price", "49.60"), ("name", "Changed")])
+def test_quote_rejects_rehashed_capture_with_changed_rows(tmp_path, field, value):
+    capture_path, _ = _quote_capture(tmp_path)
+    path = tmp_path / capture_path
+    capture = json.loads(path.read_bytes())
+    raw = (path.parent / "raw.gb18030.txt").read_bytes()
+    capture["quote_rows"][0][field] = value
+    _write(path, capture)  # new valid capture SHA cannot attest a fabricated quote
+    capture = json.loads(path.read_bytes())
+    with pytest.raises(morning.IntelligenceError, match="differ from raw"):
+        morning.validate_sina_quote_capture(capture, raw=raw, run_date="20260827")
+
+
+@pytest.mark.parametrize("provider", ["sh002463", "sz000001"])
+def test_quote_rejects_wrong_provider_mapping(tmp_path, provider):
+    capture_path, _ = _quote_capture(tmp_path)
+    path = tmp_path / capture_path
+    capture = json.loads(path.read_bytes())
+    raw = (path.parent / "raw.gb18030.txt").read_bytes()
+    capture["symbol_mapping"][0]["provider_symbol"] = provider
+    with pytest.raises(morning.IntelligenceError, match="MAPPING_INVALID"):
+        morning.validate_sina_quote_capture(capture, raw=raw, run_date="20260827")
+
+
+def test_shared_parser_rejects_duplicate_extra_and_swapped_rows():
+    from quant_investor.intelligence.sina_quotes import (
+        SinaQuoteParseError,
+        parse_sina_quote_response,
+    )
+
+    mapping = [{"symbol": "002463.SZ", "provider_symbol": "sz002463"}]
+    raw = _sina_raw()
+    assert SINA._parse(raw, mapping) == parse_sina_quote_response(raw, mapping)
+    with pytest.raises(SinaQuoteParseError, match="DUPLICATE"):
+        parse_sina_quote_response(raw + raw, mapping)
+    with pytest.raises(SinaQuoteParseError, match="EXTRA"):
+        parse_sina_quote_response(raw + raw.replace(b"sz002463", b"sh600000"), mapping)
+    with pytest.raises(SinaQuoteParseError, match="INCOMPLETE"):
+        parse_sina_quote_response(b"", mapping)
+    swapped = [
+        {"symbol": "002463.SZ", "provider_symbol": "sh600000"},
+        {"symbol": "600000.SH", "provider_symbol": "sz002463"},
+    ]
+    with pytest.raises(SinaQuoteParseError, match="MAPPING_INVALID"):
+        parse_sina_quote_response(raw, swapped)
+    with pytest.raises(SINA.SinaCaptureError, match="DUPLICATE"):
+        SINA._parse(raw + raw, mapping)

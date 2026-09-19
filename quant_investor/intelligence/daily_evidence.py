@@ -28,7 +28,6 @@ from ._common import (
     sha256,
     timestamp,
 )
-from .daily import validate_daily_research_policy
 from .fundamental import FUNDAMENTAL_COMPONENTS, assess_fundamental
 from .theme import assess_theme
 from .theme_governance import (
@@ -242,6 +241,23 @@ def _exposure_state(revenue_share: Decimal) -> tuple[str, str]:
     return "UNVERIFIED", "THEME_REVENUE_SHARE_NOT_POSITIVE"
 
 
+def _validate_exposure_evidence(
+    evidence: Sequence[Mapping[str, Any] | bytes], cutoff: str
+) -> dict[str, dict[str, Any]]:
+    validated: dict[str, dict[str, Any]] = {}
+    for value in evidence:
+        artifact = validate_company_source_evidence(value)
+        payload = artifact["payload"]
+        company = payload["company_code"]
+        if company in validated:
+            raise IntelligenceError("economic exposure evidence is duplicated")
+        if payload["source_type"] not in EXPOSURE_SOURCE_TYPES:
+            raise IntelligenceError("economic exposure source type differs")
+        require_no_future(artifact, as_of=cutoff, label="economic exposure evidence")
+        validated[company] = artifact
+    return validated
+
+
 def build_source_bound_economic_exposure_projection(
     *,
     as_of: str,
@@ -261,18 +277,7 @@ def build_source_bound_economic_exposure_projection(
     require_artifact_ref(theme_payload["policy_ref"], daily, label="theme.policy_ref")
     if daily_payload["strategy_id"] != STRATEGY_ID:
         raise IntelligenceError("economic exposure strategy differs")
-    validated: dict[str, dict[str, Any]] = {}
-    for value in evidence:
-        artifact = validate_company_source_evidence(value)
-        payload = artifact["payload"]
-        company = payload["company_code"]
-        if company in validated:
-            raise IntelligenceError("economic exposure evidence is duplicated")
-        if payload["source_type"] not in EXPOSURE_SOURCE_TYPES:
-            raise IntelligenceError("economic exposure source type differs")
-        require_no_future(artifact, as_of=cutoff, label="economic exposure evidence")
-        validated[company] = artifact
-
+    validated = _validate_exposure_evidence(evidence, cutoff)
     rows: list[dict[str, Any]] = []
     blockers: list[str] = []
     for membership in theme_payload["company_rows"]:
@@ -435,13 +440,10 @@ def build_fundamental_assessments_from_frame(
     required = {"ts_code", "trade_date", *FUNDAMENTAL_METRICS}
     if not required <= set(frame.columns):
         raise IntelligenceError("Fundamental snapshot columns are incomplete")
-    data = frame.copy()
-    data["ts_code"] = data["ts_code"].map(company_code)
-    data = (
-        data.sort_values(["ts_code", "trade_date"], kind="mergesort")
-        .groupby("ts_code", as_index=False)
-        .tail(1)
-    )
+    from .fundamental_time import select_fundamental_snapshots, source_available_at as checked_time
+
+    source_available_at = checked_time(source_available_at, as_of=as_of)
+    data = select_fundamental_snapshots(frame, as_of=as_of)
     data = data.set_index("ts_code", drop=False)
     percentiles = {
         "roe": _percentile(data["fin_roe"], higher_is_better=True),

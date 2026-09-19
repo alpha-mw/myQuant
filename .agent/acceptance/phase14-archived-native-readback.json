@@ -1,0 +1,240 @@
+{
+  "validated_at": "2026-09-13T04:38:24.324706+00:00",
+  "scope": "CURRENT_EVALUATOR_OVER_RECORDED_INSTALLED_NATIVE_READER",
+  "synthetic_fixture": true,
+  "workspace": "/private/tmp/myquant-cutoff-installed-20260913T020706Z/factor-workspace",
+  "protected_file_count": 14862,
+  "protected_changes": [],
+  "elapsed_seconds": 175.32782258291263,
+  "native_calls": [
+    {
+      "state": "FAILED",
+      "seconds": 172.70165116689168,
+      "error_class": "ContractError",
+      "error": "OUTCOME_NATIVE_CHILD_FAILED"
+    }
+  ],
+  "result": {
+    "schema_version": "factor-production-oos-summary.v1",
+    "authority": "NON_AUTHORIZING",
+    "factor_admission": false,
+    "eligibility_scope": "LOCAL_COORDINATOR_AVAILABILITY",
+    "native_replay_required": true,
+    "batch_scope": "CURRENT_CURSOR_BATCH",
+    "admissions": [
+      {
+        "observation_ref": {
+          "path": "results/factors/observations/2026/08/27/LOW.json",
+          "sha256": "a3d230f748db9f25c23bfa80f0e71c21a661c2e4f71ac8b5cfbc3d2df01eab45"
+        },
+        "factor_id": "pv_low_dollar_volume_5d",
+        "signal_date": "20260827",
+        "state": "INVALID",
+        "reason_codes": [
+          "DAILY_NATIVE_EVIDENCE_INVALID"
+        ],
+        "admission_ref": {
+          "path": "results/factors/outcome_sources/5a8950e9d8a17d9676c0e9e7a64e1a4422ae789657cf0926b1648300f78a12ba.json",
+          "sha256": "5a8950e9d8a17d9676c0e9e7a64e1a4422ae789657cf0926b1648300f78a12ba"
+        }
+      },
+      {
+        "observation_ref": {
+          "path": "results/factors/observations/2026/08/27/W80.json",
+          "sha256": "96ae246a5f2a4ddb4a32a1907b81d2bd2b34e6b6be57917081f1abf41801634a"
+        },
+        "factor_id": "pv_blend_volstab19x2_mom90_amihud5_w80",
+        "signal_date": "20260827",
+        "state": "INVALID",
+        "reason_codes": [
+          "DAILY_NATIVE_EVIDENCE_INVALID"
+        ],
+        "admission_ref": {
+          "path": "results/factors/outcome_sources/dbaf287f5201c5ca988854983aaaca4d5521c37719419de347d37cedfcbc3d36.json",
+          "sha256": "dbaf287f5201c5ca988854983aaaca4d5521c37719419de347d37cedfcbc3d36"
+        }
+      }
+    ],
+    "eligible_observation_count": 0,
+    "eligible_signal_day_count": 0,
+    "exclusions_by_reason": {
+      "DAILY_NATIVE_EVIDENCE_INVALID": 2
+    },
+    "by_factor": {
+      "pv_blend_volstab19x2_mom90_amihud5_w80": {
+        "1": {
+          "eligible_outcome_refs": [],
+          "eligible_origin_count": 0,
+          "metrics": {
+            "ic": {
+              "state": "UNAVAILABLE",
+              "sample_count": 0,
+              "mean": null
+            },
+            "rank_ic": {
+              "state": "UNAVAILABLE",
+              "sample_count": 0,
+              "mean": null
+            },
+            "long_short_spread": {
+              "state": "UNAVAILABLE",
+              "sample_count": 0,
+              "mean": null
+            }
+          }
+        },
+        "5": {
+          "eligible_outcome_refs": [],
+          "eligible_origin_count": 0,
+          "metrics": {
+            "ic": {
+              "state": "UNAVAILABLE",
+              "sample_count": 0,
+              "mean": null
+            },
+            "rank_ic": {
+              "state": "UNAVAILABLE",
+              "sample_count": 0,
+              "mean": null
+            },
+            "long_short_spread": {
+              "state": "UNAVAILABLE",
+              "sample_count": 0,
+              "mean": null
+            }
+          }
+        },
+        "20": {
+          "eligible_outcome_refs": [],
+          "eligible_origin_count": 0,
+          "metrics": {
+            "ic": {
+              "state": "UNAVAILABLE",
+              "sample_count": 0,
+              "mean": null
+            },
+            "rank_ic": {
+              "state": "UNAVAILABLE",
+              "sample_count": 0,
+              "mean": null
+            },
+            "long_short_spread": {
+              "state": "UNAVAILABLE",
+              "sample_count": 0,
+              "mean": null
+            }
+          }
+        },
+        "60": {
+          "eligible_outcome_refs": [],
+          "eligible_origin_count": 0,
+          "metrics": {
+            "ic": {
+              "state": "UNAVAILABLE",
+              "sample_count": 0,
+              "mean": null
+            },
+            "rank_ic": {
+              "state": "UNAVAILABLE",
+              "sample_count": 0,
+              "mean": null
+            },
+            "long_short_spread": {
+              "state": "UNAVAILABLE",
+              "sample_count": 0,
+              "mean": null
+            }
+          }
+        }
+      },
+      "pv_low_dollar_volume_5d": {
+        "1": {
+          "eligible_outcome_refs": [],
+          "eligible_origin_count": 0,
+          "metrics": {
+            "ic": {
+              "state": "UNAVAILABLE",
+              "sample_count": 0,
+              "mean": null
+            },
+            "rank_ic": {
+              "state": "UNAVAILABLE",
+              "sample_count": 0,
+              "mean": null
+            },
+            "long_short_spread": {
+              "state": "UNAVAILABLE",
+              "sample_count": 0,
+              "mean": null
+            }
+          }
+        },
+        "5": {
+          "eligible_outcome_refs": [],
+          "eligible_origin_count": 0,
+          "metrics": {
+            "ic": {
+              "state": "UNAVAILABLE",
+              "sample_count": 0,
+              "mean": null
+            },
+            "rank_ic": {
+              "state": "UNAVAILABLE",
+              "sample_count": 0,
+              "mean": null
+            },
+            "long_short_spread": {
+              "state": "UNAVAILABLE",
+              "sample_count": 0,
+              "mean": null
+            }
+          }
+        },
+        "20": {
+          "eligible_outcome_refs": [],
+          "eligible_origin_count": 0,
+          "metrics": {
+            "ic": {
+              "state": "UNAVAILABLE",
+              "sample_count": 0,
+              "mean": null
+            },
+            "rank_ic": {
+              "state": "UNAVAILABLE",
+              "sample_count": 0,
+              "mean": null
+            },
+            "long_short_spread": {
+              "state": "UNAVAILABLE",
+              "sample_count": 0,
+              "mean": null
+            }
+          }
+        },
+        "60": {
+          "eligible_outcome_refs": [],
+          "eligible_origin_count": 0,
+          "metrics": {
+            "ic": {
+              "state": "UNAVAILABLE",
+              "sample_count": 0,
+              "mean": null
+            },
+            "rank_ic": {
+              "state": "UNAVAILABLE",
+              "sample_count": 0,
+              "mean": null
+            },
+            "long_short_spread": {
+              "state": "UNAVAILABLE",
+              "sample_count": 0,
+              "mean": null
+            }
+          }
+        }
+      }
+    }
+  },
+  "production_deployed": false,
+  "real_oos_claim": false
+}

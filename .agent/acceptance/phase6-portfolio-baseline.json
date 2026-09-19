@@ -1,0 +1,44 @@
+{
+  "status": "READ_ONLY_BASELINE",
+  "trade_date": "20260828",
+  "decision_cutoff": "2026-08-28T13:30:00Z",
+  "store_preimage_sha256": "f1c2d1d6b2e73db64505ffdd219e25a13dd15d0b631aa84107db709bc108cdb7",
+  "source_record_id": "20260909_112312-b04",
+  "source_effective_date": "20260827",
+  "source_record_sealed_at": "2026-09-09T03:23:12Z",
+  "pointer_published_at": "2026-09-09T03:23:12Z",
+  "source_seal_before_decision": false,
+  "source_pointer_published_before_decision": false,
+  "held_count": 7,
+  "cash": "958000.0",
+  "source_refs": [
+    {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260909_112312-b04/ledger_after_manual_switch.parquet",
+      "sha256": "4bb504a01ed675af44e8ba739ba4d277bbd74fb568ac6656774b6dd0b4a38b80"
+    },
+    {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260909_112312-b04/manual_execution_manifest.json",
+      "sha256": "ee04e04271083a80ef69e8832705026d67bfb4087c8fe721bcf56a1a5ddd7494"
+    },
+    {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/_record_store/catalogs/g-daily-close-20260827-e247d10d58bd0034/catalog.v3.json",
+      "sha256": "f507430d1e38e41e2e1d83061b206806f6b692c049cae4d0a76342dd9bd77de9"
+    },
+    {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/_record_store/daily_close_transactions/daily-close-20260827-e247d10d58bd0034/committed-pointer.v1.json",
+      "sha256": "f1c2d1d6b2e73db64505ffdd219e25a13dd15d0b631aa84107db709bc108cdb7"
+    },
+    {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/_record_store/daily_close_transactions/daily-close-20260828-65583f2b970e8f20/plan.v1.json",
+      "sha256": "191bb751d1fc4fb7f760dd85bd83394baa690f3de07b104102c6e905516c5b1d"
+    }
+  ],
+  "current_store_selection_calls": 0,
+  "source_files_unchanged": true,
+  "phase6_admission": "UNCONFIRMED_PENDING_TEMPORAL_CONTRACT_REVIEW",
+  "authority": {
+    "trade": false,
+    "holdings_mutation": false,
+    "prospective_admission": false
+  }
+}

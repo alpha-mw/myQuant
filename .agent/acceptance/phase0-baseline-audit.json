@@ -1,0 +1,119 @@
+{
+  "verified_at": "2026-09-09T04:40:02.253178+00:00",
+  "phase": 0,
+  "status": "BASELINE_ARTIFACT_VERIFIED",
+  "historical_baseline_generated_at": "2026-09-07T06:01:06.407780+00:00",
+  "baseline_ref": {
+    "path": "/Users/maxwell/mySpace/myQuant/results/system/daily_dag_baseline.json",
+    "sha256": "bf12e9b7912ae0462f3ac252de555ca3d4ac6c07e49c777c3052e42b8cbe8d78"
+  },
+  "inventory_nodes": [
+    "calendar",
+    "corporate_action_recon",
+    "dashboard",
+    "decision",
+    "exposure",
+    "factor",
+    "fundamental",
+    "industry",
+    "low_observation",
+    "macro",
+    "market",
+    "morning",
+    "pit",
+    "store",
+    "theme",
+    "top100",
+    "w80_observation"
+  ],
+  "inventory_contract_fields_verified": true,
+  "explicit_break_diagnosis": [
+    {
+      "edge": "factor/LOW/W80 -> top100",
+      "reason": "ORCHESTRATOR_MISSING",
+      "detail": "Deployed DailyFactorLoop.core_completed ends after rollover, observation registration, settlement and report. No pool publisher invocation; Top100 continuation exists only in scheduler prose.",
+      "runtime_attempt_result": "NO_TOP100_NODE_RECEIPT; not evidence of provider or command failure"
+    },
+    {
+      "edge": "store -> dashboard",
+      "reason": "INPUT_MISSING",
+      "detail": "Selected official valuation and benchmark end9/3 while target9/4; event closure set must include9/4 before governed close-forward. No inferred empty events permitted."
+    }
+  ],
+  "current_ref_checks": [
+    {
+      "path": "/Users/maxwell/mySpace/myQuant/results/factors/_active.json",
+      "baseline_sha256": "7a97fd7798be0b99f294775682fd76c8fd3d31715230e33eaf28783e9caaf8eb",
+      "present_sha256": "4a22eb1307981b99c8714fba0855782002708e77b4d7202215dbb180c98ec7a6",
+      "matches_baseline": false
+    },
+    {
+      "path": "/Users/maxwell/mySpace/myQuant/results/factors/generations/factor-production-generation-676db8c12661b4095dec3fb63659989b288fcb8a6ac203b7678752df687590d3/generation.json",
+      "baseline_sha256": "5fff1592c3624249d3609130014d0bb0ac64f8158efd39a8e0e0ae4750949f80",
+      "present_sha256": "5fff1592c3624249d3609130014d0bb0ac64f8158efd39a8e0e0ae4750949f80",
+      "matches_baseline": true
+    },
+    {
+      "path": "/Users/maxwell/mySpace/myQuant/data/parquet/cn/_latest.json",
+      "baseline_sha256": "826f2d8c072697a249c8e5536bc7ab4ca778fc23788ad33d4a34413e822b5c43",
+      "present_sha256": "6dee4494b396453db03982c7b0b5bd96dbad9bc5a030a906eb76f8a4684f1a7f",
+      "matches_baseline": false
+    },
+    {
+      "path": "/Users/maxwell/mySpace/myQuant/data/parquet/cn/reference/stock_basic_membership_latest.json",
+      "baseline_sha256": "6ff302f2986aaae9193dcf8128ae2acc2c19890a41182438c9f786fae3e83a5b",
+      "present_sha256": "551b2018f39b4abf4eadf2e12bd49f439e44b266f81ebbb84c851e91351a68e6",
+      "matches_baseline": false
+    },
+    {
+      "path": "/Users/maxwell/mySpace/myQuant/results/strategy_records/CN/aggressive_tech_manufacturing/_record_store/current.v1.json",
+      "baseline_sha256": "f037197e370c09e824e97da9ce1ac86c0687def67ca7dd32d211fee2170e913c",
+      "present_sha256": "f037197e370c09e824e97da9ce1ac86c0687def67ca7dd32d211fee2170e913c",
+      "matches_baseline": true
+    },
+    {
+      "path": "/Users/maxwell/mySpace/myQuant/results/strategy_records/CN/aggressive_tech_manufacturing/20260904_110322-b02/manual_execution_manifest.json",
+      "baseline_sha256": "ab971ad19f5852f7332bc95271e1950efb596c33ff1d0f34d787a5e349599e61",
+      "present_sha256": "ab971ad19f5852f7332bc95271e1950efb596c33ff1d0f34d787a5e349599e61",
+      "matches_baseline": true
+    },
+    {
+      "path": "/Users/maxwell/mySpace/myQuant/portfolio_dashboard/private/generated/cn_aggressive_dashboard.v2.json",
+      "baseline_sha256": "00bdb62136d03ed17e096b83731e5ad7e5f0a5aba3b11e4588347957ea8fd43b",
+      "present_sha256": "0520ab64aa8abebab17c4af492f760546d68054e3897c4033dd8d79a9dbc10c4",
+      "matches_baseline": false
+    },
+    {
+      "path": "/Users/maxwell/mySpace/myQuant/results/factors/observations/2026/09/04/LOW.json",
+      "baseline_sha256": "817ec608c8fd4edd2dfee36fee660eda3945156f79a911d45a3adff3e12e6606",
+      "present_sha256": "817ec608c8fd4edd2dfee36fee660eda3945156f79a911d45a3adff3e12e6606",
+      "matches_baseline": true
+    },
+    {
+      "path": "/Users/maxwell/mySpace/myQuant/results/factors/observations/2026/09/04/W80.json",
+      "baseline_sha256": "dd6008416b287d857fcdb54231dce333f99c6a4fbfd4d6413e5b1383bb60335e",
+      "present_sha256": "dd6008416b287d857fcdb54231dce333f99c6a4fbfd4d6413e5b1383bb60335e",
+      "matches_baseline": true
+    },
+    {
+      "path": "/Users/maxwell/mySpace/myQuant-release-checkouts/7b26ac2ee9dfdd4b4a0016841c68eb5ecbbd6216/quant_investor/market/daily_factor_loop.py",
+      "baseline_sha256": "295d96e47aca8dc6c5bafd75704670f2efb56697165b1debdbe86626c9d04179",
+      "present_sha256": "295d96e47aca8dc6c5bafd75704670f2efb56697165b1debdbe86626c9d04179",
+      "matches_baseline": true
+    },
+    {
+      "path": "/Users/maxwell/mySpace/myQuant/results/strategy_records/CN/aggressive_tech_manufacturing/_event_store/current.v1.json",
+      "baseline_sha256": "3ab06e301cf197ee33b242f27c42d6a18f063a07c2860d3f9682662ca03349a9",
+      "present_sha256": "3ab06e301cf197ee33b242f27c42d6a18f063a07c2860d3f9682662ca03349a9",
+      "matches_baseline": true
+    },
+    {
+      "path": "/Users/maxwell/mySpace/myQuant/data/parquet/cn/benchmarks/_latest.json",
+      "baseline_sha256": "79fcfe3669025861a8bdd697036acc07e3d3ba5423f95f52ff88843011c75217",
+      "present_sha256": "2af8c3030806a3e0c2f585197a26097507a2dc0238a13512314bb1f9ed1a8d90",
+      "matches_baseline": false
+    }
+  ],
+  "not_a_current_runtime_readiness_claim": true,
+  "no_baseline_rewrite": true
+}

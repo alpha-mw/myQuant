@@ -1,0 +1,26 @@
+{
+  "synthetic": true,
+  "workspace": "/private/var/folders/cp/539tc5k549l2jzdy90ptl6cm0000gn/T/phase7-registered-close-before-6pyhlvek",
+  "registered_declaration_ref": {
+    "path": "results/strategy_records/CN/aggressive_tech_manufacturing/_event_store/registered/4c1ad739db114fbeb75d4e51c82a801033916324f12c7bc3c34e15b5548fa793/declaration.v1.json",
+    "sha256": "2d022692525fde835d0bb897ea7bda77c3fd9b58fb576591b16fced80c20954c"
+  },
+  "native_result": {
+    "status": "NO_ACTION",
+    "last_official_date": "2026-08-25",
+    "latest_required_close_date": "2026-08-25",
+    "missing_dates": [],
+    "pointer_sha256": "4c1ad739db114fbeb75d4e51c82a801033916324f12c7bc3c34e15b5548fa793",
+    "completion": null,
+    "provider_calls": false,
+    "broker_calls": false,
+    "order_calls": false,
+    "trade_calls": false
+  },
+  "adapter_result": {
+    "type": "ContractError",
+    "error": "STORE_EXISTING_CLOSE_RECEIPT_UNSUPPORTED_OR_AMBIGUOUS"
+  },
+  "files_unchanged": true,
+  "no_actual_account_or_provider_calls": true
+}

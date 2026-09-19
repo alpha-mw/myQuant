@@ -1699,6 +1699,38 @@ def load_fundamental_pointer(root: str | Path) -> dict[str, Any] | None:
     if not pointer_path.exists():
         return None
     pointer_bytes, pointer_signature = _stable_file_bytes(pointer_path)
+    validated = _inspect_fundamental_pointer_bytes(base, pointer_bytes)
+    if _file_signature(os.lstat(pointer_path)) != pointer_signature:
+        raise FundamentalGenerationError("fundamental pointer changed during validation")
+    return validated
+
+
+def inspect_fundamental_pointer_bytes(
+    root: str | Path, *, pointer_bytes: bytes, expected_pointer_sha256: str
+) -> dict[str, Any]:
+    """Validate exact retained pointer bytes through the native generation contract.
+
+    Manifest/table/provenance validation is shared with the current loader. This
+    function never opens, selects or rewrites the mutable Fundamental pointer.
+    """
+    if (
+        type(pointer_bytes) is not bytes
+        or type(expected_pointer_sha256) is not str
+        or not _valid_sha256(expected_pointer_sha256)
+        or hashlib.sha256(pointer_bytes).hexdigest() != expected_pointer_sha256
+    ):
+        raise FundamentalGenerationError("frozen fundamental pointer SHA differs")
+    base = _read_data_root(root)
+    pointer = _inspect_fundamental_pointer_bytes(base, pointer_bytes)
+    return {
+        "pointer": pointer,
+        "pointer_sha256": expected_pointer_sha256,
+        "validation_scope": "EXACT_RETAINED_FUNDAMENTAL_POINTER",
+        "current_pointer_replayed": False,
+    }
+
+
+def _inspect_fundamental_pointer_bytes(base: Path, pointer_bytes: bytes) -> dict[str, Any]:
     pointer_payload = _json_object_from_bytes(
         pointer_bytes,
         label="pointer",
@@ -1719,23 +1751,15 @@ def load_fundamental_pointer(root: str | Path) -> dict[str, Any] | None:
             str(tables.get(table_name, "")),
             label=table_name,
         )
-        table_signatures.append(
-            (table_name, *_file_signature(os.lstat(table_path)))
-        )
+        table_signatures.append((table_name, *_file_signature(os.lstat(table_path))))
     validated = _validate_fundamental_pointer_cached(
         str(base),
         pointer_bytes,
         manifest_bytes,
         tuple(table_signatures),
     )
-    if _file_signature(os.lstat(pointer_path)) != pointer_signature:
-        raise FundamentalGenerationError(
-            "fundamental pointer changed during validation"
-        )
     if _file_signature(os.lstat(manifest_path)) != manifest_signature:
-        raise FundamentalGenerationError(
-            "fundamental manifest changed during validation"
-        )
+        raise FundamentalGenerationError("fundamental manifest changed during validation")
     for table_name in FUNDAMENTAL_TABLES:
         table_path = _resolve_inside(
             base,
@@ -2814,6 +2838,37 @@ def _validate_daily_history_coverage_intervals(
     return tuple(sorted(normalized, key=lambda row: row["interval_id"]))
 
 
+def _bar_eligibility_invalid(
+    symbol: str,
+    *,
+    listing_dates: Mapping[str, str],
+    history_end_dates: Mapping[str, str],
+    bar_first_dates: Mapping[str, str],
+    bar_last_dates: Mapping[str, str],
+    start_date: str,
+    as_of: str,
+    zero_bar_admitted: set[str],
+) -> bool:
+    """Is this identity's bar eligibility malformed?
+
+    Listing dates must always be exact. Bar bounds must be exact too, unless the
+    identity was admitted with no bars at all — in which case the only acceptable
+    bounds are empty ones, and there is no range left to check.
+    """
+    if not re.fullmatch(r"\d{8}", listing_dates[symbol]):
+        return True
+    if not re.fullmatch(r"\d{8}", history_end_dates[symbol]):
+        return True
+    first, last = bar_first_dates[symbol], bar_last_dates[symbol]
+    if symbol in zero_bar_admitted:
+        return bool(first or last)
+    if not re.fullmatch(r"\d{8}", first) or not re.fullmatch(r"\d{8}", last):
+        return True
+    return max(start_date, listing_dates[symbol], first) > min(
+        as_of, history_end_dates[symbol], last
+    )
+
+
 def _membership_eligibility_from_bytes(
     payload: bytes,
     *,
@@ -3238,16 +3293,33 @@ def _validate_raw_to_derived_replay_v3(
             or {}
         )
         as_of_text = str(provider.get("strict_pit_as_of") or "")
-        daily_tail_exceptions = sorted(
-            symbol
-            for symbol in non_blocking_absent
-            if str(history_end_dates.get(symbol) or "") == as_of_text
+        # Use the build's own function rather than restating the rule: this set
+        # now has two sources (tail gaps and zero-bar admissions), and an inline
+        # copy here silently diverged from the build the moment the second one
+        # was added.
+        from .fundamental_mart import _active_daily_tail_gap_exceptions
+
+        daily_tail_exceptions = _active_daily_tail_gap_exceptions(
+            validated_scope_evidence, as_of=as_of_text
         )
         recomputed_audit = _build_endpoint_audit(
             outcome_symbols,
             recomputed_outcomes,
             policy=policy,
             daily_basic_empty_exception_symbols=daily_tail_exceptions,
+            # The replay must reconstruct the same denominator the build used,
+            # which means reading the same admissions out of the bound evidence.
+            zero_bar_admitted_symbols=sorted(
+                str(entry.get("symbol") or "").strip().upper()
+                for entry in list(
+                    dict(validated_scope_evidence or {}).get(
+                        "canonical_bar_zero_bar_admissions", []
+                    )
+                    or []
+                )
+                if isinstance(entry, Mapping)
+                and str(entry.get("symbol") or "").strip()
+            ),
         )
     except FundamentalGenerationError:
         raise
@@ -3836,6 +3908,14 @@ def _validate_primary_rebuild_capture_v3(
         as_of=as_of,
         non_blocking_absent=non_blocking_absent,
     )
+    # Identities admitted with no bars carry empty bounds by construction. The
+    # admission is only readable from the scope evidence, and only identities
+    # named there may have empty bounds — anything else is still a defect.
+    zero_bar_admitted_symbols = {
+        str(entry.get("symbol") or "").strip().upper()
+        for entry in list(scope.get("canonical_bar_zero_bar_admissions", []) or [])
+        if isinstance(entry, Mapping) and str(entry.get("symbol") or "").strip()
+    }
     eligibility_lines = [
         "|".join(
             (
@@ -3864,12 +3944,16 @@ def _validate_primary_rebuild_capture_v3(
         or history_end_dates != recomputed_history_end_dates
         or listing_identities != recomputed_listing_identities
         or any(
-            not re.fullmatch(r"\d{8}", listing_dates[symbol])
-            or not re.fullmatch(r"\d{8}", history_end_dates[symbol])
-            or not re.fullmatch(r"\d{8}", canonical_bar_first_dates[symbol])
-            or not re.fullmatch(r"\d{8}", canonical_bar_last_dates[symbol])
-            or max(start_date, listing_dates[symbol], canonical_bar_first_dates[symbol])
-            > min(as_of, history_end_dates[symbol], canonical_bar_last_dates[symbol])
+            _bar_eligibility_invalid(
+                symbol,
+                listing_dates=listing_dates,
+                history_end_dates=history_end_dates,
+                bar_first_dates=canonical_bar_first_dates,
+                bar_last_dates=canonical_bar_last_dates,
+                start_date=start_date,
+                as_of=as_of,
+                zero_bar_admitted=zero_bar_admitted_symbols,
+            )
             for symbol in outcome_symbols
         )
         or str(scope.get("canonical_bar_daily_start") or "") != start_date
@@ -3979,7 +4063,19 @@ def _validate_primary_rebuild_capture_v3(
     if daily_trade.max() != as_of_ts:
         raise FundamentalGenerationError("staged fundamental daily period span is incomplete")
     daily_symbol_count = int(daily["ts_code"].astype("string").nunique())
-    if daily_symbol_count / symbol_count < 0.95:
+    # An identity admitted with no bars has no tradable day in the window and so
+    # can never appear in a daily panel. Holding it against output coverage
+    # would make the gate demand output that cannot exist. The 95% threshold is
+    # unchanged; only identities carrying verified admission evidence leave the
+    # denominator, and an identity that *does* appear despite being admitted is
+    # a contradiction and still fails.
+    admitted_absent = {
+        symbol
+        for symbol in zero_bar_admitted_symbols
+        if symbol not in set(daily["ts_code"].astype("string"))
+    }
+    coverage_denominator = symbol_count - len(admitted_absent)
+    if coverage_denominator <= 0 or daily_symbol_count / coverage_denominator < 0.95:
         raise FundamentalGenerationError(
             "staged fundamental output symbol coverage below 95pct"
         )
@@ -3994,7 +4090,11 @@ def _validate_primary_rebuild_capture_v3(
         if history_end_dates.get(symbol) == as_of
     }
     missing_daily_symbols = set(outcome_symbols).difference(by_symbol.index)
-    if missing_daily_symbols.difference(tail_gap_exceptions):
+    # Two distinct reasons an identity can be absent from the daily panel: a
+    # tail gap on an identity that is still current, or an admitted identity
+    # that had no tradable day at all. Both are evidence-bound; anything else
+    # absent is still a failure.
+    if missing_daily_symbols.difference(tail_gap_exceptions | zero_bar_admitted_symbols):
         raise FundamentalGenerationError(
             "staged fundamental eligible symbols are missing daily history"
         )

@@ -1,0 +1,12 @@
+{
+  "observed_at": "2026-09-16T15:01:04.646982+00:00",
+  "scope": "COMBINED_CALENDAR_MORNING_INTEGRATION_AND_STATE_RESTORATION",
+  "log_ref": {
+    "path": "/Users/maxwell/mySpace/myQuant/.agent/acceptance/phase12-production-calendar-integration-union.log",
+    "sha256": "57d8dd46833a331f712317d8aeb527018b96096dafbfc45025dd88c89909ed6b"
+  },
+  "source_frozen_candidate": "a46e5508e4a48802e8eb741eaf7e5660c6d20539",
+  "python_files_compared": 976,
+  "source_drift": [],
+  "full_suite_claimed": false
+}

@@ -1,0 +1,72 @@
+{
+  "runtime_commit": "5060dee2d4b39b50a735393d056ebe5adb4efe3b",
+  "requests_per_chunk": [
+    {
+      "issuer": "nbs_official",
+      "method": "GET",
+      "scheme": "https",
+      "host": "www.stats.gov.cn",
+      "path": "/sj/zxfbhjd/",
+      "query": "",
+      "redirects": false,
+      "trust_env": false,
+      "timeout_seconds": [
+        5,
+        30
+      ],
+      "accepted_status": 200,
+      "accepted_response_bytes": [
+        1,
+        8388608
+      ],
+      "credentials": false,
+      "portfolio_payload": false
+    },
+    {
+      "issuer": "pbc_official",
+      "method": "GET",
+      "scheme": "https",
+      "host": "www.pbc.gov.cn",
+      "path": "/diaochatongjisi/116219/116225/index.html",
+      "query": "",
+      "redirects": false,
+      "trust_env": false,
+      "timeout_seconds": [
+        5,
+        30
+      ],
+      "accepted_status": 200,
+      "accepted_response_bytes": [
+        1,
+        8388608
+      ],
+      "credentials": false,
+      "portfolio_payload": false
+    }
+  ],
+  "chunks": 2,
+  "automatic_retries": false,
+  "parser_contracts": {
+    "nbs-national-economy-html.v1": "f61bf54508a579760fdef128578f2fd19529d00377fdba822dd3e15abb28653a",
+    "nbs-cn-pmi-html.v3": "9fa0f4466093f0df60ef9d9137301bb180b1a200049180a8bb650b3fb6ab2d58",
+    "nbs-quarterly-gdp-html.v1": "660d5c445184d543bd73a49466a46efd6b4399933fd3d333883ada3253bcbeda",
+    "nbs-quarterly-gdp-html.v2": "7b19a6486c12efbe33c26047620c1840a75cd943fd14cec4764651d2654656b9",
+    "pbc-financial-statistics-html.v1": "f1535715b37638f07ba4c340fbf93f41ca4aeb1d9456577ba3b4648482a6b579",
+    "pbc-financial-statistics-html.v2": "ef1eeed6099670af030163bdba5170477de3b737deb2a4f55ed6e54e577cf9fd"
+  },
+  "code_refs": [
+    {
+      "path": "/Users/maxwell/mySpace/myQuant-release-authority/5060dee2d4b39b50a735393d056ebe5adb4efe3b-unified-dag/installs/5060dee2d4b39b50a735393d056ebe5adb4efe3b-42a7933da56d08cfe3dcc1ccf5fd14cb7deadbea94b77423d2d74d8602602c7a/lib/python3.13/site-packages/quant_investor/macro/maintenance.py",
+      "sha256": "c4c221026319703259a07f546b655ab3593acd150a44d8987f591bf62eb0ba5d"
+    },
+    {
+      "path": "/Users/maxwell/mySpace/myQuant-release-authority/5060dee2d4b39b50a735393d056ebe5adb4efe3b-unified-dag/installs/5060dee2d4b39b50a735393d056ebe5adb4efe3b-42a7933da56d08cfe3dcc1ccf5fd14cb7deadbea94b77423d2d74d8602602c7a/lib/python3.13/site-packages/quant_investor/macro/release_calendar.py",
+      "sha256": "5cfd5ae9341f43b81ee4bfc4aef2a4b3e6fe5e0954333ef70904827ab37f7570"
+    },
+    {
+      "path": "/Users/maxwell/mySpace/myQuant-release-authority/5060dee2d4b39b50a735393d056ebe5adb4efe3b-unified-dag/installs/5060dee2d4b39b50a735393d056ebe5adb4efe3b-42a7933da56d08cfe3dcc1ccf5fd14cb7deadbea94b77423d2d74d8602602c7a/lib/python3.13/site-packages/quant_investor/macro/contracts.py",
+      "sha256": "673d80ddc72b3f58c9411763138ee9e834b1056958b61b43a9a480f642f2220e"
+    }
+  ],
+  "limits_note": "Native limit validates downloaded body size; not a streaming transfer cap. No custom transport or validation change."
+}

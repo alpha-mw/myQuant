@@ -1,0 +1,73 @@
+{
+  "observed_at": "2026-09-13T10:07:58.267490+00:00",
+  "status": "IMPLEMENTED_LOCAL_VALIDATION",
+  "scope": "PHASE12_CONFIGURED_SOURCE_TO_EXISTING_LAUNCHER",
+  "goal_complete": false,
+  "plan": "docs/plans/phase12_configured_launcher.md",
+  "reviews": {
+    "architect": "REVISE then APPROVE after two-stage locator amendment",
+    "critic": "APPROVE"
+  },
+  "verification": {
+    "related_regression": {
+      "session_id": 83754,
+      "passed": 290,
+      "seconds": 37.41,
+      "exit_code": 0
+    },
+    "final_source_cli_shell_and_concurrency": {
+      "session_id": 96806,
+      "passed": 52,
+      "seconds": 20.57,
+      "exit_code": 0
+    },
+    "counts_overlap_do_not_sum": true,
+    "black_12_files": "PASS",
+    "flake8_12_files": "PASS",
+    "mypy_8_sources": "PASS",
+    "zsh_syntax": "PASS",
+    "two_changed_manager_helpers_format": "PASS",
+    "isolated_cli_import_without_unverified_scripts": "PASS",
+    "closed_native_import_map": "PASS"
+  },
+  "implemented": [
+    "Static source-config flag pair in existing 2020 launcher; existing exact-request and early maintenance paths preserved",
+    "Verified installed source CLI plus one fixed native bridge operation",
+    "PREPARING_SOURCES locator before source CAS; history/SHA CAS under borrowed automatic lock; REQUEST_AVAILABLE before request objects",
+    "Native Calendar capture with two consumed attempt markers and immutable exact wire materialization",
+    "Native Event/benchmark source-plan generation and committed source recovery; fixed historical fact blockers",
+    "Original request reuse, matching-config ACTIVE priority, old-target native EOD advancement without renewing serving freshness",
+    "Provider/no-provider routing, literal validated two-line request selection, same-invocation single credential read and no token in inspection/recovery"
+  ],
+  "material_limits": [
+    "Only already sealed Event generation can be adopted across dates; missing historical Event facts remain BLOCKED",
+    "If no preparation commitment existed before midnight, recovered sources do not authorize backdating a new CURRENT research request",
+    "No real source-config installation, provider run, scheduler update, first full native EOD or independent unattended receipt is claimed"
+  ],
+  "test_boundaries": [
+    "Synthetic native Calendar/Store/Event/benchmark data",
+    "Controlled static install/Factor admission",
+    "Controlled old-EOD proof seam for locator advancement",
+    "Controlled interpreter for real zsh routing"
+  ],
+  "real_provider_calls": false,
+  "real_financial_writes": false,
+  "scheduler_changes": false,
+  "source_sha256": {
+    "quant_investor/operations/source_slot_contract.py": "9b66fad078328436db7f70a33966b2cfc56197de6df08e3b60bac04a114e7d86",
+    "quant_investor/operations/source_slot_storage.py": "ce4a1fa00e3e94be22328025c75f324138e7582b9f523a6474e64817c6f2ed4a",
+    "quant_investor/operations/source_slot_inputs.py": "26bd03a9048be9252ee9efdbe05f98c50a52a96a2d32639e43d733b82875f50f",
+    "quant_investor/operations/daily_preparation.py": "d63ef1d1615d9bb5edcd57c8f11949be35869842a9c4e7e27a20114a9db4e032",
+    "quant_investor/operations/native_bridge.py": "cafc438ac7cfce86e1800224f38134bccfe7453b8de3ef710698a9efaaa43a31",
+    "quant_investor/cli/daily_sources.py": "b08ee0e8a64fe69b58b4aed768de735cd00eafa2d83db0d6131166ce4e5835d9",
+    "quant_investor/market/cn_benchmark_store.py": "1426d07851897aa4ef2185efc543dda3d365af9aaf27ba08dbeab2eaa26b200d",
+    "scripts/daily_source_inputs.py": "4cc8b94172393452ae674dc6e9de896ebb7f995f5692d4655c938c553c3f6c65",
+    "scripts/manage_cn_strategy_records.py": "44b2e4e58c37ae347e71ca9e1b5f03e4b4b5a75eb2fa11c8ad30c908ae9229d5",
+    "scripts/operations/run_cn_daily_slot.sh": "964ab283580506aebf0e050f5e535f3b0302238c83763b9521b6639ddeefcf30",
+    "tests/unit/_configured_source_fixture.py": "01879229e194eb40527a4a30e357c80f800f918427ffe3dc80d181d2f8a6083a",
+    "tests/unit/test_configured_source_inputs.py": "972456107ea06329976850ea4404c986c5f651ab1cf3c49e6d8a28453a43bf2a",
+    "tests/unit/test_configured_source_launcher.py": "5256f4ccea13ec1be2e36ec300bdd202a68ea96abc3d89c94f234bd20decc26e",
+    "tests/unit/test_daily_sources_cli.py": "376f8a20e287d54b836905a3b6ddeef43a27b36b626b7204e0f387c29b4863c4"
+  },
+  "next": "Prepare actual installed static source configuration and release/install evidence; preserve historical owner-fact and Macro recovery blockers; then governed bootstrap, automation cutover/readback and final current-source acceptance."
+}

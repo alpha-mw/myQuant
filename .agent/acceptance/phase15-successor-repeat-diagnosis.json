@@ -1,0 +1,30 @@
+{
+  "observed_at": "2026-09-14T01:19:53.933020+00:00",
+  "scope": "ACTUAL_SUCCESSOR_REPEAT_STACK_AND_HOST_SLEEP_DIAGNOSIS",
+  "root": "/private/tmp/myquant-configured-catalog-20260913T202622Z",
+  "coordinator_handle": 63358,
+  "stage": "repeat",
+  "pid": 54259,
+  "safe_signal_sent_once": "SIGUSR1 after exact ready marker and PID command checks",
+  "trace_ref": {
+    "path": "/private/tmp/myquant-configured-catalog-20260913T202622Z/configured-successor-repeat.stack.txt",
+    "sha256": "0deee44704225d3a3a23e61d468d7094c11e8528a8f9fe6006eb5bf72e3bbdb6"
+  },
+  "trace_written_at": "2026-09-14T01:15:53.507901+00:00",
+  "sampled_route": "repeat -> dispatch -> existing execution replay -> completed Decision -> completed Macro -> research cutoff -> Theme Core binding -> journal source read",
+  "infinite_loop_excluded_by_single_stack": false,
+  "host_sleep_local": "2026-09-14T08:13:38+08:00",
+  "host_full_wake_local": "2026-09-14T09:12:24+08:00",
+  "host_sleep_reason": "Clamshell Sleep",
+  "intermediate_dark_wakes_present": true,
+  "wall_elapsed_includes_host_sleep": true,
+  "power_events_ref": {
+    "path": ".agent/acceptance/phase15-host-sleep-events.txt",
+    "sha256": "5559f2d0cde7dfa7e2d385a20d9d452562639dc8f5bdaf707c66ffe7ec24fb39"
+  },
+  "current_process": "54259 54254 01:06:42   9:43.88 100.0 R",
+  "power_settings_changed": false,
+  "acceptance_process_restarted": false,
+  "production_deployed": false,
+  "full_goal_complete": false
+}

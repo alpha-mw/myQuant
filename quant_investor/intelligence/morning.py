@@ -227,6 +227,81 @@ def classify_sina_quote_timing(request_time: Any, *, run_date: str) -> dict[str,
     )
 
 
+def _sina_mapping_symbols(mappings: list[Any]) -> list[str]:
+    expected_symbols: list[str] = []
+    for row in mappings:
+        if (
+            type(row) is not dict
+            or set(row) != {"provider_symbol", "symbol"}
+            or type(row.get("symbol")) is not str
+            or _COMPANY_RE.fullmatch(row["symbol"]) is None
+            or type(row.get("provider_symbol")) is not str
+        ):
+            raise IntelligenceError("Sina symbol mapping is invalid")
+        expected_symbols.append(row["symbol"])
+    if expected_symbols != sorted(set(expected_symbols), key=lambda item: item.encode("ascii")):
+        raise IntelligenceError("Sina symbol mapping must be unique and sorted")
+    return expected_symbols
+
+
+def _validate_sina_numeric_fields(row: Mapping[str, Any]) -> None:
+    for field in (
+        "amount",
+        "high",
+        "low",
+        "open",
+        "previous_close",
+        "price",
+        "volume",
+    ):
+        try:
+            number = float(str(row.get(field)))
+        except (TypeError, ValueError) as exc:
+            raise IntelligenceError("Sina numeric quote field is invalid") from exc
+        if number < 0:
+            raise IntelligenceError("Sina numeric quote field is negative")
+    high = float(str(row["high"]))
+    low = float(str(row["low"]))
+    price = float(str(row["price"]))
+    if high < low or (price > 0 and not low <= price <= high):
+        raise IntelligenceError("Sina quote price range is inconsistent")
+
+
+def _validate_sina_quote_rows(rows: list[Any], expected_symbols: list[str], run_date: str) -> None:
+    observed_symbols = []
+    for row in rows:
+        if type(row) is not dict or set(row) != {
+            "amount",
+            "high",
+            "low",
+            "name",
+            "open",
+            "previous_close",
+            "price",
+            "provider_date",
+            "provider_time",
+            "symbol",
+            "volume",
+        }:
+            raise IntelligenceError("Sina quote row shape is invalid")
+        symbol = row.get("symbol")
+        if symbol not in expected_symbols:
+            raise IntelligenceError("Sina quote row symbol differs")
+        observed_symbols.append(symbol)
+        _validate_sina_numeric_fields(row)
+        if row.get("provider_date", "").replace("-", "") != run_date:
+            raise IntelligenceError("Sina quote provider date differs")
+        try:
+            provider_time = datetime.strptime(str(row.get("provider_time")), "%H:%M:%S")
+        except ValueError as exc:
+            raise IntelligenceError("Sina quote provider time is invalid") from exc
+        provider_local = provider_time.time()
+        if not _EARLIEST_CAPTURE_LOCAL <= provider_local <= _PROVIDER_CLOSE_LATEST_LOCAL:
+            raise IntelligenceError("Sina quote provider time is outside the trading-day range")
+    if observed_symbols != expected_symbols:
+        raise IntelligenceError("Sina quote rows do not close the requested symbols")
+
+
 def validate_sina_quote_capture(
     document: Mapping[str, Any],
     *,
@@ -281,70 +356,16 @@ def validate_sina_quote_capture(
     rows = value.get("quote_rows")
     if type(mappings) is not list or not mappings or type(rows) is not list or not rows:
         raise IntelligenceError("Sina quote capture is empty")
-    expected_symbols: list[str] = []
-    for row in mappings:
-        if (
-            type(row) is not dict
-            or set(row) != {"provider_symbol", "symbol"}
-            or type(row.get("symbol")) is not str
-            or _COMPANY_RE.fullmatch(row["symbol"]) is None
-            or type(row.get("provider_symbol")) is not str
-        ):
-            raise IntelligenceError("Sina symbol mapping is invalid")
-        expected_symbols.append(row["symbol"])
-    if expected_symbols != sorted(set(expected_symbols), key=lambda item: item.encode("ascii")):
-        raise IntelligenceError("Sina symbol mapping must be unique and sorted")
-    observed_symbols = []
-    for row in rows:
-        if type(row) is not dict or set(row) != {
-            "amount",
-            "high",
-            "low",
-            "name",
-            "open",
-            "previous_close",
-            "price",
-            "provider_date",
-            "provider_time",
-            "symbol",
-            "volume",
-        }:
-            raise IntelligenceError("Sina quote row shape is invalid")
-        symbol = row.get("symbol")
-        if symbol not in expected_symbols:
-            raise IntelligenceError("Sina quote row symbol differs")
-        observed_symbols.append(symbol)
-        for field in (
-            "amount",
-            "high",
-            "low",
-            "open",
-            "previous_close",
-            "price",
-            "volume",
-        ):
-            try:
-                number = float(str(row.get(field)))
-            except (TypeError, ValueError) as exc:
-                raise IntelligenceError("Sina numeric quote field is invalid") from exc
-            if number < 0:
-                raise IntelligenceError("Sina numeric quote field is negative")
-        high = float(str(row["high"]))
-        low = float(str(row["low"]))
-        price = float(str(row["price"]))
-        if high < low or (price > 0 and not low <= price <= high):
-            raise IntelligenceError("Sina quote price range is inconsistent")
-        if row.get("provider_date", "").replace("-", "") != run_date:
-            raise IntelligenceError("Sina quote provider date differs")
-        try:
-            provider_time = datetime.strptime(str(row.get("provider_time")), "%H:%M:%S")
-        except ValueError as exc:
-            raise IntelligenceError("Sina quote provider time is invalid") from exc
-        provider_local = provider_time.time()
-        if not _EARLIEST_CAPTURE_LOCAL <= provider_local <= _PROVIDER_CLOSE_LATEST_LOCAL:
-            raise IntelligenceError("Sina quote provider time is outside the trading-day range")
-    if observed_symbols != expected_symbols:
-        raise IntelligenceError("Sina quote rows do not close the requested symbols")
+    expected_symbols = _sina_mapping_symbols(mappings)
+    _validate_sina_quote_rows(rows, expected_symbols, run_date)
+    from .sina_quotes import SinaQuoteParseError, parse_sina_quote_response
+
+    try:
+        reconstructed = parse_sina_quote_response(raw, mappings)
+    except SinaQuoteParseError as exc:
+        raise IntelligenceError(str(exc)) from exc
+    if reconstructed != rows:
+        raise IntelligenceError("Sina quote rows differ from raw response")
     return value
 
 
@@ -368,6 +389,74 @@ def _observation(
     ):
         raise IntelligenceError(f"{alias} observation state differs")
     return validated
+
+
+def _morning_store_pointer(
+    root: Path, values: Mapping[str, Any], core_blockers: list[str]
+) -> tuple[dict[str, Any], str]:
+    expected_store_sha = _sha(
+        values["expected_store_pointer_sha256"],
+        label="expected Store pointer",
+    )
+    store_raw = _stable_raw(
+        root,
+        STORE_POINTER_RELATIVE,
+        expected_store_sha,
+        label="Store pointer",
+    )
+    loaded = load_registered_catalog(root / STORE_ROOT_RELATIVE)
+    if loaded is None:
+        core_blockers.append("STORE_UNREGISTERED")
+        store_pointer: dict[str, Any] = {}
+    else:
+        store_pointer, _catalog = loaded
+        if canonical_json_bytes(store_pointer) != store_raw.rstrip(b"\n"):
+            # Store uses newline-terminated canonical JSON; byte SHA above remains authority.
+            try:
+                parsed_pointer = json.loads(store_raw)
+            except json.JSONDecodeError:
+                parsed_pointer = None
+            if parsed_pointer != store_pointer:
+                core_blockers.append("STORE_POINTER_READBACK_DIFFERS")
+        if not isinstance(store_pointer.get("active_closure"), dict):
+            core_blockers.append("STORE_HOLDINGS_UNAVAILABLE")
+    return store_pointer, expected_store_sha
+
+
+def _morning_pool_reference(
+    root: Path, values: Mapping[str, Any], previous: str, auxiliary_blockers: list[str]
+) -> dict[str, str] | None:
+    pool_path = values["pool_manifest_path"]
+    pool_sha = values["pool_manifest_sha256"]
+    pool_ref = None
+    if pool_path is None and pool_sha is None:
+        auxiliary_blockers.append("TOP100_UNAVAILABLE")
+    elif type(pool_path) is str and type(pool_sha) is str:
+        from .pool_tabular import POOL_MANIFEST_KINDS
+        from .storage import DailyResearchPoolStore
+
+        pool = validate_stable_artifact(
+            _json_ref(root, pool_path, pool_sha, label="Top100 manifest"),
+        )
+        if pool["kind"] not in POOL_MANIFEST_KINDS:
+            raise IntelligenceError("Top100 manifest kind is not registered")
+        if pool["payload"].get("signal_date") != previous:
+            auxiliary_blockers.append("TOP100_STALE")
+        else:
+            rank_path = str(Path(pool_path).parent / "factor_research_rank.json")
+            refs = DailyResearchPoolStore(root).verify(
+                rank=_json_ref(
+                    root, rank_path, pool["payload"]["rank_byte_sha256"], label="Top100 rank"
+                ),
+                expected_policy_sha256=pool["payload"]["policy_byte_sha256"],
+                policy_path=pool["payload"]["policy_path"],
+            )
+            if refs["manifest.json"] != {"path": pool_path, "sha256": pool_sha}:
+                raise IntelligenceError("Top100 manifest reference differs")
+            pool_ref = {"path": pool_path, "sha256": pool_sha}
+    else:
+        raise IntelligenceError("Top100 manifest arguments are inconsistent")
+    return pool_ref
 
 
 def _morning_input_state(
@@ -435,32 +524,7 @@ def _morning_input_state(
         previous_trade_date=previous,
     )
 
-    expected_store_sha = _sha(
-        values["expected_store_pointer_sha256"],
-        label="expected Store pointer",
-    )
-    store_raw = _stable_raw(
-        root,
-        STORE_POINTER_RELATIVE,
-        expected_store_sha,
-        label="Store pointer",
-    )
-    loaded = load_registered_catalog(root / STORE_ROOT_RELATIVE)
-    if loaded is None:
-        core_blockers.append("STORE_UNREGISTERED")
-        store_pointer: dict[str, Any] = {}
-    else:
-        store_pointer, _catalog = loaded
-        if canonical_json_bytes(store_pointer) != store_raw.rstrip(b"\n"):
-            # Store uses newline-terminated canonical JSON; byte SHA above remains authority.
-            try:
-                parsed_pointer = json.loads(store_raw)
-            except json.JSONDecodeError:
-                parsed_pointer = None
-            if parsed_pointer != store_pointer:
-                core_blockers.append("STORE_POINTER_READBACK_DIFFERS")
-        if not isinstance(store_pointer.get("active_closure"), dict):
-            core_blockers.append("STORE_HOLDINGS_UNAVAILABLE")
+    store_pointer, expected_store_sha = _morning_store_pointer(root, values, core_blockers)
 
     capture = _json_ref(
         root,
@@ -480,22 +544,7 @@ def _morning_input_state(
     quote = validate_sina_quote_capture(capture, raw=raw, run_date=run_date)
     quote_timing = classify_sina_quote_timing(quote["request_time"], run_date=run_date)
 
-    pool_path = values["pool_manifest_path"]
-    pool_sha = values["pool_manifest_sha256"]
-    pool_ref = None
-    if pool_path is None and pool_sha is None:
-        auxiliary_blockers.append("TOP100_UNAVAILABLE")
-    elif type(pool_path) is str and type(pool_sha) is str:
-        pool = validate_stable_artifact(
-            _json_ref(root, pool_path, pool_sha, label="Top100 manifest"),
-            expected_kind="daily_research_pool_manifest",
-        )
-        if pool["payload"].get("signal_date") != previous:
-            auxiliary_blockers.append("TOP100_STALE")
-        else:
-            pool_ref = {"path": pool_path, "sha256": pool_sha}
-    else:
-        raise IntelligenceError("Top100 manifest arguments are inconsistent")
+    pool_ref = _morning_pool_reference(root, values, previous, auxiliary_blockers)
     return {
         "action": values["action"],
         "run_date": run_date,
@@ -793,47 +842,9 @@ def _return_text(close: Any, reference: Any, *, label: str) -> str:
     return format(value, "f")
 
 
-def evaluate_morning_strategy_eod(
-    *,
-    workspace_root: str | os.PathLike[str],
-    request: Mapping[str, Any],
+def _morning_eod_quote(
+    root: Path, values: Mapping[str, Any], morning: Mapping[str, Any], run_date: str
 ) -> dict[str, Any]:
-    """Evaluate one successful scheduled-slot snapshot against the same-day strict close.
-
-    This inactive research evaluator creates no portfolio, order, fill or
-    holdings state.  It binds the exact morning receipt, public quote capture,
-    and canonical Market pointer before sealing one date-bound outcome.
-    """
-
-    required = {
-        "action",
-        "run_date",
-        "morning_receipt_path",
-        "morning_receipt_sha256",
-        "quote_capture_path",
-        "quote_capture_sha256",
-        "expected_market_pointer_sha256",
-        "benchmark_symbol",
-        "output_path",
-        "output_sha256",
-    }
-    values = dict(request)
-    if set(values) != required:
-        raise IntelligenceError("morning EOD evaluation request shape is invalid")
-    action = values["action"]
-    if action not in {"PREFLIGHT", "SEAL"}:
-        raise IntelligenceError("morning EOD evaluation action is invalid")
-    root = _workspace(workspace_root)
-    run_date = _date(values["run_date"], label="run_date")
-    morning = _json_ref(
-        root,
-        values["morning_receipt_path"],
-        values["morning_receipt_sha256"],
-        label="morning receipt",
-    )
-    if not _morning_receipt_success(morning) or morning.get("run_date") != run_date:
-        raise IntelligenceError("morning receipt is not a successful same-day run")
-
     quote_raw = _stable_raw(
         root,
         values["quote_capture_path"],
@@ -863,32 +874,12 @@ def evaluate_morning_strategy_eod(
         "sha256": values["quote_capture_sha256"],
     }:
         raise IntelligenceError("morning receipt quote capture binding differs")
+    return quote
 
-    expected_market_sha = _sha(
-        values["expected_market_pointer_sha256"],
-        label="expected Market pointer",
-    )
-    _stable_raw(root, MARKET_POINTER_RELATIVE, expected_market_sha, label="Market pointer")
-    from quant_investor.market.market_data_reader import MarketDataReader
 
-    reader = MarketDataReader(market="CN", data_root=root / "data", mode_policy="strict")
-    gate = reader.clean_snapshot_gate(refresh=True)
-    if gate.get("healthy") is not True or gate.get("latest_complete_trade_date") != run_date:
-        raise IntelligenceError("strict Market close is not healthy for run_date")
-    quote_rows = quote["quote_rows"]
-    symbols = [row["symbol"] for row in quote_rows]
-    close_frame = reader.read_cross_section(
-        run_date,
-        columns=["ts_code", "trade_date", "close"],
-    )
-    if "symbol" not in close_frame.columns or "close" not in close_frame.columns:
-        raise IntelligenceError("strict Market close columns are unavailable")
-    close_by_symbol = {
-        str(row.symbol): row.close
-        for row in close_frame.loc[close_frame["symbol"].isin(symbols)].itertuples()
-    }
-    _stable_raw(root, MARKET_POINTER_RELATIVE, expected_market_sha, label="Market pointer")
-
+def _morning_eod_outcomes(
+    quote_rows: list[dict[str, Any]], close_by_symbol: Mapping[str, Any]
+) -> tuple[list[dict[str, Any]], list[str]]:
     outcomes: list[dict[str, Any]] = []
     unavailable: list[str] = []
     for quote_row in quote_rows:
@@ -933,7 +924,12 @@ def evaluate_morning_strategy_eod(
                 "return_0945_to_close": observed_return,
             }
         )
+    return outcomes, unavailable
 
+
+def _morning_benchmark_returns(
+    values: Mapping[str, Any], outcomes: list[dict[str, Any]]
+) -> tuple[Any, Any, list[dict[str, Any]]]:
     benchmark_symbol = values["benchmark_symbol"]
     if benchmark_symbol is not None and (
         type(benchmark_symbol) is not str or _COMPANY_RE.fullmatch(benchmark_symbol) is None
@@ -967,6 +963,114 @@ def evaluate_morning_strategy_eod(
             }
             for row in outcomes
         ]
+    return benchmark_symbol, benchmark_return, relative_rows
+
+
+def _publish_morning_eod_result(
+    root: Path, values: Mapping[str, Any], run_date: str, action: str, result: dict[str, Any]
+) -> dict[str, Any]:
+    if action == "PREFLIGHT":
+        if values["output_path"] is not None or values["output_sha256"] is not None:
+            raise IntelligenceError("PREFLIGHT must not bind an output")
+        return {"command_status": "PREFLIGHT_COMPLETE", **result}
+
+    expected_output = f"results/operations/morning_strategy/CN/{run_date}/eod-evaluation.md"
+    if values["output_path"] != expected_output:
+        raise IntelligenceError("morning EOD output path is not deterministic")
+    output_sha = _sha(values["output_sha256"], label="morning EOD output SHA")
+    output_raw = _stable_raw(root, expected_output, output_sha, label="morning EOD output")
+    for declaration in (
+        b"research_only=true",
+        b"broker=false",
+        b"live_order=false",
+        b"actual_holdings_mutation=false",
+    ):
+        if declaration not in output_raw:
+            raise IntelligenceError("morning EOD authority declaration is missing")
+    result["output_path"] = expected_output
+    result["output_sha256"] = output_sha
+    receipt_root = _owner_directory(root / f"results/operations/morning_strategy/CN/{run_date}")
+    receipt_path = receipt_root / "eod-evaluation.v1.json"
+    digest, created = _write_exact(receipt_path, canonical_json_bytes(result))
+    return {
+        "command_status": "PUBLISHED" if created else "NO_ACTION",
+        **result,
+        "receipt_path": str(receipt_path.relative_to(root)),
+        "receipt_sha256": digest,
+    }
+
+
+def evaluate_morning_strategy_eod(
+    *,
+    workspace_root: str | os.PathLike[str],
+    request: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Evaluate one successful scheduled-slot snapshot against the same-day strict close.
+
+    This inactive research evaluator creates no portfolio, order, fill or
+    holdings state.  It binds the exact morning receipt, public quote capture,
+    and canonical Market pointer before sealing one date-bound outcome.
+    """
+
+    required = {
+        "action",
+        "run_date",
+        "morning_receipt_path",
+        "morning_receipt_sha256",
+        "quote_capture_path",
+        "quote_capture_sha256",
+        "expected_market_pointer_sha256",
+        "benchmark_symbol",
+        "output_path",
+        "output_sha256",
+    }
+    values = dict(request)
+    if set(values) != required:
+        raise IntelligenceError("morning EOD evaluation request shape is invalid")
+    action = values["action"]
+    if action not in {"PREFLIGHT", "SEAL"}:
+        raise IntelligenceError("morning EOD evaluation action is invalid")
+    root = _workspace(workspace_root)
+    run_date = _date(values["run_date"], label="run_date")
+    morning = _json_ref(
+        root,
+        values["morning_receipt_path"],
+        values["morning_receipt_sha256"],
+        label="morning receipt",
+    )
+    if not _morning_receipt_success(morning) or morning.get("run_date") != run_date:
+        raise IntelligenceError("morning receipt is not a successful same-day run")
+
+    quote = _morning_eod_quote(root, values, morning, run_date)
+
+    expected_market_sha = _sha(
+        values["expected_market_pointer_sha256"],
+        label="expected Market pointer",
+    )
+    _stable_raw(root, MARKET_POINTER_RELATIVE, expected_market_sha, label="Market pointer")
+    from quant_investor.market.market_data_reader import MarketDataReader
+
+    reader = MarketDataReader(market="CN", data_root=root / "data", mode_policy="strict")
+    gate = reader.clean_snapshot_gate(refresh=True)
+    if gate.get("healthy") is not True or gate.get("latest_complete_trade_date") != run_date:
+        raise IntelligenceError("strict Market close is not healthy for run_date")
+    quote_rows = quote["quote_rows"]
+    symbols = [row["symbol"] for row in quote_rows]
+    close_frame = reader.read_cross_section(
+        run_date,
+        columns=["ts_code", "trade_date", "close"],
+    )
+    if "symbol" not in close_frame.columns or "close" not in close_frame.columns:
+        raise IntelligenceError("strict Market close columns are unavailable")
+    close_by_symbol = {
+        str(row.symbol): row.close
+        for row in close_frame.loc[close_frame["symbol"].isin(symbols)].itertuples()
+    }
+    _stable_raw(root, MARKET_POINTER_RELATIVE, expected_market_sha, label="Market pointer")
+
+    outcomes, unavailable = _morning_eod_outcomes(quote_rows, close_by_symbol)
+
+    benchmark_symbol, benchmark_return, relative_rows = _morning_benchmark_returns(values, outcomes)
     unavailable_states = {
         row["symbol"]: row["state"] for row in outcomes if row["symbol"] in unavailable
     }
@@ -1003,35 +1107,118 @@ def evaluate_morning_strategy_eod(
         "paper_fill": False,
         "actual_holdings_mutation": False,
     }
-    if action == "PREFLIGHT":
-        if values["output_path"] is not None or values["output_sha256"] is not None:
-            raise IntelligenceError("PREFLIGHT must not bind an output")
-        return {"command_status": "PREFLIGHT_COMPLETE", **result}
+    return _publish_morning_eod_result(root, values, run_date, action, result)
 
-    expected_output = f"results/operations/morning_strategy/CN/{run_date}/eod-evaluation.md"
-    if values["output_path"] != expected_output:
-        raise IntelligenceError("morning EOD output path is not deterministic")
-    output_sha = _sha(values["output_sha256"], label="morning EOD output SHA")
-    output_raw = _stable_raw(root, expected_output, output_sha, label="morning EOD output")
-    for declaration in (
-        b"research_only=true",
-        b"broker=false",
-        b"live_order=false",
-        b"actual_holdings_mutation=false",
+
+def _consecutive_morning_success(
+    root: Path, values: Mapping[str, Any], target: str
+) -> tuple[list[dict[str, Any]], int]:
+    receipt_refs = values["morning_receipts"]
+    if type(receipt_refs) is not list or len(receipt_refs) > 2:
+        raise IntelligenceError("morning_receipts must contain at most two refs")
+    morning_receipts: list[dict[str, Any]] = []
+    for index, reference in enumerate(receipt_refs):
+        if type(reference) is not dict or set(reference) != {"path", "sha256"}:
+            raise IntelligenceError("morning receipt ref shape is invalid")
+        morning_receipts.append(
+            _json_ref(
+                root,
+                reference["path"],
+                reference["sha256"],
+                label=f"morning receipt[{index}]",
+            )
+        )
+    successful_receipts = sorted(
+        (receipt for receipt in morning_receipts if _morning_receipt_success(receipt)),
+        key=lambda receipt: str(receipt["run_date"]),
+    )
+    if successful_receipts and successful_receipts[-1]["run_date"] == target:
+        consecutive_success_count = 1
+        if (
+            len(successful_receipts) == 2
+            and successful_receipts[0]["run_date"] == successful_receipts[1]["previous_trade_date"]
+        ):
+            consecutive_success_count = 2
+    else:
+        consecutive_success_count = 0
+    return morning_receipts, consecutive_success_count
+
+
+def _morning_schedule_action(
+    eligible: bool,
+    current_state: str,
+    consecutive_success_count: int,
+    morning_receipts: list[dict[str, Any]],
+    target: str,
+) -> tuple[str, str]:
+    has_today = any(
+        receipt.get("run_date") == target and _morning_receipt_success(receipt)
+        for receipt in morning_receipts
+    )
+    return _schedule_transition(eligible, current_state, consecutive_success_count, has_today)
+
+
+def _schedule_transition(
+    eligible: bool, current_state: str, consecutive_success_count: int, has_today_success: bool
+) -> tuple[str, str]:
+    if not eligible:
+        next_state = current_state
+        schedule_action = "KEEP_FALLBACK"
+    elif current_state == "EVENING_PRIMARY":
+        next_state = "DUAL_RUN"
+        schedule_action = "ENABLE_0945_CREATE_2100_FALLBACK_KEEP_2130"
+    elif current_state == "DUAL_RUN" and consecutive_success_count >= 2:
+        next_state = "MORNING_PRIMARY"
+        schedule_action = "PAUSE_2100_FALLBACK_PAUSE_2130"
+    elif current_state == "MORNING_PRIMARY" and not has_today_success:
+        next_state = "DUAL_RUN"
+        schedule_action = "RESUME_2100_FALLBACK_KEEP_0945_RESUME_2130"
+    else:
+        next_state = current_state
+        schedule_action = "KEEP_CURRENT_SCHEDULE"
+    return next_state, schedule_action
+
+
+def _cutover_core_receipts(
+    root: Path,
+    values: Mapping[str, Any],
+    target: str,
+    core_blockers: list[str],
+    auxiliary_blockers: list[str],
+) -> None:
+    maintenance = _json_ref(
+        root,
+        values["maintenance_receipt_path"],
+        values["maintenance_receipt_sha256"],
+        label="maintenance receipt",
+    )
+    if (
+        maintenance.get("mode") != "execute"
+        or maintenance.get("attempt_slot") != "2020"
+        or maintenance.get("target_date") != target
+        or maintenance.get("factor_input_readiness") != "READY"
+        or maintenance.get("core_blockers") != []
     ):
-        if declaration not in output_raw:
-            raise IntelligenceError("morning EOD authority declaration is missing")
-    result["output_path"] = expected_output
-    result["output_sha256"] = output_sha
-    receipt_root = _owner_directory(root / f"results/operations/morning_strategy/CN/{run_date}")
-    receipt_path = receipt_root / "eod-evaluation.v1.json"
-    digest, created = _write_exact(receipt_path, canonical_json_bytes(result))
-    return {
-        "command_status": "PUBLISHED" if created else "NO_ACTION",
-        **result,
-        "receipt_path": str(receipt_path.relative_to(root)),
-        "receipt_sha256": digest,
-    }
+        core_blockers.append("MAINTENANCE_CORE_NOT_READY")
+    for blocker in maintenance.get("macro_blockers", []):
+        auxiliary_blockers.append(f"MACRO:{blocker}")
+    if maintenance.get("fundamental_integrity_status") != "READY":
+        auxiliary_blockers.append("FUNDAMENTAL_PARTIAL")
+
+    calendar = validate_stable_artifact(
+        _absolute_json(
+            values["calendar_success_path"],
+            values["calendar_success_sha256"],
+            label="Calendar capture success",
+        ),
+        expected_kind="system.trusted_provider_calendar_capture_success",
+    )
+    if (
+        calendar.get("kind") != "system.trusted_provider_calendar_capture_success"
+        or not isinstance(calendar.get("payload"), dict)
+        or calendar["payload"].get("state") != "COMPLETE"
+    ):
+        core_blockers.append("CALENDAR_CAPTURE_NOT_COMPLETE")
 
 
 def evaluate_morning_cutover(
@@ -1072,39 +1259,7 @@ def evaluate_morning_cutover(
         raise IntelligenceError("auxiliary_blockers must be text list")
     auxiliary_blockers = list(auxiliary)
 
-    maintenance = _json_ref(
-        root,
-        values["maintenance_receipt_path"],
-        values["maintenance_receipt_sha256"],
-        label="maintenance receipt",
-    )
-    if (
-        maintenance.get("mode") != "execute"
-        or maintenance.get("attempt_slot") != "2020"
-        or maintenance.get("target_date") != target
-        or maintenance.get("factor_input_readiness") != "READY"
-        or maintenance.get("core_blockers") != []
-    ):
-        core_blockers.append("MAINTENANCE_CORE_NOT_READY")
-    for blocker in maintenance.get("macro_blockers", []):
-        auxiliary_blockers.append(f"MACRO:{blocker}")
-    if maintenance.get("fundamental_integrity_status") != "READY":
-        auxiliary_blockers.append("FUNDAMENTAL_PARTIAL")
-
-    calendar = validate_stable_artifact(
-        _absolute_json(
-            values["calendar_success_path"],
-            values["calendar_success_sha256"],
-            label="Calendar capture success",
-        ),
-        expected_kind="system.trusted_provider_calendar_capture_success",
-    )
-    if (
-        calendar.get("kind") != "system.trusted_provider_calendar_capture_success"
-        or not isinstance(calendar.get("payload"), dict)
-        or calendar["payload"].get("state") != "COMPLETE"
-    ):
-        core_blockers.append("CALENDAR_CAPTURE_NOT_COMPLETE")
+    _cutover_core_receipts(root, values, target, core_blockers, auxiliary_blockers)
 
     if values["factor_rollover_status"] not in {
         "ACTIVATED",
@@ -1162,57 +1317,15 @@ def evaluate_morning_cutover(
     if values["scheduler_origin_verified"] is not True:
         core_blockers.append("SCHEDULER_ORIGIN_UNVERIFIED")
 
-    receipt_refs = values["morning_receipts"]
-    if type(receipt_refs) is not list or len(receipt_refs) > 2:
-        raise IntelligenceError("morning_receipts must contain at most two refs")
-    morning_receipts: list[dict[str, Any]] = []
-    for index, reference in enumerate(receipt_refs):
-        if type(reference) is not dict or set(reference) != {"path", "sha256"}:
-            raise IntelligenceError("morning receipt ref shape is invalid")
-        morning_receipts.append(
-            _json_ref(
-                root,
-                reference["path"],
-                reference["sha256"],
-                label=f"morning receipt[{index}]",
-            )
-        )
-    successful_receipts = sorted(
-        (receipt for receipt in morning_receipts if _morning_receipt_success(receipt)),
-        key=lambda receipt: str(receipt["run_date"]),
-    )
-    if successful_receipts and successful_receipts[-1]["run_date"] == target:
-        consecutive_success_count = 1
-        if (
-            len(successful_receipts) == 2
-            and successful_receipts[0]["run_date"] == successful_receipts[1]["previous_trade_date"]
-        ):
-            consecutive_success_count = 2
-    else:
-        consecutive_success_count = 0
+    morning_receipts, consecutive_success_count = _consecutive_morning_success(root, values, target)
 
     current_state = values["current_schedule_state"]
     if current_state not in {"EVENING_PRIMARY", "DUAL_RUN", "MORNING_PRIMARY"}:
         raise IntelligenceError("current_schedule_state is invalid")
     eligible = not core_blockers and not holdings_blockers
-    if not eligible:
-        next_state = current_state
-        schedule_action = "KEEP_FALLBACK"
-    elif current_state == "EVENING_PRIMARY":
-        next_state = "DUAL_RUN"
-        schedule_action = "ENABLE_0945_CREATE_2100_FALLBACK_KEEP_2130"
-    elif current_state == "DUAL_RUN" and consecutive_success_count >= 2:
-        next_state = "MORNING_PRIMARY"
-        schedule_action = "PAUSE_2100_FALLBACK_PAUSE_2130"
-    elif current_state == "MORNING_PRIMARY" and not any(
-        receipt.get("run_date") == target and _morning_receipt_success(receipt)
-        for receipt in morning_receipts
-    ):
-        next_state = "DUAL_RUN"
-        schedule_action = "RESUME_2100_FALLBACK_KEEP_0945_RESUME_2130"
-    else:
-        next_state = current_state
-        schedule_action = "KEEP_CURRENT_SCHEDULE"
+    next_state, schedule_action = _morning_schedule_action(
+        eligible, current_state, consecutive_success_count, morning_receipts, target
+    )
 
     core_status = "COMPLETE" if not core_blockers else "BLOCKED"
     holdings_status = "COMPLETE" if not holdings_blockers else "BLOCKED"

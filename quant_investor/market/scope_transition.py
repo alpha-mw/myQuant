@@ -530,7 +530,6 @@ def run_scope_transition(
         MaintenanceContext,
         _RunLock,
         _attempt_root,
-        _seal_attempt,
         _run_component,
     )
     from .daily_components import build_default_components
@@ -703,7 +702,9 @@ def run_scope_transition(
                     "fundamental_promotion": False,
                     "completed_at": datetime.now(timezone.utc).isoformat(),
                 }
-                sealed = _seal_attempt(attempt_root=attempt, payload=payload, state=payload)
+                sealed = _seal_scope_transition_attempt(
+                    attempt_root=attempt, payload=payload, state=payload
+                )
                 payload["attempt_receipt_ref"] = sealed["attempt_receipt_ref"]
                 _write_new(terminal, encoded(payload))
                 recovery = _recover_exact_veto(q, op, request_sha256)
@@ -738,4 +739,21 @@ def run_scope_transition(
                 }
                 if (attempt / "attempt.json").exists():
                     attempt = _attempt_root(run, now=datetime.now(timezone.utc), slot="2020")
-                return _seal_attempt(attempt_root=attempt, payload=payload, state=payload)
+                return _seal_scope_transition_attempt(
+                    attempt_root=attempt, payload=payload, state=payload
+                )
+
+
+def _seal_scope_transition_attempt(*, attempt_root: Path, payload: dict, state: dict) -> dict:
+    """Scope receipts use their existing request authority, never a daily claim."""
+    allowed = {"cn-scope-transition-readiness.v1", "cn-scope-transition-attempt.v1"}
+    if (
+        payload.get("schema_version") not in allowed
+        or payload.get("schema_version") != state.get("schema_version")
+        or "logical_claim_ref" in payload
+        or "logical_claim_ref" in state
+    ):
+        raise RuntimeError("SCOPE_TRANSITION_ATTEMPT_SCHEMA_INVALID")
+    from .daily_maintenance import _seal_attempt_records
+
+    return _seal_attempt_records(attempt_root=attempt_root, payload=payload, state=state)

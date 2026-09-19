@@ -44,8 +44,10 @@ def test_event_store_requires_explicit_all_dimension_empty_closure(tmp_path: Pat
 def test_event_store_rejects_missing_dimension(tmp_path: Path) -> None:
     closure = _closure()
     del closure["dimensions"]["funding"]
-    closure.pop("content_sha256")
-    with pytest.raises(StrategyEventStoreError, match="content SHA|dimensions"):
+    from quant_investor.strategy_records.store import content_sha256
+
+    closure["content_sha256"] = content_sha256(closure)
+    with pytest.raises(StrategyEventStoreError, match="dimensions"):
         publish_generation(
             tmp_path,
             generation_id="event-invalid-test",
@@ -111,7 +113,7 @@ def test_event_successor_rejects_loss_conflict_and_exact_replay(tmp_path: Path) 
         publish_generation(
             tmp_path,
             generation_id="event-conflict-test",
-            generated_at="2026-09-02T01:00:00Z",
+            generated_at="2026-09-02T03:00:00Z",
             expected_pointer_sha256=first["pointer_sha256"],
             closures=[conflicting, _closure("2026-08-25")],
             policy_ref={"path": "operations/policy.json", "sha256": "a" * 64},

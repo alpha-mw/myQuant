@@ -61,7 +61,7 @@ def test_pair_publication_restores_all_four_outputs_on_replace_failure(
     with pytest.raises(OSError, match="injected-replace-failure"):
         exporter.publish_bundle_pair(
             v1_bundle={"version": 1},
-            v2_bundle={"version": 2},
+            v2_bundle={"version": 2, "schema_version": "cn_aggressive_dashboard.v2"},
             v1_json_path=paths[0],
             v1_js_path=paths[1],
             v2_json_path=paths[2],

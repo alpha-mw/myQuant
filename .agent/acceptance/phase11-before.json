@@ -1,0 +1,36 @@
+{
+  "observed_at": "2026-09-12T18:02:38.274435+00:00",
+  "scope": "PHASE11_BEFORE_CURRENT_CALENDAR_AND_HISTORICAL_PUBLICATION_ROUTING",
+  "synthetic_fixture": "/private/var/folders/cp/539tc5k549l2jzdy90ptl6cm0000gn/T/phase11-before-routing-m41ismn5",
+  "native_provider_calls": 0,
+  "full_native_eod_admission": false,
+  "same_day_calendar_failure": {
+    "type": "CloseSessionAuthorityError",
+    "detail": "CATCHUP_SESSION_NOT_HISTORICAL"
+  },
+  "historical_derived_request_schema": "cn-daily-production-request.v2",
+  "historical_derived_publish_current_dashboard": true,
+  "historical_request_day": "20260827",
+  "prior_frozen_failure": {
+    "path": "/private/tmp/myquant-public-history-native-20260909T031046Z/historical-dashboard-readonly-diagnosis.json",
+    "sha256": "b9b15ada57815e3d27b2d60549d6c06388b7ff6d03e5dd7edc5bb3e407b2335c",
+    "diagnosis": {
+      "producer_commit": "3c46cb36918ca00d4fb61707bcfc16ca06b5c2a1",
+      "historical_mode": false,
+      "request_key": "e13a10105f7d183ab74c4ec48142fe892bc77cec5bd03f62aa1e05136f6b5bcb",
+      "write_methods_called": false,
+      "scope": "original native render prerequisites only",
+      "status": "REPRODUCED_FAILURE",
+      "failed_step": "native capture date gate before any retain/write",
+      "error_type": "DashboardInputError",
+      "error": "DASHBOARD_STALE:benchmark",
+      "traceback": "Traceback (most recent call last):\n  File \"/Users/maxwell/mySpace/myQuant/.agent/acceptance/diagnose_historical_dashboard.py\", line 86, in <module>\n    adapter.capture._date_gate(v1, v2)\n    ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^\n  File \"/private/tmp/myquant-public-history-native-20260909T031046Z/repository/scripts/daily_dashboard_capture.py\", line 71, in _date_gate\n    require_expected_close_date(self.workspace, v1, v2, self.journal.trade_date)\n    ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/private/tmp/myquant-public-history-native-20260909T031046Z/repository/scripts/export_cn_aggressive_dashboard_data.py\", line 456, in require_expected_close_date\n    raise DashboardInputError(\"DASHBOARD_STALE:\" + \",\".join(mismatched))\ncn_dashboard_common.DashboardInputError: DASHBOARD_STALE:benchmark\n",
+      "workspace_sha_mtime_unchanged": true
+    }
+  },
+  "source_findings": [
+    "CATCH_UP requires caller previous_completion_ref; no automatic anchor selection",
+    "All upstream template dates are preflighted through historical maintenance and derived request.v2",
+    "All completed catchup rows pass current serving gate without target/history context"
+  ]
+}

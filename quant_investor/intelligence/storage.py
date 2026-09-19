@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from datetime import datetime, timezone
 import ctypes
 import errno
 import hashlib
@@ -13,7 +14,11 @@ import stat
 import sys
 from typing import Any, Final
 
-from quant_investor.contracts import artifact_byte_sha256, canonical_json_bytes
+from quant_investor.contracts import (
+    canonical_json_bytes,
+    parse_canonical_json_bytes,
+    validate_artifact,
+)
 from quant_investor.migration.canonical import read_stable_regular_file
 
 from ._common import (
@@ -21,7 +26,6 @@ from ._common import (
     artifact_ref,
     build_artifact,
     business_identity,
-    identifier,
     sha256,
 )
 from .daily import (
@@ -35,6 +39,15 @@ from .theme_governance import (
     TECHNOLOGY_THEME_IDS,
     approved_theme_governance_policy,
     validate_theme_governance_policy,
+)
+from .pool_tabular import (
+    TABULAR_MANIFEST_KIND,
+    POOL_MANIFEST_KINDS,
+    MAX_TABLE_BYTES,
+    encode_top100,
+    verify_top100,
+    observation_bindings,
+    tabular_documents,
 )
 
 PHASE_A_POLICY_RELATIVE_PATH: Final = (
@@ -261,8 +274,8 @@ def _publish_phase_a_policy(
             temporary.unlink()
             created = False
         _verify_policy_file(path, raw)
-    observed = read_stable_regular_file(path, label="daily research policy")
-    if validate_daily_research_policy(observed) != policy:
+    observed_raw = read_stable_regular_file(path, label="daily research policy")
+    if validate_daily_research_policy(observed_raw) != policy:
         raise IntelligenceError("daily research policy readback differs")
     return {
         "command_status": "PUBLISHED" if created else "NO_ACTION",
@@ -287,9 +300,10 @@ def _publish_exact_policy_artifact(
     relative_path: str,
     artifact: Mapping[str, Any],
     validator: Callable[[Mapping[str, Any] | bytes], dict[str, Any]],
+    parent_parts: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     raw = canonical_json_bytes(artifact)
-    parent = _store_parent(root, ("policies", "research", POOL_STRATEGY_ID))
+    parent = _store_parent(root, parent_parts or ("policies", "research", POOL_STRATEGY_ID))
     path = root / relative_path
     if path.parent != parent:
         raise IntelligenceError("research policy path is outside the governed parent")
@@ -527,16 +541,20 @@ def _verify_file(path: Path, expected: bytes) -> None:
 def _validate_root(path: Path, raw_documents: Mapping[str, bytes]) -> None:
     _verify_owned_directory(path, exact_mode=True)
     leaves = sorted(entry.name for entry in path.iterdir())
-    if leaves != list(POOL_LEAF_NAMES):
+    if leaves != sorted(raw_documents):
         raise IntelligenceError("research pool leaf inventory differs")
-    for name in POOL_LEAF_NAMES:
+    for name in sorted(raw_documents):
         _verify_file(path / name, raw_documents[name])
 
 
-def _atomic_no_replace(source: Path, destination: Path) -> None:
+def _atomic_no_replace(source: Path, destination: Path, *, parent_fd: int | None = None) -> None:
     source_raw = source.name.encode("ascii", errors="strict")
     destination_raw = destination.name.encode("ascii", errors="strict")
-    parent_fd = os.open(source.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    if source.parent != destination.parent:
+        raise IntelligenceError("atomic no-replace requires one parent")
+    owns_parent = parent_fd is None
+    if parent_fd is None:
+        parent_fd = os.open(source.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
         libc = ctypes.CDLL(None, use_errno=True)
         if sys.platform == "darwin":
@@ -566,14 +584,170 @@ def _atomic_no_replace(source: Path, destination: Path) -> None:
             raise FileExistsError(destination)
         raise IntelligenceError("atomic research pool publication failed")
     finally:
-        os.close(parent_fd)
+        if owns_parent:
+            os.close(parent_fd)
+
+
+def _write_pool_staging(staging: Path, raw_documents: Mapping[str, bytes]) -> None:
+    for name in sorted(raw_documents):
+        try:
+            descriptor = os.open(
+                staging / name,
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0),
+                0o600,
+            )
+            try:
+                os.fchmod(descriptor, 0o600)
+                _write_all(descriptor, raw_documents[name])
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        except OSError as exc:
+            raise IntelligenceError("research pool staging write failed") from exc
+    staging_fd = os.open(staging, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(staging_fd)
+    finally:
+        os.close(staging_fd)
+
+
+class ResearchPoolConflict(IntelligenceError):
+    """An existing immutable daily publication cannot satisfy these exact inputs."""
+
+    default_code = "RESEARCH_POOL_CONFLICT"
+
+    def __init__(self, detail: str):
+        super().__init__(detail)
+        self.public_fields = {"publication_state": "CONFLICT"}
+
+
+def _pool_generated_at() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _pool_leaf(path: Path) -> bytes:
+    raw = read_stable_regular_file(
+        path, label=f"research pool {path.name}", max_bytes=MAX_TABLE_BYTES
+    )
+    _verify_file(path, raw)
+    return raw
 
 
 class DailyResearchPoolStore:
-    """Exact-once strategy-scoped immutable Factor research-pool store."""
+    """One immutable native publisher; format-owned historical readback."""
 
     def __init__(self, workspace_root: str | os.PathLike[str]) -> None:
         self.workspace_root = _workspace(workspace_root)
+
+    def _inputs(self, rank, expected_policy_sha256, policy_path):
+        policy = approved_pool_policy(policy_path)
+        _verify_policy_file(self.workspace_root / policy_path, canonical_json_bytes(policy))
+        if rank["payload"]["signal_date"] < policy["payload"]["effective_signal_date"]:
+            raise IntelligenceError("Factor signal date predates daily research policy")
+        legacy = _pool_documents(
+            rank=rank,
+            policy=policy,
+            policy_path=policy_path,
+            policy_sha256=expected_policy_sha256,
+        )
+        day = rank["payload"]["signal_date"]
+        relative = f"{POOL_ROOT_RELATIVE_PATH}/{POOL_STRATEGY_ID}/{day[:4]}-{day[4:6]}-{day[6:]}"
+        return policy, legacy, relative
+
+    def _observations(self, rank, observations):
+        from quant_investor.system.storage import SecureSystemStorage
+
+        # Even supplied artifacts must match the exact owning immutable source files.
+        day = rank["payload"]["signal_date"]
+        reader = SecureSystemStorage(self.workspace_root)
+        values = []
+        expected_shas = {ref["byte_sha256"] for ref in rank["payload"]["observation_refs"]}
+        for alias in ("LOW", "W80"):
+            path = f"results/factors/observations/{day[:4]}/{day[4:6]}/{day[6:]}/{alias}.json"
+            item = reader.read_workspace_file_bytes(path, maximum_bytes=MAX_TABLE_BYTES)
+            if item.byte_sha256 not in expected_shas:
+                raise IntelligenceError("Top100 observation source byte SHA differs from rank")
+            value = parse_canonical_json_bytes(item.data, label="pool observation")
+            if value.get("payload", {}).get("factor_alias") != alias:
+                raise IntelligenceError("Top100 observation path alias differs")
+            values.append(value)
+        if observations is not None and sorted(
+            (canonical_json_bytes(o) for o in observations)
+        ) != sorted(canonical_json_bytes(o) for o in values):
+            raise IntelligenceError("Top100 supplied observations differ from original files")
+        return values
+
+    def _read_existing(self, *, target, legacy, rank, policy, observations, required_format):
+        # Only a genuinely absent directory raises FileNotFoundError to the writer.
+        try:
+            os.lstat(target)
+        except FileNotFoundError:
+            raise
+        try:
+            _verify_owned_directory(target, exact_mode=True)
+            manifest_raw = _pool_leaf(target / "manifest.json")
+            manifest = validate_artifact(parse_canonical_json_bytes(manifest_raw))
+            kind = manifest["kind"]
+            if kind not in POOL_MANIFEST_KINDS:
+                raise IntelligenceError("research pool manifest kind is not registered")
+            tabular = kind == TABULAR_MANIFEST_KIND
+            if required_format not in {None, "TABULAR"} or (
+                required_format == "TABULAR" and not tabular
+            ):
+                raise IntelligenceError("research pool format conflicts with TABULAR requirement")
+            names = sorted([*POOL_LEAF_NAMES, *(["top100.parquet"] if tabular else [])])
+            if sorted(p.name for p in target.iterdir()) != names:
+                raise IntelligenceError("research pool leaf inventory differs")
+            if tabular:
+                parquet = _pool_leaf(target / "top100.parquet")
+                verify_top100(parquet, expected_sha=manifest["payload"]["top100_sha"], rank=rank)
+                values = self._observations(rank, observations)
+                bindings = observation_bindings(rank, values, policy)
+                raw = tabular_documents(
+                    legacy,
+                    bindings=bindings,
+                    generated_at=manifest["payload"]["generated_at"],
+                    parquet=parquet,
+                )
+            else:
+                raw = {name: canonical_json_bytes(doc) for name, doc in legacy.items()}
+            _validate_root(target, raw)
+            if tabular:
+                self._observations(rank, values)
+            return raw
+        except Exception as exc:
+            raise ResearchPoolConflict(
+                "research pool leaf validation conflict: " + str(exc)
+            ) from exc
+
+    def verify(
+        self,
+        *,
+        rank: Mapping[str, Any],
+        expected_policy_sha256: str,
+        policy_path: str = PHASE_A_POLICY_RELATIVE_PATH,
+        observations=None,
+        required_format: str | None = None,
+    ) -> dict[str, dict[str, str]]:
+        """Read all original leaves with exact registered-format native validation."""
+        policy, legacy, relative = self._inputs(rank, expected_policy_sha256, policy_path)
+        raw = self._read_existing(
+            target=self.workspace_root / relative,
+            legacy=legacy,
+            rank=rank,
+            policy=policy,
+            observations=observations,
+            required_format=required_format,
+        )
+        _verify_policy_file(self.workspace_root / policy_path, canonical_json_bytes(policy))
+        return {
+            name: {"path": f"{relative}/{name}", "sha256": hashlib.sha256(value).hexdigest()}
+            for name, value in raw.items()
+        }
 
     def publish(
         self,
@@ -582,63 +756,52 @@ class DailyResearchPoolStore:
         expected_policy_sha256: str,
         before_publish: Callable[[], None],
         policy_path: str = PHASE_A_POLICY_RELATIVE_PATH,
+        observations=None,
     ) -> dict[str, Any]:
-        approved = approved_pool_policy(policy_path)
-        policy_file = self.workspace_root / policy_path
-        policy_raw = canonical_json_bytes(approved)
-        _verify_policy_file(policy_file, policy_raw)
-        if hashlib.sha256(policy_raw).hexdigest() != expected_policy_sha256:
-            raise IntelligenceError("published research policy SHA differs")
-        policy = validate_daily_research_policy(policy_raw)
-        if rank["payload"]["signal_date"] < policy["payload"]["effective_signal_date"]:
-            raise IntelligenceError("Factor signal date predates daily research policy")
-        documents = _pool_documents(
-            rank=rank,
-            policy=policy,
-            policy_path=policy_path,
-            policy_sha256=expected_policy_sha256,
-        )
-        raw_documents = {
-            name: canonical_json_bytes(document) for name, document in documents.items()
-        }
-        signal_date = documents["manifest.json"]["payload"]["signal_date"]
-        parent = _store_parent(
-            self.workspace_root,
-            ("intelligence", "research_pool", POOL_STRATEGY_ID),
-        )
-        target = parent / (f"{signal_date[0:4]}-{signal_date[4:6]}-{signal_date[6:8]}")
-        if target.exists():
-            _validate_root(target, raw_documents)
+        policy, legacy, relative = self._inputs(rank, expected_policy_sha256, policy_path)
+        target = self.workspace_root / relative
+
+        def read_existing():
+            return self._read_existing(
+                target=target,
+                legacy=legacy,
+                rank=rank,
+                policy=policy,
+                observations=observations,
+                required_format="TABULAR",
+            )
+
+        try:
+            raw_documents = read_existing()
             status = "NO_ACTION"
-        else:
-            staging = parent / (f".{target.name}.staging-{os.getpid()}-{secrets.token_hex(8)}")
+        except FileNotFoundError:
+            values = self._observations(rank, observations)
+            bindings = observation_bindings(rank, values, policy)
+            parquet = encode_top100(rank)
+            raw_documents = tabular_documents(
+                legacy,
+                bindings=bindings,
+                generated_at=_pool_generated_at(),
+                parquet=parquet,
+            )
+            parent = _store_parent(
+                self.workspace_root,
+                ("intelligence", "research_pool", POOL_STRATEGY_ID),
+            )
+            staging = parent / f".{target.name}.staging-{os.getpid()}-{secrets.token_hex(8)}"
             staging.mkdir(mode=0o700)
-            for name in POOL_LEAF_NAMES:
-                try:
-                    descriptor = os.open(
-                        staging / name,
-                        os.O_WRONLY
-                        | os.O_CREAT
-                        | os.O_EXCL
-                        | getattr(os, "O_NOFOLLOW", 0)
-                        | getattr(os, "O_CLOEXEC", 0),
-                        0o600,
-                    )
-                    try:
-                        os.fchmod(descriptor, 0o600)
-                        _write_all(descriptor, raw_documents[name])
-                        os.fsync(descriptor)
-                    finally:
-                        os.close(descriptor)
-                except OSError as exc:
-                    raise IntelligenceError("research pool staging write failed") from exc
-            staging_fd = os.open(staging, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-            try:
-                os.fsync(staging_fd)
-            finally:
-                os.close(staging_fd)
-            _validate_root(staging, raw_documents)
+            _write_pool_staging(staging, raw_documents)
+            self._read_existing(
+                target=staging,
+                legacy=legacy,
+                rank=rank,
+                policy=policy,
+                observations=values,
+                required_format="TABULAR",
+            )
             before_publish()
+            _verify_policy_file(self.workspace_root / policy_path, canonical_json_bytes(policy))
+            self._observations(rank, values)
             try:
                 _atomic_no_replace(staging, target)
                 parent_fd = os.open(parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
@@ -648,23 +811,21 @@ class DailyResearchPoolStore:
                     os.close(parent_fd)
                 status = "PUBLISHED"
             except FileExistsError:
-                _validate_root(target, raw_documents)
-                for name in POOL_LEAF_NAMES:
+                # Original winner time and Parquet bytes govern repeat semantics.
+                raw_documents = read_existing()
+                for name in sorted(raw_documents):
                     (staging / name).unlink()
                 staging.rmdir()
                 status = "NO_ACTION"
-            _validate_root(target, raw_documents)
+            raw_documents = read_existing()
+        signal_date = rank["payload"]["signal_date"]
         return {
             "command_status": status,
-            "manifest_path": (
-                f"{POOL_ROOT_RELATIVE_PATH}/{POOL_STRATEGY_ID}/{target.name}/manifest.json"
-            ),
+            "publication_state": "SUCCEEDED" if status == "PUBLISHED" else "ALREADY_SUCCEEDED",
+            "manifest_path": f"{relative}/manifest.json",
             "manifest_sha256": hashlib.sha256(raw_documents["manifest.json"]).hexdigest(),
-            "pool_root": f"{POOL_ROOT_RELATIVE_PATH}/{POOL_STRATEGY_ID}/{target.name}",
-            "receipt_path": (
-                f"{POOL_ROOT_RELATIVE_PATH}/{POOL_STRATEGY_ID}/{target.name}/"
-                "publish_receipt.json"
-            ),
+            "pool_root": relative,
+            "receipt_path": f"{relative}/publish_receipt.json",
             "receipt_sha256": hashlib.sha256(raw_documents["publish_receipt.json"]).hexdigest(),
             "signal_date": signal_date,
             "strategy_id": POOL_STRATEGY_ID,

@@ -1,0 +1,18 @@
+{
+  "observed_at": "2026-09-16T20:12:55.634967+00:00",
+  "state": "ORIGINAL_CONFIGURED_DISPATCH_COMPLETE_INDEPENDENT_REPLAY_PENDING",
+  "root": "/private/tmp/myquant-canonical-scan-20260916T152008Z",
+  "commit": "5060dee2d4b39b50a735393d056ebe5adb4efe3b",
+  "dispatch_result_ref": {
+    "path": "/private/tmp/myquant-canonical-scan-20260916T152008Z/configured-native-eod-result.json",
+    "sha256": "36f32d3c3d67c2817a611cf16af4331946d24ddd3eba6d6ab206442648f8cfef"
+  },
+  "completion_ref": {
+    "path": "results/operations/daily_production/CN/20260827/completion.v1.json",
+    "sha256": "18f3b67149b23c9f153994d900efcc99d6c8e0e0618e3518b9f275c07f64d6fd"
+  },
+  "business_state": "COMPLETE",
+  "final_original_driver_pass": false,
+  "full_first_day_acceptance_claimed": false,
+  "production_deployed": false
+}

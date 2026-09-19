@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="light" />
     <title>AlphaMx科技创新组合001号｜myQuant</title>
     <link rel="icon" href="data:," />
-    <link rel="stylesheet" href="styles.css?v=dashboard-v5" />
+    <link rel="stylesheet" href="styles.css?v=dashboard-v6" />
   </head>
   <body>
     <a class="skip-link" href="#record">跳至业绩记录</a>
@@ -98,11 +98,25 @@
 
       <div class="app-shell dashboard-shell">
         <section id="blockerPanel" class="panel blocker-panel" hidden>
-          <div class="panel-heading"><div><p class="eyebrow">FAIL CLOSED</p><h2>Dashboard 不可用</h2></div></div>
+          <div class="panel-heading"><div><p class="eyebrow" id="blockerEyebrow">FAIL CLOSED</p><h2 id="blockerTitle">Dashboard 不可用</h2></div></div>
           <ul id="blockerList" class="blocker-list"></ul>
         </section>
 
         <div id="dashboardContent" hidden>
+          <section id="dailyResearchPanel" class="panel internal-only section-anchor" hidden aria-labelledby="dailyResearchTitle">
+            <div class="panel-heading"><div><p class="eyebrow">COMPLETED DAILY EVIDENCE</p><h2 id="dailyResearchTitle">已完成日终研究</h2></div><p id="dailyResearchDate"></p></div>
+            <p id="dailyResearchScope"></p>
+            <div class="table-wrap"><table><thead><tr><th>数据来源</th><th>核对结果</th></tr></thead><tbody id="dailyResearchSources"></tbody></table></div>
+            <p id="dailyDecisionCounts"></p>
+          </section>
+          <section id="dailyRegisteredPanel" class="panel internal-only section-anchor" hidden aria-labelledby="dailyRegisteredTitle">
+            <div class="panel-heading"><div><p class="eyebrow">REGISTERED TRANSACTIONS</p><h2 id="dailyRegisteredTitle">登记成交与收盘估值</h2></div><p id="dailyRegisteredDate"></p></div>
+            <div class="registered-summary">
+              <article><h3>用户登记的持仓变动</h3><p id="dailyRegisteredEvidence"></p><p id="dailyRegisteredTimes" class="registered-note"></p></article>
+              <article><h3>系统完成的收盘估值</h3><p id="dailyRegisteredClose"></p><p id="dailyRegisteredRisk" class="registered-note"></p></article>
+            </div>
+            <div class="table-wrap"><table><thead><tr><th>股票代码</th><th>变动类型</th><th>变动前股数</th><th>增加股数</th><th>变动后股数</th><th>新增成本（含费）</th><th>风险状态</th></tr></thead><tbody id="dailyRegisteredRows"></tbody></table></div>
+          </section>
           <section id="control" class="internal-control internal-only section-anchor" aria-labelledby="internalControlTitle">
             <div class="internal-control-heading">
               <div>
@@ -327,10 +341,13 @@
       document.write('<script src="private/generated/cn_aggressive_dashboard.v1.js?cache=' + Date.now() + '"><\/script>');
       document.write('<script src="private/generated/cn_aggressive_dashboard.v2.js?cache=' + Date.now() + '"><\/script>');
       document.write('<script src="private/generated/cn_aggressive_dashboard_selector.v2.js?cache=' + Date.now() + '"><\/script>');
+      document.write('<script src="private/generated/cn_daily_completed_head.v1.js?cache=' + Date.now() + '"><\/script>');
+      document.write('<script src="private/generated/cn_daily_dashboard_evidence.v1.js?cache=' + Date.now() + '"><\/script>');
     </script>
     <script src="js/cn_aggressive_input.js?v=dashboard-v2"></script>
     <script src="js/cn_aggressive_dashboard_contract_v1.js?v=dashboard-v3"></script>
     <script src="js/cn_aggressive_dashboard_contract_v2.js?v=dashboard-v1"></script>
+    <script src="js/cn_daily_dashboard_contract_v1.js?v=sealed-eod-v2"></script>
     <script src="js/cn_aggressive_dashboard_analysis_v1.js?v=dashboard-v2"></script>
     <script>
       window.__cnAggressivePrivateDashboardBundle = window.MyQuantCNAggressiveDashboardV2;
@@ -341,6 +358,6 @@
       delete window.CNAggressiveDashboardContractV2;
     </script>
     <script src="js/cn_aggressive_public_mode.js?mode=internal-v1"></script>
-    <script src="app.js?v=dashboard-v8"></script>
+    <script src="app.js?v=dashboard-v9"></script>
   </body>
 </html>

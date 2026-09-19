@@ -1,0 +1,25 @@
+{
+  "observed_at": "2026-09-16T16:48:39.242268+00:00",
+  "scope": "EXACT_FORMAL_POINTER_BYTES_ONLY_NOT_FRESH_FULL_NATIVE_REPLAY",
+  "baseline_receipt_ref": {
+    "path": ".agent/acceptance/phase15-evening-formal-frontier.json",
+    "sha256": "a6c3b7674bdd0013e26860a72b228f914520b232b941c9ff10623e10de967601"
+  },
+  "current_pointer_sha256": {
+    "/Users/maxwell/mySpace/myQuant/results/strategy_records/CN/aggressive_tech_manufacturing/_record_store/current.v1.json": "f037197e370c09e824e97da9ce1ac86c0687def67ca7dd32d211fee2170e913c",
+    "/Users/maxwell/mySpace/myQuant/results/strategy_records/CN/aggressive_tech_manufacturing/_event_store/current.v1.json": "3ab06e301cf197ee33b242f27c42d6a18f063a07c2860d3f9682662ca03349a9"
+  },
+  "all_match_last_verified_frontier": true,
+  "last_verified_store_date": "2026-09-03",
+  "last_verified_event_closure": "2026-09-03",
+  "owner_facts_requested_from": "2026-09-04",
+  "owner_facts_requested_through": "2026-09-16",
+  "owner_response": "PENDING",
+  "prediction_deadline_response": "PENDING",
+  "same_trade_date_deadline_required_by": "cn-daily-prediction-policy.v1",
+  "suggested_deadline_local_time": "23:59:59",
+  "suggestion_applied": false,
+  "owner_empty_events_inferred": false,
+  "production_writes": false,
+  "synthetic_acceptance_continues_independently": true
+}

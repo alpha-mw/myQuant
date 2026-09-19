@@ -8,7 +8,6 @@ covering every event dimension named by the standing owner policy.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import date, datetime, timezone
 import fcntl
 import hashlib
 import json
@@ -105,25 +104,10 @@ def build_empty_closure(
     owner_declaration_ref: Mapping[str, str],
     source_receipt_ref: Mapping[str, str] | None,
 ) -> dict[str, Any]:
-    day = date.fromisoformat(trade_date).isoformat()
-    for value, label in ((sealed_at, "sealed_at"), (cutoff_at, "cutoff_at")):
-        try:
-            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        except ValueError as exc:
-            raise StrategyEventStoreError(f"event {label} is invalid") from exc
-        if parsed.tzinfo is None:
-            raise StrategyEventStoreError(f"event {label} timezone is missing")
-    if datetime.fromisoformat(sealed_at.replace("Z", "+00:00")) < datetime.fromisoformat(
-        cutoff_at.replace("Z", "+00:00")
-    ):
-        raise StrategyEventStoreError("event closure precedes owner cutoff")
-    refs = [dict(policy_ref), dict(owner_declaration_ref)]
-    if source_receipt_ref is not None:
-        refs.append(dict(source_receipt_ref))
-    for ref in refs:
-        if set(ref) != {"path", "sha256"} or _SHA.fullmatch(str(ref.get("sha256"))) is None:
-            raise StrategyEventStoreError("event closure ref is invalid")
-    return _seal(
+    from .event_contracts import event_date
+
+    day = event_date(trade_date).isoformat()
+    value = _seal(
         {
             "schema_id": EVENT_CLOSURE_SCHEMA,
             "trade_date": day,
@@ -143,31 +127,13 @@ def build_empty_closure(
         }
     )
 
+    return validate_closure(value)
+
 
 def validate_closure(value: Mapping[str, Any]) -> dict[str, Any]:
-    _validate_seal(value, label="event closure")
-    if value.get("schema_id") != EVENT_CLOSURE_SCHEMA or value.get("status") != "CLOSED_EMPTY":
-        raise StrategyEventStoreError("event closure status/schema mismatch")
-    date.fromisoformat(str(value.get("trade_date")))
-    dimensions = value.get("dimensions")
-    if not isinstance(dimensions, dict) or set(dimensions) != set(EVENT_DIMENSIONS):
-        raise StrategyEventStoreError("event closure dimensions are incomplete")
-    if any(
-        not isinstance(dimensions[name], dict)
-        or dimensions[name] != {"status": "CLOSED_EMPTY", "events": []}
-        for name in EVENT_DIMENSIONS
-    ):
-        raise StrategyEventStoreError("event closure contains an unclosed dimension")
-    if any(
-        value.get(name) is not False
-        for name in (
-            "actual_holdings_mutation_authority",
-            "cash_mutation_authority",
-            "broker_order_trade_authority",
-        )
-    ):
-        raise StrategyEventStoreError("event closure claims forbidden authority")
-    return dict(value)
+    from .event_contracts import validate_closure_contract
+
+    return validate_closure_contract(value)
 
 
 def publish_generation(
@@ -179,17 +145,20 @@ def publish_generation(
     closures: Sequence[Mapping[str, Any]],
     policy_ref: Mapping[str, str],
 ) -> dict[str, Any]:
-    if _ID.fullmatch(generation_id) is None:
+    if type(generation_id) is not str or _ID.fullmatch(generation_id) is None:
         raise StrategyEventStoreError("event generation ID is invalid")
-    if _SHA.fullmatch(expected_pointer_sha256) is None:
+    if type(expected_pointer_sha256) is not str or _SHA.fullmatch(expected_pointer_sha256) is None:
         raise StrategyEventStoreError("expected event pointer SHA is invalid")
+    from .event_contracts import validate_generation, source_ref, instant
+
+    source_ref(policy_ref)
     rows = [validate_closure(row) for row in closures]
     rows.sort(key=lambda row: row["trade_date"])
     if not rows or len({row["trade_date"] for row in rows}) != len(rows):
         raise StrategyEventStoreError("event generation dates are empty or duplicated")
-    for ref in (policy_ref,):
-        if set(ref) != {"path", "sha256"} or _SHA.fullmatch(str(ref.get("sha256"))) is None:
-            raise StrategyEventStoreError("event policy ref is invalid")
+    generated = instant(generated_at, label="generation")
+    if any(instant(row["sealed_at"], label="closure seal") > generated for row in rows):
+        raise StrategyEventStoreError("event generation precedes closure seal")
     existing = None
     if expected_pointer_sha256 != EMPTY_POINTER_SHA256:
         if pointer_sha256(root) != expected_pointer_sha256:
@@ -216,6 +185,7 @@ def publish_generation(
             "broker_order_trade_authority": False,
         }
     )
+    validate_generation(generation)
     generation_raw = canonical_json_bytes(generation)
     relative = f"generations/{generation_id}.v1.json"
     path = root / relative
@@ -253,7 +223,8 @@ def publish_generation(
         observed = pointer_sha256(root)
         if observed != expected_pointer_sha256:
             raise StrategyEventCASMismatch(
-                f"event pointer CAS mismatch: expected {expected_pointer_sha256}, observed {observed}"
+                f"event pointer CAS mismatch: expected {expected_pointer_sha256}, "
+                f"observed {observed}"
             )
         if expected_pointer_sha256 != EMPTY_POINTER_SHA256:
             previous_raw = _read(root / "current.v1.json", label="event predecessor pointer")
@@ -280,34 +251,100 @@ def publish_generation(
     return {**loaded, "pointer_sha256": _sha(pointer_raw)}
 
 
-def load_generation(root: Path) -> dict[str, Any]:
-    pointer_raw = _read(root / "current.v1.json", label="event pointer")
-    pointer = json.loads(pointer_raw)
-    _validate_seal(pointer, label="event pointer")
-    if pointer.get("schema_id") != EVENT_POINTER_SCHEMA:
-        raise StrategyEventStoreError("event pointer schema mismatch")
-    ref = pointer.get("generation")
-    if not isinstance(ref, dict):
-        raise StrategyEventStoreError("event generation ref is absent")
-    raw = _read(root / str(ref.get("path")), label="event generation")
-    if _sha(raw) != ref.get("sha256"):
+def _parse_native_bytes(raw: bytes, *, label: str) -> dict[str, Any]:
+    try:
+        value = json.loads(raw)
+    except (ValueError, TypeError, UnicodeDecodeError) as exc:
+        raise StrategyEventStoreError(f"event {label} JSON invalid") from exc
+    if type(value) is not dict or canonical_json_bytes(value) != raw:
+        raise StrategyEventStoreError(f"event {label} bytes are not canonical")
+    return value
+
+
+def load_frozen_generation(
+    root: Path, *, pointer_bytes: bytes, expected_pointer_sha256: str
+) -> dict[str, Any]:
+    """Replay exact caller-retained pointer bytes; no current selection or write."""
+    from quant_investor.system.storage import SecureSystemStorage
+    from .event_contracts import validate_pointer, validate_generation
+
+    if (
+        type(pointer_bytes) is not bytes
+        or not pointer_bytes
+        or len(pointer_bytes) > 1024 * 1024
+        or _sha(pointer_bytes) != expected_pointer_sha256
+    ):
+        raise StrategyEventStoreError("frozen event pointer SHA mismatch")
+    pointer = validate_pointer(_parse_native_bytes(pointer_bytes, label="pointer"))
+    reader = SecureSystemStorage(root)
+    ref = pointer["generation"]
+    stored = reader.read_workspace_file_bytes(ref["path"], maximum_bytes=16 * 1024 * 1024)
+    if stored.byte_sha256 != ref["sha256"]:
         raise StrategyEventStoreError("event generation SHA mismatch")
-    generation = json.loads(raw)
-    _validate_seal(generation, label="event generation")
-    if generation.get("schema_id") != EVENT_GENERATION_SCHEMA or generation.get(
-        "generation_id"
-    ) != pointer.get("generation_id"):
-        raise StrategyEventStoreError("event generation closure mismatch")
-    closures = [validate_closure(row) for row in generation.get("closures", [])]
-    if [row["trade_date"] for row in closures] != pointer.get("trade_dates"):
-        raise StrategyEventStoreError("event pointer date set mismatch")
+    generation = validate_generation(
+        _parse_native_bytes(stored.data, label="generation"), pointer=pointer
+    )
+    after = reader.read_workspace_file_bytes(ref["path"], maximum_bytes=16 * 1024 * 1024)
+    if (after.data, after.stat_identity) != (stored.data, stored.stat_identity):
+        raise StrategyEventStoreError("event generation changed during frozen read")
     return {
         "pointer": pointer,
         "generation": generation,
-        "closures": closures,
-        "pointer_sha256": _sha(pointer_raw),
-        "generation_sha256": _sha(raw),
+        "closures": generation["closures"],
+        "pointer_sha256": expected_pointer_sha256,
+        "pointer_bytes": pointer_bytes,
+        "generation_sha256": stored.byte_sha256,
     }
+
+
+def load_generation(root: Path) -> dict[str, Any]:
+    raw = _read(root / "current.v1.json", label="event pointer")
+    value = load_frozen_generation(root, pointer_bytes=raw, expected_pointer_sha256=_sha(raw))
+    if _read(root / "current.v1.json", label="event pointer") != raw:
+        raise StrategyEventStoreError("event pointer changed during read")
+    value.pop("pointer_bytes")
+    return value
+
+
+def load_historical_generation(root: Path, *, expected_pointer_sha256: str) -> dict[str, Any]:
+    """Read one exact registered ancestor, never infer it by directory ordering."""
+    from quant_investor.system.storage import SecureSystemStorage
+
+    if type(expected_pointer_sha256) is not str or _SHA.fullmatch(expected_pointer_sha256) is None:
+        raise StrategyEventStoreError("historical event pointer SHA invalid")
+    reader = SecureSystemStorage(root)
+    current = reader.read_workspace_file_bytes("current.v1.json", maximum_bytes=1024 * 1024)
+    selected = current
+    seen: set[str] = set()
+    for _ in range(4096):
+        from .event_contracts import validate_pointer
+
+        pointer = validate_pointer(_parse_native_bytes(selected.data, label="historical pointer"))
+        if (
+            pointer.get("schema_id") != EVENT_POINTER_SCHEMA
+            or pointer.get("broker_order_trade_authority") is not False
+        ):
+            raise StrategyEventStoreError("historical event pointer contract invalid")
+        if selected.byte_sha256 == expected_pointer_sha256:
+            break
+        previous = pointer.get("previous_pointer_sha256")
+        if type(previous) is not str or _SHA.fullmatch(previous) is None or previous in seen:
+            raise StrategyEventStoreError("requested event pointer is not in registered ancestry")
+        seen.add(previous)
+        selected = reader.read_workspace_file_bytes(
+            f"pointer_history/{previous}.json", maximum_bytes=1024 * 1024
+        )
+        if selected.byte_sha256 != previous:
+            raise StrategyEventStoreError("historical event predecessor SHA mismatch")
+    else:
+        raise StrategyEventStoreError("event pointer ancestry bound exceeded")
+    result = load_frozen_generation(
+        root, pointer_bytes=selected.data, expected_pointer_sha256=expected_pointer_sha256
+    )
+    after = reader.read_workspace_file_bytes("current.v1.json", maximum_bytes=1024 * 1024)
+    if after.byte_sha256 != current.byte_sha256:
+        raise StrategyEventStoreError("event pointer changed during historical read")
+    return result
 
 
 __all__ = [
@@ -320,6 +357,8 @@ __all__ = [
     "StrategyEventStoreError",
     "build_empty_closure",
     "load_generation",
+    "load_frozen_generation",
+    "load_historical_generation",
     "pointer_sha256",
     "publish_generation",
     "validate_closure",

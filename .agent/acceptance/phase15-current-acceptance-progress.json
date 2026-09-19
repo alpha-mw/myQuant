@@ -1,0 +1,57 @@
+{
+  "observed_at": "2026-09-13T18:34:36.247960+00:00",
+  "state": "ACCEPTANCE_RUNNING",
+  "goal_complete": false,
+  "runtime_commit": "5fb93c405e4c821e1c1fa99249fd8c99af15d433",
+  "runtime_install_verification": "PASS",
+  "ci": {
+    "root": "/private/tmp/myquant-current-acceptance-20260913T175746Z",
+    "repository": "/private/tmp/myquant-current-acceptance-20260913T175746Z/repository",
+    "producer_commit": "5fb93c405e4c821e1c1fa99249fd8c99af15d433",
+    "state": "RUNNING",
+    "steps": [],
+    "production_deployed": false,
+    "active_step": "unit",
+    "child_pid": 1971
+  },
+  "configured_native": {
+    "state": "RUNNING",
+    "root": "/private/tmp/myquant-configured-native-20260913T182952Z",
+    "producer_commit": "5fb93c405e4c821e1c1fa99249fd8c99af15d433",
+    "started_at": "2026-09-13T18:30:18.545920+00:00",
+    "production_deployed": false,
+    "child_pid": 13628
+  },
+  "handles": {
+    "ci": 63865,
+    "configured_native": 38569
+  },
+  "source_sha256": {
+    "docs/plans/phase15_final_acceptance.md": "0e52aabb3464fc731c446588eac6bf9273c60e232485aa152117ba4c7b1d7dfb",
+    "docs/plans/daily_evidence_dag_chat_design.md": "0746e64ad568f886ee31c2d44ffab942b1779a723796239cb9058e3998d53bc9",
+    "tests/unit/_native_configured_daily_scenario.py": "082b2d303cb3270e186edefa44c5fbee51fde3bd1f3eb8ea70890520e7a61398",
+    "tests/unit/_native_full_dag_scenario.py": "c7105739188ad840653dbc18f5d161bd1183deab9912efdb9220860c6b99a0ac",
+    "tests/unit/_native_daily_maintenance_fixture.py": "e15b6318641679f3d2a6229827e589ff344edde6c37fd87ad138b11adac2dada",
+    ".agent/acceptance/run_current_acceptance_ci.py": "f536b573aa699c015dc256090e5c570355ba81d10363a66e50cc155371e803e5",
+    ".agent/acceptance/run_configured_native_acceptance.py": "65e4f5ec26ceb51aee8eeb69db20282cd666159541d37a238886bfe0f69223aa"
+  },
+  "earlier_failures": [
+    {
+      "root": "/private/tmp/myquant-current-acceptance-20260913T175746Z",
+      "stage": "initial offline build",
+      "resolution": "same frozen checkout resumed using supported existing UV_CACHE_DIR",
+      "preserved": "/private/tmp/myquant-current-acceptance-20260913T175746Z/preparation-failure.v1.json"
+    },
+    {
+      "root": "/private/tmp/myquant-current-acceptance-20260913T175746Z",
+      "stage": "configured fixture baseline before request creation",
+      "error": "OFFICIAL_CLOSE_CALENDAR_BEHIND_MARKET:2026-08-27",
+      "resolution": "fixture baseline moved before target Market creation; independent workspace uses same verified runtime",
+      "preserved": "/private/tmp/myquant-current-acceptance-20260913T175746Z/configured-driver-status.json"
+    }
+  ],
+  "clarification_pending": "whether final five-session acceptance additionally requires real unattended days; original instruction explicitly requires at least synthetic five sessions",
+  "production_deployed": false,
+  "real_provider_calls": false,
+  "real_financial_state_changed": false
+}

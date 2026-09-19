@@ -1,0 +1,40 @@
+{
+  "state": "MORNING_POLICY_PREPARED_NOT_EXECUTED",
+  "quote_policy_ref": {
+    "path": ".agent/acceptance/phase12-5060-morning-quote-policy.json",
+    "sha256": "a8fa0909e03abb4622b941c5aa985861ad18cfb4fde521fc3d364225b990e24b"
+  },
+  "threshold_policy_refs": {
+    "trailing": {
+      "path": "results/policies/risk/aggressive_tech_manufacturing/trailing-anchor.v1/owner-trailing-anchor-policy-20260901-v1.json",
+      "sha256": "b313aa91e1f7ca1e8922b2d22f7735ceee3190675c2e8dab3955c69f0f1d342a"
+    },
+    "initial_stop": {
+      "path": "results/policies/risk/aggressive_tech_manufacturing/initial-risk-stop.v1/owner-stop-policy-20260828-v1.json",
+      "sha256": "11eb7018ff6abde2d276c7b997e0e61e2cd6b170407872734bb8d407b334c178"
+    }
+  },
+  "required_runtime_refs": [
+    "previous_completion_ref from exact completed native EOD",
+    "quote_capture_ref and quote_raw_ref from same-day sealed live capture"
+  ],
+  "order": [
+    "Record real capture time and minimum installed anchors",
+    "Resolve pointer-selected holdings; union original two additional symbols",
+    "Seal one same-day quote capture",
+    "Validate complete prior EOD and v3 policies",
+    "PREFLIGHT, create report and SEAL using exact same quote refs"
+  ],
+  "effective_through": "20260930",
+  "authority": {
+    "broker": false,
+    "order": false,
+    "trade": false,
+    "actual_holdings_mutation": false,
+    "system": false,
+    "mainline": false
+  },
+  "scheduler_changed": false,
+  "provider_calls": false,
+  "complete": false
+}

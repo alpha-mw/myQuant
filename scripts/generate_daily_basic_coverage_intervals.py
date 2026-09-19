@@ -40,9 +40,10 @@ def main() -> int:
     ap.add_argument("--daily-start", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument(
-        "--outcomes",
-        required=True,
-        help="request_outcomes.json; only symbols the audit flagged are declared",
+        "--tolerance-days",
+        type=int,
+        default=62,
+        help="must match FundamentalEndpointAuditPolicy.daily_history_boundary_tolerance_days",
     )
     ap.add_argument("--write", action="store_true")
     args = ap.parse_args()
@@ -57,15 +58,35 @@ def main() -> int:
     # Declare only what the audit actually flagged. Asserting a provider
     # boundary for a symbol the audit is content with would be inventing
     # authority, which is how the retired v1 file went wrong.
-    outcomes = json.loads(Path(args.outcomes).read_text())["outcomes"]
-    flagged = {
-        normalize_ts_code(row["symbol"])
-        for row in outcomes
-        if row.get("table") == "daily_basic" and row.get("history_complete") is not True
-    }
-    # The scope evidence must be built over the whole canonical scope — it
-    # verifies the symbol set — so filter only when emitting intervals.
-    symbols = sorted(daily["ts_code"].dropna().unique())
+    # Deriving the scope from a previous run's outcomes is circular: once a
+    # declaration is in place those symbols report complete, and the next
+    # regeneration finds nothing to declare. Reproduce the audit's own test
+    # instead — a symbol needs a boundary only when the provider's first
+    # observation lands later than the date the audit expects data from, which
+    # is the latest of the window opening, the listing, and the first canonical
+    # bar. A later listing is PRE_LISTING, not a provider boundary.
+    # The scope evidence verifies the symbol set against the canonical scope
+    # file itself, so take the symbols from there. Reading them off the staged
+    # table instead ties this to whatever that run happened to fetch, which
+    # drifts as soon as the scope gains or loses a listing.
+    # build_canonical_scope_evidence validates whatever declaration is already
+    # on disk, and a declaration is bound to one cutoff — so last run's file
+    # fails identity validation the moment the as_of moves. Set it aside while
+    # the evidence is computed; a declaration is a per-run input, regenerated
+    # from scratch, never amended in place.
+    out_path = Path(args.out)
+    stashed = out_path.with_suffix(out_path.suffix + ".regenerating")
+    if out_path.exists():
+        out_path.replace(stashed)
+
+    scope_payload = json.loads(Path(args.scope).read_text(encoding="utf-8"))
+    symbols = sorted(
+        {
+            normalize_ts_code(symbol)
+            for symbol in list(scope_payload.get("full_a", []) or [])
+            if normalize_ts_code(symbol)
+        }
+    )
     evidence = build_canonical_scope_evidence(
         symbols,
         canonical_path=args.scope,
@@ -79,15 +100,21 @@ def main() -> int:
     history_ends = dict(evidence.get("history_end_dates", {}) or {})
 
     window_start = args.daily_start
-    observed_first = (
-        daily[daily["ts_code"].isin(flagged)].groupby("ts_code")["trade_date"].min()
-    )
+    bar_first = dict(evidence.get("canonical_bar_first_dates", {}) or {})
+    tolerance = int(args.tolerance_days)
+    observed_first = daily.groupby("ts_code")["trade_date"].min()
 
     intervals: list[dict[str, str]] = []
     skipped: list[str] = []
     for symbol, first in observed_first.items():
-        if first <= window_start:
-            continue  # nothing missing at the front of the window
+        expected_start = max(
+            window_start,
+            str(listing_dates.get(symbol) or ""),
+            str(bar_first.get(symbol) or ""),
+        )
+        gap_days = (pd.Timestamp(first) - pd.Timestamp(expected_start)).days
+        if gap_days <= tolerance:
+            continue  # the audit tolerates this much, so there is nothing to declare
         listing_start = str(listing_dates.get(symbol) or "")
         listing_end = str(history_ends.get(symbol) or "")
         identity = str(identities.get(symbol) or "")
@@ -123,8 +150,8 @@ def main() -> int:
     payload = {**record, "record_sha256": canonical_json_sha256(record)}
 
     summary = {
-        "symbols_flagged_by_audit": len(flagged),
         "intervals_declared": len(intervals),
+        "tolerance_days": tolerance,
         "skipped": skipped,
         "source_table": str(daily_path),
         "source_sha256": source_sha,
@@ -137,11 +164,14 @@ def main() -> int:
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
     if args.write:
+        stashed.unlink(missing_ok=True)
         Path(args.out).write_text(
             json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
         )
         print(f"\nwritten: {args.out}")
     else:
+        if stashed.exists():
+            stashed.replace(out_path)
         print("\n(dry run; pass --write to persist)")
     return 0
 

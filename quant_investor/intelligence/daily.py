@@ -26,7 +26,6 @@ from quant_investor.factors.production_observation import (
 from quant_investor.market.tushare._core import content_ref as tushare_content_ref
 from quant_investor.market.tushare.industry_membership import (
     validate_industry_membership_capture,
-    validate_industry_membership_partition_capture,
 )
 from quant_investor.market.tushare.industry_taxonomy import (
     validate_industry_membership_execution_plan,
@@ -47,7 +46,6 @@ from ._common import (
     artifact_ref,
     build_artifact,
     business_identity,
-    canonical_value,
     company_code,
     decimal_text,
     decimal_value,
@@ -122,29 +120,9 @@ def _company_set_sha256(companies: Sequence[str]) -> str:
     return hashlib.sha256(canonical_json_bytes(list(companies))).hexdigest()
 
 
-def build_daily_research_policy(
-    *,
-    strategy_id: str,
-    effective_from: str,
-    effective_signal_date: str,
-    effective_to: str | None,
+def _normalize_daily_factor_policy(
     factor_rows: Sequence[Mapping[str, Any]],
-    pool_policy: Mapping[str, Any],
-    decision_thresholds: Mapping[str, Any],
-    technology_theme_ids: Sequence[str],
-    technology_policy_state: str,
-    theme_provider_precedence: Sequence[str],
-    fundamental_freshness: Mapping[str, Any],
-    created_at: str,
-) -> dict[str, Any]:
-    """Seal one explicit, effective-dated, non-authorizing research policy."""
-
-    strategy = identifier(strategy_id, label="strategy_id")
-    start = timestamp(effective_from, label="effective_from")
-    end = None if effective_to is None else timestamp(effective_to, label="effective_to")
-    instant = timestamp(created_at, label="created_at")
-    if start > instant or (end is not None and (end < start or instant > end)):
-        raise IntelligenceError("daily research policy chronology is invalid")
+) -> list[dict[str, str]]:
     if isinstance(factor_rows, (str, bytes)) or not isinstance(factor_rows, Sequence):
         raise IntelligenceError("factor_rows must be a sequence")
     normalized_factors: list[dict[str, str]] = []
@@ -178,6 +156,10 @@ def build_daily_research_policy(
         row["weight"] != "0.500000000000" for row in normalized_factors
     ):
         raise IntelligenceError("daily research factor set must be exact LOW/W80 at 50/50")
+    return normalized_factors
+
+
+def _normalize_daily_pool_policy(pool_policy: Mapping[str, Any]) -> dict[str, Any]:
     required_pool = {
         "minimum_cohort",
         "missing_rule",
@@ -209,6 +191,10 @@ def build_daily_research_policy(
     }
     if any(pool_policy[field] != value for field, value in expected_pool_constants.items()):
         raise IntelligenceError("pool policy algorithm differs from registered compiler")
+    return {**expected_pool_constants, "minimum_cohort": minimum_cohort, "pool_size": pool_size}
+
+
+def _daily_decision_thresholds(decision_thresholds: Mapping[str, Any]) -> tuple[Decimal, Decimal]:
     if type(decision_thresholds) is not dict or set(decision_thresholds) != {
         "paper_candidate",
         "research_approved",
@@ -228,6 +214,10 @@ def build_daily_research_policy(
     )
     if paper < research:
         raise IntelligenceError("paper threshold cannot be below research threshold")
+    return research, paper
+
+
+def _validate_policy_signal_date(effective_signal_date: str) -> None:
     if (
         type(effective_signal_date) is not str
         or re.fullmatch(r"[0-9]{8}", effective_signal_date) is None
@@ -237,6 +227,35 @@ def build_daily_research_policy(
         datetime.strptime(effective_signal_date, "%Y%m%d")
     except ValueError as exc:
         raise IntelligenceError("effective_signal_date is invalid") from exc
+
+
+def build_daily_research_policy(
+    *,
+    strategy_id: str,
+    effective_from: str,
+    effective_signal_date: str,
+    effective_to: str | None,
+    factor_rows: Sequence[Mapping[str, Any]],
+    pool_policy: Mapping[str, Any],
+    decision_thresholds: Mapping[str, Any],
+    technology_theme_ids: Sequence[str],
+    technology_policy_state: str,
+    theme_provider_precedence: Sequence[str],
+    fundamental_freshness: Mapping[str, Any],
+    created_at: str,
+) -> dict[str, Any]:
+    """Seal one explicit, effective-dated, non-authorizing research policy."""
+
+    strategy = identifier(strategy_id, label="strategy_id")
+    start = timestamp(effective_from, label="effective_from")
+    end = None if effective_to is None else timestamp(effective_to, label="effective_to")
+    instant = timestamp(created_at, label="created_at")
+    if start > instant or (end is not None and (end < start or instant > end)):
+        raise IntelligenceError("daily research policy chronology is invalid")
+    normalized_factors = _normalize_daily_factor_policy(factor_rows)
+    normalized_pool = _normalize_daily_pool_policy(pool_policy)
+    research, paper = _daily_decision_thresholds(decision_thresholds)
+    _validate_policy_signal_date(effective_signal_date)
     if technology_policy_state not in {"ACTIVE", "UNCONFIGURED"}:
         raise IntelligenceError("technology policy state is invalid")
     technologies = _identifiers(
@@ -258,11 +277,6 @@ def build_daily_research_policy(
         raise IntelligenceError("fundamental freshness policy shape is invalid")
     if fundamental_freshness["policy"] != "ADVISORY_NO_FIXED_MAXIMUM":
         raise IntelligenceError("fundamental freshness policy is invalid")
-    normalized_pool = {
-        **expected_pool_constants,
-        "minimum_cohort": minimum_cohort,
-        "pool_size": pool_size,
-    }
     fields = {
         "decision_thresholds": {
             "paper_candidate": decimal_text(paper),
@@ -316,6 +330,23 @@ def validate_daily_research_policy(artifact: Mapping[str, Any] | bytes) -> dict[
     return normalized
 
 
+def _signal_percentiles(rows: Mapping[str, Decimal]) -> dict[str, Decimal]:
+    ordered = sorted(rows, key=lambda symbol: (rows[symbol], symbol.encode("ascii")))
+    result: dict[str, Decimal] = {}
+    denominator = Decimal(max(len(ordered) - 1, 1))
+    index = 0
+    while index < len(ordered):
+        end = index
+        while end + 1 < len(ordered) and rows[ordered[end + 1]] == rows[ordered[index]]:
+            end += 1
+        rank = (Decimal(index) + Decimal(end)) / Decimal(2)
+        percentile = rank / denominator if len(ordered) > 1 else Decimal("1")
+        for offset in range(index, end + 1):
+            result[ordered[offset]] = percentile
+        index = end + 1
+    return result
+
+
 def rank_factor_signals(
     *,
     signal_values: Mapping[str, Mapping[str, Any]],
@@ -350,26 +381,10 @@ def rank_factor_signals(
                 raise IntelligenceError(f"{alias}.{symbol} must be finite canonical hex float")
             parsed[alias][symbol] = Decimal.from_float(observed)
 
-    def percentiles(rows: Mapping[str, Decimal]) -> dict[str, Decimal]:
-        ordered = sorted(rows, key=lambda symbol: (rows[symbol], symbol.encode("ascii")))
-        result: dict[str, Decimal] = {}
-        denominator = Decimal(max(len(ordered) - 1, 1))
-        index = 0
-        while index < len(ordered):
-            end = index
-            while end + 1 < len(ordered) and rows[ordered[end + 1]] == rows[ordered[index]]:
-                end += 1
-            rank = (Decimal(index) + Decimal(end)) / Decimal(2)
-            percentile = rank / denominator if len(ordered) > 1 else Decimal("1")
-            for offset in range(index, end + 1):
-                result[ordered[offset]] = percentile
-            index = end + 1
-        return result
-
     by_alias = {
         alias: {
             symbol: Decimal(decimal_text(value))
-            for symbol, value in percentiles(parsed[alias]).items()
+            for symbol, value in _signal_percentiles(parsed[alias]).items()
         }
         for alias in ("LOW", "W80")
     }
@@ -439,6 +454,47 @@ def _require_policy_signal_date(
         raise IntelligenceError("Factor signal date predates daily research policy")
 
 
+def _validate_rank_observations(
+    snapshot: Mapping[str, Any],
+    observations: Sequence[Mapping[str, Any] | bytes],
+    policy_payload: Mapping[str, Any],
+    signal_date: str,
+) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
+    observed: dict[str, dict[str, Any]] = {}
+    for raw in observations:
+        artifact = validate_factor_production_observation(raw)
+        payload = artifact["payload"]
+        alias = payload["factor_alias"]
+        if alias in observed:
+            raise IntelligenceError("Factor observation alias is duplicated")
+        observed[alias] = artifact
+    if set(observed) != {"LOW", "W80"}:
+        raise IntelligenceError("Factor observations must be exact LOW/W80")
+    factor_rows = {row["factor_alias"]: row for row in snapshot["factor_rows"]}
+    if set(factor_rows) != {"LOW", "W80"}:
+        raise IntelligenceError("Factor snapshot rows must be exact LOW/W80")
+    _validate_active_factor_policy(
+        snapshot["active_factor_rows"],
+        policy_payload=policy_payload,
+    )
+    for alias, artifact in observed.items():
+        payload = artifact["payload"]
+        row = factor_rows[alias]
+        expected = {
+            "factor_generation_id": snapshot["factor_generation_id"],
+            "factor_generation_sha256": snapshot["factor_generation_sha256"],
+            "factor_pointer_sha256": snapshot["factor_pointer_sha256"],
+            "factor_id": row["factor_id"],
+            "signal_date": signal_date,
+            "signal_sha256": row["signal_sha256"],
+            "signal_symbol_set_sha256": row["signal_symbol_set_sha256"],
+            "symbol_count": row["symbol_count"],
+        }
+        if any(payload.get(field) != value for field, value in expected.items()):
+            raise IntelligenceError("Factor observation differs from atomic production head")
+    return observed, factor_rows
+
+
 def build_factor_research_rank(
     *,
     snapshot: Mapping[str, Any],
@@ -487,38 +543,9 @@ def build_factor_research_rank(
     )
     if generation_ref["byte_sha256"] != snapshot["factor_generation_sha256"]:
         raise IntelligenceError("Factor generation ref binding differs")
-    observed: dict[str, dict[str, Any]] = {}
-    for raw in observations:
-        artifact = validate_factor_production_observation(raw)
-        payload = artifact["payload"]
-        alias = payload["factor_alias"]
-        if alias in observed:
-            raise IntelligenceError("Factor observation alias is duplicated")
-        observed[alias] = artifact
-    if set(observed) != {"LOW", "W80"}:
-        raise IntelligenceError("Factor observations must be exact LOW/W80")
-    factor_rows = {row["factor_alias"]: row for row in snapshot["factor_rows"]}
-    if set(factor_rows) != {"LOW", "W80"}:
-        raise IntelligenceError("Factor snapshot rows must be exact LOW/W80")
-    _validate_active_factor_policy(
-        snapshot["active_factor_rows"],
-        policy_payload=policy_payload,
+    observed, factor_rows = _validate_rank_observations(
+        snapshot, observations, policy_payload, signal_date
     )
-    for alias, artifact in observed.items():
-        payload = artifact["payload"]
-        row = factor_rows[alias]
-        expected = {
-            "factor_generation_id": snapshot["factor_generation_id"],
-            "factor_generation_sha256": snapshot["factor_generation_sha256"],
-            "factor_pointer_sha256": snapshot["factor_pointer_sha256"],
-            "factor_id": row["factor_id"],
-            "signal_date": signal_date,
-            "signal_sha256": row["signal_sha256"],
-            "signal_symbol_set_sha256": row["signal_symbol_set_sha256"],
-            "symbol_count": row["symbol_count"],
-        }
-        if any(payload.get(field) != value for field, value in expected.items()):
-            raise IntelligenceError("Factor observation differs from atomic production head")
     ranked = rank_factor_signals(signal_values=snapshot["signal_values"], policy=policy_artifact)
     symbol_set_sha = ranked["common_symbol_set_sha256"]
     expected_set_shas = {row["signal_symbol_set_sha256"] for row in factor_rows.values()}
@@ -557,44 +584,7 @@ def build_factor_research_rank(
     )
 
 
-def validate_factor_research_rank(
-    artifact: Mapping[str, Any] | bytes,
-    *,
-    policy: Mapping[str, Any] | bytes | None = None,
-) -> dict[str, Any]:
-    normalized, payload = artifact_payload(artifact, expected_kind=RANK_KIND)
-    if (
-        payload.get("authority") != NO_AUTHORITY
-        or payload.get("status") != "READY"
-        or payload.get("blocker_codes") != []
-    ):
-        raise IntelligenceError("Factor research rank authority or status is invalid")
-    rank_as_of = timestamp(payload.get("as_of"), label="rank.as_of")
-    signal_date = payload.get("signal_date")
-    if (
-        type(signal_date) is not str
-        or not re.fullmatch(r"[0-9]{8}", signal_date)
-        or signal_date != rank_as_of[:10].replace("-", "")
-    ):
-        raise IntelligenceError("Factor research rank signal date is invalid")
-    identifier(payload.get("strategy_id"), label="rank.strategy_id")
-    sha256(payload.get("factor_pointer_sha256"), label="rank.factor_pointer_sha256")
-    sha256(payload.get("common_symbol_set_sha256"), label="rank.common_symbol_set_sha256")
-    if type(payload.get("common_symbol_count")) is not int or payload["common_symbol_count"] <= 0:
-        raise IntelligenceError("Factor research rank symbol count is invalid")
-    generation_ref = validate_artifact_ref(
-        payload.get("factor_generation_ref"), label="rank.factor_generation_ref"
-    )
-    if generation_ref["kind"] != "factor.production_generation":
-        raise IntelligenceError("Factor research rank generation kind is invalid")
-    observation_refs = _ref_rows(payload.get("observation_refs", []), label="observation_refs")
-    if len(observation_refs) != 2 or any(
-        row["kind"] != "factor.production_observation" for row in observation_refs
-    ):
-        raise IntelligenceError("Factor research rank observation closure is invalid")
-    if payload["observation_refs"] != observation_refs:
-        raise IntelligenceError("Factor research rank observation refs are not canonical")
-    validate_artifact_ref(payload.get("policy_ref"), label="rank.policy_ref")
+def _validate_rank_pool_rows(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
     rows = payload.get("pool_rows")
     if type(rows) is not list or not rows or len(rows) > payload["common_symbol_count"]:
         raise IntelligenceError("Factor research rank pool is invalid")
@@ -637,6 +627,12 @@ def validate_factor_research_rank(
         key=lambda row: (-row[0], row[1].encode("ascii")),
     ):
         raise IntelligenceError("Factor research rank ordering is invalid")
+    return rows
+
+
+def _validate_rank_pool_policy(
+    payload: Mapping[str, Any], rows: list[dict[str, Any]], policy: Mapping[str, Any] | bytes | None
+) -> None:
     if policy is not None:
         policy_artifact = validate_daily_research_policy(policy)
         require_artifact_ref(payload["policy_ref"], policy_artifact, label="rank.policy_ref")
@@ -653,6 +649,48 @@ def validate_factor_research_rank(
             )
             if row["combined_percentile"] != decimal_text(expected):
                 raise IntelligenceError("combined percentile does not replay policy")
+
+
+def validate_factor_research_rank(
+    artifact: Mapping[str, Any] | bytes,
+    *,
+    policy: Mapping[str, Any] | bytes | None = None,
+) -> dict[str, Any]:
+    normalized, payload = artifact_payload(artifact, expected_kind=RANK_KIND)
+    if (
+        payload.get("authority") != NO_AUTHORITY
+        or payload.get("status") != "READY"
+        or payload.get("blocker_codes") != []
+    ):
+        raise IntelligenceError("Factor research rank authority or status is invalid")
+    rank_as_of = timestamp(payload.get("as_of"), label="rank.as_of")
+    signal_date = payload.get("signal_date")
+    if (
+        type(signal_date) is not str
+        or not re.fullmatch(r"[0-9]{8}", signal_date)
+        or signal_date != rank_as_of[:10].replace("-", "")
+    ):
+        raise IntelligenceError("Factor research rank signal date is invalid")
+    identifier(payload.get("strategy_id"), label="rank.strategy_id")
+    sha256(payload.get("factor_pointer_sha256"), label="rank.factor_pointer_sha256")
+    sha256(payload.get("common_symbol_set_sha256"), label="rank.common_symbol_set_sha256")
+    if type(payload.get("common_symbol_count")) is not int or payload["common_symbol_count"] <= 0:
+        raise IntelligenceError("Factor research rank symbol count is invalid")
+    generation_ref = validate_artifact_ref(
+        payload.get("factor_generation_ref"), label="rank.factor_generation_ref"
+    )
+    if generation_ref["kind"] != "factor.production_generation":
+        raise IntelligenceError("Factor research rank generation kind is invalid")
+    observation_refs = _ref_rows(payload.get("observation_refs", []), label="observation_refs")
+    if len(observation_refs) != 2 or any(
+        row["kind"] != "factor.production_observation" for row in observation_refs
+    ):
+        raise IntelligenceError("Factor research rank observation closure is invalid")
+    if payload["observation_refs"] != observation_refs:
+        raise IntelligenceError("Factor research rank observation refs are not canonical")
+    validate_artifact_ref(payload.get("policy_ref"), label="rank.policy_ref")
+    rows = _validate_rank_pool_rows(payload)
+    _validate_rank_pool_policy(payload, rows, policy)
     return normalized
 
 
@@ -673,12 +711,14 @@ def project_tushare_industry_source(
     member_plan = validate_industry_membership_execution_plan(
         membership_plan, taxonomy_plan=tax_plan, taxonomy_capture=tax_capture
     )
-    partitions = [
-        validate_industry_membership_partition_capture(
-            row, membership_plan=member_plan, taxonomy_plan=tax_plan, taxonomy_capture=tax_capture
-        )
-        for row in partition_documents
-    ]
+    from quant_investor.market.tushare.industry_membership import _validate_membership_partitions
+
+    partitions = _validate_membership_partitions(
+        membership_plan=member_plan,
+        taxonomy_plan=tax_plan,
+        taxonomy_capture=tax_capture,
+        partition_documents=partition_documents,
+    )
     member_capture = validate_industry_membership_capture(
         membership_capture,
         membership_plan=member_plan,
@@ -748,41 +788,17 @@ def project_tushare_industry_source(
     )
 
 
-def project_tushare_theme_source(
-    *,
-    dc_plan: Mapping[str, Any],
-    dc_capture: Mapping[str, Any],
-    dc_partitions: Sequence[Mapping[str, Any]],
+def _project_theme_fallback(
+    fallback: Any,
     tdx_plan: Mapping[str, Any] | None,
     tdx_capture: Mapping[str, Any] | None,
     tdx_partitions: Sequence[Mapping[str, Any]],
-    policy: Mapping[str, Any] | bytes,
-    as_of: str,
-) -> dict[str, Any]:
-    cutoff = timestamp(as_of, label="as_of")
-    policy_artifact = validate_daily_research_policy(policy)
-    if policy_artifact["payload"]["technology_policy_state"] != "ACTIVE":
-        raise IntelligenceError("technology policy is not configured")
-    dc_valid_plan = validate_theme_provider_execution_plan(dc_plan)
-    daily_date = cutoff[:10].replace("-", "")
-    if dc_valid_plan["provider"] != "TUSHARE_DC" or dc_valid_plan["trade_date"] != daily_date:
-        raise IntelligenceError("Theme DC provider or date differs from daily cutoff")
-    dc_valid_capture = validate_theme_provider_capture(
-        dc_capture, plan=dc_valid_plan, partition_documents=dc_partitions
-    )
-    if dc_valid_capture["timestamp"] > cutoff:
-        raise IntelligenceError("Theme DC capture is future-dated")
-    dc_projection = project_theme_provider_capture(
-        plan=dc_valid_plan, capture=dc_valid_capture, partition_documents=dc_partitions
-    )
-    fallback = derive_tdx_fallback_company_keyset(
-        dc_plan=dc_valid_plan, dc_capture=dc_valid_capture, dc_partition_documents=dc_partitions
-    )
+    dc_valid_plan: Mapping[str, Any],
+    cutoff: str,
+    source_refs: list[dict[str, Any]],
+) -> tuple[Any, set[str]]:
     tdx_projection = None
-    source_refs = [
-        tushare_content_ref(dc_valid_plan, identity_field="plan_id"),
-        tushare_content_ref(dc_valid_capture, identity_field="capture_id"),
-    ]
+    tdx_registry_ids: set[str] = set()
     if fallback:
         if tdx_plan is None or tdx_capture is None:
             raise IntelligenceError("Theme TDX fallback capture is required")
@@ -814,7 +830,17 @@ def project_tushare_theme_source(
         # including industry and broad-index rows.  Theme v2 admits only IDs
         # present in the exact same-date concept registry; all other rows stay
         # sealed in raw capture evidence but cannot enter membership or voting.
-    technologies = set(policy_artifact["payload"]["technology_theme_ids"])
+    return tdx_projection, tdx_registry_ids
+
+
+def _theme_company_rows(
+    dc_valid_plan: Mapping[str, Any],
+    dc_projection: Mapping[str, Any],
+    tdx_projection: Any,
+    fallback: Any,
+    tdx_registry_ids: set[str],
+    technologies: set[str],
+) -> tuple[list[dict[str, Any]], list[str]]:
     company_rows = []
     blockers: list[str] = []
     for company in dc_valid_plan["company_keyset"]:
@@ -849,6 +875,50 @@ def project_tushare_theme_source(
                 "theme_ids": theme_ids,
             }
         )
+    return company_rows, blockers
+
+
+def project_tushare_theme_source(
+    *,
+    dc_plan: Mapping[str, Any],
+    dc_capture: Mapping[str, Any],
+    dc_partitions: Sequence[Mapping[str, Any]],
+    tdx_plan: Mapping[str, Any] | None,
+    tdx_capture: Mapping[str, Any] | None,
+    tdx_partitions: Sequence[Mapping[str, Any]],
+    policy: Mapping[str, Any] | bytes,
+    as_of: str,
+) -> dict[str, Any]:
+    cutoff = timestamp(as_of, label="as_of")
+    policy_artifact = validate_daily_research_policy(policy)
+    if policy_artifact["payload"]["technology_policy_state"] != "ACTIVE":
+        raise IntelligenceError("technology policy is not configured")
+    dc_valid_plan = validate_theme_provider_execution_plan(dc_plan)
+    daily_date = cutoff[:10].replace("-", "")
+    if dc_valid_plan["provider"] != "TUSHARE_DC" or dc_valid_plan["trade_date"] != daily_date:
+        raise IntelligenceError("Theme DC provider or date differs from daily cutoff")
+    dc_valid_capture = validate_theme_provider_capture(
+        dc_capture, plan=dc_valid_plan, partition_documents=dc_partitions
+    )
+    if dc_valid_capture["timestamp"] > cutoff:
+        raise IntelligenceError("Theme DC capture is future-dated")
+    dc_projection = project_theme_provider_capture(
+        plan=dc_valid_plan, capture=dc_valid_capture, partition_documents=dc_partitions
+    )
+    fallback = derive_tdx_fallback_company_keyset(
+        dc_plan=dc_valid_plan, dc_capture=dc_valid_capture, dc_partition_documents=dc_partitions
+    )
+    source_refs = [
+        tushare_content_ref(dc_valid_plan, identity_field="plan_id"),
+        tushare_content_ref(dc_valid_capture, identity_field="capture_id"),
+    ]
+    tdx_projection, tdx_registry_ids = _project_theme_fallback(
+        fallback, tdx_plan, tdx_capture, tdx_partitions, dc_valid_plan, cutoff, source_refs
+    )
+    technologies = set(policy_artifact["payload"]["technology_theme_ids"])
+    company_rows, blockers = _theme_company_rows(
+        dc_valid_plan, dc_projection, tdx_projection, fallback, tdx_registry_ids, technologies
+    )
     companies = _codes(dc_valid_plan["company_keyset"], label="theme companies")
     trade_date = dc_valid_plan["trade_date"]
     if daily_date != trade_date:
@@ -1142,7 +1212,9 @@ def compile_daily_intelligence(  # noqa: C901 - explicit cross-domain research c
             }
         )
     research_portfolio = None
-    if market_risk_artifact is not None:
+    # The daily compiler has no allocation inputs (ADV or existing weights).
+    # Emit the all-cash risk projection only when a hard veto requires it.
+    if market_risk_artifact is not None and market_risk_artifact["payload"]["hard_risk_codes"]:
         from .portfolio import construct_research_portfolio
 
         research_portfolio = construct_research_portfolio(

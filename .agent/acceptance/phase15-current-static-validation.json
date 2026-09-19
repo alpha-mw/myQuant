@@ -1,0 +1,24 @@
+{
+  "observed_at": "2026-09-13T10:30:58.360413+00:00",
+  "source_freeze_ref": "phase15-current-freeze-20260913T101052Z.json",
+  "source_freeze_verified_unchanged_at": "2026-09-13T10:29:19.696325+00:00",
+  "frozen_file_count": 914,
+  "checks": {
+    "stable_flake8": "PASS",
+    "stable_black": "PASS:87 files unchanged",
+    "stable_mypy": "PASS:87 sources",
+    "strategy_record_access": "PASS:35 reviewed callers",
+    "dashboard_contract": "PASS",
+    "dashboard_script_syntax": "PASS:3 files",
+    "global_fatal_flake8": "PASS:0"
+  },
+  "unit_suite": "RUNNING:session87610",
+  "full_ci_pass": false,
+  "installation_performed": false,
+  "unit_slow_case": {
+    "test": "tests/unit/test_unified_factor_store_contextual.py::test_full_prospective_store_context_replays_1442_raw_sources_without_activation",
+    "synthetic_sessions": 390,
+    "synthetic_raw_source_files": 1442,
+    "observation": "Full suite advanced beyond this case; terminal unit receipt still pending."
+  }
+}

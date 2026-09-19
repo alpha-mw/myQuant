@@ -1,0 +1,25 @@
+{
+  "state": "CONFIRMED_UNSCOPED_LEGACY_LIST_INPUT",
+  "observed_at": "2026-09-13T20:26:23.579353+00:00",
+  "failed_root": "/private/tmp/myquant-configured-clock-20260913T192045Z",
+  "driver_exit_code": 1,
+  "finished_at": "2026-09-13T19:47:59.127375+00:00",
+  "exception": "focus exposure union contains an unknown or duplicate company",
+  "original_request_ref": {
+    "path": "results/operations/daily_production/CN/20260827/preparation/25ab04a52b9fc06d88ab7b4f2f5b3b934faf9ae20f46c5d5133c1befdf8f615b/request.json",
+    "sha256": "5d4493c0edd9579dd8fdd7663fb7ac13062274aa9d52bc549be1a3c3a94a145c"
+  },
+  "original_exposure_ref": {
+    "path": "configured-inputs/exposure.json",
+    "sha256": "6dba55b19aae8f3a29483a2f32e2d98a88eb87bf2bcd20cee2018f9fbc6b395b"
+  },
+  "input_rows": 3000,
+  "unique_companies": 3000,
+  "native_target_union": 102,
+  "extra_companies": 2898,
+  "missing_target_companies": 0,
+  "core_and_theme_completed": true,
+  "cutoff_eod_complete": false,
+  "old_request_or_source_rewritten": false,
+  "repair": "Explicit versioned catalog, selected after native Top100/focus proof; strict legacy list contract and full data coverage preserved."
+}

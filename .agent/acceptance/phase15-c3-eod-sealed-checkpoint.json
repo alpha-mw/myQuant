@@ -1,0 +1,39 @@
+{
+  "observed_at": "2026-09-14T13:36:03.488259+00:00",
+  "state": "CURRENT_INSTALLED_FIRST_DAY_EOD_SEALED_FINAL_PUBLICATION_REPLAY_PENDING",
+  "runtime_commit": "c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b",
+  "root": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z",
+  "completion_ref": {
+    "path": "results/operations/daily_production/CN/20260827/completion.v1.json",
+    "sha256": "f1acaf5e510b0193bb3e010d226d58e6a6337fb2a3bf2efb4ac38ae57bb44c57"
+  },
+  "native_status": "SUCCEEDED",
+  "schema_version": "cn-daily-eod-completion.v2",
+  "node_terminal_sha_and_success_checked": [
+    "calendar",
+    "corporate_action_recon",
+    "dashboard",
+    "decision",
+    "exposure",
+    "factor",
+    "fundamental",
+    "industry",
+    "low_observation",
+    "macro",
+    "market",
+    "pit",
+    "store",
+    "theme",
+    "top100",
+    "w80_observation"
+  ],
+  "synthetic": true,
+  "native_validation_completed_at_simulated": "2026-08-27T13:20:00Z",
+  "file_mtime_observation_utc": "2026-09-14T13:33:21.455737+00:00",
+  "full_driver_result_available": false,
+  "final_independent_proof_available": false,
+  "serving_publication_available": false,
+  "full_native_replay_repeated_by_this_check": false,
+  "production_deployed": false,
+  "full_goal_complete": false
+}

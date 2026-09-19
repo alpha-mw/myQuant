@@ -1,0 +1,9 @@
+{
+  "producer_commit": "3c46cb36918ca00d4fb61707bcfc16ca06b5c2a1",
+  "changed_paths": [
+    "scripts/check_strategy_record_access.py"
+  ],
+  "native_package_and_business_scripts_unchanged": true,
+  "approved_change": "exact empty-operation catchup_binding access rule",
+  "new_scanner_sha256": "0c53738bf8dca12b39112863a19fa97220f4eeb2d214ec4a5bbb9081f8e74a3d"
+}

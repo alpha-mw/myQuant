@@ -1,0 +1,112 @@
+{
+  "phase": 3,
+  "status": "COMPLETED_LOCAL_VALIDATION",
+  "source_sha256": {
+    "quant_investor/contracts/builtins.py": "7db9018d1ab9ca1f7da1f4b30a14a03ca8bb4a2a4800dff1dbd6544cb88bcc9e",
+    "quant_investor/intelligence/pool_tabular.py": "c3ae3319401c7ed3f1cb0605b4b88398108eb68c2ac7511b75d019ef9dda5bd3",
+    "quant_investor/intelligence/storage.py": "3d92a1c76043622de6b2c073220867503a483852990388bd9136c2fee2a8873c",
+    "quant_investor/operations/core_pool.py": "4cd17bf910d8eb357d1533ae99e179aa6b0568295a9aacbe6a1d50d66ac312b4",
+    "quant_investor/operations/completion_core.py": "f93b05f0e4875e8f981532081009e009daf791e464d84a703609c6e488442742",
+    "quant_investor/operations/research_sources.py": "b60cf14c5bdbade1e3aff859383c18d604d6ecf81ed96b28af44717e437e879e",
+    "quant_investor/cli/unified.py": "8017561ba95021d6bf053a9bdf351d487d720a2fd32bd305224c557498ac1fba",
+    "quant_investor/intelligence/morning.py": "efe58612676758406a0b771fa192395bda908fea3b961a521b3759c95f24dc1d",
+    "scripts/cn_weekly_review_v2.py": "f7acd27d66c51b2a7cf6c2fe30cc56754a73dec51198a4d2cba8cf26228a6a59",
+    "tests/unit/test_daily_evidence_tabular_pool.py": "9124743ebfb863f83e2d741c4bf462e70df7f0136e4d7593083bb111c4cd7242",
+    "tests/unit/test_unified_daily_intelligence_storage.py": "1c9d2d91672c7b0ec4793c57a7954ae35f7aa547dcaf9b5685a715805255faa6",
+    "tests/unit/test_daily_evidence_core_pool.py": "4c481b54aa9873b93050a2b752d969efd6aa031e13a3f6ff8506ac5f433566ac",
+    "tests/unit/test_daily_evidence_research_sources.py": "dc4833b0d7d10a528b4fd367c47e7b2a97fbbd980851c79bfa98cd66c155e568",
+    "tests/unit/test_cn_weekly_factor_consumer.py": "689744dc0e5c4a55cf2df2ec2a5c407078b591e9f444d277a7222836f1b5b695",
+    "tests/unit/test_daily_evidence_tabular_core_replay.py": "750d7361eb535e11d6ba3cab1a09f8bedfb84144880a6a03a4616c9a703e9c3a"
+  },
+  "review": "Architect amendments accepted; Critic APPROVE",
+  "native_pool_receipt": ".agent/acceptance/phase3-native-pool.json",
+  "focused_results": [
+    {
+      "session": 37995,
+      "result": "25 passed, 5 fixture errors in 215.61s; weekly fixture native observation cohort mismatches were corrected"
+    },
+    {
+      "session": 36918,
+      "result": "25 tabular tests passed in 6.81s"
+    },
+    {
+      "session": 26069,
+      "result": "35 passed, 1 failed in 9.46s; public CLI, table, core automatic publisher/crash adoption and Morning readback passed"
+    }
+  ],
+  "remaining_known_failure": {
+    "test": "test_cn_weekly_factor_consumer.py::test_exact_maintenance_observations_policy_rank_and_pool_replay",
+    "reason": "CLOSE_RECEIPT_REPLAY_MISMATCH in maintenance fixture; Top100 VERIFIED",
+    "baseline_reproduction": {
+      "producer": "3c46cb36918ca00d4fb61707bcfc16ca06b5c2a1",
+      "session": 73090,
+      "result": "same test failed in 1.71s on untouched frozen repository, PYTHONDONTWRITEBYTECODE=1 and no pytest cache"
+    },
+    "disposition": "Preserve pre-existing failure; do not weaken maintenance validation or treat weekly whole closure as passed"
+  },
+  "static_results": {
+    "mypy": "9 source files passed",
+    "flake8": "13 changed source/test files passed after unused-import cleanup",
+    "black": "15 files passed before unused import removal; deletion only, no formatting issue introduced"
+  },
+  "remaining_phase3": [],
+  "native_five_day": {
+    "root": "/private/tmp/myquant-final-source-native-20260909T030031Z",
+    "producer_commit": "3c46cb36918ca00d4fb61707bcfc16ca06b5c2a1",
+    "status": "RUNNING",
+    "steps": [
+      {
+        "step": "20260827",
+        "exit_code": 0
+      },
+      {
+        "step": "20260828",
+        "exit_code": 0
+      },
+      {
+        "step": "20260831",
+        "exit_code": 0
+      },
+      {
+        "step": "20260901",
+        "exit_code": 0
+      }
+    ],
+    "active_step": "20260902",
+    "child_pid": 30847,
+    "live_process_snapshot": "PID  PPID  ELAPSED      TIME STAT\n30847 58050 07:45:57  46:13.51 R"
+  },
+  "native_historical": {
+    "status": "RUNNING",
+    "attempt": 3,
+    "producer_commit": "3c46cb36918ca00d4fb61707bcfc16ca06b5c2a1",
+    "synthetic": true,
+    "new_request_ref": {
+      "path": "historical-fixture/request-complete-context.json",
+      "sha256": "37306ca971fc649ab2c0c11790650d81f49c9badf6bff8a5b47e98a0482ccd93"
+    },
+    "prior_failed_request_ref": {
+      "path": "historical-fixture/request.json",
+      "sha256": "a537bfa600d41de39d00e025638af6511f611f608529891d08642700b93cdbbf"
+    },
+    "driver_sha256": "4bbe665673929323e6c04e5b40bd6b14ec71eda95198df90c28577bfd5a998af",
+    "child_pid": 27677,
+    "live_process_snapshot": "PID  PPID  ELAPSED      TIME STAT\n27677 27675 07:51:57  51:52.47 R"
+  },
+  "whole_goal_complete": false,
+  "verified_at": "2026-09-09T14:42:10.185967+00:00",
+  "final_focused_result": {
+    "session_id": 89716,
+    "result": "121 passed in 21.82s",
+    "scope": [
+      "tabular_pool",
+      "tabular_core_replay",
+      "unified_daily_intelligence_storage",
+      "core_pool",
+      "dependency_diagnostics",
+      "core_bindings",
+      "unified_morning_strategy"
+    ]
+  },
+  "historical_catchup_status": "FAILED attempt3 at dashboard POST_WRITE_IN_DOUBT; original journal RUNNING; exact read-only reproduction DASHBOARD_STALE:benchmark before capture retain/write; 15 other nodes succeeded"
+}

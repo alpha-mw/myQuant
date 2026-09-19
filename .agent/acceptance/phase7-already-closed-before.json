@@ -1,0 +1,20 @@
+{
+  "scope": "ISOLATED_NATIVE_ALREADY_CLOSED_DAY",
+  "fixture_root": "/private/var/folders/cp/539tc5k549l2jzdy90ptl6cm0000gn/T/phase7-existing-close-eqo_pkq3",
+  "day": "2026-08-24",
+  "result": {
+    "status": "NO_ACTION",
+    "last_official_date": "2026-08-24",
+    "latest_required_close_date": "2026-08-24",
+    "missing_dates": [],
+    "pointer_sha256": "51b20407f4d6df4a08236ede0eba8c8ac84757aebbd09107fcec3000e28a2b84",
+    "completion": null,
+    "provider_calls": false,
+    "broker_calls": false,
+    "order_calls": false,
+    "trade_calls": false
+  },
+  "new_materializer_requires": "PLAN_PREPARED",
+  "materializer_can_adopt": false,
+  "store_pointer_unchanged": true
+}

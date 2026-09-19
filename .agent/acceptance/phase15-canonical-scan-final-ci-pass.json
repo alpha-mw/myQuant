@@ -1,0 +1,80 @@
+{
+  "observed_at": "2026-09-16T16:40:42.506935+00:00",
+  "state": "PASS",
+  "commit": "5060dee2d4b39b50a735393d056ebe5adb4efe3b",
+  "root": "/private/tmp/myquant-canonical-scan-20260916T152008Z",
+  "gates": [
+    {
+      "step": "access",
+      "exit_code": 0,
+      "seconds": 3.47
+    },
+    {
+      "step": "fatal-lint",
+      "exit_code": 0,
+      "seconds": 3.67
+    },
+    {
+      "step": "stable-lint",
+      "exit_code": 0,
+      "seconds": 1.19
+    },
+    {
+      "step": "stable-black",
+      "exit_code": 0,
+      "seconds": 2.13
+    },
+    {
+      "step": "stable-mypy",
+      "exit_code": 0,
+      "seconds": 3.05
+    },
+    {
+      "step": "dashboard-v1",
+      "exit_code": 0,
+      "seconds": 0.22
+    },
+    {
+      "step": "dashboard-v2",
+      "exit_code": 0,
+      "seconds": 0.04
+    },
+    {
+      "step": "dashboard-daily",
+      "exit_code": 0,
+      "seconds": 0.09
+    },
+    {
+      "step": "syntax-app",
+      "exit_code": 0,
+      "seconds": 0.03
+    },
+    {
+      "step": "syntax-cn_aggressive_input",
+      "exit_code": 0,
+      "seconds": 0.02
+    },
+    {
+      "step": "syntax-cn_aggressive_dashboard_contract_v1",
+      "exit_code": 0,
+      "seconds": 0.02
+    },
+    {
+      "step": "unit",
+      "exit_code": 0,
+      "seconds": 3817.58
+    }
+  ],
+  "unit_result": {
+    "passed": 5185,
+    "skipped": 3,
+    "warnings": 87,
+    "seconds": 3816.53
+  },
+  "source_drift": [],
+  "status_sha256": "cf6396d607133d3ff83b91f556e4fedb3fc0dca5332ef149d66886647171faec",
+  "unit_log_sha256": "669d78bce4f50cb3633a7d53e228155d769502c1af1eadb48c196bcecb0d790b",
+  "installed_eod_morning_proof_separate": true,
+  "production_deployed": false,
+  "full_goal_complete": false
+}

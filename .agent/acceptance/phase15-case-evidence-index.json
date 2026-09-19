@@ -1,0 +1,333 @@
+{
+  "observed_at": "2026-09-16T17:48:57.444978+00:00",
+  "original_design": "docs/plans/daily_evidence_dag_chat_design.md",
+  "original_phase15_cases": 10,
+  "current_runtime_commit": "5060dee2d4b39b50a735393d056ebe5adb4efe3b",
+  "cases": [
+    {
+      "case": 1,
+      "requirement": "正常交易日全部节点成功",
+      "state": "PRIOR_C3_INSTALLED_FIRST_DAY_PASS",
+      "evidence_boundary": "Current c3 original pre-Core configured entry and independent full16-node native replay passed for synthetic20260827. Native no-trade Store and legitimate Fundamental lag/Decision continuation verified. One normal day only; current five-day/Morning and deployment remain unproven.",
+      "source_paths": [
+        "tests/unit/_native_configured_daily_scenario.py"
+      ],
+      "checkpoint_ref": ".agent/acceptance/phase15-current-eod-checkpoint.json",
+      "dispatch_checkpoint_ref": ".agent/acceptance/phase15-current-dispatch-checkpoint.json",
+      "acceptance_ref": ".agent/acceptance/phase15-c3-first-day-acceptance.json",
+      "evidence_runtime_commit": "c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b",
+      "prior_acceptance_ref": ".agent/acceptance/phase15-configured-first-day-acceptance.json",
+      "current_version_state": "CURRENT_5060_INSTALLED_FIRST_DAY_PASS",
+      "current_acceptance_ref": ".agent/acceptance/phase15-5060-first-day-acceptance.json"
+    },
+    {
+      "case": 2,
+      "requirement": "Factor 成功后自动补齐尚未运行的 Top100",
+      "state": "PRIOR_C3_INSTALLED_FIRST_DAY_PASS",
+      "evidence_boundary": "Current c3 original pre-Core configured entry and independent full16-node native replay passed for synthetic20260827. Native no-trade Store and legitimate Fundamental lag/Decision continuation verified. One normal day only; current five-day/Morning and deployment remain unproven.",
+      "source_paths": [
+        "tests/unit/_native_configured_daily_scenario.py",
+        "tests/unit/test_daily_evidence_core_pool.py"
+      ],
+      "checkpoint_ref": ".agent/acceptance/phase15-current-eod-checkpoint.json",
+      "dispatch_checkpoint_ref": ".agent/acceptance/phase15-current-dispatch-checkpoint.json",
+      "acceptance_ref": ".agent/acceptance/phase15-c3-first-day-acceptance.json",
+      "evidence_runtime_commit": "c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b",
+      "prior_acceptance_ref": ".agent/acceptance/phase15-configured-first-day-acceptance.json",
+      "current_version_state": "CURRENT_5060_INSTALLED_FIRST_DAY_PASS",
+      "current_acceptance_ref": ".agent/acceptance/phase15-5060-first-day-acceptance.json"
+    },
+    {
+      "case": 3,
+      "requirement": "Top100 中断后恢复，不重跑 Factor",
+      "state": "PREPARED_NOT_RUN",
+      "evidence_boundary": "Separate installed sixth day after the unchanged normal five days; combines explicit Top100 interruption/recovery with historical unresolved corporate input. Exact original sixth-day request resumes, Factor/Pool recomputation forbidden. Full execution pending.",
+      "source_paths": [
+        "tests/unit/_native_top100_recovery_case.py",
+        "tests/unit/_native_configured_successor.py",
+        ".agent/acceptance/run_configured_successors.py"
+      ],
+      "preparation_ref": ".agent/acceptance/phase15-top100-recovery-case-preparation.json",
+      "current_version_state": "PENDING_CURRENT_INSTALLED_CHAIN"
+    },
+    {
+      "case": 4,
+      "requirement": "Store 前日缺失时按序补齐",
+      "state": "CURRENT_INSTALLED_PASS",
+      "evidence_boundary": "Same-commit installed synthetic native acceptance; exact refs verified; prior attempts preserved. See current receipt for complete scope.",
+      "source_paths": [
+        "tests/unit/_native_missing_store_case.py",
+        "tests/unit/_native_configured_daily_scenario.py",
+        ".agent/acceptance/run_missing_store_acceptance.py"
+      ],
+      "run_ref": ".agent/acceptance/phase15-missing-store-scenario-start.json",
+      "repair_ref": ".agent/acceptance/phase15-missing-store-boundary-repair.json",
+      "checkpoint_ref": ".agent/acceptance/phase15-missing-store-commit-checkpoint.json",
+      "dispatch_complete_ref": ".agent/acceptance/phase15-missing-store-dispatch-complete.json",
+      "evidence_runtime_commit": "5060dee2d4b39b50a735393d056ebe5adb4efe3b",
+      "acceptance_ref": ".agent/acceptance/phase15-5060-case4-acceptance.json",
+      "current_version_state": "PASS",
+      "current_run_location_ref": ".agent/acceptance/phase15-current-case4-location.json",
+      "current_interruption_ref": ".agent/acceptance/phase15-current-case4-clock-interruption.json",
+      "prior_version_evidence": {
+        "state": "INSTALLED_RETAINED_RECOVERY_PASS",
+        "acceptance_ref": ".agent/acceptance/phase15-missing-store-final-acceptance.json",
+        "evidence_runtime_commit": "bf078d3235de3ade1379e8082d5d4a49e109f7d5",
+        "evidence_boundary": "bf078 installed retained original request recovered missing20260827 Store; independent full16-node native replay passed; exactly one real financial CAS; original upstream/Factor/Top100/cutoff unchanged; missing date exactly once. Synthetic and retained-test-interruption disclosures preserved; original first public return unavailable. This is version-scoped Case4 proof, not current c3 five-day or production proof."
+      }
+    },
+    {
+      "case": 5,
+      "requirement": "无交易日仍生成新的每日 Store",
+      "state": "PRIOR_C3_INSTALLED_FIRST_DAY_PASS",
+      "evidence_boundary": "Current c3 original pre-Core configured entry and independent full16-node native replay passed for synthetic20260827. Native no-trade Store and legitimate Fundamental lag/Decision continuation verified. One normal day only; current five-day/Morning and deployment remain unproven.",
+      "source_paths": [
+        "tests/unit/_native_configured_daily_scenario.py",
+        "tests/unit/_native_configured_successor.py",
+        "tests/unit/_verify_five_native_days.py"
+      ],
+      "checkpoint_ref": ".agent/acceptance/phase15-current-cases5-7-checkpoint.json",
+      "dispatch_checkpoint_ref": ".agent/acceptance/phase15-current-dispatch-checkpoint.json",
+      "acceptance_ref": ".agent/acceptance/phase15-c3-first-day-acceptance.json",
+      "evidence_runtime_commit": "c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b",
+      "prior_acceptance_ref": ".agent/acceptance/phase15-configured-first-day-acceptance.json",
+      "current_version_state": "CURRENT_5060_INSTALLED_FIRST_DAY_PASS",
+      "current_acceptance_ref": ".agent/acceptance/phase15-5060-first-day-acceptance.json"
+    },
+    {
+      "case": 6,
+      "requirement": "公司行动未解决时可估值，但移动止损不可执行",
+      "state": "PREPARED_NATIVE_SEGMENT_PASS_FULL_DAG_PENDING",
+      "evidence_boundary": "Current installed native historical unresolved corporate evidence then Store valuation commits; same-day financial-conflict refusal preserved (other nodes fixture adapters in that negative test). Separate sixth-day full configured scenario prepared with a new corporate-only input configuration, outside unchanged normal five days. No full-DAG completion claim yet.",
+      "source_paths": [
+        "tests/unit/_native_unresolved_corporate_case.py",
+        "tests/unit/_native_configured_successor.py",
+        "tests/unit/test_daily_evidence_corporate_reconciliation.py"
+      ],
+      "preparation_ref": ".agent/acceptance/phase15-unresolved-corporate-preparation.json",
+      "current_version_state": "PENDING_CURRENT_INSTALLED_CHAIN"
+    },
+    {
+      "case": 7,
+      "requirement": "合法 Fundamental 滞后只告警，Decision 继续",
+      "state": "PRIOR_C3_INSTALLED_FIRST_DAY_PASS",
+      "evidence_boundary": "Current c3 original pre-Core configured entry and independent full16-node native replay passed for synthetic20260827. Native no-trade Store and legitimate Fundamental lag/Decision continuation verified. One normal day only; current five-day/Morning and deployment remain unproven.",
+      "source_paths": [
+        "tests/unit/test_daily_evidence_low_frequency.py"
+      ],
+      "checkpoint_ref": ".agent/acceptance/phase15-current-cases5-7-checkpoint.json",
+      "dispatch_checkpoint_ref": ".agent/acceptance/phase15-current-dispatch-checkpoint.json",
+      "acceptance_ref": ".agent/acceptance/phase15-c3-first-day-acceptance.json",
+      "evidence_runtime_commit": "c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b",
+      "prior_acceptance_ref": ".agent/acceptance/phase15-configured-first-day-acceptance.json",
+      "current_version_state": "CURRENT_5060_INSTALLED_FIRST_DAY_PASS",
+      "current_acceptance_ref": ".agent/acceptance/phase15-5060-first-day-acceptance.json"
+    },
+    {
+      "case": 8,
+      "requirement": "Market/PIT SHA 错配阻断",
+      "state": "PRIOR_E_INSTALLED_FULL_EOD_ENTRY_REJECTION_PASS",
+      "evidence_boundary": "Exact copies of prior E all16 native journals/outputs pass native status and Core handoff inspection. Separate physical Market/PIT corruption rejects full native EOD entry before admission; original evidence unchanged. Does not claim completion of the positive full run.",
+      "source_paths": [
+        "tests/unit/test_daily_evidence_core_bindings.py",
+        "tests/unit/_native_installed_source_mismatch.py"
+      ],
+      "checkpoint_ref": ".agent/acceptance/phase15-current-source-mismatch-proof.json",
+      "evidence_runtime_commit": "bf078d3235de3ade1379e8082d5d4a49e109f7d5",
+      "current_version_state": "CURRENT_5060_INSTALLED_FULL_EOD_ENTRY_SHA_REJECTION_PASS",
+      "harness_plan": "docs/plans/phase15_case8_path_bound_calendar.md",
+      "current_preparation_ref": ".agent/acceptance/phase15-current-case8-preparation.json",
+      "current_harness_repair_ref": ".agent/acceptance/phase15-current-case8-financial-reader-repair.json",
+      "current_acceptance_ref": ".agent/acceptance/phase15-5060-case8-acceptance.json"
+    },
+    {
+      "case": 9,
+      "requirement": "同一天重复执行保持幂等",
+      "state": "CURRENT_INSTALLED_PASS",
+      "evidence_boundary": "Same-commit installed synthetic native acceptance; exact refs verified; prior attempts preserved. See current receipt for complete scope.",
+      "source_paths": [
+        "tests/unit/_native_configured_boundary_checks.py"
+      ],
+      "acceptance_ref": ".agent/acceptance/phase15-5060-case9-acceptance.json",
+      "prior_acceptance_ref": ".agent/acceptance/phase15-configured-repeat-acceptance.json",
+      "evidence_runtime_commit": "5060dee2d4b39b50a735393d056ebe5adb4efe3b",
+      "current_version_state": "PASS",
+      "prior_version_evidence": {
+        "state": "PRIOR_C3_INSTALLED_PASS",
+        "acceptance_ref": ".agent/acceptance/phase15-c3-repeat-acceptance.json",
+        "evidence_runtime_commit": "c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b",
+        "evidence_boundary": "Actual original configured request returns NO_ACTION/COMPLETE and exact original EOD ref; full workspace byte/mode/mtime inventory unchanged; maintenance/Factor production/financial writers forbidden; actual stageexit0."
+      }
+    },
+    {
+      "case": 10,
+      "requirement": "休市日不生成虚假财务状态",
+      "state": "PREPARED_NOT_RUN",
+      "evidence_boundary": "New installed configured Calendar closed-day check requires no request, source plan, daily DAG, financial/serving mutation and read-only repeat",
+      "source_paths": [
+        "tests/unit/_native_configured_boundary_checks.py"
+      ],
+      "current_version_state": "PENDING_CURRENT_INSTALLED_CHAIN"
+    }
+  ],
+  "five_sessions": {
+    "state": "THREE_DAYS_PASS_FOURTH_DAY_RUNNING",
+    "dates": [
+      "20260827",
+      "20260828",
+      "20260831",
+      "20260901",
+      "20260902"
+    ],
+    "completed_dates": [
+      "20260827",
+      "20260828",
+      "20260831"
+    ],
+    "completed_dates_are_verified_only": true,
+    "active_date": "20260901",
+    "full_five_day_acceptance_proven": false,
+    "harness_started_once": true,
+    "requirement": "At least synthetic, automatic, same unchanged configuration, consecutive native Factor/Store/Calendar chain, all nodes and next Morning; no synthetic-to-real or OOS relabeling",
+    "morning_state": "NOT_RUN"
+  },
+  "old_proofs_remain_version_scoped": true,
+  "full_goal_complete": false,
+  "current_installed_run_root": "/private/tmp/myquant-canonical-scan-20260916T152008Z",
+  "catalog_repair_validation": ".agent/acceptance/phase15-exposure-catalog-validation.json",
+  "successor_driver_status_path": "/private/tmp/myquant-canonical-scan-20260916T152008Z/configured-successors-status.json",
+  "current_second_day_state": {
+    "state": "PASS",
+    "acceptance_ref": ".agent/acceptance/phase15-5060-second-day-acceptance.json"
+  },
+  "candidate_runtime_commit": "5060dee2d4b39b50a735393d056ebe5adb4efe3b",
+  "candidate_runtime_root": "/private/tmp/myquant-canonical-scan-20260916T152008Z",
+  "candidate_five_day_acceptance": {
+    "state": "SUCCESSOR_DRIVER_RUNNING",
+    "root": "/private/tmp/myquant-canonical-scan-20260916T152008Z",
+    "status_file": "/private/tmp/myquant-canonical-scan-20260916T152008Z/configured-chain-status.json",
+    "automatic_retry": false,
+    "original_handle": 75106,
+    "first_driver_pid": 90634,
+    "first_native_pid": 90635,
+    "last_process_check": "2026-09-16T17:29:37.580267+00:00",
+    "first_day_acceptance_ref": ".agent/acceptance/phase15-5060-first-day-acceptance.json",
+    "calendar_future_proof_early_readback_ref": ".agent/acceptance/phase15-current-calendar-early-readback.json",
+    "first_day_completed_at": "2026-09-16T20:18:41.902785+00:00"
+  },
+  "phase12_current_preparation": {
+    "observed_at": "2026-09-14T06:09:59.618668+00:00",
+    "packet": ".agent/acceptance/phase12-cutover-bindings.json",
+    "owner_stop_compatibility": "CURRENT_INSTALLED_NATIVE_POLICY_GRAMMAR_PASS",
+    "trailing_policy": "CURRENT_INSTALLED_NATIVE_POLICY_GRAMMAR_PASS",
+    "static_hashes_checked": 704,
+    "scheduler_changed": false,
+    "production_ready": false,
+    "latest_owner_input_request_ref": ".agent/acceptance/phase12-owner-inputs-pending-20260917.json"
+  },
+  "current_source_final_gates": {
+    "state": "PASS",
+    "runtime_commit": "5060dee2d4b39b50a735393d056ebe5adb4efe3b",
+    "acceptance_ref": ".agent/acceptance/phase15-canonical-scan-final-ci-pass.json",
+    "passed": 5185,
+    "skipped": 3,
+    "warnings": 87,
+    "source_drift": []
+  },
+  "responsive_ui": {
+    "state": "CURRENT_ASSETS_RESPONSIVE_HTTP_BROWSER_QA_PASS",
+    "receipt": ".agent/acceptance/phase15-responsive-http-ui.json",
+    "synthetic_fixture": true,
+    "full_native_eod_admission": false,
+    "file_browser_policy_block_preserved": true
+  },
+  "prior_E_acceptance": {
+    "current_runtime_commit": "bf078d3235de3ade1379e8082d5d4a49e109f7d5",
+    "current_installed_run_root": "/private/tmp/myquant-configured-catalog-20260913T202622Z",
+    "successor_driver_status_path": "/private/tmp/myquant-configured-catalog-20260913T202622Z/configured-successors-resume-status.json",
+    "five_sessions": {
+      "state": "SECOND_DAY_PREPARED_REQUEST_CONTINUED_AFTER_TEST_GUARD_FIX",
+      "dates": [
+        "20260827",
+        "20260828",
+        "20260831",
+        "20260901",
+        "20260902"
+      ],
+      "requirement": "At least synthetic, automatic, same unchanged configuration, consecutive native Factor/Store/Calendar chain, all nodes and next Morning; no synthetic-to-real or OOS relabeling",
+      "completed_dates": [
+        "20260827"
+      ],
+      "active_date": "20260828",
+      "harness_interruption_disclosed": true,
+      "uninterrupted_harness_claimed": false
+    },
+    "current_second_day_state": {
+      "state": "FAILED_NATIVE_PREFLIGHT",
+      "driver_handle": 97119,
+      "child_terminated": true,
+      "diagnosis_ref": ".agent/acceptance/phase15-catchup-input-mode-diagnosis.json",
+      "repair_plan": "docs/plans/phase15_catchup_dashboard_input_modes.md",
+      "runtime_patch_not_yet_implemented": false,
+      "repair_receipt": ".agent/acceptance/phase15-catchup-input-mode-repair.json",
+      "patched_reader_installed_preflight": "PASS",
+      "old_request_new_runtime_admission": "REJECTED_EXACT_INSTALL_BINDING",
+      "old_request_preserved": true
+    },
+    "prepared_day_repair_ref": ".agent/acceptance/phase15-prepared-day-boundary-repair.json"
+  },
+  "previous_index_snapshot_ref": {
+    "path": ".agent/acceptance/phase15-case-evidence-index-before-5060.json",
+    "sha256": "06d5cb9ef110b25ffe0921fe489c860e44c2b5b9ed33eb62856c1a5dc5cc2d0e"
+  },
+  "prior_c3_five_sessions": {
+    "state": "FIVE_DAILY_STAGES_AND_AGGREGATE_REPLAY_PASS_MORNING_MISSING_CALENDAR_PROOF",
+    "dates": [
+      "20260827",
+      "20260828",
+      "20260831",
+      "20260901",
+      "20260902"
+    ],
+    "requirement": "At least synthetic, automatic, same unchanged configuration, consecutive native Factor/Store/Calendar chain, all nodes and next Morning; no synthetic-to-real or OOS relabeling",
+    "completed_dates": [
+      "20260827",
+      "20260828",
+      "20260831",
+      "20260901",
+      "20260902"
+    ],
+    "active_date": null,
+    "harness_interruption_disclosed": true,
+    "uninterrupted_harness_claimed": false,
+    "uninterrupted_chain_so_far": true,
+    "full_five_day_acceptance_proven": false,
+    "prior_interrupted_run_ref": "prior_E_acceptance",
+    "full_native_replay_all_days": true,
+    "no_write_replay": true,
+    "aggregate_acceptance_ref": ".agent/acceptance/phase15-c3-five-day-aggregate-acceptance.json",
+    "morning_state": "FAIL_MISSING_NEXT_SESSION_CALENDAR_PROOF"
+  },
+  "superseded_d2_stop_ref": ".agent/acceptance/phase15-scoped-clock-superseded-stop.json",
+  "prior_c3_day_stage_labels": {
+    "current_third_day_state": "FULL_STAGE_PASS",
+    "current_fourth_day_state": "FULL_STAGE_PASS",
+    "current_fifth_day_state": "FULL_STAGE_PASS"
+  },
+  "current_remaining_day_acceptance": {
+    "runtime_commit": "5060dee2d4b39b50a735393d056ebe5adb4efe3b",
+    "state": "NOT_YET_VERIFIED",
+    "dates": [
+      "20260901",
+      "20260902"
+    ],
+    "authoritative_status_path": "/private/tmp/myquant-canonical-scan-20260916T152008Z/configured-successors-status.json",
+    "note": "Historical third-to-fifth day PASS labels moved out of current-version fields; existing driver remains responsible for progression."
+  },
+  "index_reconciled_at": "2026-09-19T02:29:58.832637+00:00",
+  "current_third_day_state": {
+    "state": "PASS",
+    "evidence_runtime_commit": "5060dee2d4b39b50a735393d056ebe5adb4efe3b",
+    "acceptance_ref": ".agent/acceptance/phase15-5060-third-day-acceptance.json"
+  }
+}

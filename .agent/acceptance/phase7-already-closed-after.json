@@ -1,0 +1,56 @@
+{
+  "generated_at": "2026-09-12T04:02:43.633720+00:00",
+  "scope": "ISOLATED_CURRENT_SOURCE_NATIVE_ALREADY_CLOSED_DAY",
+  "synthetic": true,
+  "full_dag_proof": false,
+  "fixture_root": "/private/var/folders/cp/539tc5k549l2jzdy90ptl6cm0000gn/T/phase7-adoption-after-alngpp8m",
+  "status": "PLAN_ADOPTED",
+  "original_plan_ref": {
+    "path": "results/strategy_records/CN/aggressive_tech_manufacturing/_record_store/daily_close_transactions/daily-close-20260824-824a1d6d765f4998/plan.v1.json",
+    "sha256": "fc23bbd42eae3b79a807617b9e5870c24593f78d73f7cdd879ef9867d842409a"
+  },
+  "source_pointer_ref": {
+    "path": "results/strategy_records/CN/aggressive_tech_manufacturing/_record_store/daily_close_transactions/daily-close-20260824-824a1d6d765f4998/source-pointer.v1.json",
+    "sha256": "5c6e6c2f5c4c2379e977b99729e99b7c7aa19d77c5284e52110bbb0cf13b47b7"
+  },
+  "original_output_refs": {
+    "pointer": {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/_record_store/daily_close_transactions/daily-close-20260824-824a1d6d765f4998/committed-pointer.v1.json",
+      "sha256": "cc7bbf7bbf58f9df73e4ce96e54dd3650458a880bc7a399faa9f1df659113805"
+    },
+    "catalog": {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/_record_store/catalogs/g-daily-close-20260824-824a1d6d765f4998/catalog.v3.json",
+      "sha256": "e0316c586d90858f0dc3cae62ec090151c01da0e1daac1f8c3119d90996aea09"
+    },
+    "ledger": {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260912_120243-b01/ledger_after_manual_switch.parquet",
+      "sha256": "bfcf620422232468863d2e90c543946e0cd87815bdf904f33057c944af128a96"
+    },
+    "manual": {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260912_120243-b01/manual_execution_manifest.json",
+      "sha256": "10a81973d513f3466bac894dd429605fb1233546687c1e8f807990bfb45117aa"
+    },
+    "performance_manifest": {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/_record_store/performance/p-daily-close-20260824-824a1d6d765f4998/manifest.v1.json",
+      "sha256": "26baaf42c1a6804f88a5c45f2dd4fdf7942c36f52f0691f1d8a3e44a6a975b99"
+    },
+    "performance_series": {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/_record_store/performance/p-daily-close-20260824-824a1d6d765f4998/series.parquet",
+      "sha256": "3dc7c66e8a765b501c684c2d010341e80d0d65cbf9f75f0a3307244d6e30ac89"
+    },
+    "performance_owner_declaration": {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/_record_store/performance/p-daily-close-20260824-824a1d6d765f4998/owner_declaration.v1.json",
+      "sha256": "6e6f7f505157f1e281d49e6992b45da57e775b691e79af4190e7b670a395e3a8"
+    },
+    "completion": {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/_record_store/daily_close_transactions/daily-close-20260824-824a1d6d765f4998/completion.v1.json",
+      "sha256": "c69d7c82d7f9a3c224595ba4c2f419f8c447f6ebc147d51848b3f2567d4eafd2"
+    }
+  },
+  "replay_current_or_writer_calls": 0,
+  "all_business_bytes_and_mtime_unchanged": true,
+  "limitations": [
+    "Native batch close only; no nonempty financial applications or manual-record adoption",
+    "No installed release or unattended deployment verification"
+  ]
+}

@@ -50,7 +50,8 @@ from scripts.cn_dashboard_common import (  # noqa: E402
 )
 
 
-SCHEMA_ID = "cn_weekly_portfolio_evidence.v1"
+SCHEMA_ID = "cn_weekly_portfolio_evidence.v2"
+HISTORICAL_SCHEMA_ID = "cn_weekly_portfolio_evidence.v1"
 HISTORICAL_LABEL = "aggressive_tech_manufacturing"
 CANONICAL_STRATEGY_ID = "cn-aggressive-tech-manufacturing"
 IDENTITY_PATH = (
@@ -66,7 +67,7 @@ MARKET_CALENDAR_ROOT = Path("data/parquet/cn/macro_release_calendar")
 MARKET_CALENDAR_POINTER = MARKET_CALENDAR_ROOT / "_latest.json"
 DECISION_LOG_PATH = Path("results/decision_log/decision_log.jsonl")
 RETROSPECTIVE_DAILY_REVIEW_ROOT = Path("results/operations/daily_reviews/CN")
-DOMAIN_NAMES = (
+HISTORICAL_DOMAIN_NAMES = (
     "STORE_HOLDINGS",
     "WEEKLY_OPERATIONS",
     "PERFORMANCE_BENCHMARK",
@@ -77,6 +78,7 @@ DOMAIN_NAMES = (
     "DECISION_LOG",
     "QA",
 )
+DOMAIN_NAMES = (*HISTORICAL_DOMAIN_NAMES, "RISK_MONITOR", "FACTOR_DAILY_COVERAGE", "FACTOR_EFFECTIVENESS")
 DOMAIN_STATUSES = {
     "FRESH",
     "PARTIAL",
@@ -757,7 +759,7 @@ def export(args: argparse.Namespace) -> dict[str, Any]:
         "%Y-%m-%dT%H:%M:%SZ"
     )
     output_dir = assert_private_tmp(Path(args.output_dir))
-    output_path = output_dir / "cn_weekly_portfolio_evidence.v1.json"
+    output_path = output_dir / "cn_weekly_portfolio_evidence.v2.json"
     if output_path.exists():
         raise WeeklyEvidenceError("weekly evidence output already exists")
     output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -780,7 +782,7 @@ def export(args: argparse.Namespace) -> dict[str, Any]:
         market_calendar_error = str(exc)
     daily_input, daily_ref = _safe_json_input(
         Path(args.daily_review_json) if args.daily_review_json else None,
-        expected_schema="cn_weekly_daily_review_input.v1",
+        expected_schema="cn_weekly_daily_review_input.v2",
         report_week=window["report_week"],
         label="daily review",
     )
@@ -796,8 +798,19 @@ def export(args: argparse.Namespace) -> dict[str, Any]:
         report_week=window["report_week"],
         label="public web research",
     )
+    producer_path = getattr(args, "producer_receipts_json", None)
+    producer_input, producer_ref = _safe_json_input(
+        Path(producer_path) if producer_path else None,
+        expected_schema="cn_weekly_producer_receipts_input.v1", report_week=window["report_week"],
+        label="producer receipts",
+    )
+    producer_refs = producer_input.get("refs", []) if producer_input else []
+    if (not isinstance(producer_refs, list) or len(producer_refs) > 100
+            or any(not isinstance(ref, dict) or set(ref) != {"path", "sha256"} for ref in producer_refs)):
+        raise WeeklyEvidenceError("producer receipt refs invalid")
     if market_calendar_error is None:
-        daily_domain, daily_rows = _daily_review_domain(
+        from scripts.cn_weekly_review_v2 import daily_domain as build_daily_domain
+        daily_domain, daily_rows = build_daily_domain(
             daily_input,
             daily_ref,
             window=window,
@@ -990,12 +1003,10 @@ def export(args: argparse.Namespace) -> dict[str, Any]:
         retrospective_daily_reviews = _registered_retrospective_daily_reviews(
             expected_trade_dates=registered_trade_dates,
         )
-        domains["DAILY_REVIEW_COVERAGE"] = _merge_daily_review_coverage(
-            domains["DAILY_REVIEW_COVERAGE"],
-            registered_receipts=registered_daily_receipts,
-            retrospective_reviews=retrospective_daily_reviews,
-            expected_trade_dates=registered_trade_dates,
-        )
+        # Receipt continuity and retrospective research never backfill task runs.
+        evidence = domains["DAILY_REVIEW_COVERAGE"]["evidence"]
+        evidence["registered_receipt_dates"] = sorted({row["trade_date"] for row in registered_daily_receipts})
+        evidence["retrospective_review_dates"] = sorted({row["trade_date"] for row in retrospective_daily_reviews})
 
     mainline_status = MainlineStore(PROJECT_ROOT).status(
         strategy_id=CANONICAL_STRATEGY_ID
@@ -1131,6 +1142,14 @@ def export(args: argparse.Namespace) -> dict[str, Any]:
             }
         ),
     }
+    from scripts.cn_weekly_review_v2 import enrich
+    bundle["registered_trade_dates"] = registered_trade_dates
+    bundle["producer_receipt_refs"] = producer_refs
+    if producer_ref:
+        bundle["source_refs"].append(producer_ref)
+    enrich(bundle, PROJECT_ROOT, registered_trade_dates)
+    bundle["warnings"] = sorted({w for d in domains.values() for w in d["warnings"]})
+    bundle["blockers"] = sorted({w for d in domains.values() for w in d["blockers"]})
     bundle["status"] = _overall(domains)
     bundle["content_sha256"] = _content_sha(bundle)
     raw = canonical_json_bytes(bundle)
@@ -1157,6 +1176,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--daily-review-json")
     parser.add_argument("--market-briefing-json")
     parser.add_argument("--public-web-json")
+    parser.add_argument("--producer-receipts-json")
     return parser
 
 

@@ -1,0 +1,38 @@
+{
+  "scope": "CURRENT_COLLECTOR_AND_NATIVE_FINANCIAL_CAPTURE",
+  "synthetic": true,
+  "root": "/private/var/folders/cp/539tc5k549l2jzdy90ptl6cm0000gn/T/phase9-source-collector-wjzs0w1g",
+  "day": "20260828",
+  "outputs": {
+    "capture": {
+      "path": "results/operations/daily_production/CN/20260828/dashboard/capture.v1.json",
+      "sha256": "48d10444f1bc0a3ecef77390a65450292541f7bcfff119f8ce8c201301ba8930"
+    },
+    "v1": {
+      "path": "results/operations/daily_production/CN/20260828/dashboard/objects/d717fa2b935e935d2701f38b370312754a090e74593e1c96729906e6072d7569.bin",
+      "sha256": "d717fa2b935e935d2701f38b370312754a090e74593e1c96729906e6072d7569"
+    },
+    "v2": {
+      "path": "results/operations/daily_production/CN/20260828/dashboard/objects/06a60781de2b870a761a7865a5258d639d6f1caeb69d58d87468b98731eca66a.bin",
+      "sha256": "06a60781de2b870a761a7865a5258d639d6f1caeb69d58d87468b98731eca66a"
+    },
+    "daily_evidence": {
+      "path": "results/operations/daily_production/CN/20260828/dashboard/daily-evidence-2267541e2f961758e432e947782def0972e4341393e19c6ce212300e007db392.json",
+      "sha256": "2267541e2f961758e432e947782def0972e4341393e19c6ce212300e007db392"
+    }
+  },
+  "count": 100,
+  "decision_state_counts": {
+    "INSUFFICIENT_EVIDENCE": 0,
+    "PAPER_CANDIDATE": 58,
+    "RESEARCH_APPROVED": 42,
+    "THESIS_INVALIDATED": 0,
+    "WATCHLIST": 0
+  },
+  "serving_files_written": false,
+  "full_native_eod_admission": false,
+  "limitations": [
+    "Factor/Theme/Decision source artifacts retained from frozen synthetic3c46 run; new journal wrappers are explicit test records",
+    "Current Top100 binary conversion, Decision report, Store close, five-source collector and financial Dashboard renderer exercised; no full native EOD claim"
+  ]
+}

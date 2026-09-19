@@ -198,13 +198,17 @@ def test_frozen_release_build_install_and_exact_origin_replay(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # The owning builder is offline and uses a fresh empty cache unless one is
+    # explicitly supplied. Reuse the cache populated by the test environment's
+    # dependency installation; preserve an explicitly configured cache.
+    if "UV_CACHE_DIR" not in os.environ:
+        cache = subprocess.check_output(["uv", "cache", "dir"], text=True).strip()
+        monkeypatch.setenv("UV_CACHE_DIR", cache)
     source = Path(__file__).resolve().parents[2]
     repository = tmp_path / "repository"
-    subprocess.run(
-        ["git", "clone", "--quiet", "--shared", str(source), str(repository)],
-        check=True,
-        stdin=subprocess.DEVNULL,
-    )
+    from _native_daily_release_fixture import snapshot_repository
+
+    snapshot_repository(source, repository)
     commit = _git(repository, "rev-parse", "HEAD^{commit}")
     tree = _git(repository, "rev-parse", "HEAD^{tree}")
     release_root = tmp_path / "release"
@@ -613,7 +617,7 @@ def test_frozen_release_build_install_and_exact_origin_replay(
     )
     production_workspace = tmp_path / "attached-production-workspace"
     subprocess.run(
-        ["git", "clone", "--quiet", "--shared", str(source), str(production_workspace)],
+        ["git", "clone", "--quiet", "--shared", str(repository), str(production_workspace)],
         check=True,
         stdin=subprocess.DEVNULL,
     )

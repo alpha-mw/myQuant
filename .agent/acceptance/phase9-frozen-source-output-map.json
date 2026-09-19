@@ -1,0 +1,590 @@
+{
+  "scope": "FROZEN_3C46_NATIVE_SOURCE_SHAPES_ONLY",
+  "root": "/private/tmp/myquant-final-source-native-20260909T030031Z/factor-workspace",
+  "sources": {
+    "store": {
+      "terminal_ref": {
+        "path": "results/operations/daily_production/CN/20260827/nodes/store/59ef3de4292969834ea5b051aa9699bef438d36c17bf893bfba25fddc7fc865f/attempt-0001/terminal.json",
+        "sha256": "f5860e3091c6a965e82c89b6c46fa7d08ff735ba03c410bf8c3791f04c3bb6f2"
+      },
+      "outputs": {
+        "catalog": {
+          "ref": {
+            "path": "results/strategy_records/CN/aggressive_tech_manufacturing/_record_store/catalogs/g-daily-close-20260827-e247d10d58bd0034/catalog.v3.json",
+            "sha256": "f507430d1e38e41e2e1d83061b206806f6b692c049cae4d0a76342dd9bd77de9"
+          },
+          "sha_matches": true,
+          "keys": [
+            "active_record_id",
+            "content_sha256",
+            "generation_id",
+            "lineage_index",
+            "lineage_index_sha256",
+            "performance_contract_ready",
+            "performance_history_ref",
+            "previous_record_id",
+            "published_at",
+            "receipts",
+            "record_count",
+            "records",
+            "schema_id"
+          ],
+          "kind": "myquant.strategy_record_catalog.v3"
+        },
+        "completion": {
+          "ref": {
+            "path": "results/strategy_records/CN/aggressive_tech_manufacturing/_record_store/daily_close_transactions/daily-close-20260827-e247d10d58bd0034/completion.v1.json",
+            "sha256": "0056cf566a53c5490eead05b87c2761a40d6419a4f4d0172f55c7a08f9ecb099"
+          },
+          "sha_matches": true,
+          "keys": [
+            "broker_order_trade_authority",
+            "cas_observed_at",
+            "committed_through",
+            "content_sha256",
+            "effective_at",
+            "input_fingerprint",
+            "pointer_sha256",
+            "requested_target",
+            "schema_id",
+            "status",
+            "transaction_id"
+          ],
+          "kind": "myquant.cn_official_close_batch_completion.v1"
+        },
+        "ledger": {
+          "ref": {
+            "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260909_112312-b04/ledger_after_manual_switch.parquet",
+            "sha256": "4bb504a01ed675af44e8ba739ba4d277bbd74fb568ac6656774b6dd0b4a38b80"
+          },
+          "sha_matches": true
+        },
+        "manual": {
+          "ref": {
+            "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260909_112312-b04/manual_execution_manifest.json",
+            "sha256": "ee04e04271083a80ef69e8832705026d67bfb4087c8fe721bcf56a1a5ddd7494"
+          },
+          "sha_matches": true,
+          "keys": [
+            "advisory_only",
+            "applied_local_trades",
+            "applied_owner_declared_trades",
+            "automation_run_status",
+            "benchmark_input_path",
+            "benchmark_input_sha256",
+            "blockers",
+            "broker_order_trade_authority",
+            "capital_cny",
+            "cash_after",
+            "cash_before",
+            "completeness_passed",
+            "continuity_checkpoint_digest",
+            "continuity_receipt_created_at",
+            "continuity_receipt_id",
+            "continuity_receipt_sha256",
+            "decision_data_sufficient",
+            "effective_manual_holding_count",
+            "effective_manual_ledger_path",
+            "excluded_external_flow",
+            "execution_status",
+            "fees_cny",
+            "fill_count",
+            "financial_state",
+            "financial_state_sha256",
+            "funding_events",
+            "gross_trade_value",
+            "historical_holdings_storage_authority",
+            "historical_lane",
+            "holdings_completeness_passed",
+            "latest_complete_trade_date",
+            "ledger_after_manual_switch_parquet",
+            "ledger_after_manual_switch_parquet_sha256",
+            "ledger_provenance",
+            "local_manual_fills_allowed",
+            "manual_execution_mode",
+            "market_pointer_path",
+            "market_pointer_sha256",
+            "market_value_after",
+            "net_external_flow",
+            "next_ledger_path",
+            "next_ledger_sha256",
+            "no_broker_api_called",
+            "no_execution_performed_by_codex",
+            "no_llm_gateway_called",
+            "no_order_created_by_codex",
+            "no_provider_quote_called",
+            "no_trade_performed",
+            "not_v17_prediction_or_forward_observation",
+            "official_valuation",
+            "order_count",
+            "owner_reported_external_fills",
+            "pnl_summary_path",
+            "pnl_summary_sha256",
+            "portfolio_pnl_after",
+            "portfolio_return_after",
+            "price_basis",
+            "provider_quote_called",
+            "publication_class",
+            "quote_source",
+            "realized_pnl_from_rebalance",
+            "record_origin",
+            "record_timestamp",
+            "recorded_at",
+            "recorded_at_iso",
+            "rejected_or_pending_trades",
+            "review_state",
+            "schema_version",
+            "snapshot_id",
+            "snapshot_manifest_path",
+            "snapshot_manifest_sha256",
+            "source_catalog_generation_id",
+            "source_catalog_sha256",
+            "source_contained_ledger_sha256",
+            "source_manifest_sha256",
+            "source_manual_holding_count",
+            "source_manual_manifest_sha256",
+            "source_pointer_sha256",
+            "source_record",
+            "status",
+            "supersedes_record",
+            "total_value_after",
+            "trade_count",
+            "trade_date",
+            "v17_mainline_authority",
+            "valuation_completeness_passed",
+            "valuation_evidence_input_sha256",
+            "valuation_evidence_path",
+            "valuation_evidence_sha256",
+            "valuation_status",
+            "valuation_trade_date"
+          ],
+          "kind": "cn_aggressive_manual_execution.v3"
+        },
+        "performance_manifest": {
+          "ref": {
+            "path": "results/strategy_records/CN/aggressive_tech_manufacturing/_record_store/performance/p-daily-close-20260827-e247d10d58bd0034/manifest.v1.json",
+            "sha256": "4da00342c78369523632856bc945dcb883ffd0f895fb43f0e5ab7b2b0ea18afc"
+          },
+          "sha_matches": true,
+          "keys": [
+            "authority_kind",
+            "broker_authority",
+            "canonical_strategy_id",
+            "cumulative_return",
+            "execution_authority",
+            "extension_method",
+            "final_net_external_flow_cny",
+            "final_record_id",
+            "first_raw_nav_cny",
+            "generated_at",
+            "historical_label",
+            "historical_seed_method",
+            "identity_declaration",
+            "last_raw_nav_cny",
+            "max_drawdown",
+            "normalized_projection_semantic_sha256",
+            "order_authority",
+            "owner_declaration",
+            "parent_performance_manifest_sha256",
+            "performance_generation_id",
+            "performance_initial_capital_cny",
+            "row_count",
+            "schema_id",
+            "seed_end_date",
+            "seed_start_date",
+            "semantic_sha256",
+            "series",
+            "source_catalog_generation_id",
+            "source_catalog_sha256",
+            "source_dashboard_projection_sha256",
+            "source_store_pointer_sha256",
+            "trade_authority",
+            "v17_activation_authority"
+          ],
+          "kind": "myquant.strategy_performance_manifest.v1"
+        },
+        "performance_owner_declaration": {
+          "ref": {
+            "path": "results/strategy_records/CN/aggressive_tech_manufacturing/_record_store/performance/p-daily-close-20260827-e247d10d58bd0034/owner_declaration.v1.json",
+            "sha256": "2e3eb2ad5ca4fd476221d7d9a81064850c2fefdefffed942fcdfbb2bf8aeb8d5"
+          },
+          "sha_matches": true,
+          "keys": [
+            "approval_scope",
+            "approved_series",
+            "authority_kind",
+            "broker_authority",
+            "canonical_strategy_id",
+            "declared_at",
+            "declared_by",
+            "execution_authority",
+            "historical_label",
+            "normalized_projection_semantic_sha256",
+            "order_authority",
+            "performance_generation_id",
+            "schema_id",
+            "semantic_sha256",
+            "source_catalog_sha256",
+            "source_store_pointer_sha256",
+            "trade_authority",
+            "v17_activation_authority"
+          ],
+          "kind": "myquant.strategy_performance_owner_declaration.v1"
+        },
+        "performance_series": {
+          "ref": {
+            "path": "results/strategy_records/CN/aggressive_tech_manufacturing/_record_store/performance/p-daily-close-20260827-e247d10d58bd0034/series.parquet",
+            "sha256": "a275f2c21d88d6c59aa403b6630fe5765d0381711eb544589c884e81ad5f1b0a"
+          },
+          "sha_matches": true
+        },
+        "pointer": {
+          "ref": {
+            "path": "results/strategy_records/CN/aggressive_tech_manufacturing/_record_store/daily_close_transactions/daily-close-20260827-e247d10d58bd0034/committed-pointer.v1.json",
+            "sha256": "f1c2d1d6b2e73db64505ffdd219e25a13dd15d0b631aa84107db709bc108cdb7"
+          },
+          "sha_matches": true,
+          "keys": [
+            "active_closure",
+            "active_record_id",
+            "broker_order_trade_authority",
+            "catalog_path",
+            "catalog_sha256",
+            "content_sha256",
+            "generation_id",
+            "previous_pointer_sha256",
+            "previous_record_id",
+            "published_at",
+            "schema_id",
+            "v17_mainline_authority"
+          ],
+          "kind": "myquant.strategy_record_store_current.v1"
+        }
+      },
+      "state": "SUCCEEDED"
+    },
+    "factor": {
+      "terminal_ref": {
+        "path": "results/operations/daily_production/CN/20260827/nodes/factor/ad89f9ac6c2ccdf3e6fff4ed9897b94f02f447821f615370a1310a8ceeeb2fe1/attempt-0001/terminal.json",
+        "sha256": "da33ff709e0e07f02c6b001b8f73bb7a3cfe02fedc49751c9e33cd8576c0c710"
+      },
+      "outputs": {
+        "generation": {
+          "ref": {
+            "path": "results/factors/generations/factor-production-generation-9986c0f649b6ed52dd9d0b25fa07301ff5d8529c6532c96001cd0e07a0fba7ba/generation.json",
+            "sha256": "8070ea4390a254feb5b2e561514c0d4d5b141b8b15c56a7fc61d1dd11b73c626"
+          },
+          "sha_matches": true,
+          "keys": [
+            "artifact_id",
+            "contract_sha256",
+            "created_at",
+            "kind",
+            "payload",
+            "semantic_sha256"
+          ],
+          "kind": "factor.production_generation",
+          "payload_keys": [
+            "activation_scope",
+            "active_factor_rows",
+            "admission_route",
+            "as_of",
+            "broker_authority",
+            "calendar_capture_custody_attestation_ref",
+            "calendar_compilation_ref",
+            "control_rows",
+            "deployed_release_ref",
+            "exact_replay_sha256",
+            "factor_active_set_ref",
+            "factor_implementation_refs",
+            "factor_policy_ref",
+            "factor_production_generation_id",
+            "factor_source_bundle_ref",
+            "factor_validation_attestation_ref",
+            "fundamental_dependency_state",
+            "fundamental_freshness_policy",
+            "investment_authority",
+            "legacy_zero_call_ref",
+            "low_signal_sha256",
+            "mainline_authority",
+            "market_input_ref",
+            "market_pit_selection_ref",
+            "market_scope_source_ref",
+            "portfolio_authority",
+            "producer_identity",
+            "recomputation_evidence_ref",
+            "release_install_evidence_ref",
+            "release_install_input_source_ref",
+            "release_install_verification",
+            "signal_statistics",
+            "signal_values",
+            "source_closure_ref",
+            "state",
+            "strategy_record_authority",
+            "system_authority",
+            "w80_signal_sha256"
+          ]
+        }
+      },
+      "state": "SUCCEEDED"
+    },
+    "top100": {
+      "terminal_ref": {
+        "path": "results/operations/daily_production/CN/20260827/nodes/top100/5ad1d172740d419e142e2d7d19accc69158e278168156fe78d78d6fd7d707b9b/attempt-0001/terminal.json",
+        "sha256": "678fb5711dd1f16e9d96b56b0df4c7525d1a888f2784c42186650eff02d89159"
+      },
+      "outputs": {
+        "factor_research_rank.json": {
+          "ref": {
+            "path": "results/intelligence/research_pool/aggressive_tech_manufacturing/2026-08-27/factor_research_rank.json",
+            "sha256": "9e31568ee6bfc6896b84189e899793fedeb917db0836175f8b91d55253f379e9"
+          },
+          "sha_matches": true,
+          "keys": [
+            "artifact_id",
+            "contract_sha256",
+            "created_at",
+            "kind",
+            "payload",
+            "semantic_sha256"
+          ],
+          "kind": "factor_research_rank",
+          "payload_keys": [
+            "as_of",
+            "authority",
+            "blocker_codes",
+            "common_symbol_count",
+            "common_symbol_set_sha256",
+            "factor_generation_ref",
+            "factor_pointer_sha256",
+            "observation_refs",
+            "policy_ref",
+            "pool_rows",
+            "production",
+            "rank_id",
+            "research_only",
+            "run_state",
+            "signal_date",
+            "status",
+            "strategy_id"
+          ]
+        },
+        "manifest.json": {
+          "ref": {
+            "path": "results/intelligence/research_pool/aggressive_tech_manufacturing/2026-08-27/manifest.json",
+            "sha256": "a8388d43ea3a4e0dcb0e5d87f40a1531512f59b52ab6e22b937b4e5a8d91160a"
+          },
+          "sha_matches": true,
+          "keys": [
+            "artifact_id",
+            "contract_sha256",
+            "created_at",
+            "kind",
+            "payload",
+            "semantic_sha256"
+          ],
+          "kind": "daily_research_pool_manifest",
+          "payload_keys": [
+            "authority",
+            "common_symbol_count",
+            "common_symbol_set_sha256",
+            "expected_leaf_names",
+            "factor_admission_route",
+            "factor_generation_ref",
+            "factor_pointer_sha256",
+            "factor_research_pool",
+            "manifest_id",
+            "observation_refs",
+            "policy_byte_sha256",
+            "policy_path",
+            "policy_ref",
+            "pool_size",
+            "production",
+            "prospective_admission_state",
+            "rank_byte_sha256",
+            "rank_ref",
+            "research_only",
+            "run_state",
+            "selected_symbol_set_sha256",
+            "selected_symbols_byte_sha256",
+            "selected_symbols_ref",
+            "signal_date",
+            "strategy_id",
+            "technology_gate",
+            "technology_shortlist",
+            "theme_gate_executed"
+          ]
+        },
+        "publish_receipt.json": {
+          "ref": {
+            "path": "results/intelligence/research_pool/aggressive_tech_manufacturing/2026-08-27/publish_receipt.json",
+            "sha256": "9889473b2bb216431ea9e652ddffa407cf8c923f1a5f8176197decef8b81df66"
+          },
+          "sha_matches": true,
+          "keys": [
+            "artifact_id",
+            "contract_sha256",
+            "created_at",
+            "kind",
+            "payload",
+            "semantic_sha256"
+          ],
+          "kind": "daily_research_pool_receipt",
+          "payload_keys": [
+            "authority",
+            "manifest_byte_sha256",
+            "manifest_ref",
+            "production",
+            "receipt_id",
+            "research_only",
+            "root_relative_path",
+            "run_state",
+            "signal_date",
+            "state",
+            "strategy_id"
+          ]
+        },
+        "selected_symbols.json": {
+          "ref": {
+            "path": "results/intelligence/research_pool/aggressive_tech_manufacturing/2026-08-27/selected_symbols.json",
+            "sha256": "5e4aa4f63b71f1b3ab5195c731387f15d253bd36d33739f4acdbcb4f4e26e0eb"
+          },
+          "sha_matches": true,
+          "keys": [
+            "artifact_id",
+            "contract_sha256",
+            "created_at",
+            "kind",
+            "payload",
+            "semantic_sha256"
+          ],
+          "kind": "daily_research_selected_symbols",
+          "payload_keys": [
+            "authority",
+            "ordered_symbols",
+            "production",
+            "rank_ref",
+            "research_only",
+            "run_state",
+            "selection_id",
+            "signal_date",
+            "strategy_id",
+            "symbol_count",
+            "symbol_set_sha256"
+          ]
+        }
+      },
+      "state": "SUCCEEDED"
+    },
+    "theme": {
+      "terminal_ref": {
+        "path": "results/operations/daily_production/CN/20260827/nodes/theme/1ae2573e209868bd393548f1358ba4f035d383ab7686dfe1701f20ce45242fbf/attempt-0001/terminal.json",
+        "sha256": "845597209ecdf183ee6c8cf73c4813b6c4acc2f43937eede9e5d2e430356ba67"
+      },
+      "outputs": {
+        "artifact": {
+          "ref": {
+            "path": "results/operations/daily_production/CN/20260827/research/artifacts/ee5fa6cac9c3e3d07dae8ab486b5eb2b9cf054a392092277e5e14cc3d0b98b15.json",
+            "sha256": "ee5fa6cac9c3e3d07dae8ab486b5eb2b9cf054a392092277e5e14cc3d0b98b15"
+          },
+          "sha_matches": true,
+          "keys": [
+            "artifact_id",
+            "contract_sha256",
+            "created_at",
+            "kind",
+            "payload",
+            "semantic_sha256"
+          ],
+          "kind": "theme_membership_projection",
+          "payload_keys": [
+            "as_of",
+            "authority",
+            "blocker_codes",
+            "company_rows",
+            "company_set_sha256",
+            "fallback_company_keyset",
+            "policy_ref",
+            "production",
+            "projection_id",
+            "research_only",
+            "run_state",
+            "source_refs",
+            "status",
+            "trade_date"
+          ]
+        },
+        "capture": {
+          "ref": {
+            "path": "results/operations/daily_production/CN/20260827/research/nodes/theme/1ae2573e209868bd393548f1358ba4f035d383ab7686dfe1701f20ce45242fbf.json",
+            "sha256": "7d3dfec9b42a3d71b1a036560f927c5a6f9206eda4f62a0b35b0f2cbf5b0fd5c"
+          },
+          "sha_matches": true,
+          "keys": [
+            "artifact_refs",
+            "authority",
+            "captured_at",
+            "request_key",
+            "research_cutoff",
+            "schema_version",
+            "state"
+          ],
+          "kind": "cn-daily-research-node-capture.v1"
+        }
+      },
+      "state": "SUCCEEDED"
+    },
+    "decision": {
+      "terminal_ref": {
+        "path": "results/operations/daily_production/CN/20260827/nodes/decision/56763d07b81baa63cb41b15b0c7f4a67d941eb03b2333c937eb5a8fdf1816bca/attempt-0001/terminal.json",
+        "sha256": "b7e3b8a508595bcfa1cbe71ec7cdbf5fe5ddcfe366ff06372caf226e67a76a99"
+      },
+      "outputs": {
+        "capture": {
+          "ref": {
+            "path": "results/operations/daily_production/CN/20260827/research/cc0cc5a0c0e8ea69c5ca02eb837aab55fe0644ec29da2a9db9137722390cc173/capture.v1.json",
+            "sha256": "37ba97c8671eebeec62246d72d8a9875cf5367da19a73654b646cbf47e20e157"
+          },
+          "sha_matches": true,
+          "keys": [
+            "artifact_refs",
+            "authority",
+            "captured_at",
+            "native_timestamps_are_publication_proof",
+            "recovered_custody",
+            "request_ref",
+            "research_cutoff",
+            "research_status",
+            "result_ref",
+            "schema_version",
+            "trade_date"
+          ],
+          "kind": "cn-daily-research-capture.v1"
+        },
+        "result": {
+          "ref": {
+            "path": "results/operations/daily_production/CN/20260827/research/cc0cc5a0c0e8ea69c5ca02eb837aab55fe0644ec29da2a9db9137722390cc173/result.json",
+            "sha256": "15d3bec2fe1bb37ab4bae1d5c6face1080fe1b319d456efa2520c79114f09f98"
+          },
+          "sha_matches": true,
+          "keys": [
+            "artifacts",
+            "as_of",
+            "authority",
+            "decisions",
+            "evaluation",
+            "evidence_bundle",
+            "production",
+            "research_only",
+            "research_portfolio",
+            "run_state",
+            "status",
+            "strategy_id"
+          ],
+          "kind": null
+        }
+      },
+      "state": "SUCCEEDED"
+    }
+  }
+}

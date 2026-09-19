@@ -1,0 +1,104 @@
+{
+  "observed_at": "2026-09-14T15:29:51.425337+00:00",
+  "state": "CURRENT_INSTALLED_CONFIGURED_FIRST_DAY_PASS",
+  "runtime_commit": "c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b",
+  "root": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z",
+  "driver_status_ref": {
+    "path": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/configured-driver-status.json",
+    "sha256": "f4ee13e4a92e625156ee904538b7c2c3637db379ed51a8b743dd1e018b50ae45"
+  },
+  "native_proof_ref": {
+    "path": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/configured-native-proof.json",
+    "sha256": "c994131fa3824e224bc22c7c1a28a21ae8a1ca1c002b5f143d0dade5acf424d2"
+  },
+  "helper_manifest_ref": {
+    "path": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/validation-helper-manifest.json",
+    "sha256": "ff21a4f1dedd60ba3836688780c277f3c3d01d0598ec0a101fa9eb2d466c8064"
+  },
+  "finished_at": "2026-09-14T15:26:03.155756+00:00",
+  "original_request_ref": {
+    "path": "results/operations/daily_production/CN/20260827/preparation/1335469cd918f263243cf08e8d972e99c4ae41f2a22cc7085a7b2f590ebcdc32/request.json",
+    "sha256": "cd9ae41f0801076ce72b8d84264b2fbecb6bfda7fc880fd6baddde1546d667ac"
+  },
+  "config_ref": {
+    "path": "configured-inputs/source-config.json",
+    "sha256": "1335469cd918f263243cf08e8d972e99c4ae41f2a22cc7085a7b2f590ebcdc32"
+  },
+  "completion_ref": {
+    "path": "results/operations/daily_production/CN/20260827/completion.v1.json",
+    "sha256": "f1acaf5e510b0193bb3e010d226d58e6a6337fb2a3bf2efb4ac38ae57bb44c57"
+  },
+  "native_replay_validated": true,
+  "validated_nodes": [
+    "calendar",
+    "corporate_action_recon",
+    "dashboard",
+    "decision",
+    "exposure",
+    "factor",
+    "fundamental",
+    "industry",
+    "low_observation",
+    "macro",
+    "market",
+    "pit",
+    "store",
+    "theme",
+    "top100",
+    "w80_observation"
+  ],
+  "pre_core_configuration": true,
+  "factor_core_and_release_verifier_mocked": false,
+  "no_trade_store": {
+    "manual_ref": {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260827_212000-b04/manual_execution_manifest.json",
+      "sha256": "bc08bf29079bd94025f687318b51ee112574c2b90e6af910ea5348f8610d20b0"
+    },
+    "completion_ref": {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/_record_store/daily_close_transactions/daily-close-20260827-c1877d780724e97a/completion.v1.json",
+      "sha256": "c874acdff15f9e8e1654e76a6e53804c5aabe8417ec473a64db5f367c7efffbf"
+    },
+    "committed_through": "2026-08-27",
+    "trade_count": 0,
+    "order_count": 0,
+    "fill_count": 0
+  },
+  "fundamental_lag": {
+    "freshness_ref": {
+      "path": "results/operations/daily_production/CN/20260827/research/artifacts/4c1351afe8a9487668d522f29b76649d38c5b7c5181fb24536b530d626b5e52e.json",
+      "sha256": "4c1351afe8a9487668d522f29b76649d38c5b7c5181fb24536b530d626b5e52e"
+    },
+    "state": "STALE_WARNING",
+    "entries": 100,
+    "warnings": 100,
+    "critical_missing": 0,
+    "decision_rows": 100,
+    "decision_state_counts": {
+      "PAPER_CANDIDATE": 58,
+      "RESEARCH_APPROVED": 42
+    }
+  },
+  "ledger": {
+    "ledger_ref": {
+      "path": "results/prospective/CN/20260827/evidence-ledger.v1.json",
+      "sha256": "4628511d018659cc0352d05466e328dd7d07ef6571901830b2557d55497a9bdc"
+    },
+    "classification": "RETROSPECTIVE_RECOMPUTE",
+    "prospective": false,
+    "synthetic": true,
+    "recomputed": true,
+    "validation_scope": "NATIVE_LEDGER_DERIVATION",
+    "native_business_replay_required": true
+  },
+  "synthetic": true,
+  "production_deployed": false,
+  "real_provider_calls": false,
+  "current_normal_days_completed": 1,
+  "required_normal_days": 5,
+  "full_goal_complete": false,
+  "limitations": [
+    "synthetic prices, external transports and logical clock",
+    "maintenance verifies native preproduced Market/PIT/history through fixture NO_ACTION adapters",
+    "one configured bootstrap day; successor automatic/five-session and Morning acceptance remain"
+  ]
+}

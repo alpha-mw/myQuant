@@ -1818,13 +1818,17 @@ def validate_trusted_provider_calendar_capture_failure(
 
 
 def _official_documentation_fetch() -> tuple[bytes, int, Mapping[str, str], bool, Sequence[str]]:
+    from ._calendar_production_transport import _begin_response, _complete_response
+
+    calendar_ticket = _begin_response("DOCUMENTATION")
     connection: http.client.HTTPSConnection | None = None
     try:
+        context = ssl.create_default_context()
         connection = http.client.HTTPSConnection(
             "tushare.pro",
             443,
             timeout=20.0,
-            context=ssl.create_default_context(),
+            context=context,
         )
         connection.request(
             "GET",
@@ -1844,6 +1848,7 @@ def _official_documentation_fetch() -> tuple[bytes, int, Mapping[str, str], bool
             for key, value in response.getheaders()
             if key.lower() in _SAFE_HEADERS
         }
+        _complete_response(calendar_ticket, raw=raw, tls_context=context)
         return raw, response.status, dict(sorted(headers.items())), True, []
     except (SystemSecurityError, SystemPreconditionError):
         raise
@@ -3004,3 +3009,8 @@ __all__ = [
     "validate_trusted_provider_calendar_capture_transaction",
     "validate_trusted_provider_calendar_compilation",
 ]
+
+# Private identity anchors for the installed production Calendar recorder.
+_ORIGINAL_DOCUMENTATION_FETCH = _official_documentation_fetch
+_ORIGINAL_CAPTURE = capture_trusted_provider_calendar_evidence
+_ORIGINAL_UTC_NOW = _utc_now

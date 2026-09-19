@@ -1,0 +1,8 @@
+{
+  "root": "/private/tmp/myquant-configured-native-20260913T182952Z",
+  "shared_install": "/private/tmp/myquant-current-acceptance-20260913T175746Z",
+  "runtime_commit": "5fb93c405e4c821e1c1fa99249fd8c99af15d433",
+  "verification": "PASS",
+  "prior_attempt": "/private/tmp/myquant-current-acceptance-20260913T175746Z",
+  "prior_attempt_state": "FAIL_BEFORE_CONFIGURED_REQUEST"
+}

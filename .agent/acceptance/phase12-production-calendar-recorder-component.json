@@ -1,0 +1,59 @@
+{
+  "observed_at": "2026-09-16T14:10:20.289156+00:00",
+  "state": "LOCAL_TRANSPORT_RECORDER_COMPONENT_VERIFIED",
+  "architect": "APPROVE_WITH_CHANGES_INCORPORATED",
+  "critic": "APPROVE",
+  "plan": "docs/plans/phase12_production_future_calendar.md",
+  "source_refs": [
+    {
+      "path": "quant_investor/market/_calendar_production_transport.py",
+      "sha256": "2a5b5f7b3127d8b704f45bfea777fb1bd90f3665e76aefbbae8b5f93f57f3ef1"
+    },
+    {
+      "path": "quant_investor/market/tushare_transport.py",
+      "sha256": "b345744fdfc770f26d2439944280cf8302933e238690eb53ddb85b59e4393a7c"
+    },
+    {
+      "path": "quant_investor/market/tushare_calendar_authority.py",
+      "sha256": "a8ad87f2069612b833eecaed1ef6db91299af309d41a2d421cd1bc50646f7dc4"
+    },
+    {
+      "path": "tests/unit/test_calendar_production_transport.py",
+      "sha256": "81a0f6e24c2ede389da1fa02493579459bc19ba7c3b8ff6cd27691ae4a54e04f"
+    }
+  ],
+  "verification": [
+    {
+      "scope": "recorder + existing transport/decimal + fixture capability",
+      "passed": 89
+    },
+    {
+      "scope": "recorder + native Calendar authority",
+      "passed": 69,
+      "warnings": 2
+    },
+    {
+      "scope": "final recorder incl wrapped integrity error and failed HTTP",
+      "passed": 19
+    }
+  ],
+  "counts_overlap": true,
+  "fatal_static_check": "PASS",
+  "known_test_seams": [
+    "Injected private recorder session for hook units",
+    "Mocked installed verifier/manifest for wrapper unit",
+    "Mocked network with explicit route guard seam for successful-boundary units"
+  ],
+  "production_mode_connected": false,
+  "production_proof_publisher_implemented": false,
+  "real_provider_calls": false,
+  "production_deployed": false,
+  "full_goal_complete": false,
+  "next": [
+    "Implement immutable production transport receipt and exact reader",
+    "Versioned production proof dispatch",
+    "v3 fresh and zero-call recovery integration",
+    "Morning explicit live provenance/recheck",
+    "Focused and final frozen installed validation"
+  ]
+}

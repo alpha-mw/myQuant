@@ -7,6 +7,8 @@ portfolio candidates, mutates a strategy pointer, or creates execution state.
 
 from __future__ import annotations
 
+from quant_investor.operations.dashboard_replay_sources import registered_dashboard_store
+
 import csv
 import hashlib
 import json
@@ -156,6 +158,17 @@ def _relative_to_project(path: Path, project_root: Path) -> str:
 
 def stable_read(path: Path, project_root: Path) -> StableArtifact:
     """Read a regular non-symlink file twice and bind its exact bytes."""
+
+    from quant_investor.operations.dashboard_replay_sources import retained_bytes
+
+    retained = retained_bytes(path, project_root)
+    if retained is not None:
+        return StableArtifact(
+            path=path,
+            relative_path=_relative_to_project(path, project_root),
+            data=retained,
+            sha256=sha256_bytes(retained),
+        )
 
     try:
         metadata = path.lstat()
@@ -746,7 +759,9 @@ def _verify_registered_benchmark_compatibility_alias(
     generation_id = evidence.get("benchmark_generation_id")
     if generation_id is None:
         try:
-            registered = load_registered_catalog(record_root)
+            registered = registered_dashboard_store(
+                record_root, current_loader=load_registered_catalog
+            )
         except StrategyRecordStoreError as exc:
             raise DashboardInputError("official_valuation_benchmark_lineage_invalid") from exc
         if registered is None:
@@ -1683,7 +1698,7 @@ def build_dashboard_catalog_projection(record_root: Path, project_root: Path) ->
     """
 
     try:
-        registered = load_registered_catalog(record_root)
+        registered = registered_dashboard_store(record_root, current_loader=load_registered_catalog)
     except StrategyRecordStoreError as exc:
         raise DashboardInputError(f"record_catalog_invalid:{exc}") from exc
     if registered is not None:
@@ -1930,6 +1945,7 @@ def _registered_dashboard_projection(
     record_root: Path,
     project_root: Path,
     registered_override: tuple[dict[str, Any], dict[str, Any]] | None = None,
+    valuation_date: str | None = None,
 ) -> (
     tuple[
         list[dict[str, Any]],
@@ -1947,7 +1963,9 @@ def _registered_dashboard_projection(
 
     if registered_override is None:
         try:
-            registered = load_registered_catalog(record_root)
+            registered = registered_dashboard_store(
+                record_root, current_loader=load_registered_catalog
+            )
         except StrategyRecordStoreError as exc:
             raise DashboardInputError(f"record_catalog_invalid:{exc}") from exc
     else:
@@ -1963,6 +1981,7 @@ def _registered_dashboard_projection(
             pointer=pointer,
             catalog=catalog,
             registered_override=registered_override,
+            valuation_date=valuation_date,
         )
     if catalog.get("fixture_only_legacy_dashboard") is True:
         return _legacy_registered_dashboard_projection_body(
@@ -1987,6 +2006,7 @@ def _registered_dashboard_v3_projection(
     pointer: dict[str, Any],
     catalog: dict[str, Any],
     registered_override: tuple[dict[str, Any], dict[str, Any]] | None,
+    valuation_date: str | None = None,
 ) -> tuple[
     list[dict[str, Any]],
     list[str],
@@ -2012,6 +2032,16 @@ def _registered_dashboard_v3_projection(
     }
     active_id = pointer.get("active_record_id")
     previous_id = pointer.get("previous_record_id")
+    if valuation_date is not None:
+        if registered_override is None:
+            raise DashboardInputError("historical_date_requires_committed_snapshot")
+        from daily_dashboard_history import select_historical_records
+
+        active_id, previous_id = select_historical_records(
+            record_root=record_root,
+            catalog=catalog,
+            valuation_date=valuation_date,
+        )
     if (
         not isinstance(active_id, str)
         or not isinstance(previous_id, str)
@@ -2042,7 +2072,9 @@ def _registered_dashboard_v3_projection(
                 raise DashboardInputError("catalog_v3_selected_record_sha_mismatch:" + record_id)
         row["storage_state"] = "ONLINE"
         row["record_inventory_sha256"] = catalog_row.get("inventory_sha256")
-        row["evidence_status"] = "CATALOG_V3_ACTIVE_CLOSURE"
+        row["evidence_status"] = (
+            "CATALOG_V3_DATE_CLOSURE" if valuation_date is not None else "CATALOG_V3_ACTIVE_CLOSURE"
+        )
         return row
 
     previous = load_selected(previous_id)
@@ -2082,6 +2114,8 @@ def _registered_dashboard_v3_projection(
     prior_excluded = 0.0
     initial_units = 1_000_000.0
     for raw in performance["rows"]:
+        if valuation_date is not None and raw["valuation_date"] > valuation_date:
+            continue
         record_id = raw["record_id"]
         stored = catalog_by_id.get(record_id, {})
         cash = float(raw["cash_cny"])
@@ -2180,6 +2214,24 @@ def _registered_dashboard_v3_projection(
             if artifact.sha256 != ref["sha256"]:
                 raise DashboardInputError("canonical_performance_source_sha_mismatch")
             catalog_artifacts.append(artifact)
+    registered_predecessor = None
+    from daily_dashboard_history import registered_intraday_predecessor
+
+    predecessor_refs = registered_intraday_predecessor(
+        project_root=project_root,
+        record_root=record_root,
+        pointer=pointer,
+        catalog=catalog,
+        latest=latest,
+        previous=previous,
+    )
+    if predecessor_refs is not None:
+        registered_predecessor = previous["record"]
+        for reference in predecessor_refs:
+            artifact = stable_read(project_root / reference["path"], project_root)
+            if artifact.sha256 != reference["sha256"]:
+                raise DashboardInputError("registered_predecessor_source_sha_mismatch")
+            catalog_artifacts.append(artifact)
     return (
         [previous, latest],
         [],
@@ -2201,6 +2253,7 @@ def _registered_dashboard_v3_projection(
             "history_registry_ref": None,
             "history_registry": None,
             "canonical_performance_points": canonical_points,
+            "canonical_intraday_predecessor": registered_predecessor,
             "canonical_funding_events": funding_events,
             "performance_history_ref": performance_ref,
             "lineage_index_sha256": catalog["lineage_index_sha256"],
@@ -3071,11 +3124,29 @@ def build_bundle(
     today: date,
     history_integrity_path: Path | None = None,
     benchmark_gap_policy: str = "strict",
+    historical_close_plan_ref: Mapping[str, str] | None = None,
+    historical_valuation_date: str | None = None,
 ) -> dict[str, Any]:
     if benchmark_gap_policy not in {"strict", "allow_trailing"}:
         raise DashboardInputError("benchmark_gap_policy_invalid")
+    if historical_valuation_date is not None and historical_close_plan_ref is None:
+        raise DashboardInputError("historical_date_requires_committed_snapshot")
+    registered_override = None
+    historical_refs = []
+    if historical_close_plan_ref is not None:
+        from daily_dashboard_history import committed_dashboard_store
+
+        registered_override, historical_refs = committed_dashboard_store(
+            project_root=project_root,
+            record_root=record_root,
+            plan_ref=historical_close_plan_ref,
+            valuation_date=historical_valuation_date,
+        )
     registered_projection = _registered_dashboard_projection(
-        record_root=record_root, project_root=project_root
+        record_root=record_root,
+        project_root=project_root,
+        registered_override=registered_override,
+        valuation_date=historical_valuation_date,
     )
     catalog_artifacts: list[StableArtifact] = []
     integrity_context: dict[str, Any] = {
@@ -3105,6 +3176,11 @@ def build_bundle(
         ) = registered_projection
         latest = pointer_selection["latest"]
         previous = pointer_selection["previous"]
+    for ref in historical_refs:
+        artifact = stable_read(project_root / ref["path"], project_root)
+        if artifact.sha256 != ref["sha256"]:
+            raise DashboardInputError("historical_dashboard_source_sha_mismatch")
+        catalog_artifacts.append(artifact)
     if len(valid) < 2:
         raise DashboardInputError("fewer_than_two_hash_bound_valid_records")
     assert latest is not None and previous is not None
@@ -3202,7 +3278,14 @@ def build_bundle(
         }
 
     latest_economic_point = economic_point_for(latest)
-    previous_economic_point = economic_point_for(previous)
+    # The exact C1 finalization proof admits the original record-level view;
+    # its replaced intraday point is not reinserted into canonical daily history.
+    previous_economic_point = (
+        None
+        if canonical_performance_points is not None
+        and integrity_context.get("canonical_intraday_predecessor") == previous["record"]
+        else economic_point_for(previous)
+    )
     if canonical_performance_points is not None:
         latest_view, portfolio_cash, portfolio_total = _official_financial_state_view(latest)
         previous_view, _, previous_portfolio_total = _official_financial_state_view(previous)
@@ -3465,6 +3548,8 @@ def build_bundle(
     ]
 
     try:
+        if historical_close_plan_ref is not None:
+            raise StrategyAccountingError("historical accounting generation not bound")
         accounting = load_accounting_generation(record_root)
     except StrategyAccountingError:
         assurance = {

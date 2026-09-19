@@ -624,6 +624,32 @@ class _DefaultComponents:
 
     def market(self, context: MaintenanceContext) -> Mapping[str, Any]:
         pit = _stage_evidence(context, "PIT")
+        historical = None
+        authority_path = context.close_session_receipt_path
+        authority_sha = context.close_session_receipt_sha256
+        if context.historical_session_ref is not None:
+            from .historical_session import read_historical_core
+            from .daily_maintenance import _read_owner_file
+
+            started_path = context.attempt_root / "started.json"
+            started_raw = _read_owner_file(started_path, code="HISTORICAL_MARKET_STARTED_UNSAFE")
+            checked = read_historical_core(
+                attempt_root=context.attempt_root,
+                proof_ref=context.historical_session_ref,
+                close_ref={
+                    "path": str(context.close_session_receipt_path),
+                    "sha256": context.close_session_receipt_sha256,
+                },
+                started_ref={
+                    "path": str(started_path),
+                    "sha256": hashlib.sha256(started_raw).hexdigest(),
+                },
+                target=context.target_date,
+                read=lambda p, label: _read_owner_file(p, code="HISTORICAL_MARKET_SOURCE_UNSAFE"),
+            )
+            historical = checked["historical_session"]
+            authority_path = Path(context.historical_session_ref["path"])
+            authority_sha = context.historical_session_ref["sha256"]
         production_data_root = self.workspace / "data"
         parent = _market_reference(production_data_root)
         parent_date = str(parent["pointer"].get("latest_complete_trade_date") or "")
@@ -640,6 +666,11 @@ class _DefaultComponents:
             == pit_binding.get("generation_manifest_sha256")
             and coverage.get("pit_membership_sha256") == pit_binding.get("canonical_sha256")
         )
+        if historical is not None and not (
+            parent_date == historical["previous_trade_date"]
+            or (parent_date == context.target_date and pit_binding_matches)
+        ):
+            raise RuntimeError("HISTORICAL_MARKET_PREDECESSOR_INVALID")
         if parent_date == context.target_date and pit_binding_matches:
             return {
                 "status": "NO_ACTION",
@@ -690,8 +721,8 @@ class _DefaultComponents:
         capture = self.apis.market_capture(
             provider=provider,
             capture_root=context.attempt_root / "market_capture",
-            target_authority_path=context.close_session_receipt_path,
-            expected_target_authority_sha256=context.close_session_receipt_sha256,
+            target_authority_path=authority_path,
+            expected_target_authority_sha256=authority_sha,
             scope_path=pit["scope_path"],
             expected_scope_sha256=pit["scope_sha256"],
             pit_generation_binding=pit["pit_binding"],
@@ -800,6 +831,10 @@ class _DefaultComponents:
         }
 
     def macro(self, context: MaintenanceContext) -> Mapping[str, Any]:
+        from .daily_macro_layout import select_macro_layout
+        from .daily_macro_source import attach_macro_source
+
+        layout = select_macro_layout(context) if context.mode == "execute" else None
         market = _stage_evidence(context, "MARKET")
         pit = _stage_evidence(context, "PIT")
         release_root = self.workspace / "data/parquet/cn/macro_release_calendar"
@@ -835,8 +870,9 @@ class _DefaultComponents:
             in {_compact_date(value) for value in release_evidence.open_dates}
             and _compact_date(release_evidence.captured_at) >= context.target_date
             and exact_market_binding
+            and (layout is None or layout.state == "FRESH")
         ):
-            return {
+            healthy = {
                 "status": "NO_ACTION",
                 "write_performed": False,
                 "blockers": [],
@@ -849,13 +885,16 @@ class _DefaultComponents:
                     "market_manifest_sha256": market["snapshot_manifest_sha256"],
                 },
             }
-        transaction_id = f"macro-{context.target_date}-{context.attempt_slot}"
-        journal_root = context.run_root / "journals" / "macro" / context.target_date
-        journal_run_id = f"macro-{context.target_date}"
-        journal_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.chmod(journal_root, 0o700)
-        journal_run = journal_root / journal_run_id
-        if context.mode == "execute" and journal_run.exists():
+            return attach_macro_source(context, layout, healthy)
+        transaction_write_performed = False
+        transaction_id = (
+            layout.transaction_id
+            if layout
+            else f"macro-{context.target_date}-{context.attempt_slot}"
+        )
+        journal_root = layout.journal_root if layout else context.attempt_root / "unused-journal"
+        journal_run_id = layout.journal_id if layout else transaction_id
+        if layout and layout.state in {"JOURNALED", "LEGACY"}:
             recovery = self.apis.macro_recover(
                 journal_root=journal_root,
                 journal_run_id=journal_run_id,
@@ -868,6 +907,7 @@ class _DefaultComponents:
             if recovery.get("terminal") is True:
                 result = recovery
             elif recovery.get("execute_forward_eligible") is True:
+                transaction_write_performed = True
                 result = self.apis.macro_recover(
                     journal_root=journal_root,
                     journal_run_id=journal_run_id,
@@ -885,35 +925,56 @@ class _DefaultComponents:
                     "evidence": {"recovery": dict(recovery)},
                 }
         else:
-            preparation_root = context.attempt_root / "macro_prepare"
-            preparation_root.mkdir(mode=0o700)
-            prepared = self.apis.macro_prepare(
-                market="CN",
-                target_date=context.target_date,
-                snapshot_manifest_path=market["snapshot_manifest_path"],
-                expected_snapshot_manifest_sha256=market["snapshot_manifest_sha256"],
-                coverage_manifest_path=market["snapshot_manifest_path"],
-                expected_coverage_manifest_sha256=market["snapshot_manifest_sha256"],
-                scope_artifact_path=_stage_evidence(context, "PIT")["scope_path"],
-                expected_scope_artifact_sha256=_stage_evidence(context, "PIT")["scope_sha256"],
-                release_root=release_root,
-                expected_release_pointer_sha256=release_sha,
-                observations_root=observations_root,
-                expected_observations_pointer_sha256=observations_sha,
-                market_pointer_path=market["pointer_path"],
-                expected_market_pointer_sha256=market["pointer_sha256"],
-                pit_pointer_path=pit["pit_binding"]["discovery_pointer_path"],
-                expected_pit_pointer_sha256=pit["pit_binding"]["discovery_pointer_sha256"],
-                authority_mode=("candidate" if context.mode == "shadow" else "canonical"),
-                release_run_id=f"release-{transaction_id}",
-                observations_run_id=f"observations-{transaction_id}",
-                private_run_root=preparation_root,
-                transaction_run_id=transaction_id,
-                allow_live=True,
-            )
+            if layout and layout.state == "PREPARED":
+                prepared: Mapping[str, Any] = {
+                    "prepared_path": str(layout.prepared_path),
+                    "prepared_sha256": _sha(_stable_bytes(layout.prepared_path)),
+                }
+            else:
+                preparation_root = (
+                    layout.preparation_parent if layout else context.attempt_root / "macro_prepare"
+                )
+                preparation_root.mkdir(parents=True, exist_ok=layout is not None, mode=0o700)
+                prepared = self.apis.macro_prepare(
+                    market="CN",
+                    target_date=context.target_date,
+                    snapshot_manifest_path=market["snapshot_manifest_path"],
+                    expected_snapshot_manifest_sha256=market["snapshot_manifest_sha256"],
+                    coverage_manifest_path=market["snapshot_manifest_path"],
+                    expected_coverage_manifest_sha256=market["snapshot_manifest_sha256"],
+                    scope_artifact_path=_stage_evidence(context, "PIT")["scope_path"],
+                    expected_scope_artifact_sha256=_stage_evidence(context, "PIT")["scope_sha256"],
+                    release_root=release_root,
+                    expected_release_pointer_sha256=release_sha,
+                    observations_root=observations_root,
+                    expected_observations_pointer_sha256=observations_sha,
+                    market_pointer_path=market["pointer_path"],
+                    expected_market_pointer_sha256=market["pointer_sha256"],
+                    pit_pointer_path=pit["pit_binding"]["discovery_pointer_path"],
+                    expected_pit_pointer_sha256=pit["pit_binding"]["discovery_pointer_sha256"],
+                    authority_mode=("candidate" if context.mode == "shadow" else "canonical"),
+                    release_run_id="r" + _sha(transaction_id.encode("ascii")),
+                    observations_run_id="o" + _sha(transaction_id.encode("ascii")),
+                    private_run_root=preparation_root,
+                    transaction_run_id=transaction_id,
+                    allow_live=True,
+                )
             if context.mode == "shadow":
                 result = prepared
             else:
+                from quant_investor.macro.maintenance_transaction import _preflight_prepared_commit
+
+                _preflight_prepared_commit(
+                    prepared_path=prepared["prepared_path"],
+                    expected_prepared_sha256=prepared["prepared_sha256"],
+                    expected_target_date=context.target_date,
+                    market_pointer_path=market["pointer_path"],
+                    expected_market_pointer_sha256=market["pointer_sha256"],
+                    pit_pointer_path=pit["pit_binding"]["discovery_pointer_path"],
+                    expected_pit_pointer_sha256=pit["pit_binding"]["discovery_pointer_sha256"],
+                )
+                journal_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+                transaction_write_performed = True
                 result = self.apis.macro_commit(
                     prepared_path=prepared["prepared_path"],
                     expected_prepared_sha256=prepared["prepared_sha256"],
@@ -925,9 +986,9 @@ class _DefaultComponents:
                     expected_pit_pointer_sha256=pit["pit_binding"]["discovery_pointer_sha256"],
                 )
         ready = str(result.get("status") or "") in {"PREPARED", "SUCCESS"}
-        return {
+        healthy = {
             "status": "READY" if ready else "BLOCKED",
-            "write_performed": context.mode == "execute" and ready,
+            "write_performed": transaction_write_performed,
             "blockers": [] if ready else ["MACRO_TRANSACTION_BLOCKED"],
             "evidence": {
                 "transaction_status": result.get("status"),
@@ -937,6 +998,7 @@ class _DefaultComponents:
                 "journal_run_id": journal_run_id,
             },
         }
+        return attach_macro_source(context, layout, healthy)
 
 
 def build_default_components(

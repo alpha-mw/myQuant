@@ -1,0 +1,220 @@
+{
+  "classification": "RETROSPECTIVE_RECONSTRUCTION",
+  "canonical_writes": false,
+  "provider_calls": false,
+  "results": [
+    {
+      "source": {
+        "path": "/Users/maxwell/mySpace/myQuant/data/parquet/cn/_snapshots/20260905T163228Z.json",
+        "sha256": "b4ea6c41dc8d33bc2ed51098458822d3b50c78740dc21a0d36debf2168bda4b9"
+      },
+      "capture": {
+        "path": "/Users/maxwell/mySpace/myQuant/data/private/cn_daily_maintenance/attempts/20260905T163145Z-2020-5b470afef77ab5f8/market_capture/manifest.json",
+        "sha256": "949c0343e301047d7084871d25cf10b621813099d5bdd92eb4a78925f6560b83"
+      },
+      "state": "NATIVE_PREPARED_CANDIDATE_PASS",
+      "manifest_ref": {
+        "path": "/Users/maxwell/mySpace/myQuant/.agent/acceptance/phase12-macro-recovery-projections/macro-retrospective-market-32897943347583d4e3edb6b647ab941764b487fe3cf5fdbb329fdac433522762/manifest.json",
+        "sha256": "27b4f8ace5b5f62d922a1c949be228b6e06659256acbd9349882ccf7d489cb15"
+      },
+      "projections": [
+        {
+          "target_trade_date": "20260904",
+          "path": "/Users/maxwell/mySpace/myQuant/.agent/acceptance/phase12-macro-recovery-projections/macro-retrospective-market-32897943347583d4e3edb6b647ab941764b487fe3cf5fdbb329fdac433522762/_snapshots/20260918T135423Z.json",
+          "sha256": "6bfba58176c4bc470a1d5ee7d28d44722e598315a40f0f428b25f4efad67084a"
+        }
+      ],
+      "checks": [
+        {
+          "date": "20260904",
+          "observation_content_hash": "e1a5fbcd9793bb58d195685d5ef75de48f1c67ba0459dcb167bbd847a47e3619",
+          "evidence_sha256": "143d288138b7a2b295a9890c2caa7aa96dff5c6f2370c224fa5e14d0a77b4432"
+        }
+      ]
+    },
+    {
+      "source": {
+        "path": "/Users/maxwell/mySpace/myQuant/data/parquet/cn/_snapshots/20260907T082202Z.json",
+        "sha256": "7402087d74602caba5c31ac07e8b7d210d25deca9c088225ac11b8d9fbb2274e"
+      },
+      "capture": {
+        "path": "/Users/maxwell/mySpace/myQuant/data/private/cn_daily_maintenance/attempts/20260907T082121Z-1620-c9634965996ef262/market_capture/manifest.json",
+        "sha256": "8106f9814174eb7d2e6402bdf6435f511f4cc8329f8d844a4cdc8484585a3357"
+      },
+      "state": "NATIVE_PREPARED_CANDIDATE_PASS",
+      "manifest_ref": {
+        "path": "/Users/maxwell/mySpace/myQuant/.agent/acceptance/phase12-macro-recovery-projections/macro-retrospective-market-cd67d7136c05fc6243c4fd0ea97430b0259d541e0748a0b937bc57a63797e539/manifest.json",
+        "sha256": "1a0826c94a39db2a56d4378e1ffa731356b4edd5a604b3586676c58e290940ab"
+      },
+      "projections": [
+        {
+          "target_trade_date": "20260907",
+          "path": "/Users/maxwell/mySpace/myQuant/.agent/acceptance/phase12-macro-recovery-projections/macro-retrospective-market-cd67d7136c05fc6243c4fd0ea97430b0259d541e0748a0b937bc57a63797e539/_snapshots/20260918T135427Z.json",
+          "sha256": "dc8352ed682448981bf9c73e1b40313fa7cff3e70951a066cafd6cc02b488eeb"
+        }
+      ],
+      "checks": [
+        {
+          "date": "20260907",
+          "observation_content_hash": "c514048153d2e3f485bea9b68c6486cfe0d38f11888ca092a5989d8997a6cb09",
+          "evidence_sha256": "4d518a56e62d1366973a225d1aa0cfa7bf8daf1f75bc0a2abb0bb3632835df7a"
+        }
+      ]
+    },
+    {
+      "source": {
+        "path": "/Users/maxwell/mySpace/myQuant/data/parquet/cn/_snapshots/20260908T082152Z.json",
+        "sha256": "4d86f459f4a7c8346cf1c62b33e11085aad9fe470c2538a2435174b88d154e34"
+      },
+      "capture": {
+        "path": "/Users/maxwell/mySpace/myQuant/data/private/cn_daily_maintenance/attempts/20260908T082110Z-1620-21dc3895032a8d5d/market_capture/manifest.json",
+        "sha256": "f7d674203c5610779de8a9f590d7a533beddc6171f741c1107716119c73fcf6f"
+      },
+      "state": "NATIVE_PREPARED_CANDIDATE_PASS",
+      "manifest_ref": {
+        "path": "/Users/maxwell/mySpace/myQuant/.agent/acceptance/phase12-macro-recovery-projections/macro-retrospective-market-6459cc90e03be979b175992d57c7f33db604d35c76f725a0a44eb012eceb4fb8/manifest.json",
+        "sha256": "34a9de1e6b228d59192e85b61fc2edb496b1119b2b406564c86b9b1095baad0b"
+      },
+      "projections": [
+        {
+          "target_trade_date": "20260908",
+          "path": "/Users/maxwell/mySpace/myQuant/.agent/acceptance/phase12-macro-recovery-projections/macro-retrospective-market-6459cc90e03be979b175992d57c7f33db604d35c76f725a0a44eb012eceb4fb8/_snapshots/20260918T135429Z.json",
+          "sha256": "563630f72e1918f7408b4cbfa51c1859a66b6cc509a3d98fe0f001110a305fb9"
+        }
+      ],
+      "checks": [
+        {
+          "date": "20260908",
+          "observation_content_hash": "21f15fd5a0c6f24ae61262df1a32c2e03cfa5017fed228484f9926b829769204",
+          "evidence_sha256": "fc9095c5fec9e21820da3c47d2762006a5c4174fc5cb66d0ca3ebdf9b78459e7"
+        }
+      ]
+    },
+    {
+      "source": {
+        "path": "/Users/maxwell/mySpace/myQuant/data/parquet/cn/_snapshots/20260909T142713Z.json",
+        "sha256": "7c7d9c01cb57c5c4a03a47fe65780afa9b9018bf2e5ce885de191d38bb6437d1"
+      },
+      "capture": {
+        "path": "/Users/maxwell/mySpace/myQuant/data/private/cn_daily_maintenance/attempts/20260909T142626Z-2020-4f241c25a2bddb9f/market_capture/manifest.json",
+        "sha256": "87a82f7c39380f796c33206341bf179495bc9ff6e9298b543612fbb49e4227ab"
+      },
+      "state": "NATIVE_PREPARED_CANDIDATE_PASS",
+      "manifest_ref": {
+        "path": "/Users/maxwell/mySpace/myQuant/.agent/acceptance/phase12-macro-recovery-projections/macro-retrospective-market-7bfa715dd7dffd8de895be5826e4eb4b460d5e74decf6a93ca5897b72400d338/manifest.json",
+        "sha256": "97d41ee508acde19f3eba7bb59485309b99f894ee006f3ffd741df0cb26826e1"
+      },
+      "projections": [
+        {
+          "target_trade_date": "20260909",
+          "path": "/Users/maxwell/mySpace/myQuant/.agent/acceptance/phase12-macro-recovery-projections/macro-retrospective-market-7bfa715dd7dffd8de895be5826e4eb4b460d5e74decf6a93ca5897b72400d338/_snapshots/20260918T135431Z.json",
+          "sha256": "f8c4e59caa65cbca0b2cf99c46868a5d5595653c2ffd50b80b4758a417e3ef3c"
+        }
+      ],
+      "checks": [
+        {
+          "date": "20260909",
+          "observation_content_hash": "1412efe7a5b3bd9a22bc83cdbf3da4fba34a803650c3ed58900742a3d2bc28dd",
+          "evidence_sha256": "289ec9a48220d66e9e25597346674a1b4d10382ab0d964aa04ee082fb2f24e65"
+        }
+      ]
+    },
+    {
+      "source": {
+        "path": "/Users/maxwell/mySpace/myQuant/data/parquet/cn/_snapshots/20260911T135213Z.json",
+        "sha256": "e66af370e1b47c974001c2c15a1d4810d6d16c6931727836d55d627bd8684ecb"
+      },
+      "capture": {
+        "path": "/Users/maxwell/mySpace/myQuant/data/private/cn_daily_maintenance/attempts/20260911T135111Z-2020-c3fc0db656d4f550/market_capture/manifest.json",
+        "sha256": "ad29bdcb45ce9420a51369c38a06c53c922739b880cf329b72e371e104ce45b1"
+      },
+      "state": "NATIVE_PREPARED_CANDIDATE_PASS",
+      "manifest_ref": {
+        "path": "/Users/maxwell/mySpace/myQuant/.agent/acceptance/phase12-macro-recovery-projections/macro-retrospective-market-b8d2712ab98be26fe95b4a91757314e481b7b9e8e6ca499f7e69cd9c77bf745e/manifest.json",
+        "sha256": "1214999007f74ce38780fb36dc96bfdc7323e537f1de0c66b37f19c2cc2024ce"
+      },
+      "projections": [
+        {
+          "target_trade_date": "20260910",
+          "path": "/Users/maxwell/mySpace/myQuant/.agent/acceptance/phase12-macro-recovery-projections/macro-retrospective-market-b8d2712ab98be26fe95b4a91757314e481b7b9e8e6ca499f7e69cd9c77bf745e/_snapshots/20260918T135433Z.json",
+          "sha256": "80e1a550c0e0147c22a7fae128449b10afbc3846fd7a796512019ae675ffa51d"
+        },
+        {
+          "target_trade_date": "20260911",
+          "path": "/Users/maxwell/mySpace/myQuant/.agent/acceptance/phase12-macro-recovery-projections/macro-retrospective-market-b8d2712ab98be26fe95b4a91757314e481b7b9e8e6ca499f7e69cd9c77bf745e/_snapshots/20260918T135434Z.json",
+          "sha256": "4325c550d07a3301208e5f2540bdfd0c063c23710eb4a147b40c1ac30f1d6b62"
+        }
+      ],
+      "checks": [
+        {
+          "date": "20260910",
+          "observation_content_hash": "77035c70c2ef418f1de8ceebc15149f1bb04bc50b1adea78f4fbd0b3fe3f35f7",
+          "evidence_sha256": "73afc44e6f48913df3f4a803c494f99d0c95cd841b430f29ccb4b26acb177785"
+        },
+        {
+          "date": "20260911",
+          "observation_content_hash": "0f601e3b8a4b16bde2ab896ddc50d31c934d823d11dc455157b9e0dc2a3edb7d",
+          "evidence_sha256": "055f4817771902b5aa5b22500775ed9cf65990b2665d3998d3e3380dfdde9be2"
+        }
+      ]
+    },
+    {
+      "source": {
+        "path": "/Users/maxwell/mySpace/myQuant/data/parquet/cn/_snapshots/20260914T132202Z.json",
+        "sha256": "d2333e89051bcee16ebc57cdb5823776eb10043caba2f4af8247e32c0dc414a5"
+      },
+      "capture": {
+        "path": "/Users/maxwell/mySpace/myQuant/data/private/cn_daily_maintenance/attempts/20260914T132113Z-2020-94f1d2736ed203df/market_capture/manifest.json",
+        "sha256": "c07f288555b8de6221b29b23c7d90cd11e059e518a11bfbc1c988ae9b9f1b892"
+      },
+      "state": "NATIVE_PREPARED_CANDIDATE_PASS",
+      "manifest_ref": {
+        "path": "/Users/maxwell/mySpace/myQuant/.agent/acceptance/phase12-macro-recovery-projections/macro-retrospective-market-60eb1e1619200b75213b93d1c0a07494c028af92ce2ddc834d2d24efd62814a0/manifest.json",
+        "sha256": "b730b0b27d90e28f29aa86c752889cad498f4234a81c1dc5c853b8cb551872db"
+      },
+      "projections": [
+        {
+          "target_trade_date": "20260914",
+          "path": "/Users/maxwell/mySpace/myQuant/.agent/acceptance/phase12-macro-recovery-projections/macro-retrospective-market-60eb1e1619200b75213b93d1c0a07494c028af92ce2ddc834d2d24efd62814a0/_snapshots/20260918T135436Z.json",
+          "sha256": "41cfa725edef87e6b5e61304dc8766b41e29256307e104bcc11fe602155ec08d"
+        }
+      ],
+      "checks": [
+        {
+          "date": "20260914",
+          "observation_content_hash": "a969ae85ecaaa38b0512c3e1d5ac6662188b2c16463cbb049a27cc52a76dfd49",
+          "evidence_sha256": "5b5d05309d43f2d26e717449599820dc306d972fb7b8b7994b32ac2d490d3f5b"
+        }
+      ]
+    },
+    {
+      "source": {
+        "path": "/Users/maxwell/mySpace/myQuant/data/parquet/cn/_snapshots/20260915T082220Z.json",
+        "sha256": "ac098d7e0db6b7b7604d3c4940f9ef6d35f9950f17f77602850b9f21b7c4a55f"
+      },
+      "capture": {
+        "path": "/Users/maxwell/mySpace/myQuant/data/private/cn_daily_maintenance/attempts/20260915T082123Z-1620-359f51a541d736bb/market_capture/manifest.json",
+        "sha256": "70e546bb90107a2b051158aad48af75461d79149007caa94921666bf3e3296c0"
+      },
+      "state": "NATIVE_PREPARED_CANDIDATE_PASS",
+      "manifest_ref": {
+        "path": "/Users/maxwell/mySpace/myQuant/.agent/acceptance/phase12-macro-recovery-projections/macro-retrospective-market-d7fb338eb7b5bdda8858344c10f3c625868dc319c2ba2b0c9c0e15af21b97f5e/manifest.json",
+        "sha256": "410c576b19b36e5b80c23d8fd646f8a90b97da10186787dadf8b6c4bc838e392"
+      },
+      "projections": [
+        {
+          "target_trade_date": "20260915",
+          "path": "/Users/maxwell/mySpace/myQuant/.agent/acceptance/phase12-macro-recovery-projections/macro-retrospective-market-d7fb338eb7b5bdda8858344c10f3c625868dc319c2ba2b0c9c0e15af21b97f5e/_snapshots/20260918T135438Z.json",
+          "sha256": "d093eb64bf5fc0a1547315cf1a31ab340d729d33b5c8a765341e17bb09d4bb7f"
+        }
+      ],
+      "checks": [
+        {
+          "date": "20260915",
+          "observation_content_hash": "9042bd5c959f2fa7a9c3b4489c53677f0b978bbe63435a01efc579dbe5b7f44b",
+          "evidence_sha256": "4c289058fb6a64b19bf8e6d96a316c0f25fcea46c8aa43951c4bfb8b13d82468"
+        }
+      ]
+    }
+  ]
+}

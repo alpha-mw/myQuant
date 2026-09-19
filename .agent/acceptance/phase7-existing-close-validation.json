@@ -1,0 +1,66 @@
+{
+  "generated_at": "2026-09-12T04:11:10.501423+00:00",
+  "status": "COMPLETED_LOCAL_VALIDATION",
+  "scope": "PHASE7_EXISTING_NATIVE_BATCH_CLOSE_ADOPTION",
+  "review": "Architect amendments accepted; Critic APPROVE",
+  "verification": [
+    {
+      "session": 5659,
+      "tests": 51,
+      "seconds": 7.63,
+      "result": "PASS"
+    },
+    {
+      "session": 38225,
+      "tests": 13,
+      "overlap_with_first_run": 9,
+      "seconds": 2.9,
+      "result": "PASS"
+    }
+  ],
+  "static": {
+    "mypy_sources": 6,
+    "black_files": 7,
+    "flake8": "PASS --max-line-length=100 (6 files); fatal-error lint native batch + adapter",
+    "final_adapter_and_tests": "mypy1, Black2 and flake8 --max-line-length=100 PASS after final edits"
+  },
+  "native_receipt": ".agent/acceptance/phase7-already-closed-after.json",
+  "sources": {
+    "scripts/cn_official_close_batch.py": "97c56104b08efbb0f71a7d1d8b2116248d8b5b2c7a8045e3704fd2661e795403",
+    "scripts/daily_store_adoption.py": "592dac2cb2a16e495a18568a556f32499a570ed71a099621e0277e799adf4a0c",
+    "scripts/daily_production_store_adapter.py": "2fab5baf0c197c5f9239394fd80db77a37e5110e1443f3f6c47a91dd392a1199",
+    "scripts/daily_store_materialization.py": "13cd2e65c86fe42e05ec31d5bd599991e762f616bf9845f7df704cb595520d6d",
+    "scripts/daily_materialization.py": "78d604aa2f31cef7ab8933219f2942b20e689da7f03864c63f551dce047ff669",
+    "quant_investor/operations/portfolio_binding.py": "68734014756a5e95af5852d7063afc49b848e3a825f88a2a14ffa36efd19c677",
+    "quant_investor/operations/decision_recipe.py": "e16f7812379a393462161cf890db6e9220e6feecdfe418dc9a5dd573ad4c758d",
+    "tests/unit/test_daily_evidence_existing_store_adoption.py": "79427f6a0f972d74897d11fd8949e867f07fcedd8a8ed0b8e94d093e4b664f43"
+  },
+  "limitations": [
+    "Native batch no-action close only; nonempty financial events and other manual-record adoption remain",
+    "Isolated synthetic native fixtures; no current-source installed full DAG receipt",
+    "No providers, actual holdings/cash/owner-threshold mutations, deployment or scheduler changes"
+  ],
+  "final_verification": {
+    "session": 48947,
+    "passed": 58,
+    "failed": 3,
+    "seconds": 8.62,
+    "adoption_cases_passed": 16,
+    "failure": "Old mocked adapter fixture missing derived_serving_root during setup before adoption logic",
+    "independent_baseline": {
+      "root": "/private/tmp/myquant-final-source-native-20260909T030031Z/repository",
+      "producer": "3c46cb36918ca00d4fb61707bcfc16ca06b5c2a1",
+      "passed": 0,
+      "failed": 3,
+      "seconds": 0.63,
+      "same_exception": true,
+      "cache_and_bytecode_writes_disabled": true
+    }
+  },
+  "final_guard_notes": [
+    "Every existing source file is decoded through SecureSystemStorage before pending/CAS-crash recovery",
+    "Incomplete legacy custody after head advancement cannot trigger metadata recovery",
+    "Complete legacy read-only compatibility and ordinary native crash recovery both pass"
+  ],
+  "reproduction_note": "Saved after-reproduction preceded final pending-recovery guard hardening; final 58-test run includes current-source equivalent positive native adoption and read-only replay"
+}

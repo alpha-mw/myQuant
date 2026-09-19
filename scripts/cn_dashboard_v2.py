@@ -9,6 +9,8 @@ or any other governed state.
 
 from __future__ import annotations
 
+from quant_investor.operations.dashboard_replay_sources import registered_dashboard_store
+
 import copy
 import hashlib
 import json
@@ -29,8 +31,13 @@ from quant_investor.strategy_records.store import (
     content_sha256 as store_content_sha256,
     load_registered_catalog,
 )
+from quant_investor.strategy_records.close_plan_contracts import (
+    RECEIPT_V2,
+    validate_registered_receipt,
+)
 
 SCHEMA_VERSION = "cn_aggressive_dashboard.v2"
+HISTORICAL_SCHEMA_VERSION = "cn_aggressive_dashboard_history.v1"
 V1_SCHEMA_VERSION = "cn_aggressive_dashboard.v1"
 MARKET = "CN"
 STRATEGY_LABEL = "aggressive_tech_manufacturing"
@@ -128,6 +135,14 @@ def _project_relative(path: Path, project_root: Path) -> str:
 
 def _stable_artifact(path: Path, project_root: Path) -> _Artifact:
     """Bind a regular, non-symlink project file with a stable double read."""
+
+    from quant_investor.operations.dashboard_replay_sources import retained_bytes
+
+    retained = retained_bytes(path, project_root)
+    if retained is not None:
+        # The closed replay context already validated this exact logical path.
+        # Its original current-head file need not still exist on disk.
+        return _artifact_from_bytes(path, retained, project_root)
 
     try:
         before = path.lstat()
@@ -281,6 +296,12 @@ def _reject_unrelated_same_day_receipts(
         raise DashboardV2Error("daily_continuity_receipts_invalid")
     for candidate in receipts:
         if not isinstance(candidate, dict) or candidate.get("receipt_id") == expected_receipt_id:
+            continue
+        if candidate.get("schema_id") == RECEIPT_V2:
+            try:
+                validate_registered_receipt(candidate)
+            except ValueError as exc:
+                raise DashboardV2Error("daily_continuity_receipt_unrelated") from exc
             continue
         if candidate.get("schema_id") == OFFICIAL_CLOSE_BATCH_RECEIPT_SCHEMA:
             if (
@@ -819,7 +840,9 @@ def _verify_v1_against_closure(
         if evidence.get(key) != closure.get(key):
             raise DashboardV2Error(f"canonical_v1_active_closure_mismatch:{key}")
     try:
-        ledger = pd.read_parquet(ledger_artifact.path)
+        from io import BytesIO
+
+        ledger = pd.read_parquet(BytesIO(ledger_artifact.raw))
     except Exception as exc:
         raise DashboardV2Error("active_ledger_parquet_unreadable") from exc
     required = {"symbol", "name", "shares", "avg_cost", "cost_basis"}
@@ -996,6 +1019,8 @@ def build_v2_bundle(
     publication_attempt_id: str,
     market_reader: Any | None = None,
     v1_json_bytes_override: bytes | None = None,
+    historical_close_plan_ref: Mapping[str, str] | None = None,
+    historical_valuation_date: str | None = None,
 ) -> dict[str, Any]:
     """Build one exact, read-only v2 Dashboard bundle.
 
@@ -1028,14 +1053,30 @@ def build_v2_bundle(
     if _json_object(v1_artifact, label="canonical_v1_file") != v1_bundle:
         raise DashboardV2Error("canonical_v1_file_body_mismatch")
 
+    if historical_valuation_date is not None and historical_close_plan_ref is None:
+        raise DashboardV2Error("historical_date_requires_committed_snapshot")
+    historical_refs = []
     try:
-        registered = load_registered_catalog(records)
+        if historical_close_plan_ref is None:
+            registered = registered_dashboard_store(records, current_loader=load_registered_catalog)
+        else:
+            from daily_dashboard_history import committed_dashboard_store
+
+            registered, historical_refs = committed_dashboard_store(
+                project_root=root,
+                record_root=records,
+                plan_ref=historical_close_plan_ref,
+                valuation_date=historical_valuation_date,
+            )
     except StrategyRecordStoreError as exc:
         raise DashboardV2Error(f"record_store_invalid:{exc}") from exc
     if registered is None:
         raise DashboardV2Error("record_store_unregistered")
     pointer, catalog = registered
-    pointer_artifact = _stable_artifact(records / "_record_store/current.v1.json", root)
+    pointer_path = records / "_record_store/current.v1.json"
+    if historical_close_plan_ref is not None:
+        pointer_path = root / historical_refs[1]["path"]
+    pointer_artifact = _stable_artifact(pointer_path, root)
     catalog_relative = pointer.get("catalog_path")
     if not isinstance(catalog_relative, str):
         raise DashboardV2Error("record_store_catalog_path_invalid")
@@ -1048,7 +1089,18 @@ def build_v2_bundle(
     if catalog_artifact.sha256 != pointer.get("catalog_sha256"):
         raise DashboardV2Error("record_store_catalog_sha256_mismatch")
 
+    active_id = str(pointer.get("active_record_id") or "")
     closure = pointer.get("active_closure")
+    if historical_valuation_date is not None:
+        from daily_dashboard_history import select_historical_records
+        from quant_investor.strategy_records.store import _active_closure
+
+        active_id, _ = select_historical_records(
+            record_root=records,
+            catalog=catalog,
+            valuation_date=historical_valuation_date,
+        )
+        closure = _active_closure(catalog["records"], active_id)
     if not isinstance(closure, dict) or not closure:
         raise DashboardV2Error("record_store_active_closure_missing")
     artifacts, closure_refs = _closure_artifacts(
@@ -1056,7 +1108,6 @@ def build_v2_bundle(
     )
     _verify_v1_against_closure(v1_bundle, closure, artifacts["ledger"])
 
-    active_id = str(pointer.get("active_record_id") or "")
     active_lineage = [
         row
         for row in catalog.get("lineage_index", [])
@@ -1114,16 +1165,38 @@ def build_v2_bundle(
                 candidate
                 for candidate in catalog.get("receipts", [])
                 if isinstance(candidate, dict)
-                and candidate.get("schema_id") == OFFICIAL_CLOSE_BATCH_RECEIPT_SCHEMA
+                and candidate.get("schema_id") in {OFFICIAL_CLOSE_BATCH_RECEIPT_SCHEMA, RECEIPT_V2}
                 and candidate.get("record_id") == active_id
             ]
+            if (
+                len(active_batch_receipts) == 1
+                and active_batch_receipts[0]["schema_id"] == RECEIPT_V2
+            ):
+                candidate = validate_registered_receipt(active_batch_receipts[0])
+                from daily_dashboard_history import committed_dashboard_store
+
+                path = (
+                    records
+                    / "_record_store/daily_close_transactions"
+                    / candidate["transaction_id"]
+                    / "plan.v2.json"
+                )
+                artifact = _stable_artifact(path, root)
+                committed, refs = committed_dashboard_store(
+                    project_root=root,
+                    record_root=records,
+                    plan_ref=_source_ref(artifact),
+                    valuation_date=candidate["trade_date"],
+                )
+                if committed != (pointer, catalog):
+                    raise DashboardV2Error("registered_financial_publication_source_mismatch")
+                historical_refs.extend(refs)
             batch_financial_publication = (
                 lineage_row.get("publication_class") == BATCH_PUBLICATION_CLASS
                 and lineage_row.get("valuation_date")
                 == v1_bundle.get("portfolio", {}).get("performance_end_date")
                 and len(active_batch_receipts) == 1
-                and active_batch_receipts[0].get("trade_date")
-                == lineage_row.get("valuation_date")
+                and active_batch_receipts[0].get("trade_date") == lineage_row.get("valuation_date")
                 and active_batch_receipts[0].get("status") == "OFFICIAL_CLOSE_PREPARED"
                 and active_batch_receipts[0].get("payload_copied") is False
                 and active_batch_receipts[0].get("actual_holdings_mutation_authority") is False
@@ -1167,7 +1240,7 @@ def build_v2_bundle(
             receipt = matching_receipts[0]
             _validate_continuity_receipt(
                 receipt,
-                expected_active_record_id=str(pointer.get("active_record_id") or ""),
+                expected_active_record_id=active_id,
                 expected_checkpoint=closure,
                 generation_local_date=generation_local_date,
             )
@@ -1220,7 +1293,7 @@ def build_v2_bundle(
         else:
             _validate_continuity_receipt(
                 receipt,
-                expected_active_record_id=str(pointer.get("active_record_id") or ""),
+                expected_active_record_id=active_id,
                 expected_checkpoint=closure,
                 generation_local_date=generation_local_date,
             )
@@ -1310,7 +1383,7 @@ def build_v2_bundle(
             weekend_receipt = weekend_receipts[0]
             _validate_continuity_receipt(
                 weekend_receipt,
-                expected_active_record_id=str(pointer.get("active_record_id") or ""),
+                expected_active_record_id=active_id,
                 expected_checkpoint=closure,
                 generation_local_date=generation_local_date,
                 expected_created_local_date=mark_day,
@@ -1436,6 +1509,7 @@ def build_v2_bundle(
     )
     source_refs = _dedupe_source_refs(
         [
+            *historical_refs,
             _source_ref(v1_artifact),
             _source_ref(pointer_artifact),
             _source_ref(catalog_artifact),
@@ -1467,7 +1541,7 @@ def build_v2_bundle(
         "integrity": {"status": "VERIFIED"},
         "continuity_authority": {
             "status": continuity_status,
-            "anchor_record_id": str(pointer["active_record_id"]),
+            "anchor_record_id": active_id,
             "anchor_data_date": _date_text(
                 v1_bundle.get("latest_data_date"), label="anchor_data_date"
             ),
@@ -1503,7 +1577,7 @@ def build_v2_bundle(
             "authority": VIEW_ONLY_AUTHORITY,
             "source_kind": MARK_SOURCE_KIND,
             "mark_date": mark_date,
-            "anchor_record_id": str(pointer["active_record_id"]),
+            "anchor_record_id": active_id,
             "base_ledger_sha256": str(closure["ledger_sha256"]),
             "base_financial_state_sha256": str(closure["financial_state_sha256"]),
             "positions": marked_positions,
@@ -1534,6 +1608,19 @@ def build_v2_bundle(
         },
         "source_refs": source_refs,
     }
+    if historical_close_plan_ref is not None:
+        if market_reader is None or getattr(market_reader, "_frozen_snapshot_sha", None) is None:
+            raise DashboardV2Error("historical_market_snapshot_must_be_frozen")
+        if mark_date != v1_bundle["latest_data_date"]:
+            raise DashboardV2Error("historical_store_market_date_mismatch")
+        bundle["schema_version"] = HISTORICAL_SCHEMA_VERSION
+        bundle["evidence_timing"] = "RETROSPECTIVE_RECOMPUTE"
+        bundle["valuation_date"] = v1_bundle["latest_data_date"]
+        bundle["historical_binding"] = {
+            "plan_ref": dict(historical_close_plan_ref),
+            "store_pointer_ref": _source_ref(pointer_artifact),
+            "market_snapshot_ref": _source_ref(market_manifest),
+        }
     bundle["content_sha256"] = content_sha256(bundle)
     errors = validate_v2_shape(bundle)
     if errors:
@@ -1563,9 +1650,23 @@ def validate_v2_shape(bundle: dict) -> list[str]:
         "content_sha256",
     }
     errors: list[str] = []
+    historical = bundle.get("schema_version") == HISTORICAL_SCHEMA_VERSION
+    if historical:
+        required.update({"historical_binding", "evidence_timing", "valuation_date"})
+        if bundle.get("valuation_date") != bundle.get("canonical_v1", {}).get("latest_data_date"):
+            errors.append("historical_valuation_date_mismatch")
+        if bundle.get("evidence_timing") != "RETROSPECTIVE_RECOMPUTE":
+            errors.append("historical_evidence_timing_invalid")
+        binding = bundle.get("historical_binding")
+        if (
+            not isinstance(binding, dict)
+            or set(binding) != {"plan_ref", "store_pointer_ref", "market_snapshot_ref"}
+            or not all(_valid_source_ref(ref) for ref in binding.values())
+        ):
+            errors.append("historical_binding_invalid")
     if set(bundle) != required:
         errors.append("bundle_keys_invalid")
-    if bundle.get("schema_version") != SCHEMA_VERSION:
+    if bundle.get("schema_version") not in {SCHEMA_VERSION, HISTORICAL_SCHEMA_VERSION}:
         errors.append("schema_version_invalid")
     attempt_id = bundle.get("publication_attempt_id")
     if not isinstance(attempt_id, str) or _ATTEMPT_RE.fullmatch(attempt_id) is None:
@@ -2025,6 +2126,24 @@ def _validate_required_source_refs(
         f"{store_root}/_record_store/current.v1.json",
         "data/parquet/cn/_latest.json",
     }
+    if bundle.get("schema_version") == HISTORICAL_SCHEMA_VERSION:
+        binding = bundle.get("historical_binding")
+        if not isinstance(binding, dict) or not all(_valid_source_ref(r) for r in binding.values()):
+            errors.append("historical_binding_invalid")
+            return
+        required = {ref["path"] for ref in binding.values()}
+        if (
+            not binding.get("store_pointer_ref", {})
+            .get("path", "")
+            .endswith("/committed-pointer.v1.json")
+        ):
+            errors.append("historical_store_pointer_path_invalid")
+        if (
+            not binding.get("market_snapshot_ref", {})
+            .get("path", "")
+            .startswith("data/parquet/cn/_snapshots/")
+        ):
+            errors.append("historical_market_snapshot_path_invalid")
     continuity = bundle.get("continuity_authority")
     anchor = str(continuity.get("anchor_record_id") or "") if isinstance(continuity, dict) else ""
     if anchor:
@@ -2074,6 +2193,24 @@ def verify_v2_source_refs(
     refs = bundle.get("source_refs")
     if not isinstance(refs, list):
         return ["source_refs_missing"]
+    if bundle.get("schema_version") == HISTORICAL_SCHEMA_VERSION:
+        try:
+            from daily_dashboard_history import committed_dashboard_store
+
+            binding = bundle["historical_binding"]
+            records = project_root / "results/strategy_records/CN/aggressive_tech_manufacturing"
+            _, committed_refs = committed_dashboard_store(
+                project_root=project_root,
+                record_root=records,
+                plan_ref=binding["plan_ref"],
+                valuation_date=bundle["valuation_date"],
+            )
+            if binding["store_pointer_ref"] != committed_refs[1]:
+                errors.append("historical_commit_pointer_mismatch")
+            if any(ref not in refs for ref in committed_refs):
+                errors.append("historical_commit_sources_missing")
+        except (KeyError, ValueError, OSError, StrategyRecordStoreError) as exc:
+            errors.append("historical_commit_invalid:" + str(exc))
     canonical_ref = bundle.get("canonical_v1_ref")
     for index, ref in enumerate(refs):
         if not _valid_source_ref(ref):

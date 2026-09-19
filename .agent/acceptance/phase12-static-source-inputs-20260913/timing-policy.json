@@ -1,0 +1,1 @@
+{"acquisition_deadline_local_time":"23:59:59","alignment_max_seconds":1,"authority":{"actual_holdings_mutation":false,"broker":false,"mainline":false,"order":false,"system":false,"trade":false},"cutoff_rule":"AFTER_VERIFIED_SOURCE_CUSTODY","mode":"CURRENT_POST_ACQUISITION","schema_version":"cn-daily-research-timing-policy.v1","timezone":"Asia/Shanghai"}

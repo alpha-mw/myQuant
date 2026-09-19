@@ -1,0 +1,14 @@
+{
+  "root": "/private/tmp/myquant-configured-missing-store-20260914T012539Z",
+  "commit": "bf078d3235de3ade1379e8082d5d4a49e109f7d5",
+  "state": "RETAINED_RECOVERY_RUNNING",
+  "source_root": "/private/tmp/myquant-configured-catalog-20260913T202622Z",
+  "native_scenario_started": true,
+  "production_deployed": false,
+  "initial_clone_attached_failure_retained": true,
+  "process_handle": 6375,
+  "child_pid": 93409,
+  "status_path": "/private/tmp/myquant-configured-missing-store-20260914T012539Z/missing-store-resume-driver-status.json",
+  "initial_process_handle": 28287,
+  "initial_state": "FAIL_TEST_ASSERTION"
+}

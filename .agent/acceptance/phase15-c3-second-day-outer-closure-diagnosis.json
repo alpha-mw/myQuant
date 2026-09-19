@@ -1,0 +1,17 @@
+{
+  "observed_at": "2026-09-15T02:05:29.111128+00:00",
+  "child_pid": 29285,
+  "signal_count": 6,
+  "replay_call": 11,
+  "trade_date": "20260828",
+  "trace_ref": {
+    "path": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/configured-successor-20260828-call11.stack.txt",
+    "sha256": "abd9b0daaf31eaba72d829ea964d1bd9e1d9207563c2728130259f03e6ca3518"
+  },
+  "caller": "daily_automatic_catchup.run_automatic_catchup:278 -> automatic_catchup_closure.completion_state:51 -> automatic_catchup_resolution._replay:92",
+  "phase": "POST_INNER_DISPATCH_OUTER_COMPLETION_STATE_RECONCILIATION",
+  "driver_stage_complete": false,
+  "synthetic": true,
+  "production_deployed": false,
+  "do_not_repeat_signal_for_same_phase": true
+}

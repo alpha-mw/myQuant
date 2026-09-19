@@ -1,0 +1,12 @@
+{
+  "state": "RUNNING",
+  "root": "/private/tmp/myquant-contextual-timeout-repro-20260916T144304Z",
+  "frozen_repository": "/private/tmp/myquant-future-calendar-scoped-clock-20260916T125157Z/repository",
+  "target": "tests/unit/test_unified_factor_store_contextual.py::test_full_prospective_store_context_replays_1442_raw_sources_without_activation",
+  "scope": "ISOLATED_DIAGNOSTIC_WITH_120_SECOND_CHILD_STACK_DUMP",
+  "native_timeout_seconds": 180,
+  "timeout_changed": false,
+  "automatic_retry": false,
+  "started_at": "2026-09-16T14:43:04.882491+00:00",
+  "pid": 34973
+}

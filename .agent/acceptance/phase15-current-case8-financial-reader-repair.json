@@ -1,0 +1,14 @@
+{
+  "observed_at": "2026-09-16T20:28:16.201235+00:00",
+  "case": 8,
+  "state": "HARNESS_PREPARATION_FAILED_NATIVE_FINANCIAL_MODE_CONTRACT",
+  "failure": "Generic source reader rejected legitimate0644 Store output before fault injection",
+  "runtime_changed": false,
+  "original_file_permissions_changed": false,
+  "old_status_sha256": "c65eff5e767445baa78acc1caa86809b50b28074f0013618045dfa4204d69749",
+  "old_log_sha256": "fd74f5c685bebf08ba528fa622277e559f215206ff864b644e8898c7e8326323",
+  "old_helper_sha256": "7c95f4d8eade9cc7e28806b680ae59c742998eb790ded96f9e6c993cc775f46b",
+  "repair": "Only Store outputs under exact strategy prefix use existing native read_event_source; other sources keep strict secure reader",
+  "focused_harness_tests_passed": 4,
+  "new_helper_sha256": "78e166e4b10bcabe7a6938c02deb102640621285cf48952dc9fb039e6fd17339"
+}

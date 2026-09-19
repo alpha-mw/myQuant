@@ -102,6 +102,19 @@ def build_selector(
 
 
 def validate_selector(selector: Any) -> list[str]:
+    if (
+        isinstance(selector, dict)
+        and selector.get("schema_version") == "cn_aggressive_dashboard_selector.v3"
+    ):
+        from quant_investor.operations.dashboard_serving_contract import (
+            validate_selector as validate_v3,
+        )
+
+        try:
+            validate_v3(selector)
+            return []
+        except (ValueError, KeyError, TypeError) as exc:
+            return ["sealed_selector_invalid:" + str(exc)]
     if not isinstance(selector, dict):
         return ["selector_not_object"]
     required = {
@@ -156,6 +169,13 @@ def validate_selector(selector: Any) -> list[str]:
 
 
 def render_json(selector: dict[str, Any]) -> bytes:
+    if selector.get("schema_version") == "cn_aggressive_dashboard_selector.v3":
+        from quant_investor.operations.dashboard_serving_contract import (
+            validate_selector as validate_v3,
+        )
+        from quant_investor.contracts import canonical_json_bytes as exact_json
+
+        return exact_json(validate_v3(selector))
     errors = validate_selector(selector)
     if errors:
         raise ValueError("selector_invalid:" + ";".join(errors))
@@ -165,6 +185,14 @@ def render_json(selector: dict[str, Any]) -> bytes:
 
 
 def render_js(selector: dict[str, Any]) -> bytes:
+    if selector.get("schema_version") == "cn_aggressive_dashboard_selector.v3":
+        from quant_investor.operations.dashboard_serving_contract import raw_js
+
+        return raw_js(
+            "MyQuantCNAggressiveDashboardSelectorV2",
+            "MyQuantCNDailyDashboardSelectorRaw",
+            render_json(selector),
+        )
     errors = validate_selector(selector)
     if errors:
         raise ValueError("selector_invalid:" + ";".join(errors))
@@ -201,7 +229,41 @@ def publish_selector(
     js_path: Path,
     project_root: Path,
     js_first: bool,
+    _capability=None,
 ) -> None:
+    from quant_investor.operations.dashboard_publication_guard import publication_scope
+    from quant_investor.operations.daily_contract import ContractError
+
+    with publication_scope(project_root, _capability):
+        if (
+            selector.get("schema_version") == "cn_aggressive_dashboard_selector.v3"
+            and _capability is None
+        ):
+            raise ContractError("DASHBOARD_EOD_PUBLICATION_REQUIRED")
+        _publish_selector_locked(
+            selector,
+            json_path=json_path,
+            js_path=js_path,
+            project_root=project_root,
+            js_first=js_first,
+            _capability=_capability,
+        )
+
+
+def _publish_selector_locked(
+    selector: dict[str, Any],
+    *,
+    json_path: Path,
+    js_path: Path,
+    project_root: Path,
+    js_first: bool,
+    _capability=None,
+) -> None:
+    from quant_investor.operations.dashboard_replay_sources import (
+        require_live_dashboard_publication,
+    )
+
+    require_live_dashboard_publication()
     json_path = require_exact_private_dashboard_output_path(
         project_root=project_root,
         path=json_path,
@@ -220,7 +282,10 @@ def publish_selector(
         else ((json_path, json_raw), (js_path, js_raw))
     )
     for path, raw in ordered:
-        _atomic_replace(path, raw)
+        if _capability is not None:
+            _capability.validate_bytes(path, raw)
+        if _capability is None or not path.exists() or path.read_bytes() != raw:
+            _atomic_replace(path, raw)
 
 
 def read_selector(path: Path) -> dict[str, Any]:

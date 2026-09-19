@@ -398,6 +398,14 @@ class FactorBacktestConfig:
     max_participation_rate: float | None = None
     min_coverage_ratio: float = 0.0
     neutralize_industry: bool = False
+    #: Legacy candidate selection drops a symbol whose *forward* execution return
+    #: is unavailable, which makes a signal-day target weight depend on data from
+    #: after the signal date — and, because the eligible count sets the quantile
+    #: boundaries, changes the weights of the other symbols too. Set False to
+    #: decide eligibility from signal-date information only and let ex-post
+    #: evaluability be reported separately. The default preserves the historical
+    #: behaviour rather than silently re-weighting existing results.
+    selection_requires_future_return: bool = True
     neutralize_size: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -416,6 +424,9 @@ class FactorBacktestConfig:
             raise ValueError("delay_days must be >= 1.")
         self.execution_price = str(self.execution_price)
         self.long_short = bool(self.long_short)
+        self.selection_requires_future_return = bool(
+            self.selection_requires_future_return
+        )
         self.long_only = bool(self.long_only)
         if not (self.long_short or self.long_only):
             raise ValueError("At least one of long_short or long_only must be true.")
@@ -473,6 +484,12 @@ class FactorBacktestConfig:
             max_participation_rate=data.get("max_participation_rate"),
             min_coverage_ratio=float(data.get("min_coverage_ratio", 0.0)),
             neutralize_industry=bool(data.get("neutralize_industry", False)),
+            # Enumerated explicitly: without this the flag is dropped on
+            # round-trip and a research config silently reverts to the
+            # lookahead-bearing default.
+            selection_requires_future_return=bool(
+                data.get("selection_requires_future_return", True)
+            ),
             neutralize_size=bool(data.get("neutralize_size", False)),
             metadata=dict(data.get("metadata", {}) or {}),
         )

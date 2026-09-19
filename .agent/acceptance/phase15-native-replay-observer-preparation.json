@@ -1,0 +1,34 @@
+{
+  "observed_at": "2026-09-14T00:00:05.756269+00:00",
+  "scope": "FUTURE_ACCEPTANCE_HELPER_ONLY",
+  "helper": "tests/unit/_native_configured_successor.py",
+  "helper_sha256": "7bb8304194081634648e67e8c847ee917e2c5d43f036f76b097365407f32ce73",
+  "producer_commit": "bf078d3235de3ade1379e8082d5d4a49e109f7d5",
+  "business_runtime_differences": [],
+  "native_admission_or_replay_skipped": false,
+  "behavior": "Passively observe actual current-day native full-replay returns inside successful dispatch; use exact matching result for test proof, otherwise call original extra independent replay. No captured result is ever returned to the runtime.",
+  "preserved_checks": [
+    "predecessor native replay before new synthetic input staging",
+    "all original native dispatch/replay/serving gates",
+    "unchanged normal five-day configuration/lineage checks",
+    "separate final full native readonly replay of all five retained dates",
+    "Morning native completed-input admission"
+  ],
+  "validation": {
+    "black": "PASS",
+    "selected_flake8": "PASS",
+    "parent_and_generated_child_syntax": "PASS",
+    "installed_actual_sha_failure_passthrough": "PASS",
+    "success_capture_on_native_failure": false,
+    "original_aliases_restored": true,
+    "copied_negative_fixture_restored": true,
+    "session": 34474,
+    "exit_code": 0,
+    "log": "/private/tmp/myquant-configured-catalog-20260913T202622Z/native-replay-observer-validation.log"
+  },
+  "positive_full_dispatch_observer_exercised": false,
+  "observed_runtime_savings_seconds": null,
+  "first_E_process_modified": false,
+  "full_goal_complete": false,
+  "production_deployed": false
+}

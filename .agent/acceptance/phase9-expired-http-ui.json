@@ -1,0 +1,18 @@
+{
+  "scope": "EXPIRED_SYNTHETIC_HTTP_BROWSER_UI",
+  "root": "/private/var/folders/cp/539tc5k549l2jzdy90ptl6cm0000gn/T/phase9-expired-ui-to9q06r3",
+  "source": "/private/var/folders/cp/539tc5k549l2jzdy90ptl6cm0000gn/T/phase9-source-collector-wjzs0w1g/portfolio_dashboard",
+  "full_native_eod_admission": false,
+  "observed_at": "2026-09-12T16:11:55.523914+00:00",
+  "result": "PASS",
+  "observed_labels": [
+    "已过期日终快照 · 2026-08-28",
+    "STALE",
+    "快照已过期，可查看历史记录",
+    "2026-08-28 · 16 calendar days"
+  ],
+  "browser_tab_closed": true,
+  "server_stop_requested": true,
+  "server_stopped": true,
+  "server_exit_code": 0
+}

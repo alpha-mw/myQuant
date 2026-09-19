@@ -1,0 +1,72 @@
+{
+  "status": "LOCAL_REPAIR_VALIDATED",
+  "observed_at": "2026-09-13T19:01:50.274110+00:00",
+  "source_sha256": {
+    "scripts/manage_cn_strategy_records.py": "460f8e7e3d386618f6679b275a89e5252c88ab82459b29a5c7cfb0044125752b",
+    "scripts/registered_daily_event_sources.py": "d5dbc62f76cc28992eabf2d84bff272de297cb68e3126756609fdf452f84e1e2",
+    "scripts/check_strategy_record_access.py": "3ca1efd03595980eed0fcc3ee09d33921c560a76fb24f33f0c538efdaa19c054",
+    "tests/unit/test_registered_event_declaration.py": "4b8373cb9014913b5e6c3cb44c54976da9f331b3b37badb8a01b43084a335d5f",
+    "tests/unit/test_daily_evidence_research_diagnostics.py": "fa5b3538682705cdba158977341767e53d02e32b5c0d19b06de4084632ef1909",
+    "tests/unit/test_research_historical_universe_gates.py": "358a3cef86f29886e8bb176b818fe22689dd545985a3bc12b05c1881bba52bcd",
+    "tests/unit/_native_configured_daily_scenario.py": "174933267fecc6b06a35eef679968b0faf006992aaa81fed0fc3a50ac25371ee",
+    "tests/unit/_native_daily_release_fixture.py": "921438acff4f8e910410a78e82dc37c8616879b9aacce7a92cf0f11228e6d89e"
+  },
+  "registered_publication": "All directory and immutable-file publication moved into the manager operation-lock block; retired reader writer rejects immediately. Lock fd/name identity and actual exclusion rechecked across publication/readback.",
+  "tests": {
+    "count": 162,
+    "seconds": 17.67,
+    "log": "/Users/maxwell/mySpace/myQuant/.agent/acceptance/phase15-access-fixture-validation.log",
+    "scope": "registered declaration, access governance, Record manager, daily Event producer, research diagnostics and historical universe fixtures"
+  },
+  "static_checks": {
+    "fatal": "PASS",
+    "stable_lint": "PASS",
+    "stable_black": "PASS 88 files",
+    "stable_mypy": "PASS 88 files"
+  },
+  "frozen_access_inventory": {
+    "state": "PASS",
+    "reviewed_callers": 65,
+    "repository": "/private/tmp/myquant-configured-current-20260913T190006Z/repository",
+    "commit": "f7968454dcf537b20369a762bdbb16f56b2ee019"
+  },
+  "base_ci_root": "/private/tmp/myquant-current-acceptance-20260913T175746Z",
+  "full_ci_result": "BASE_FAILED_SIX_KNOWN_REPAIRS_VALIDATED_LOCALLY",
+  "configured_native_root": "/private/tmp/myquant-configured-current-20260913T190006Z",
+  "configured_native_result": "INTERRUPTED_FOR_CONFIRMED_TEST_CLOCK_GAP",
+  "production_deployed": false,
+  "full_goal_complete": false,
+  "base_full_ci": {
+    "state": "FAIL",
+    "unit": {
+      "passed": 4823,
+      "failed": 6,
+      "skipped": 3,
+      "seconds": 3852.09
+    },
+    "all_four_static_steps": "PASS",
+    "source_drift": [],
+    "status_ref": "/private/tmp/myquant-current-acceptance-20260913T175746Z/ci-status.json",
+    "failure_scope": "Exactly the 6 previously reproduced failures; repaired focused checks recorded separately, not relabeled as a passing original run."
+  },
+  "dashboard": {
+    "current_daily_contract": {
+      "passed": 28,
+      "failed": 0,
+      "log": "/Users/maxwell/mySpace/myQuant/.agent/acceptance/phase15-frozen-daily-dashboard.log"
+    },
+    "legacy_v2": "PASS",
+    "legacy_v1_original": "FAIL: internal cache-version assertions stale after index.html moved to app v9 / styles v6",
+    "legacy_v1_corrected": "PASS; test-only change; frozen snapshot unchanged",
+    "test_delta_sha256": "e8c777585fe1c6de951e2c6d8923c5a1138a6173b3db06e3a51f22601e25aa0d"
+  },
+  "frozen_current_focused_retest": {
+    "state": "PASS",
+    "count": 162,
+    "seconds": 17.76,
+    "log": "/private/tmp/myquant-configured-current-20260913T190006Z/focused-repairs.log",
+    "commit": "f7968454dcf537b20369a762bdbb16f56b2ee019"
+  },
+  "replacement_native_root": "/private/tmp/myquant-configured-clock-20260913T192045Z",
+  "replacement_native_result": "RUNNING"
+}

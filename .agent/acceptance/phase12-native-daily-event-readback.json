@@ -1,0 +1,44 @@
+{
+  "observed_at": "2026-09-13T08:36:27.573559+00:00",
+  "scope": "READ_ONLY_EXISTING_DAILY_EVENT_SOURCE",
+  "status": "PASS",
+  "trade_date": "2026-09-03",
+  "event_pointer_sha256": "3ab06e301cf197ee33b242f27c42d6a18f063a07c2860d3f9682662ca03349a9",
+  "source_profile": "LEGACY_COMPONENT_TERMINAL",
+  "maintenance_status": "PARTIAL",
+  "source_refs": [
+    {
+      "path": "data/private/cn_daily_maintenance/attempts/20260903T141558Z-2020-2e0162fa054894b7/attempt.json",
+      "sha256": "37183ce0f75e4e7aee9e55b4bc6c2588ddbeb36c5199d0ee5e7c96d633af9c6f"
+    },
+    {
+      "path": "data/private/cn_daily_maintenance/attempts/20260903T141558Z-2020-2e0162fa054894b7/close-session-receipt.json",
+      "sha256": "7bba5f1ca7e621b7cd67539406ceade2c0e804156ac40c66f1072f049ca3815e"
+    },
+    {
+      "path": "data/private/cn_daily_maintenance/attempts/20260903T141558Z-2020-2e0162fa054894b7/close-session.raw.json",
+      "sha256": "ee261e48460c0a3126f588a078193878310c45d0e4d822698a70ea207397e581"
+    },
+    {
+      "path": "data/private/cn_daily_maintenance/attempts/20260903T141558Z-2020-2e0162fa054894b7/state.json",
+      "sha256": "64482c781de2d80a2c1028285c0e3314e16169b5938755b2bc0b371673f05f4a"
+    },
+    {
+      "path": "operations/policies/cn-daily-official-close-policy.v1.json",
+      "sha256": "da0e378f69ad52022c16012bd2d568dea56a2093bc421766167ec508ae132a29"
+    }
+  ],
+  "eod_admission": false,
+  "factor_admission": false,
+  "macro_diagnostic": {
+    "original_ref": {
+      "path": "/Users/maxwell/mySpace/myQuant/data/private/cn_daily_maintenance/MACRO_WRITE_VETO.json",
+      "sha256": "94ca64460695572e69afa7a37f3a4d8572afef8170a91492b52586295a3f424b"
+    },
+    "current_sha256": "0730ed36967ce75453486aed0967d1c238c344b1073c369843184f65fcf26c4b",
+    "semantics": "RECORDED_DIAGNOSTIC_REF_ONLY_NOT_EVENT_AUTHORITY"
+  },
+  "financial_source_mutation": false,
+  "historical_closure_creation": false,
+  "provider_calls": false
+}

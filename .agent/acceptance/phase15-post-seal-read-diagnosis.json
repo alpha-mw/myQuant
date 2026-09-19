@@ -1,0 +1,31 @@
+{
+  "observed_at": "2026-09-13T23:18:00.817833+00:00",
+  "state": "BOUNDED_POST_SEAL_READ_DIAGNOSIS",
+  "scope": "Separate60-second readonly full EOD replay; journal writes and financial CAS forbidden. Not an exact primary-process stack or an EOD pass.",
+  "profile": "/private/tmp/myquant-configured-catalog-20260913T202622Z/full-eod-read-profile.txt",
+  "profile_status": {
+    "state": "BOUNDED_READ_SAMPLE",
+    "error": "bounded readonly profile elapsed",
+    "elapsed_seconds": 60.06945579103194,
+    "scope": "separate readonly full EOD replay,60s bound; no full-run completion claim"
+  },
+  "findings": [
+    "Sample remained inside Decision source replay and Theme/Core binding, dominated by deep Factor lineage/source/recomputation validation.",
+    "No serving receipt, selector commit or intent observed; completion was sealed at2026-09-13T22:17:37.951022Z.",
+    "Static call-path review found nested repeated validation; no safe bypass or runtime optimization implemented."
+  ],
+  "future_trace_protocol": {
+    "driver": ".agent/acceptance/run_configured_successors.py",
+    "sha256": "d203d7d57e6b3e763f5d0dacfeb63ccd43ee542806963eb4e280fdbfbf15ec68",
+    "signal": "SIGUSR1",
+    "requires_verified_ready_marker": true,
+    "smoke_test": "PASS: exact generated child block, ready PID, stack output, normal child exit",
+    "scope": "future diagnostic child only; no locals, no timers/threads, no current-process injection"
+  },
+  "original_process": {
+    "handle": 37364,
+    "pid": 14119,
+    "state": "RUNNING"
+  },
+  "full_goal_complete": false
+}

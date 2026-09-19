@@ -1,0 +1,93 @@
+{
+  "observed_at": "2026-09-14T04:51:03.075123+00:00",
+  "state": "PREPARATION_FOOTPRINT_ASSERTION_REPAIRED_EXISTING_REQUEST_CONTINUED",
+  "root": "/private/tmp/myquant-configured-catalog-20260913T202622Z",
+  "original_failed_handle": 63358,
+  "original_driver_status": {
+    "state": "FAIL",
+    "root": "/private/tmp/myquant-configured-catalog-20260913T202622Z",
+    "producer_commit": "bf078d3235de3ade1379e8082d5d4a49e109f7d5",
+    "started_at": "2026-09-14T00:13:11.732136+00:00",
+    "steps": [
+      {
+        "stage": "repeat",
+        "exit_code": 0,
+        "seconds": 6454.59,
+        "log": "/private/tmp/myquant-configured-catalog-20260913T202622Z/configured-successor-repeat.log"
+      },
+      {
+        "stage": "20260828",
+        "exit_code": 1,
+        "seconds": 5869.39,
+        "log": "/private/tmp/myquant-configured-catalog-20260913T202622Z/configured-successor-20260828.log"
+      }
+    ],
+    "production_deployed": false,
+    "helper_drift": [],
+    "finished_at": "2026-09-14T04:35:29.881604+00:00"
+  },
+  "failure_classification": "TEST_REJECTED_DAY_DIRECTORY_CREATED_BY_SUCCESSFUL_SOURCE_PREPARATION",
+  "actual_day_directory_entries_at_stop": [
+    "preparation"
+  ],
+  "native_business_nodes_started_at_stop": false,
+  "native_dag_failure_at_stop": false,
+  "fixed_check": "Reject actual nodes/executions/handoff/EOD evidence and require all native node states NOT_STARTED; preparation directory is permitted.",
+  "validation": {
+    "runner_tests_passed": 8,
+    "seconds": 9.13,
+    "actual_installed_prepared_guard": "PASS",
+    "original_prepared_ref_sha_checks": "PASS",
+    "black": "PASS",
+    "selected_flake8": "PASS",
+    "parent_child_syntax": "PASS"
+  },
+  "source_sha256": {
+    "tests/unit/_native_configured_successor.py": "01b868b89584022af598e9fe009fd4f5677a24bd63abcbd5db6976fd923e8f17",
+    "tests/unit/test_daily_evidence_runner.py": "120bab1ad9a3597bf95db97952fc37b695dbb8db4318e72aaf082420e13fe00f",
+    ".agent/acceptance/run_configured_successors.py": "d756c8ab7d3903a0b8013308faeb1b869e1b651971db610fb90dc516b9e48f9d"
+  },
+  "original_pinned_helpers_unchanged": true,
+  "resume_checkpoint": {
+    "state": "CONTINUING_EXISTING_PREPARED_REQUEST_BEFORE_ANY_BUSINESS_NODE",
+    "trade_date": "20260828",
+    "request_ref": {
+      "path": "results/operations/daily_production/CN/20260828/preparation/deb3a8278fca35a7cb3e56d81a1b35da2c190fa1709f16a5d211bf9634568779/request.json",
+      "sha256": "77d10bc50c8d82c63e97b02813e06e8edb23cc287b3b1e3edf3b393b0ea5ba16"
+    },
+    "config_ref": {
+      "path": "configured-inputs/source-config.json",
+      "sha256": "deb3a8278fca35a7cb3e56d81a1b35da2c190fa1709f16a5d211bf9634568779"
+    },
+    "previous_completion_ref": {
+      "path": "results/operations/daily_production/CN/20260827/completion.v1.json",
+      "sha256": "a67133c2735471808e73eb89201483ada7ccf53456a2e9e9785e075503e98027"
+    },
+    "harness_interruption_disclosed": true,
+    "business_nodes_started_before_resume": false,
+    "source_staging_repeated": false,
+    "previous_native_checks_completed_in_original_attempt": true,
+    "independent_final_five_day_replay_required": true
+  },
+  "new_handle": 97119,
+  "new_driver_status": {
+    "state": "RUNNING",
+    "root": "/private/tmp/myquant-configured-catalog-20260913T202622Z",
+    "producer_commit": "bf078d3235de3ade1379e8082d5d4a49e109f7d5",
+    "started_at": "2026-09-14T04:48:30.895701+00:00",
+    "steps": [],
+    "production_deployed": false,
+    "continued_from_preparation_test_failure": true,
+    "previous_failure_ref": {
+      "path": "/private/tmp/myquant-configured-catalog-20260913T202622Z/configured-successors-status.json",
+      "sha256": "0b905cf7e75ab1dce259632f62fb4e889bec359250120843701769e3ad1e4ff7"
+    },
+    "active_step": "20260828",
+    "child_pid": 8066
+  },
+  "runtime_business_code_changed": false,
+  "uninterrupted_harness_claimed": false,
+  "five_day_acceptance_still_pending": true,
+  "production_deployed": false,
+  "full_goal_complete": false
+}

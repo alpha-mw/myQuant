@@ -1,0 +1,77 @@
+{
+  "state": "CATALOG_IMPLEMENTED_LOCAL_VALIDATION_INSTALLED_RUN_PENDING",
+  "observed_at": "2026-09-13T20:31:25.661739+00:00",
+  "review": {
+    "architect": "APPROVE_WITH_CHANGES; refinements incorporated",
+    "critic": "APPROVE"
+  },
+  "source_sha256": {
+    "quant_investor/operations/exposure_catalog.py": "ce1c5c23df3d9b6311115f8bd53e4fb844c8730fc1fa918617dc548ba22bc49e",
+    "quant_investor/operations/research_materialization.py": "9c94919a6b3c6eea6c1c303f951a5b7f1408cc38cb71d4f63c945a58144e303a",
+    "quant_investor/operations/research_source_bundle.py": "50cd3503c19ce2c7c32c0ab36345906ceb6166f4dc0f72e7f88bf7f010a18c4d",
+    "tests/unit/test_exposure_catalog.py": "b7eb032a0b256994b73589debdcf7320466d233c40be360c64d637e7f805ae37",
+    "tests/unit/_native_cutoff_sources_fixture.py": "06aec025a7db4ae16b984dd66fbeae72a54b45be46373d929b2d3a96c93b02ce",
+    "tests/unit/_native_configured_daily_scenario.py": "8d999e3eaf0898a138153e292c5279d2e40fc0a20ad027825cb2ddea2e30dc0a",
+    "docs/plans/phase15_exposure_catalog_selection.md": "f3bd1f92f19c084fa780bcd26254bdc873548ce0d61995b51fd482a184f5586d"
+  },
+  "runtime_scope": [
+    "quant_investor/operations/exposure_catalog.py",
+    "quant_investor/operations/research_materialization.py",
+    "quant_investor/operations/research_source_bundle.py"
+  ],
+  "legacy_list_contract_unchanged": true,
+  "native_exposure_projection_and_union_unchanged": true,
+  "catalog_scope": "current recipe v5/v6 plus verified modern focus profile; native Top100 union fixed focus companies",
+  "catalog_grammar_and_cohort_failures": "existing dependency taxonomy; no added retry/write authority",
+  "tests": [
+    {
+      "scope": "final catalog v5/v6 collector/frozen replay/source failures/diagnoses plus materialization/registered contracts",
+      "passed": 37,
+      "seconds": 79.84,
+      "log": ".agent/acceptance/phase15-catalog-acceptance.log"
+    },
+    {
+      "scope": "earlier existing materialization/exposure/native-cutoff/registered contracts",
+      "passed": 62,
+      "seconds": 202.07,
+      "log": ".agent/acceptance/phase15-catalog-existing-regression.log"
+    }
+  ],
+  "counts_overlap": true,
+  "static": {
+    "mypy": "PASS 3 source files",
+    "flake8": "PASS 3 source files",
+    "black": "PASS changed files"
+  },
+  "retained_native_preview": {
+    "reference": ".agent/acceptance/phase15-catalog-retained-native-preview.json",
+    "input_rows": 3000,
+    "selected_rows": 102,
+    "pool": 100,
+    "focus": 2,
+    "unused_sources_read": false,
+    "workspace_unchanged": true,
+    "scope": "local candidate preview, not old request acceptance or full installed EOD"
+  },
+  "native_exposure_projections": ".agent/acceptance/phase15-catalog-native-exposure-projections.json",
+  "failed_original_run": ".agent/acceptance/phase15-exposure-scope-failure.json",
+  "new_installed_root": "/private/tmp/myquant-configured-catalog-20260913T202622Z",
+  "new_installed_commit": "bf078d3235de3ade1379e8082d5d4a49e109f7d5",
+  "installed_verification": "PASS",
+  "native_driver_handle": 37364,
+  "native_driver_status": {
+    "state": "RUNNING",
+    "root": "/private/tmp/myquant-configured-catalog-20260913T202622Z",
+    "producer_commit": "bf078d3235de3ade1379e8082d5d4a49e109f7d5",
+    "started_at": "2026-09-13T20:29:00.406306+00:00",
+    "production_deployed": false,
+    "child_pid": 14119
+  },
+  "five_day_and_morning": "NOT_STARTED",
+  "production_deployed": false,
+  "full_goal_complete": false,
+  "frozen_access_governance": {
+    "state": "PASS",
+    "reviewed_callers": 65
+  }
+}

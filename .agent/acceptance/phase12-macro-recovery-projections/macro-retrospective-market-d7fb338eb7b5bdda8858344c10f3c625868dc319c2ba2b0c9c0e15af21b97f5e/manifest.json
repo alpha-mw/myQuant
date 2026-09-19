@@ -1,0 +1,21 @@
+{
+  "candidate_id": "macro-retrospective-market-d7fb338eb7b5bdda8858344c10f3c625868dc319c2ba2b0c9c0e15af21b97f5e",
+  "canonical_pointer_write": false,
+  "capture_manifest_path": "/Users/maxwell/mySpace/myQuant/data/private/cn_daily_maintenance/attempts/20260915T082123Z-1620-359f51a541d736bb/market_capture/manifest.json",
+  "capture_manifest_sha256": "70e546bb90107a2b051158aad48af75461d79149007caa94921666bf3e3296c0",
+  "classification": "RETROSPECTIVE_RECONSTRUCTION",
+  "content_sha256": "62790bd0959017e54accf9bcb1b55e214d21dd0db2214839313deb8cf6b2a5cf",
+  "market_pointer_write": false,
+  "pit_pointer_write": false,
+  "projections": [
+    {
+      "path": "/Users/maxwell/mySpace/myQuant/.agent/acceptance/phase12-macro-recovery-projections/macro-retrospective-market-d7fb338eb7b5bdda8858344c10f3c625868dc319c2ba2b0c9c0e15af21b97f5e/_snapshots/20260918T135438Z.json",
+      "sha256": "d093eb64bf5fc0a1547315cf1a31ab340d729d33b5c8a765341e17bb09d4bb7f",
+      "target_trade_date": "20260915"
+    }
+  ],
+  "reconstructed_at": "2026-09-18T13:54:38+00:00",
+  "schema_version": "macro-retrospective-market-reconstruction.v1",
+  "source_snapshot_manifest_path": "/Users/maxwell/mySpace/myQuant/data/parquet/cn/_snapshots/20260915T082220Z.json",
+  "source_snapshot_manifest_sha256": "ac098d7e0db6b7b7604d3c4940f9ef6d35f9950f17f77602850b9f21b7c4a55f"
+}

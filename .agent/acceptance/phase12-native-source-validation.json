@@ -1,0 +1,90 @@
+{
+  "observed_at": "2026-09-13T01:49:18.942159+00:00",
+  "status": "NATIVE_SOURCE_AND_MATERIALIZATION_VALIDATED_WITH_EXPLICIT_OUTER_SEAMS",
+  "phase12_complete": false,
+  "full_goal_complete": false,
+  "source_and_test_refs": [
+    {
+      "path": "quant_investor/operations/prospective_sources.py",
+      "sha256": "f366d0bc6daa12c2ad9f758b1e9c192425de17bfb0c902517c763d62d917f300"
+    },
+    {
+      "path": "quant_investor/market/tushare/industry_membership.py",
+      "sha256": "040cd38e0c5bd397964e085287910462272030b569e2c58fe3399c584fb63d25"
+    },
+    {
+      "path": "quant_investor/intelligence/daily.py",
+      "sha256": "1b1c32b32a0d49f46e73fc1cce6228586947dbc0250434f4975ac04f73f5f58d"
+    },
+    {
+      "path": "tests/unit/_native_cutoff_sources_fixture.py",
+      "sha256": "e64aa32c963ef76d79eb170f0e5e76f5ba6162a1cb04afcf05e8adbae0409912"
+    },
+    {
+      "path": "tests/unit/test_daily_evidence_native_cutoff_sources.py",
+      "sha256": "06b5c718a963e369ad4a3b7b15ca5d9117d8b86f860c8c72e1cf75f29d935db8"
+    },
+    {
+      "path": "tests/unit/test_daily_evidence_cutoff_commitment.py",
+      "sha256": "8c4df78eaef717202682076a2ef6e1d45df1e987b1422c0ab7010ced09d954f2"
+    },
+    {
+      "path": "tests/unit/test_tushare_industry_capture_stable.py",
+      "sha256": "033493d8bf1ad178d50b0c21224962708536e5186a98e9ccc4311bc7fcefc53c"
+    }
+  ],
+  "native_integration": {
+    "session": 83300,
+    "exit_code": 0,
+    "result": "3 passed in 185.79s",
+    "paths": [
+      "native Industry/Theme/Exposure/Fundamental/Macro source projection",
+      "native corporate source validation and wrapper derivation",
+      "current and historical materialization5/native6",
+      "native compiler over the cutoff-bound native source projections",
+      "post-deadline readback with unchanged hashes and mtimes",
+      "Macro head change after commitment: frozen proof succeeds while current guard rejects"
+    ]
+  },
+  "focused_regressions": [
+    {
+      "session": 22663,
+      "exit_code": 0,
+      "result": "73 passed in 61.28s"
+    },
+    {
+      "session": 52979,
+      "exit_code": 0,
+      "result": "145 passed in 21.61s"
+    }
+  ],
+  "clock_and_tamper": {
+    "result": "14 cutoff transaction cases passed",
+    "scope": "native book/storage; source/corporate proof builders controlled in fault-injection cases"
+  },
+  "real_retained_industry_readback": ".agent/acceptance/phase12-retained-industry-readback.json",
+  "actual_book_baseline": ".agent/acceptance/phase12-portfolio-cutover-baseline.json",
+  "fix": "Fundamental manifest SHA now comes from native frozen-pointer derivation_binding; raw native pointer has no manifest_sha256 field. Manifest bytes are compared to native verified manifest.",
+  "performance_change": "Common Industry plan validated once per in-memory batch; every partition still fully replays scope/count/rows/timestamp/seal and whole capture checks; no cross-call cache. Existing retained 696-ref native Industry closure passed in 2.196s.",
+  "static": {
+    "mypy": "3 production files PASS",
+    "flake8": "7 touched files PASS",
+    "black": "7 touched files PASS",
+    "git_diff_check": "PASS"
+  },
+  "seams": [
+    "Synthetic prices, calendars, issuer facts and provider times, explicitly marked not OOS/provider evidence",
+    "Core/maintenance receipts and focus PIT context controlled; no real Factor activation/ancestry or installed release attestation in this fixture",
+    "Cutoff-specific synthetic rank fixture preserves frozen Top100 values and source refs; actual native compiler executes",
+    "Public native compiler/Factor guard attempt failed on the fixture Factor authority directory; guard was not weakened and no public installed success is claimed"
+  ],
+  "pending_owner_fact": "Async question asks whether September4–11 has unregistered transactions/funding/holdings/cost changes. No answer received; missing dates not declared empty.",
+  "remaining": [
+    "installed current-source full Factor/Core/public daily-close and EOD proof",
+    "daily source/request provisioning and first bootstrap",
+    "existing scheduler cutover/readback and independent unattended run",
+    "remaining Phase7/9/13/14/15 acceptance"
+  ],
+  "production_source_mutation": false,
+  "live_provider_calls": false
+}

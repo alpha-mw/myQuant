@@ -1,0 +1,22 @@
+{
+  "observed_at": "2026-09-16T10:33:49.891777+00:00",
+  "state": "AGGREGATE_REPLAY_PASS_MORNING_BLOCKED",
+  "proof_ref": {
+    "path": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/configured-five-native-trading-day-proof.json",
+    "sha256": "6dbf372b2a95ed4e9c8c210a0f33c8b44488d564066ec6620e95d59799db2281"
+  },
+  "verified_trade_dates": [
+    "20260827",
+    "20260828",
+    "20260831",
+    "20260901",
+    "20260902"
+  ],
+  "no_write_replay": true,
+  "inventory_entries": 62036,
+  "synthetic": true,
+  "harness_interruption_disclosed": true,
+  "whole_goal_complete": false,
+  "morning_failure": "missing calendar output next_session_calendar_proof",
+  "proof_trailing_literal_newline_disclosed": false
+}

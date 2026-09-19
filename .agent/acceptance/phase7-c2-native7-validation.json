@@ -1,0 +1,136 @@
+{
+  "recorded_at": "2026-09-13T14:48:59.593865+00:00",
+  "state": "C2_CUTOFF_NATIVE_INPUT_STORE_AND_MORNING_SOURCES_LOCALLY_VALIDATED",
+  "goal_complete": false,
+  "c2_complete": false,
+  "versions": {
+    "recipe": 6,
+    "acquired_source_bundle": 2,
+    "cutoff": 2,
+    "research_wrapper": 3,
+    "materialization": 6,
+    "native_input": 7,
+    "corporate_recipe": 3,
+    "native_store_plan": 2
+  },
+  "verified_behavior": [
+    "Registered declaration carried to native Store arguments, separate previous-EOD baseline and writer identity",
+    "Original owner-fact, registration and Store publication times bound to immutable cutoff source refs",
+    "Exact recipe/materialization/cutoff/native-input version and path dispatch; old profiles unchanged",
+    "Existing-position add and new symbol materialize, produce Corporate v3, close native Store and feed MorningRiskSources",
+    "Morning uses final holdings union; old trailing policy veto remains, exact post-trade initial-stop binding can validate independently; wrong pointer SHA is vetoed",
+    "Historical replay preserves original cutoff and original native portfolio-copy evidence without writes",
+    "Initial execution previous-EOD gate compares the Decision baseline, independently validating writer preimage"
+  ],
+  "tests": [
+    {
+      "name": "registered_native7_store_and_morning",
+      "log": ".agent/acceptance/phase7-c2-native7-morning-tests.log",
+      "passed": 2,
+      "seconds": 152.17,
+      "session_id": 46609,
+      "terminal_exit_code": 0
+    },
+    {
+      "name": "existing_materialization_corporate_morning_registration",
+      "log": ".agent/acceptance/phase7-c2-transport-regression.log",
+      "passed": 176,
+      "seconds": 52.95,
+      "session_id": 7651,
+      "terminal_exit_code": 0
+    },
+    {
+      "name": "native_legacy_cutoff_current_and_historical",
+      "log": ".agent/acceptance/phase7-c2-current-native6-regression.log",
+      "passed": 3,
+      "seconds": 185.83,
+      "session_id": 30246,
+      "terminal_exit_code": 0
+    },
+    {
+      "name": "final_cutoff_custody_grammar_and_previous_preflight",
+      "log": ".agent/acceptance/phase7-c2-final-contract-tests.log",
+      "passed": 34,
+      "seconds": 2.61,
+      "session_id": 15125,
+      "terminal_exit_code": 0
+    }
+  ],
+  "validation_note": "Native6 regression preceded the final v1 recorded-copy recovery repair; final contract tests exercise that precise new branch and ordinary/historical custody. Counts are separate run scopes, not an aggregate full-suite result.",
+  "static": {
+    "black_selected_files": 23,
+    "black": "PASS",
+    "mypy_selected_sources": 10,
+    "mypy": "PASS",
+    "flake8_owned_sources_and_tests": "PASS",
+    "strategy_record_access": "PASS: 35 reviewed callers"
+  },
+  "scope": {
+    "synthetic_financial_data": true,
+    "market_calendar_research_sources": "native modules over synthetic inputs",
+    "factor_core_focus_pit_admission": "controlled fixture boundaries",
+    "prior_all_node_eod_admission": "controlled fixture boundary; Store terminal/native replay real",
+    "morning_full_eod_and_quote_acquisition": "not exercised; exact MorningRiskSources exercised",
+    "native_whole_dag": false,
+    "running_install_proof": false,
+    "real_provider_calls": false,
+    "real_account_mutation": false,
+    "scheduler_deployment": false,
+    "unattended_evidence": false
+  },
+  "repairs": [
+    "Registered cutoff replay retained the same decision-source-pointer read as initial custody",
+    "Legacy adoption cutoff replay explicitly reads its originally recorded native source-pointer ref; reproduced failure retained in phase7-c2-legacy-custody-before.log",
+    "Synthetic owner fills are constructed with cent prices before native publication; exact cash preservation gate remains unchanged",
+    "Fixture registry construction now owns the required journal lock; fixed-version test inventory includes v6"
+  ],
+  "remaining": [
+    "Native7 Dashboard recipe v2 and forwarding exact registered transition output",
+    "Serving descriptor v2, UI and full completed Dashboard/native EOD replay",
+    "Finalized registered request recovery from original source locator with full pre-CAS time/input custody validation",
+    "Complete configured daily path, current-source installation/full CI/scheduler/unattended receipts",
+    "Other original phase gaps and supported financial profiles/historical ordering"
+  ],
+  "dashboard_plan_review": {
+    "architect": "APPROVE_WITH_CHANGES, amendments incorporated",
+    "critic": "APPROVE",
+    "implementation": "NOT_STARTED"
+  },
+  "source_sha256": {
+    "quant_investor/operations/automatic_catchup_resolution.py": "de44d3672a9e61208f259c12220b5fbb1025e8514f4a6f6d1b894091708b0172",
+    "quant_investor/operations/catchup_binding.py": "4b36681ede938b5c6e13aef705c66621b506e440c94655dcf1f0d6b60797358a",
+    "quant_investor/operations/corporate_adapter.py": "9a14b1d8728e5dccf0ba48a5dd2be88a1952843b94cecceaff9ed53de14aa80a",
+    "quant_investor/operations/completion_corporate.py": "e8653397700fcafc1dae4a532579afc205fecaa8ce7a9fe7a80deed855ad29a2",
+    "quant_investor/operations/completion_decision.py": "a9e9ba09869ecfd627d688ff8f45c19be2589c79712c03962b220ba79983a37a",
+    "quant_investor/operations/decision_recipe.py": "a11c0743b41b5e039b752d1f035fcbaf1e227a8d53762b956223bf54cad104de",
+    "quant_investor/operations/materialization_contract.py": "d2bc03633e0b46e78944f3ee4cec732a0514d8e0c56e0b83da5d990b8ce5314a",
+    "quant_investor/operations/morning_risk_sources.py": "eb1e63b84870a29cd40050b9435f8431de0d89ac7f8745b44d9d9bc20b9ec66f",
+    "quant_investor/operations/native_input_contract.py": "3af3aea05fac24152b7153961d8b30816726bbfec147b5af01d7567c4fad2074",
+    "quant_investor/operations/prospective_sources.py": "0735167560105e4c1fdfa16291e3c1a238c3535e5333d54da8b653182a2a7da3",
+    "quant_investor/operations/research_capture.py": "fe1c159cd84e81c81415eb0aa4b4da03fbc2c905b8de5f9c392fa9f053937322",
+    "quant_investor/operations/research_corporate_inputs.py": "859b8c2feecb3bc79a1fff635e21be73fe5be541ecfaa36da5887d52745f04f1",
+    "quant_investor/operations/research_cutoff.py": "d0395c9f831f29be3a392ae66dde95ed090ded0530abed2b7751a3d6b2a4b69c",
+    "quant_investor/operations/research_cutoff_contract.py": "4ddee0f3d4e055281baa604e97ea1358c1e0c7b788880c5f9a70aa90973bdfa1",
+    "quant_investor/operations/research_materialization.py": "ec6f7a6af9b153bb6f2f9f631b71d005395d06a90b5cbc6134e5b450a914c994",
+    "quant_investor/operations/research_request.py": "d437b3df46a2a3a400ea00403858ab151747fd65ddd8bfa634e2d48d936daaef",
+    "quant_investor/operations/research_source_bundle.py": "01cec1a7dd1893d530da64bb84284b6e3be0f71b49feb81b8b062bc9e8b57b83",
+    "quant_investor/intelligence/morning_threshold_review.py": "7b055589167fae720a7a040fd4271f028253fd26efd9c8998d8fd8eff91c8bf3",
+    "scripts/daily_materialization.py": "0497e6098e8ef0a1711c1cd1f4b8cecd7ed3337a19309ef72f325f1f0f685ffe",
+    "scripts/daily_native_inputs.py": "71de4ed341ebfa089c2158ab263f8546b71ef47651feed5f8703862c99bdd906",
+    "scripts/daily_native_registry.py": "2438cede3553e516cc4dfb9dded5f0bfea097a93ab03c8248c8e77fbede962c9",
+    "scripts/daily_store_materialization.py": "6c7aa4198b344d1662afb0a95f9bb502349490f496c112d55c853e9f9c10ec5d",
+    "scripts/daily_completion_store.py": "67564b05d8380b02c466f2610869b8b5d010a0228a19853b37035f93e8b8cd84",
+    "scripts/daily_completion_replay.py": "1fae7fab2f729e9c310eb01e5e8803e6798fcd1fc11d0e5157a593dd93b00a8a",
+    "scripts/daily_ledger.py": "1e27de8a450fa93a2327f982be747cf87726e77ecc0d647269d9654d7b7d618e",
+    "scripts/daily_ledger_replay.py": "656735e19f5db3f11fcba3cf193d693b9e0fad2282d35cd71e32385d860428b5",
+    "scripts/daily_catchup.py": "a18c409b4b4a82da6d407c34fd8e0f230145ef28e4899ed073c3fff824ee12ee",
+    "scripts/registered_daily_event_sources.py": "9db30e16ed58b0a49c5fae63de94103717247be5863809ab53907ee1ec78f6e7",
+    "tests/unit/_registered_event_fixture.py": "18e26397583506081824dc2cd4acd2bc349b94a18c52c3d840e21affaa62c9b3",
+    "tests/unit/_native_cutoff_sources_fixture.py": "03c6ce5b573212f2c1c6ec2c1689c5fdf56c274476b411f0a4cf6041429c834d",
+    "tests/unit/test_registered_cutoff_materialization.py": "a020843ff46303948cf2dbf68b4ad43c1f5f7be5be7479687b7ddeab6601d2e6",
+    "tests/unit/test_registered_cutoff_contract.py": "ad7c85ac47221bb27db56fc3bf7f7ff51998bb4a11f64ec33908c400c66c7e1e",
+    "tests/unit/test_daily_evidence_cutoff_commitment.py": "e095783fd7a5fb057bd1e3907a244f8088680f3eff315b3aede4c7ac9fdd0a2c",
+    "tests/unit/test_daily_evidence_materialization_contract.py": "7dd36b318cc0a13798b954f90d42e87b263c8318a44b7f82a7ec51abef4b894d",
+    "tests/unit/test_daily_evidence_previous_preflight.py": "0e0fd72dd73fc8535d648aa33552703bce89d088db5b51c1f07261ba0f1e8c41"
+  }
+}

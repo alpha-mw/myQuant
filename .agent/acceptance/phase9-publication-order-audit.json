@@ -1,0 +1,24 @@
+{
+  "scope": "CURRENT_SOURCE_CONTROL_FLOW_INSPECTION",
+  "runtime_exercised": false,
+  "finding": "Current Dashboard publishes public bundle and selector during its DAG node, before EOD completion sealing",
+  "evidence": [
+    {
+      "path": "scripts/daily_dashboard_adapter.py",
+      "symbol": "CurrentDashboardAdapter.execute",
+      "behavior": "Calls publish_bundle_pair and publish_selector before writing dashboard/publication.v1.json and returning node outcome",
+      "sha256": "ab84054f12f06a6d6bab2ddb400b9f6ed6eed6a3a4104235c9703123255fb4d1"
+    },
+    {
+      "path": "scripts/daily_completion.py",
+      "symbol": "run_and_seal_materialized_input",
+      "behavior": "Runs native input DAG first; only after every node is SUCCEEDED calls seal_materialized_completion",
+      "sha256": "51fa895a7e9cad4ad11b021c0a502c6d6d39a92df605d1565a99766b7a0fd2da"
+    }
+  ],
+  "implication": "A public current Dashboard can precede a valid completed daily DAG if later completion checks fail or the process crashes before EOD seal",
+  "next_step": "Phase9 concrete plan must move current publication behind authoritative EOD seal while preserving exact historical captures, crash recovery, no backwards publication and consumer proof bindings",
+  "implementation_changed": false,
+  "whole_phase_complete": false,
+  "observed_at": "2026-09-12T04:16:41.309566+00:00"
+}

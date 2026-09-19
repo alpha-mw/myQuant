@@ -783,6 +783,10 @@ def _strict_pointer(root: Path) -> dict[str, Any] | None:
     pointer_bytes = _optional_pointer_bytes(root)
     if pointer_bytes is None:
         return None
+    return _decode_pointer_bytes(pointer_bytes)
+
+
+def _decode_pointer_bytes(pointer_bytes: bytes) -> dict[str, Any]:
     try:
         payload = json.loads(pointer_bytes.decode("utf-8"))
     except MacroObservationStoreError:
@@ -792,12 +796,13 @@ def _strict_pointer(root: Path) -> dict[str, Any] | None:
     if not isinstance(payload, Mapping):
         raise MacroObservationStoreError("macro_observation_pointer_not_object")
     pointer = dict(payload)
-    if pointer.get("schema_version") != "macro-observation-pointer.v1" or pointer.get("status") != "OK":
+    if (
+        pointer.get("schema_version") != "macro-observation-pointer.v1"
+        or pointer.get("status") != "OK"
+    ):
         raise MacroObservationStoreError("macro_observation_pointer_shape_invalid")
     if not _observer_flags_valid(pointer):
-        raise MacroObservationStoreError(
-            "macro_observation_pointer_observer_flags_invalid"
-        )
+        raise MacroObservationStoreError("macro_observation_pointer_observer_flags_invalid")
     pointer["pointer_sha256"] = hashlib.sha256(pointer_bytes).hexdigest()
     return pointer
 
@@ -914,9 +919,7 @@ def load_observations(
             manifest_bytes = _stable_file_bytes(
                 manifest_path,
                 unsafe_blocker="macro_observation_generation_missing",
-                changed_blocker=(
-                    "macro_observation_generation_manifest_changed_during_read"
-                ),
+                changed_blocker=("macro_observation_generation_manifest_changed_during_read"),
             )
             manifest = json.loads(manifest_bytes.decode("utf-8"))
         except MacroObservationStoreError:
@@ -936,13 +939,17 @@ def load_observations(
             **_OBSERVER_FLAGS,
         }
     assert pointer is not None
+    return _decode_observation_generation(base, pointer)
+
+
+def _decode_observation_generation(
+    base: Path, pointer: Mapping[str, Any]
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     table_bytes, manifest = _resolve_generation(base, pointer)
     try:
         frame = pd.read_parquet(io.BytesIO(table_bytes))
     except Exception as exc:
-        raise MacroObservationStoreError(
-            "macro_observation_generation_table_invalid"
-        ) from exc
+        raise MacroObservationStoreError("macro_observation_generation_table_invalid") from exc
     if tuple(frame.columns) != OBSERVATION_COLUMNS:
         raise MacroObservationStoreError("macro_observation_generation_schema_mismatch")
     rows: list[dict[str, Any]] = []
@@ -953,19 +960,46 @@ def load_observations(
     content_set_hash = canonical_hash({"hashes": sorted(row["content_hash"] for row in rows)})
     if content_set_hash != str(pointer.get("content_set_hash") or ""):
         raise MacroObservationStoreError("macro_observation_content_set_hash_mismatch")
-    if manifest.get("content_set_hash") != content_set_hash or int(manifest.get("row_count", -1)) != len(rows):
+    if manifest.get("content_set_hash") != content_set_hash or int(
+        manifest.get("row_count", -1)
+    ) != len(rows):
         raise MacroObservationStoreError("macro_observation_manifest_content_mismatch")
     if manifest.get("schema_version") == _GENERATION_V2:
         raw_mapping = manifest.get("observation_evidence")
         assert isinstance(raw_mapping, Mapping)  # validated by resolver
-        if not set(raw_mapping).issubset(
-            {row["content_hash"] for row in rows}
-        ):
-            raise MacroObservationStoreError(
-                "macro_observation_evidence_observation_hash_missing"
-            )
+        if not set(raw_mapping).issubset({row["content_hash"] for row in rows}):
+            raise MacroObservationStoreError("macro_observation_evidence_observation_hash_missing")
         _validate_evidence_record_drift(rows, raw_mapping)
     return rows, {**pointer, "generation_manifest": manifest}
+
+
+def load_frozen_observations(
+    root: str | Path,
+    *,
+    pointer_raw: bytes,
+    expected_pointer_sha256: str,
+    expected_generation_id: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Replay only the readiness closure's frozen pointer, never a current head."""
+    if (
+        type(pointer_raw) is not bytes
+        or not pointer_raw
+        or len(pointer_raw) > 16 * 1024 * 1024
+        or hashlib.sha256(pointer_raw).hexdigest() != expected_pointer_sha256
+    ):
+        raise MacroObservationStoreError("macro_frozen_pointer_sha_mismatch")
+    base = _read_root(root)
+    pointer = _decode_pointer_bytes(pointer_raw)
+    if pointer.get("generation_id") != _safe_id(expected_generation_id):
+        raise MacroObservationStoreError("macro_frozen_generation_id_mismatch")
+    rows, observed = _decode_observation_generation(base, pointer)
+    table, manifest = _resolve_generation(base, pointer)
+    if (
+        hashlib.sha256(table).hexdigest() != pointer["parquet_sha256"]
+        or manifest != observed["generation_manifest"]
+    ):
+        raise MacroObservationStoreError("macro_frozen_generation_changed")
+    return rows, observed
 
 
 def _normalize_rows(observations: Iterable[Mapping[str, Any] | MacroObservation]) -> list[dict[str, Any]]:

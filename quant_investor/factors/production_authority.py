@@ -3746,6 +3746,12 @@ class FactorProductionStore:
                 "factor_pointer_byte_sha256": pointer_stored.byte_sha256,
                 "system_pointer_touched": False,
             }
+        return self._verify_pointer_lineage(pointer_stored, marker_stored)
+
+    def _verify_pointer_lineage(
+        self, pointer_stored: FactorStoredBytes, marker_stored: FactorStoredBytes
+    ) -> dict[str, Any]:
+        """Native immutable lineage replay shared by current and recorded readers."""
         active_pointer = validate_factor_active_pointer(pointer_stored.data)
         marker = validate_factor_production_marker(marker_stored.data)
         genesis_pointer = self._read_artifact_ref(
@@ -3922,6 +3928,44 @@ class FactorProductionStore:
             "blockers": [],
         }
 
+    def inspect_recorded_research_inputs(
+        self, *, pointer_raw: bytes, expected_pointer_sha256: str, expected_trade_date: str
+    ) -> dict[str, Any]:
+        """Replay a committed recorded pointer without reading heads or taking locks.
+
+        The caller binds these bytes to its immutable completion. Native lineage,
+        commit and mirrored-source validation remain mandatory. This does not
+        establish current Factor authority or authorize a new decision.
+        """
+        expected = _require_sha(expected_pointer_sha256, label="recorded Factor pointer")
+        if type(pointer_raw) is not bytes or _sha256(pointer_raw) != expected:
+            _raise("recorded Factor pointer SHA differs")
+        if (
+            type(expected_trade_date) is not str
+            or re.fullmatch(r"[0-9]{8}", expected_trade_date) is None
+        ):
+            _raise("recorded Factor trade date is invalid")
+        stored = FactorStoredBytes("recorded-completion-pointer", pointer_raw, expected)
+        marker = self.read(FACTOR_PRODUCTION_MARKER_PATH)
+        verification = self._verify_pointer_lineage(stored, marker)
+        if verification["as_of"] != expected_trade_date:
+            _raise("recorded Factor trade date differs")
+        inputs = self._observation_inputs_for_pointer(
+            stored, genesis_sha=verification["genesis_pointer_sha256"]
+        )
+        generation = self._read_generation_for_pointer(
+            pointer_raw, label="recorded Factor research"
+        )
+        if self.read(FACTOR_PRODUCTION_MARKER_PATH) != marker:
+            _raise("Factor marker changed during recorded replay")
+        return {
+            **inputs,
+            "factor_generation": generation,
+            "factor_generation_ref": _artifact_ref(generation),
+            "consumer_admission": False,
+            "validation_scope": "RECORDED_FACTOR_NATIVE_REPLAY",
+        }
+
     def read_active_signal(self, factor_id: str) -> dict[str, Any]:
         """Read one sealed active signal without consulting current sources."""
 
@@ -4010,13 +4054,44 @@ class FactorProductionStore:
             or marker_stored.byte_sha256 != verification["marker_byte_sha256"]
         ):
             _raise("Factor production authority changed during observation read")
+        return self._observation_inputs_for_pointer(
+            pointer_stored, genesis_sha=verification["genesis_pointer_sha256"]
+        )
+
+    def read_observation_history(self) -> list[dict[str, Any]]:
+        """Resolve observations solely through verified predecessor links, under active lock."""
+        verification = self.verify_active()
+        if verification.get("factor_authority") != FACTOR_AUTHORITY_ACTIVE:
+            _raise("Factor observation recovery requires complete lineage")
+        selected = self.read(FACTOR_ACTIVE_POINTER_PATH)
+        if selected.byte_sha256 != verification["factor_pointer_byte_sha256"]:
+            _raise("Factor pointer changed during history read")
+        genesis = verification["genesis_pointer_sha256"]
+        history = []
+        seen: set[str] = set()
+        while selected.byte_sha256 != genesis:
+            if selected.byte_sha256 in seen or len(seen) >= FACTOR_POINTER_CHAIN_MAX:
+                _raise("Factor observation history cycle or bound exceeded")
+            seen.add(selected.byte_sha256)
+            history.append(self._observation_inputs_for_pointer(selected, genesis_sha=genesis))
+            pointer = validate_factor_active_pointer(selected.data)
+            previous = pointer["previous_pointer_sha256"]
+            selected = self.read(FACTOR_POINTER_HISTORY_ROOT / f"{previous}.json")
+            if selected.byte_sha256 != previous:
+                _raise("Factor observation predecessor SHA differs")
+        return list(reversed(history))
+
+    def _observation_inputs_for_pointer(
+        self, pointer_stored: FactorStoredBytes, *, genesis_sha: str
+    ) -> dict[str, Any]:
+        """Project an already lineage-verified immutable generation, never current Market."""
         generation = self._read_generation_for_pointer(
             pointer_stored.data, label="Factor production observation"
         )
+        generation = _validate_factor_generation(generation)
+        pointer = validate_factor_active_pointer(pointer_stored.data)
         payload = generation["payload"]
-        if payload["as_of"] != verification["as_of"]:
-            _raise("Factor production observation date differs from verified head")
-        if pointer_stored.byte_sha256 == verification["genesis_pointer_sha256"]:
+        if pointer_stored.byte_sha256 == genesis_sha:
             _raise("Factor production genesis observation lacks exact PIT pointer binding")
         else:
             bundle = validate_factor_production_rollover_bundle(
@@ -4052,7 +4127,7 @@ class FactorProductionStore:
         return {
             "signal_date": payload["as_of"],
             "factor_generation_id": payload["factor_production_generation_id"],
-            "factor_generation_sha256": verification["factor_generation_sha256"],
+            "factor_generation_sha256": pointer["factor_generation_sha256"],
             "factor_pointer_sha256": pointer_stored.byte_sha256,
             "market_pointer_sha256": market_pointer_sha256,
             "market_manifest_sha256": market_manifest_sha256,
@@ -4066,6 +4141,14 @@ class FactorProductionStore:
                 "calendar_capture_custody_attestation_ref"
             ],
             "factor_rows": factor_rows,
+            "signal_values": payload["signal_values"],
+            "signal_statistics": payload["signal_statistics"],
+            "active_factor_rows": payload["active_factor_rows"],
+            "factor_implementation_refs": payload["factor_implementation_refs"],
+            "factor_policy_ref": payload["factor_policy_ref"],
+            "source_generation_ref": payload["factor_source_bundle_ref"],
+            "generation_created_at": generation["created_at"],
+            "seal_time_upper_bound": pointer["activated_at"],
         }
 
     def read_active_research_inputs(self, *, expected_pointer_sha256: str) -> dict[str, Any]:
@@ -4105,6 +4188,62 @@ class FactorProductionStore:
                 "factor_generation": generation,
                 "factor_generation_ref": _artifact_ref(generation),
                 "signal_values": signal_values,
+            }
+
+    def read_historical_research_inputs(
+        self, *, expected_pointer_sha256: str, expected_trade_date: str
+    ) -> dict[str, Any]:
+        """Read a named, verified ancestor without substituting the active signal.
+
+        The existing history resolver performs source and pointer-lineage replay.
+        The lock spans selection, immutable copying, and the final head recheck.
+        This read neither rolls a pointer backward nor recomputes historical data.
+        """
+        expected = _require_sha(expected_pointer_sha256, label="historical research pointer")
+        if (
+            type(expected_trade_date) is not str
+            or re.fullmatch(r"[0-9]{8}", expected_trade_date) is None
+        ):
+            _raise("historical research trade date is invalid")
+        with self._active_lock():
+            before = self.read(FACTOR_ACTIVE_POINTER_PATH)
+            history = self.read_observation_history()
+            matches = [row for row in history if row["factor_pointer_sha256"] == expected]
+            if len(matches) != 1:
+                _raise("UNSUPPORTED_LINEAGE_GAP: historical research pointer not in ancestry")
+            inputs = matches[0]
+            if inputs["signal_date"] != expected_trade_date:
+                _raise("historical research trade date differs")
+            pointer = (
+                before
+                if before.byte_sha256 == expected
+                else self.read(FACTOR_POINTER_HISTORY_ROOT / f"{expected}.json")
+            )
+            if pointer.byte_sha256 != expected:
+                _raise("historical research pointer SHA differs")
+            generation = self._read_generation_for_pointer(
+                pointer.data, label="historical Factor research input"
+            )
+            payload = generation["payload"]
+            if (
+                payload["as_of"] != expected_trade_date
+                or payload["factor_production_generation_id"] != inputs["factor_generation_id"]
+            ):
+                _raise("historical research generation binding differs")
+            values = {
+                factor_id: dict(payload["signal_values"][factor_id])
+                for factor_id in (LOW_DOLLAR_VOLUME, BLEND_W80)
+            }
+            if set(values[LOW_DOLLAR_VOLUME]) != set(values[BLEND_W80]):
+                _raise("historical research signal keysets differ")
+            if self.read(FACTOR_ACTIVE_POINTER_PATH).byte_sha256 != before.byte_sha256:
+                _raise("Factor pointer changed during historical research read")
+            return {
+                **inputs,
+                "active_factor_rows": [dict(row) for row in payload["active_factor_rows"]],
+                "factor_generation": generation,
+                "factor_generation_ref": _artifact_ref(generation),
+                "signal_values": values,
             }
 
     def assert_active_pointer(self, *, expected_pointer_sha256: str) -> None:

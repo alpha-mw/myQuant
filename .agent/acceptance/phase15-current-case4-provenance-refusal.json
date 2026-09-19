@@ -1,0 +1,15 @@
+{
+  "observed_at": "2026-09-16T19:24:33.260651+00:00",
+  "case": 4,
+  "state": "UNSCOPED_RECOVERY_REFUSED_BEFORE_FINANCIAL_RECOVERY",
+  "failure": "PROVENANCE_UNAVAILABLE",
+  "boundary": "read_maintenance_handoff -> read_factor_loop_context -> require_fixture_capability",
+  "refs": {
+    "missing-store-resume-driver-status.json": "d342b768eb6f40679bbeeab1a4747c52700d55490770d41111e7e63be72cdc32",
+    "missing-store-resume-native.log": "7e725f1b671494163d4c19f41813271a01aaea76a0fe52ac6f5442035c4e475e"
+  },
+  "runtime_gate_preserved": true,
+  "next_environment_change": "Re-enter original configured_future_calendar_scope for same root/date/install; forbid all fresh capture entrypoints",
+  "runtime_or_frozen_helper_edits": false,
+  "prior_clock_failure_retained": true
+}

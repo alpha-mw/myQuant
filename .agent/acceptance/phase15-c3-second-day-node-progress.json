@@ -1,0 +1,77 @@
+{
+  "observed_at": "2026-09-14T20:11:33.350903+00:00",
+  "state": "PARTIAL",
+  "trade_date": "20260828",
+  "status_snapshot_sha256": "e2156d571c93002b7da183a9656edadc134c996ff4203fcff43a07896789d232",
+  "nodes": {
+    "calendar": {
+      "state": "SUCCEEDED",
+      "attempt": 1,
+      "command_status": "ADOPTED",
+      "blocking_reason": null
+    },
+    "factor": {
+      "state": "SUCCEEDED",
+      "attempt": 1,
+      "command_status": "ADOPTED",
+      "blocking_reason": null
+    },
+    "low_observation": {
+      "state": "SUCCEEDED",
+      "attempt": 1,
+      "command_status": "ADOPTED",
+      "blocking_reason": null
+    },
+    "market": {
+      "state": "SUCCEEDED",
+      "attempt": 1,
+      "command_status": "ADOPTED",
+      "blocking_reason": null
+    },
+    "pit": {
+      "state": "SUCCEEDED",
+      "attempt": 1,
+      "command_status": "ADOPTED",
+      "blocking_reason": null
+    },
+    "top100": {
+      "state": "RUNNING",
+      "attempt": 1,
+      "command_status": null,
+      "blocking_reason": null
+    },
+    "w80_observation": {
+      "state": "SUCCEEDED",
+      "attempt": 1,
+      "command_status": "ADOPTED",
+      "blocking_reason": null
+    }
+  },
+  "verified_terminal_refs": {
+    "calendar": {
+      "path": "results/operations/daily_production/CN/20260828/nodes/calendar/0fda32d1356a8149df7341a18eb8ab52042b6d52e3e4122dfdb84f9018395beb/attempt-0001/terminal.json",
+      "sha256": "73eea3ddd0dec6a941aac21ecff1748606fcbcb4482b5181aade237cafd7ec88"
+    },
+    "factor": {
+      "path": "results/operations/daily_production/CN/20260828/nodes/factor/74a6d3fbb672952228246ad5da7c5b78ca01ebcbbdd5b50fd095da13141865da/attempt-0001/terminal.json",
+      "sha256": "2e253bfd7866328cb6227264d23564e325c9dc0628b7473c9c8f6338218e10d6"
+    },
+    "low_observation": {
+      "path": "results/operations/daily_production/CN/20260828/nodes/low_observation/ae44aecef674a0adb600127cb9e64242ddd174ae530a0addd26e5ac18fc42ec1/attempt-0001/terminal.json",
+      "sha256": "2b8a8461324b5b53aa82b994075f0c6fea9c2bfea4918d8148e34b96df123207"
+    },
+    "market": {
+      "path": "results/operations/daily_production/CN/20260828/nodes/market/2a94d156ff5c9003a445d05137e286c62bbde4a764b1bcd38bc1348ba05a023e/attempt-0001/terminal.json",
+      "sha256": "a7383beef5ca656c200022d45dda65d9e619d2a1760636d7f0ae2f8278cb77be"
+    },
+    "pit": {
+      "path": "results/operations/daily_production/CN/20260828/nodes/pit/343cd34e735607082753e15e53686ab8b9106cc3e3e56f4dd84b2875c918b046/attempt-0001/terminal.json",
+      "sha256": "c7d20cfc56681b84fa29c0466154d9a448520978f4545af1a008031871619059"
+    },
+    "w80_observation": {
+      "path": "results/operations/daily_production/CN/20260828/nodes/w80_observation/951e26e1bc43eccb2ade355c1c044b008f7c3fe5e51706094b0a88b2a7fda280/attempt-0001/terminal.json",
+      "sha256": "2780b9b424bb2c5b6c9b59027e2dd20a29042417cd06c097f3f23d2e2b05e459"
+    }
+  },
+  "full_eod_proven": false
+}

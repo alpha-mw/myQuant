@@ -139,14 +139,43 @@ def _maintenance_attempt(tmp_path: Path, *, mode: str = "execute", status: str =
             "canonical": {"latest_sha256": market_pointer_sha},
         },
     )
-    raw_response = b'{"code":0,"data":{"fields":[],"items":[]}}'
+    from datetime import datetime, timedelta, timezone
+    from quant_investor.market.close_session_authority import acquire_close_session_authority
+    from quant_investor.market.tushare_transport import replay_tushare_response_bytes
+
+    fields = ["exchange", "cal_date", "is_open", "pretrade_date"]
+    day = datetime(2026, 7, 20)
+    previous = "20260717"
+    items = []
+    while day <= datetime(2026, 8, 20):
+        opened = day.weekday() < 5  # Explicit synthetic test calendar, not runtime authority.
+        stamp = day.strftime("%Y%m%d")
+        items.append(["SSE", stamp, int(opened), previous])
+        if opened:
+            previous = stamp
+        day += timedelta(days=1)
+    raw_response = json.dumps(
+        {
+            "code": 0,
+            "data": {"fields": fields, "items": items, "count": len(items), "has_more": False},
+            "detail": "",
+            "msg": "",
+            "request_id": "fixture-request",
+        }
+    ).encode()
+
+    class Client:
+        def request(self, **_kwargs):
+            return replay_tushare_response_bytes(
+                raw_response, api_name="trade_cal", expected_fields=fields
+            )
+
+    closed = acquire_close_session_authority(
+        now=datetime(2026, 8, 20, 13, tzinfo=timezone.utc), client=Client()
+    )
     raw_path = attempt / "close-session.raw.json"
     raw_sha = _write(raw_path, raw_response)
-    close = {
-        "target_trade_date": "20260820",
-        "raw_response_path": str(raw_path),
-        "raw_response_sha256": raw_sha,
-    }
+    close = {**closed.receipt, "raw_response_path": str(raw_path), "raw_response_sha256": raw_sha}
     close_path = attempt / "close-session-receipt.json"
     close_sha = _write(close_path, close)
     state = {

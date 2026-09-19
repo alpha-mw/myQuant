@@ -1,0 +1,280 @@
+{
+  "observed_at": "2026-09-15T21:38:55.266271+00:00",
+  "goal_state": "ACTIVE_NOT_COMPLETE",
+  "main": {
+    "root": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z",
+    "chain_parent_pid": 20635,
+    "successor_driver_pid": 18867,
+    "child_pid": 44221,
+    "active_step": "20260902",
+    "status": {
+      "state": "RUNNING",
+      "root": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z",
+      "producer_commit": "c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b",
+      "started_at": "2026-09-14T15:26:03.348126+00:00",
+      "steps": [
+        {
+          "stage": "repeat",
+          "exit_code": 0,
+          "seconds": 5009.18,
+          "log": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/configured-successor-repeat.log"
+        },
+        {
+          "stage": "20260828",
+          "exit_code": 0,
+          "seconds": 30888.99,
+          "log": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/configured-successor-20260828.log"
+        },
+        {
+          "stage": "20260831",
+          "exit_code": 0,
+          "seconds": 32034.59,
+          "log": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/configured-successor-20260831.log"
+        },
+        {
+          "stage": "20260901",
+          "exit_code": 0,
+          "seconds": 32166.61,
+          "log": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/configured-successor-20260901.log"
+        }
+      ],
+      "production_deployed": false,
+      "continued_from_preparation_test_failure": false,
+      "previous_failure_ref": null,
+      "active_step": "20260902",
+      "child_pid": 44221
+    },
+    "actual_phase": "FIFTH_DAY_RUNNING",
+    "signals_sent_current_child": 0,
+    "fourth_day_acceptance_ref": ".agent/acceptance/phase15-c3-fourth-day-acceptance.json",
+    "completed_fourth_day_observation": {
+      "root": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z",
+      "chain_parent_pid": 20635,
+      "successor_driver_pid": 18867,
+      "child_pid": 81355,
+      "active_step": "20260901",
+      "status": {
+        "state": "RUNNING",
+        "root": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z",
+        "producer_commit": "c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b",
+        "started_at": "2026-09-14T15:26:03.348126+00:00",
+        "steps": [
+          {
+            "stage": "repeat",
+            "exit_code": 0,
+            "seconds": 5009.18,
+            "log": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/configured-successor-repeat.log"
+          },
+          {
+            "stage": "20260828",
+            "exit_code": 0,
+            "seconds": 30888.99,
+            "log": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/configured-successor-20260828.log"
+          },
+          {
+            "stage": "20260831",
+            "exit_code": 0,
+            "seconds": 32034.59,
+            "log": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/configured-successor-20260831.log"
+          }
+        ],
+        "production_deployed": false,
+        "continued_from_preparation_test_failure": false,
+        "previous_failure_ref": null,
+        "active_step": "20260901",
+        "child_pid": 81355
+      },
+      "actual_phase": "FOURTH_DAY_RUNNING",
+      "signals_sent_current_child": 0,
+      "third_day_acceptance_ref": ".agent/acceptance/phase15-c3-third-day-acceptance.json",
+      "completed_third_day_observation": {
+        "root": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z",
+        "chain_parent_pid": 20635,
+        "successor_driver_pid": 18867,
+        "child_pid": 3772,
+        "active_step": "20260831",
+        "status": {
+          "state": "RUNNING",
+          "root": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z",
+          "producer_commit": "c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b",
+          "started_at": "2026-09-14T15:26:03.348126+00:00",
+          "steps": [
+            {
+              "stage": "repeat",
+              "exit_code": 0,
+              "seconds": 5009.18,
+              "log": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/configured-successor-repeat.log"
+            },
+            {
+              "stage": "20260828",
+              "exit_code": 0,
+              "seconds": 30888.99,
+              "log": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/configured-successor-20260828.log"
+            }
+          ],
+          "production_deployed": false,
+          "continued_from_preparation_test_failure": false,
+          "previous_failure_ref": null,
+          "active_step": "20260831",
+          "child_pid": 3772
+        },
+        "first_day_acceptance_ref": ".agent/acceptance/phase15-c3-first-day-acceptance.json",
+        "tool_handle_available": false,
+        "safe_trace_marker": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/configured-successor-20260831-trace-ready.json",
+        "signals_sent_current_child": 4,
+        "repeat_diagnosis_ref": ".agent/acceptance/phase15-c3-repeat-stack-diagnosis.json",
+        "repeat_acceptance_ref": ".agent/acceptance/phase15-c3-repeat-acceptance.json",
+        "actual_phase": "THIRD_DAY_EOD_SEALED_FINAL_REPLAY_PENDING",
+        "second_day_diagnosis_ref": ".agent/acceptance/phase15-c3-second-day-stack-diagnosis.json",
+        "preparation_diagnosis_ref": ".agent/acceptance/phase15-c3-second-day-preparation-diagnosis.json",
+        "factor_progress_ref": ".agent/acceptance/phase15-c3-second-day-factor-started.json",
+        "post_core_diagnosis_ref": ".agent/acceptance/phase15-c3-second-day-post-core-diagnosis.json",
+        "completed_second_day_observation": {
+          "root": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z",
+          "chain_parent_pid": 20635,
+          "successor_driver_pid": 18867,
+          "child_pid": 29285,
+          "active_step": "20260828",
+          "status": {
+            "state": "RUNNING",
+            "root": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z",
+            "producer_commit": "c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b",
+            "started_at": "2026-09-14T15:26:03.348126+00:00",
+            "steps": [
+              {
+                "stage": "repeat",
+                "exit_code": 0,
+                "seconds": 5009.18,
+                "log": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/configured-successor-repeat.log"
+              }
+            ],
+            "production_deployed": false,
+            "continued_from_preparation_test_failure": false,
+            "previous_failure_ref": null,
+            "active_step": "20260828",
+            "child_pid": 29285
+          },
+          "first_day_acceptance_ref": ".agent/acceptance/phase15-c3-first-day-acceptance.json",
+          "tool_handle_available": false,
+          "safe_trace_marker": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/configured-successor-20260828-trace-ready.json",
+          "signals_sent_current_child": 6,
+          "repeat_diagnosis_ref": ".agent/acceptance/phase15-c3-repeat-stack-diagnosis.json",
+          "repeat_acceptance_ref": ".agent/acceptance/phase15-c3-repeat-acceptance.json",
+          "actual_phase": "MATERIALIZED_EXECUTION_PRIOR_EOD_REPLAY_LEDGER",
+          "second_day_diagnosis_ref": ".agent/acceptance/phase15-c3-second-day-stack-diagnosis.json",
+          "preparation_diagnosis_ref": ".agent/acceptance/phase15-c3-second-day-preparation-diagnosis.json",
+          "factor_progress_ref": ".agent/acceptance/phase15-c3-second-day-factor-started.json",
+          "post_core_diagnosis_ref": ".agent/acceptance/phase15-c3-second-day-post-core-diagnosis.json"
+        },
+        "second_day_acceptance_ref": ".agent/acceptance/phase15-c3-second-day-acceptance.json",
+        "third_day_diagnosis_ref": ".agent/acceptance/phase15-c3-third-day-initial-replay-diagnosis.json",
+        "third_day_source_progress_ref": ".agent/acceptance/phase15-c3-third-day-source-progress.json",
+        "third_day_preparation_diagnosis_ref": ".agent/acceptance/phase15-c3-third-day-preparation-diagnosis.json",
+        "third_day_request_ref": ".agent/acceptance/phase15-c3-third-day-request-ready.json",
+        "third_day_factor_progress_ref": ".agent/acceptance/phase15-c3-third-day-factor-started.json",
+        "third_day_node_progress_ref": ".agent/acceptance/phase15-c3-third-day-node-progress.json",
+        "third_day_core_complete_ref": ".agent/acceptance/phase15-c3-third-day-core-complete.json",
+        "third_day_post_core_diagnosis_ref": ".agent/acceptance/phase15-c3-third-day-post-core-diagnosis.json",
+        "third_day_research_progress_ref": ".agent/acceptance/phase15-c3-third-day-research-progress.json",
+        "third_day_all_nodes_ref": ".agent/acceptance/phase15-c3-third-day-all-nodes.json",
+        "third_day_eod_ref": ".agent/acceptance/phase15-c3-third-day-eod-sealed.json"
+      }
+    }
+  },
+  "independent_case4": {
+    "root": "/private/tmp/myquant-configured-missing-store-20260914T012539Z",
+    "status": {
+      "state": "PASS",
+      "case": 4,
+      "root": "/private/tmp/myquant-configured-missing-store-20260914T012539Z",
+      "producer_commit": "bf078d3235de3ade1379e8082d5d4a49e109f7d5",
+      "started_at": "2026-09-14T03:35:11.299870+00:00",
+      "production_deployed": false,
+      "continued_from_retained_test_failure": true,
+      "exit_code": 0,
+      "finished_at": "2026-09-14T08:45:01.416829+00:00",
+      "helper_drift": []
+    },
+    "native_store_committed_checkpoint": ".agent/acceptance/phase15-missing-store-commit-checkpoint.json",
+    "final_proof_pending": false,
+    "SIGUSR1_already_sent_once": true,
+    "dispatch_complete_checkpoint": {
+      "observed_at": "2026-09-14T07:12:14.676873+00:00",
+      "state": "NATIVE_RETAINED_RECOVERY_DISPATCH_COMPLETE_FINAL_INDEPENDENT_REPLAY_PENDING",
+      "root": "/private/tmp/myquant-configured-missing-store-20260914T012539Z",
+      "runtime_commit": "bf078d3235de3ade1379e8082d5d4a49e109f7d5",
+      "handle": 6375,
+      "child_pid": 93409,
+      "result_ref": {
+        "path": "/private/tmp/myquant-configured-missing-store-20260914T012539Z/missing-store-resumed-result.json",
+        "sha256": "388a0b47f719e5c93a332d35de3d8c4e687cbd27f05c7e918bead7f2ab455119"
+      },
+      "result": {
+        "schema_version": "cn-daily-production-result.v1",
+        "action": "EXECUTE",
+        "target_trade_date": "20260827",
+        "execution_state": "SUCCEEDED",
+        "business_state": "COMPLETE",
+        "days": [
+          {
+            "trade_date": "20260827",
+            "execution_state": "SUCCEEDED",
+            "business_state": "COMPLETE",
+            "completion_ref": {
+              "path": "results/operations/daily_production/CN/20260827/completion.v1.json",
+              "sha256": "00acab0a55c4c0d6c71d01623059b288f3663bde23078e4f33c234ba46228888"
+            }
+          }
+        ],
+        "authority": {
+          "broker": false,
+          "order": false,
+          "trade": false,
+          "actual_holdings_mutation": false,
+          "system": false,
+          "mainline": false
+        }
+      },
+      "completion_ref": {
+        "path": "results/operations/daily_production/CN/20260827/completion.v1.json",
+        "sha256": "00acab0a55c4c0d6c71d01623059b288f3663bde23078e4f33c234ba46228888"
+      },
+      "completion_schema": "cn-daily-eod-completion.v2",
+      "completion_exact_bytes_sha_verified": true,
+      "native_completion_status": "SUCCEEDED",
+      "synthetic": true,
+      "final_case4_proof_pending": true,
+      "exact_cas_count_final_assertion_pending": true,
+      "original_test_failure_disclosure_preserved": true,
+      "production_deployed": false,
+      "full_goal_complete": false
+    },
+    "state": "PASS",
+    "original_handle": 6375,
+    "child_pid": null,
+    "acceptance_ref": ".agent/acceptance/phase15-missing-store-final-acceptance.json"
+  },
+  "terminal_do_not_resume": [
+    6375,
+    28287,
+    37364,
+    63358,
+    74723,
+    80804,
+    97119,
+    29285
+  ],
+  "reader_repair": ".agent/acceptance/phase15-catchup-input-mode-repair.json",
+  "automatic_retry": false,
+  "production_deployed": false,
+  "final_gates": {
+    "state": "PASS",
+    "original_handle": 80804,
+    "child_pid": null,
+    "acceptance_ref": ".agent/acceptance/phase15-c3-final-gates-acceptance.json"
+  },
+  "responsive_ui_receipt": ".agent/acceptance/phase15-responsive-http-ui.json",
+  "sleep_evidence": ".agent/acceptance/phase15-sep14-evening-sleep-events.txt",
+  "current_long_running_native_job_count": 1,
+  "latest_current_child_diagnosis": null
+}

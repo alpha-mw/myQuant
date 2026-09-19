@@ -1,0 +1,29 @@
+{
+  "phase": 5,
+  "status": "IMPLEMENTATION_IN_PROGRESS",
+  "substep": "FUNDAMENTAL_CUTOFF_SELECTION_FIXED",
+  "selected_snapshot_trade_date": "20260820.000000000000",
+  "as_of": "2026-08-28T13:30:00Z",
+  "tests": {
+    "session_id": 1239,
+    "result": "47 passed in 88.17s"
+  },
+  "static": {
+    "mypy": "2 source files passed",
+    "flake8": "intelligence max-complexity10 passed",
+    "black": "3 files passed"
+  },
+  "source_sha256": {
+    "quant_investor/intelligence/fundamental_time.py": "e8c449569457ceceb3ae67b5820796e26b6d37f9a1367744eea3517a03be7873",
+    "quant_investor/intelligence/daily_evidence.py": "53b819571ac2f61bb11c2a2ca242b1a032230c44cd7bd4dfc35ff2c61083dc3c",
+    "tests/unit/test_daily_evidence_fundamental_cutoff.py": "39e8b2eb0a98bdd0670a06f5d1287b351dea012b404255c6be46a2c3aa26c59c"
+  },
+  "remaining": [
+    "registered Fundamental native derivation availability binding",
+    "four-state freshness artifact and warning-only policy",
+    "frozen-pointer Macro observation reader without current lookup",
+    "versioned source recipe/output and legacy completed replay",
+    "native source adapter critical-missing versus warning-only acceptance"
+  ],
+  "whole_goal_complete": false
+}

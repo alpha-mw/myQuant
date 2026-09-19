@@ -1,0 +1,52 @@
+{
+  "phase": 7,
+  "scope": "NATIVE_EVENT_INTEGRITY_AND_FROZEN_CORPORATE_PROVENANCE",
+  "status": "COMPLETED_LOCAL_VALIDATION_FOR_BOUNDED_REPAIR",
+  "full_phase7_complete": false,
+  "full_goal_complete": false,
+  "verified_at": "2026-09-12T03:24:43.640751+00:00",
+  "goal_status_verified": "active",
+  "review": "Architect amendments adopted; Critic APPROVE",
+  "verification": {
+    "pytest_session": 90404,
+    "passed": 126,
+    "seconds": 3.36,
+    "exit_code": 0,
+    "mypy_files": 5,
+    "black_files": 9,
+    "flake8": "PASS"
+  },
+  "real_evidence": [
+    ".agent/acceptance/phase7-event-validation-before.json",
+    ".agent/acceptance/phase7-event-current-shapes.json",
+    ".agent/acceptance/phase7-canonical-event-provenance.json",
+    ".agent/acceptance/phase7-frozen-corporate-replay.json"
+  ],
+  "outcomes": [
+    "All 4 rehashed invalid closure cases now reject",
+    "All seven nonempty event dimensions reject before publication",
+    "4 canonical catalog pseudo-refs now resolve and actual CorporateActionEvidence projections validate without source changes",
+    "Exact frozen corporate completed replay passes without current event head access",
+    "Native Store, manager continuity and no-action regressions pass"
+  ],
+  "remaining": [
+    "Governed nonempty fills/cash/manual event handling and same-day existing official-state adoption must be audited/completed within no-holdings-mutation scope",
+    "Phase8 named split/dividend/rights/bonus/share-conversion evidence and explicit adjustment reports are not implemented by this repair",
+    "Phase9-15 work remains per execution register"
+  ],
+  "file_sha256": {
+    "quant_investor/strategy_records/event_store.py": "a1fb4a84c9311f2200e80b3d4b8a8e71a07f2d076165751f496c5c64a1047ad8",
+    "quant_investor/strategy_records/event_contracts.py": "18cc392fcfe4e426c3dfb72a01d2d560a6ef49fd8da5e9fc0cf6ba1caa218324",
+    "quant_investor/strategy_records/event_receipts.py": "160bdc3d67b4e6df4b3e188f00e68f058f3a950dfd469f55781e4f1f4577cbae",
+    "quant_investor/strategy_records/receipts.py": "6fd1202d2688e44716914e25719468095577a7e515695d6d13af41d6476f0681",
+    "quant_investor/operations/corporate_actions.py": "b6187faf1bef6e8f5429ac6d4d37424a7dcbad93664e0e5b19e6d4c84e3186a0",
+    "scripts/manage_cn_strategy_records.py": "419743c7a00d877c4577056860c4ba82377f061583953bb2c3183a600d522b0d",
+    "tests/unit/test_strategy_event_integrity.py": "c2a58e20badbd8adf05c054342e793a92752d8e6b37d398523b01be3e44f028e",
+    "tests/unit/test_strategy_event_receipts.py": "7c570e0d4dcb33cc91dd575efa63f07adba4e90462d9e19bb18684e628f45dfe",
+    "tests/unit/test_strategy_event_store.py": "19105e7b30a0d1f30978c60ea73ea24b3c1fa9787c378799da1d959ba33fe018",
+    "tests/unit/test_daily_evidence_corporate_actions.py": "998f6a72d055a234458f6a131da084c3c1dd64415f25b79bc16cd84f4f202b51",
+    "tests/unit/test_manage_cn_strategy_records.py": "a4cbfb83ea405d943c40531a69c88e277decda2346b78686779bac9edf8fcb44",
+    "docs/plans/phase07_event_integrity.md": "0f9edeae94c21745054702cb9f1d13f58b1498c34c9f27f7d831e7355f6573e8",
+    "docs/runbooks/daily_investment_intelligence.md": "c679a7a01463c6982ef96c0fb3d2bf914743e4338465399151ceb99e661dba73"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "observed_at": "2026-09-13T23:46:24.971514+00:00",
+  "scope": "ONE_SECOND_NATIVE_STACK_SAMPLE_OF_ACTUAL_PRIMARY_PROCESS",
+  "pid": 14119,
+  "parent_pid": 14118,
+  "primary_handle": 37364,
+  "sample_handle": 79469,
+  "sample_exit_code": 0,
+  "sample_ref": {
+    "path": "/private/tmp/myquant-configured-catalog-20260913T202622Z/primary-post-seal-sample.txt",
+    "sha256": "ce4b1df2c1c25a348b56d6e0040c6cd6c8e1866f68aa3c501ba994ec88443661"
+  },
+  "observed_main_thread": "Python evaluation with Arrow binary equality / array comparison",
+  "python_source_frame_identity": "UNCONFIRMED_BY_NATIVE_SAMPLE",
+  "lock_wait_not_observed_in_sample": true,
+  "infinite_loop_excluded": false,
+  "full_native_completion_claimed": false,
+  "primary_process": "14119 03:17:24 191:53.41 100.0 R",
+  "original_process_preserved": true,
+  "next_action": "Keep original E; collect actual terminal status and final proof before successors. Do not repeat equivalent profiling or implement speculative reader swaps."
+}

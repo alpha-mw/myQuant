@@ -1,0 +1,64 @@
+{
+  "observed_at": "2026-09-14T01:14:56.629903+00:00",
+  "state": "CURRENT_INSTALLED_FIRST_DAY_FULL_NATIVE_ACCEPTANCE_PASS",
+  "root": "/private/tmp/myquant-configured-catalog-20260913T202622Z",
+  "producer_commit": "bf078d3235de3ade1379e8082d5d4a49e109f7d5",
+  "synthetic": true,
+  "driver_status": {
+    "state": "PASS",
+    "root": "/private/tmp/myquant-configured-catalog-20260913T202622Z",
+    "producer_commit": "bf078d3235de3ade1379e8082d5d4a49e109f7d5",
+    "started_at": "2026-09-13T20:29:00.406306+00:00",
+    "production_deployed": false,
+    "exit_code": 0,
+    "finished_at": "2026-09-14T00:12:30.392544+00:00",
+    "helper_drift": []
+  },
+  "driver_total_seconds": 13409.986238,
+  "dispatch_result_to_process_exit_seconds": 1693.557044,
+  "proof_ref": {
+    "path": "/private/tmp/myquant-configured-catalog-20260913T202622Z/configured-native-proof.json",
+    "sha256": "3b5f566e5a529c1971c061a313bd7f5906aa46ef62f05678606e5a0eed2fc149"
+  },
+  "completion_ref": {
+    "path": "results/operations/daily_production/CN/20260827/completion.v1.json",
+    "sha256": "a67133c2735471808e73eb89201483ada7ccf53456a2e9e9785e075503e98027"
+  },
+  "request_ref": {
+    "path": "results/operations/daily_production/CN/20260827/preparation/deb3a8278fca35a7cb3e56d81a1b35da2c190fa1709f16a5d211bf9634568779/request.json",
+    "sha256": "6e226f204ef60f759a21c46c37366d359ed5c4614fb8632780f9a1757db48ea7"
+  },
+  "config_ref": {
+    "path": "configured-inputs/source-config.json",
+    "sha256": "deb3a8278fca35a7cb3e56d81a1b35da2c190fa1709f16a5d211bf9634568779"
+  },
+  "validated_nodes": [
+    "calendar",
+    "corporate_action_recon",
+    "dashboard",
+    "decision",
+    "exposure",
+    "factor",
+    "fundamental",
+    "industry",
+    "low_observation",
+    "macro",
+    "market",
+    "pit",
+    "store",
+    "theme",
+    "top100",
+    "w80_observation"
+  ],
+  "native_replay_validated": true,
+  "serving_readback_ref": "/private/tmp/myquant-configured-catalog-20260913T202622Z/configured-serving-readback.json",
+  "cases_with_native_day_evidence": [
+    1,
+    2,
+    5,
+    7
+  ],
+  "five_day_native_chain_complete": false,
+  "production_deployed": false,
+  "full_goal_complete": false
+}

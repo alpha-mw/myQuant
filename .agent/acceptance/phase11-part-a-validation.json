@@ -1,0 +1,109 @@
+{
+  "observed_at": "2026-09-12T19:07:25.570779+00:00",
+  "status": "PART_A_COMPLETED_LOCAL_VALIDATION",
+  "phase11_complete": false,
+  "full_goal_complete": false,
+  "sources": [
+    {
+      "path": "quant_investor/market/requested_session.py",
+      "sha256": "72f7c0d9062a352d3591ff7ffa2f0ecd8566626bb8b3ad131c0a2801508fff53"
+    },
+    {
+      "path": "quant_investor/market/maintenance_journal.py",
+      "sha256": "3616b57dc50cfa9e3b1885fafcc675ed7ddb21f7d0d216731b6e6bffb9c724dd"
+    },
+    {
+      "path": "quant_investor/market/daily_maintenance.py",
+      "sha256": "c18ff67b3edd1ca3ffe3f96fc38bfaa09783965cf1f75be2ec128783ba04ccfb"
+    },
+    {
+      "path": "quant_investor/operations/catchup_binding.py",
+      "sha256": "9284497651f9969b4302ed22c6ef5fd5e43aa375b5e205ed5da68747d5d0c550"
+    },
+    {
+      "path": "quant_investor/operations/maintenance_readback.py",
+      "sha256": "9f4f5b9c6abf38a01f9ecf1d156fbdac5911ab1b11109d9f76b9a1718e0923ff"
+    },
+    {
+      "path": "quant_investor/operations/maintenance_handoff.py",
+      "sha256": "619e2cedeace078b552c626ddc97c23258ad4575265f619530c52483f94b8b9e"
+    },
+    {
+      "path": "scripts/daily_materialization.py",
+      "sha256": "96836ce72da5326689a6712d116db43788193e79eace4aa87d8d6421e36355ee"
+    },
+    {
+      "path": "scripts/daily_catchup.py",
+      "sha256": "3f501713f8bbac64c877daf763eae35a5b0ebcb74d31cb1088411e8404e1a1ba"
+    }
+  ],
+  "tests": [
+    {
+      "path": "tests/unit/_public_catchup_fixture.py",
+      "sha256": "9e4f9b51995323ae8cee26a8eff53b544fb55428b6953dc6f97e11f1a89daf12"
+    },
+    {
+      "path": "tests/unit/test_daily_evidence_catchup_routing.py",
+      "sha256": "554a93c2f6a43c32b82bf8cf361202697fce0ee0be283d120469c9f21f9a3ae9"
+    },
+    {
+      "path": "tests/unit/test_daily_evidence_public_catchup.py",
+      "sha256": "51f5ba5b91fd60cb95240318ddbfc9bfd841fa8ec4c7384693f4cdcd4f1d503c"
+    },
+    {
+      "path": "tests/unit/test_daily_evidence_requested_maintenance.py",
+      "sha256": "7bf612fcbd86baa5b1f28e50eb32b1c568b8835f01714db9a149bb2b51f8694a"
+    },
+    {
+      "path": "tests/unit/test_daily_evidence_maintenance_handoff.py",
+      "sha256": "365778ab71b127b1d5b54db320bd34ef1b68984779410775f44fa0fc24775423"
+    },
+    {
+      "path": "tests/unit/test_daily_evidence_historical_handoff.py",
+      "sha256": "a36e2edc5fe9d3e8c777bdb0ee0a47f2c4b6b25ebe95ee4f7f89582f86ff3944"
+    }
+  ],
+  "checks": [
+    {
+      "session": 19992,
+      "exit_code": 0,
+      "result": "265 passed in 28.37s",
+      "log": {
+        "path": "/tmp/myquant-phase11-part-a-tests.txt",
+        "sha256": "96746c1e7f970d8db02e6a62671ee451fb3f7adbc011c411b2b2ee77045a02ae"
+      }
+    },
+    {
+      "session": 5134,
+      "exit_code": 0,
+      "result": "56 passed in 3.29s",
+      "scope": "Includes additional current predecessor rejection and historical binding-v2 handoff; overlaps main suite"
+    },
+    {
+      "session": 29881,
+      "exit_code": 0,
+      "result": "24 passed in 2.13s",
+      "scope": "Routing follow-up includes explicit no-gap current-publication boundary; overlaps main suite"
+    }
+  ],
+  "static": {
+    "mypy_sources": 8,
+    "black_files": 14,
+    "flake8": "PASS"
+  },
+  "native_historical_dashboard": {
+    "path": ".agent/acceptance/phase11-native-historical-dashboard.json",
+    "sha256": "233fa8b0dfa960c53a5e3310e58185602e92bda84879508bcc29637b9162a8b7"
+  },
+  "old_failure_sha_unchanged": true,
+  "old_failed_job_recovered": false,
+  "remaining": [
+    "Part B automatic authoritative anchor/target selection and durable overlapping invocation",
+    "Final installed current-source full DAG and five-day acceptance"
+  ],
+  "limitations": [
+    "Native Calendar/maintenance/Store/Market/financial Dashboard and five-domain collector exercised using synthetic fixtures",
+    "Coordinator EOD admission and unrelated handoff producer boundaries explicitly controlled",
+    "No live provider or production/scheduler/portfolio changes"
+  ]
+}

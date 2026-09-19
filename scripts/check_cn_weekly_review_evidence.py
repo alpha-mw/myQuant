@@ -26,6 +26,7 @@ from quant_investor.strategy_records.store import (  # noqa: E402
 )
 from scripts.export_cn_weekly_review_evidence import (  # noqa: E402
     DOMAIN_NAMES,
+    HISTORICAL_DOMAIN_NAMES,
     DOMAIN_STATUSES,
     MAX_BUNDLE_BYTES,
     RECORD_ROOT,
@@ -74,7 +75,8 @@ def _read_bundle(path: Path) -> tuple[dict[str, Any], bytes, str]:
 
 def _check_domain_matrix(bundle: dict[str, Any]) -> None:
     domains = bundle.get("domains")
-    if not isinstance(domains, dict) or set(domains) != set(DOMAIN_NAMES):
+    expected_names = DOMAIN_NAMES if bundle.get("schema_id") == SCHEMA_ID else HISTORICAL_DOMAIN_NAMES
+    if not isinstance(domains, dict) or set(domains) != set(expected_names):
         raise WeeklyEvidenceCheckError("evidence coverage matrix is incomplete")
     for name, domain in domains.items():
         if (
@@ -281,9 +283,55 @@ def _check_formal_boundaries(bundle: dict[str, Any]) -> None:
         raise WeeklyEvidenceCheckError("scheduled-run read boundary is invalid")
 
 
+def _check_v2_projections(bundle: dict[str, Any]) -> None:
+    from scripts import export_cn_weekly_review_evidence as exporter
+    from scripts.cn_weekly_review_v2 import daily_domain, enrich
+    import copy
+
+    window = bundle["report_window"]
+    try:
+        expected, _ = exporter._registered_cn_trade_dates(
+            PROJECT_ROOT, start_date=window["start_date"], end_date=window["end_date"]
+        )
+    except (StrategyRecordStoreError, WeeklyEvidenceError, KeyError):
+        expected = []
+    if bundle.get("registered_trade_dates") != expected:
+        raise WeeklyEvidenceCheckError("v2 expected trading calendar differs")
+    reference = bundle["domains"]["DAILY_REVIEW_COVERAGE"]["evidence"].get("source_ref")
+    value, actual_ref = exporter._safe_json_input(
+        Path(reference["path"]) if reference else None,
+        expected_schema="cn_weekly_daily_review_input.v2", report_week=window["report_week"], label="daily review v2",
+    )
+    if expected:
+        domain, rows = daily_domain(value, actual_ref, window=window, expected_trade_dates=expected)
+        loaded = load_registered_catalog(PROJECT_ROOT / RECORD_ROOT)
+        catalog = loaded[1] if loaded else None
+        receipts = exporter._registered_daily_review_receipts(catalog, expected_trade_dates=expected)
+        retrospective = exporter._registered_retrospective_daily_reviews(expected_trade_dates=expected)
+        domain["evidence"]["registered_receipt_dates"] = sorted({r["trade_date"] for r in receipts})
+        domain["evidence"]["retrospective_review_dates"] = sorted({r["trade_date"] for r in retrospective})
+        if domain != bundle["domains"]["DAILY_REVIEW_COVERAGE"] or rows != bundle["daily_reviews"]["items"]:
+            raise WeeklyEvidenceCheckError("v2 independent daily coverage differs")
+    replay = copy.deepcopy(bundle)
+    enrich(replay, PROJECT_ROOT, expected)
+    for key in ("period", "risk_monitor", "factor_daily_coverage", "attribution"):
+        if replay[key] != bundle.get(key):
+            raise WeeklyEvidenceCheckError("v2 replay differs:" + key)
+    for key in ("STORE_HOLDINGS", "PERFORMANCE_BENCHMARK"):
+        if replay["domains"][key]["status"] != bundle["domains"][key]["status"]:
+            raise WeeklyEvidenceCheckError("v2 completeness status differs:" + key)
+    for key in ("RISK_MONITOR", "FACTOR_DAILY_COVERAGE", "FACTOR_EFFECTIVENESS"):
+        if replay["domains"][key] != bundle["domains"][key]:
+            raise WeeklyEvidenceCheckError("v2 domain replay differs:" + key)
+    for key in ("warnings", "blockers"):
+        expected_messages = sorted({message for domain in bundle["domains"].values() for message in domain[key]})
+        if expected_messages != bundle.get(key):
+            raise WeeklyEvidenceCheckError("v2 aggregate messages differ:" + key)
+
+
 def check(path: Path) -> dict[str, Any]:
     bundle, raw, byte_sha = _read_bundle(path)
-    if bundle.get("schema_id") != SCHEMA_ID:
+    if bundle.get("schema_id") not in {SCHEMA_ID, "cn_weekly_portfolio_evidence.v1"}:
         raise WeeklyEvidenceCheckError("weekly evidence schema is unsupported")
     observed_content = bundle.get("content_sha256")
     if not isinstance(observed_content, str) or observed_content != _content_sha(bundle):
@@ -296,6 +344,8 @@ def check(path: Path) -> dict[str, Any]:
     _check_operations(bundle)
     _check_performance_and_flows(bundle)
     _check_formal_boundaries(bundle)
+    if bundle["schema_id"] == SCHEMA_ID:
+        _check_v2_projections(bundle)
     source_refs = bundle.get("source_refs")
     if not isinstance(source_refs, list):
         raise WeeklyEvidenceCheckError("source_refs are absent")

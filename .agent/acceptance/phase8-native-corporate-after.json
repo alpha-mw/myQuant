@@ -1,0 +1,214 @@
+{
+  "observed_at": "2026-09-12T04:53:22.751503+00:00",
+  "scope": "CURRENT_SOURCE_SYNTHETIC_NATIVE_CORPORATE_NODE_AND_PRE_CLOSE_BOOK",
+  "synthetic": true,
+  "native_cases": [
+    {
+      "kind": "DIVIDEND",
+      "fixture_root": "/private/var/folders/cp/539tc5k549l2jzdy90ptl6cm0000gn/T/phase8-native-dividend-nncvv6be",
+      "outcome": "SUCCEEDED",
+      "output_refs": {
+        "financial_events": {
+          "path": "results/operations/daily_production/CN/20260824/corporate-actions/14232f086d745ac60d022284487693b9e7cd34ac14244593919c401c83196c66.json",
+          "sha256": "14232f086d745ac60d022284487693b9e7cd34ac14244593919c401c83196c66"
+        },
+        "event_generation": {
+          "path": "results/strategy_records/CN/aggressive_tech_manufacturing/_event_store/generations/event-20260824-synthetic.v1.json",
+          "sha256": "e317860e9a6191a196beaf707c5dc9a07c17584de9d59f0c6407dcc8e0188f7d"
+        },
+        "reconciliation": {
+          "path": "results/operations/daily_production/CN/20260824/corporate-actions/reconciliation-86b3ab5a32609b3f4f65a7f77ab6200fd819cad831838c6ce62d982e09bcf5f6.json",
+          "sha256": "86b3ab5a32609b3f4f65a7f77ab6200fd819cad831838c6ce62d982e09bcf5f6"
+        }
+      },
+      "report_state": "RECONCILED_RESEARCH_ONLY",
+      "event_result": {
+        "anchor": {
+          "blocker_codes": [],
+          "old_tracking_start_date": "20260820",
+          "policy_ref": {
+            "path": "fixtures/tracking-policy.json",
+            "sha256": "683d2cea228368490807c6ea2f72b87cab61a6f6e31ee31be0426f5be66b3859"
+          },
+          "review_ref": {
+            "path": "fixtures/reviews.json",
+            "sha256": "1342da5194d98d51d0a34cf9a4591f99330fd9ab7c08331ec92e6b9b4d8d81f0"
+          },
+          "source_record_id": "20260820_1321",
+          "state": "OWNER_DECLARED_RESEARCH_RESET",
+          "tracking_start_date": "20260821"
+        },
+        "blocker_codes": [],
+        "effective_trade_date": "20260820",
+        "event_id": "synthetic-action",
+        "event_ref": {
+          "path": "fixtures/corporate-event.json",
+          "sha256": "6090cc38759257edcc513e085b194e624c17f92a0977a46d472d4e5a642026a7"
+        },
+        "financial": {
+          "after_record_id": "20260820_1321",
+          "before_record_id": "20260819_1321",
+          "blocker_codes": [],
+          "cash_adjustment": {
+            "after": "999000.0",
+            "before": "998900.0",
+            "delta": "100.0",
+            "unit": "CNY"
+          },
+          "cost_basis_adjustment": {
+            "after": "1000.0",
+            "before": "1000.0",
+            "delta": "0.0",
+            "unit": "CNY"
+          },
+          "shares_adjustment": {
+            "after": "100",
+            "before": "100",
+            "delta": "0",
+            "unit": "SHARES"
+          },
+          "source_refs": [
+            {
+              "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260819_1321/ledger_after_manual_switch.parquet",
+              "sha256": "28ca119ba924db8d9c6bdc55f279f54411feb1192cbfee985e9511e47f7f7ee2"
+            },
+            {
+              "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260819_1321/manifest.json",
+              "sha256": "618c6a933f55c753ee50100cf660fef307806117d23173e44bc423a5f214db7c"
+            },
+            {
+              "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260819_1321/manual_execution_manifest.json",
+              "sha256": "c630fd43b42d8723c52c94a7ccea37470cb6ab184501c6599ef35dfaf5a50f74"
+            },
+            {
+              "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260820_1321/ledger_after_manual_switch.parquet",
+              "sha256": "28ca119ba924db8d9c6bdc55f279f54411feb1192cbfee985e9511e47f7f7ee2"
+            },
+            {
+              "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260820_1321/manifest.json",
+              "sha256": "54b56d8d7a7ed758cc0dc51cc08516881e38d2a2e7dc0dc367bb5f07e4a2261e"
+            },
+            {
+              "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260820_1321/manual_execution_manifest.json",
+              "sha256": "9ad6ffd1354f27837b881cd4ad8d050449145827adccb74e497f26752a095ce7"
+            }
+          ],
+          "state": "OBSERVED_NATIVE_POSTING",
+          "unattributed_transition": null
+        },
+        "kind": "DIVIDEND",
+        "reconciliation_state": "RECONCILED_RESEARCH_ONLY",
+        "source_state": "SOURCE_DECLARED"
+      },
+      "same_custody_replay_without_current_heads": true,
+      "store_unchanged_before_deliberate_fixture_head_removal": true
+    },
+    {
+      "kind": "SPLIT",
+      "fixture_root": "/private/var/folders/cp/539tc5k549l2jzdy90ptl6cm0000gn/T/phase8-native-split-dt72nrxq",
+      "outcome": "SUCCEEDED",
+      "output_refs": {
+        "financial_events": {
+          "path": "results/operations/daily_production/CN/20260824/corporate-actions/a080154202ad3d78dfbb114cd5a8274c2599aac96b02223d40f4b8cdec421401.json",
+          "sha256": "a080154202ad3d78dfbb114cd5a8274c2599aac96b02223d40f4b8cdec421401"
+        },
+        "event_generation": {
+          "path": "results/strategy_records/CN/aggressive_tech_manufacturing/_event_store/generations/event-20260824-synthetic.v1.json",
+          "sha256": "e317860e9a6191a196beaf707c5dc9a07c17584de9d59f0c6407dcc8e0188f7d"
+        },
+        "reconciliation": {
+          "path": "results/operations/daily_production/CN/20260824/corporate-actions/reconciliation-0ae5a9d7a5e45f03bf6cc6197aee5be18286be31959f5f010e5a21c6c52a5720.json",
+          "sha256": "0ae5a9d7a5e45f03bf6cc6197aee5be18286be31959f5f010e5a21c6c52a5720"
+        }
+      },
+      "report_state": "RECONCILED_RESEARCH_ONLY",
+      "event_result": {
+        "anchor": {
+          "blocker_codes": [],
+          "old_tracking_start_date": "20260820",
+          "policy_ref": {
+            "path": "fixtures/tracking-policy.json",
+            "sha256": "11d33c7c91994aaf3fbde5543172f9b7e1a298b5ada2f9f07c1f176cc82cf5ad"
+          },
+          "review_ref": {
+            "path": "fixtures/reviews.json",
+            "sha256": "b6c2df09cc0748f25c1fd6bad1c707020545281105910b6f6f53a0798bb7e027"
+          },
+          "source_record_id": "20260820_1321",
+          "state": "OWNER_DECLARED_RESEARCH_RESET",
+          "tracking_start_date": "20260821"
+        },
+        "blocker_codes": [],
+        "effective_trade_date": "20260820",
+        "event_id": "synthetic-action",
+        "event_ref": {
+          "path": "fixtures/corporate-event.json",
+          "sha256": "bd705bdc91f2f7a0defdbfb0be3993f549979205a6f0d7bb44a508761008e31e"
+        },
+        "financial": {
+          "after_record_id": "20260820_1321",
+          "before_record_id": "20260819_1321",
+          "blocker_codes": [],
+          "cash_adjustment": {
+            "after": "998900.0",
+            "before": "998900.0",
+            "delta": "0.0",
+            "unit": "CNY"
+          },
+          "cost_basis_adjustment": {
+            "after": "1000.0",
+            "before": "1000.0",
+            "delta": "0.0",
+            "unit": "CNY"
+          },
+          "shares_adjustment": {
+            "after": "200",
+            "before": "100",
+            "delta": "100",
+            "unit": "SHARES"
+          },
+          "source_refs": [
+            {
+              "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260819_1321/ledger_after_manual_switch.parquet",
+              "sha256": "28ca119ba924db8d9c6bdc55f279f54411feb1192cbfee985e9511e47f7f7ee2"
+            },
+            {
+              "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260819_1321/manifest.json",
+              "sha256": "618c6a933f55c753ee50100cf660fef307806117d23173e44bc423a5f214db7c"
+            },
+            {
+              "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260819_1321/manual_execution_manifest.json",
+              "sha256": "c630fd43b42d8723c52c94a7ccea37470cb6ab184501c6599ef35dfaf5a50f74"
+            },
+            {
+              "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260820_1321/ledger_after_manual_switch.parquet",
+              "sha256": "50f822eedd40846a37a5f04bffab9e354b6217a50088fe293785532ff9c2cfad"
+            },
+            {
+              "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260820_1321/manifest.json",
+              "sha256": "2866a67760eef366194ae57b3a789528978f4682bc4719d06565b03068b51f39"
+            },
+            {
+              "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260820_1321/manual_execution_manifest.json",
+              "sha256": "02bf70fefb0eb2e3e70e9957a6e8e1a2cc0adb5f7bc35d86cbb20d59665be805"
+            }
+          ],
+          "state": "OBSERVED_NATIVE_POSTING",
+          "unattributed_transition": null
+        },
+        "kind": "SPLIT",
+        "reconciliation_state": "RECONCILED_RESEARCH_ONLY",
+        "source_state": "SOURCE_DECLARED"
+      },
+      "same_custody_replay_without_current_heads": true,
+      "store_unchanged_before_deliberate_fixture_head_removal": true
+    }
+  ],
+  "provider_calls": 0,
+  "real_account_mutations": 0,
+  "full_dag_proof": false,
+  "limitations": [
+    "Issuer events and owner review are explicitly synthetic declarations; not canonical company/account evidence",
+    "Materialization v3/native v4 and completed corporate replay validated separately with controlled outer handoff/EOD-admission seams"
+  ]
+}

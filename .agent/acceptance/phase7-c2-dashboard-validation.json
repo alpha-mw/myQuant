@@ -1,0 +1,97 @@
+{
+  "recorded_at": "2026-09-13T15:50:03.303900+00:00",
+  "state": "REGISTERED_DASHBOARD_LOCAL_VALIDATION_COMPLETE",
+  "whole_goal_complete": false,
+  "c2_complete": false,
+  "implemented": [
+    "Native7 Dashboard recipe2 with three explicit registered refs, original five-domain artifact unchanged",
+    "Exact Corporate3 and C1 frozen plan2/final Store cross-proof; Dashboard forwards the same registered transition as fifth output",
+    "Completed Dashboard replay and observed serving rebuild registered fields from frozen sources; no current heads required",
+    "Serving descriptor2 embeds verified report and close summary under existing filenames and selector SHA",
+    "Browser validates registered profile, final positions/cash, owner/broker/risk state and zero close-writer counts; UI separates owner BUY from official valuation",
+    "Native financial readers recognize receipt2 and the proved superseded intraday predecessor without reinserting a duplicate daily performance point"
+  ],
+  "tests": [
+    {
+      "name": "final_native_and_regression",
+      "log": ".agent/acceptance/phase7-c2-dashboard-final-tests.log",
+      "passed": 84,
+      "seconds": 51.93,
+      "session_id": 99351,
+      "terminal_exit_code": 0
+    },
+    {
+      "name": "browser_contract_and_tampering",
+      "log": ".agent/acceptance/phase7-c2-dashboard-browser-contract-tests.log",
+      "passed": 28,
+      "failed": 0
+    }
+  ],
+  "static": {
+    "black_files": 12,
+    "black": "PASS",
+    "mypy_sources": 3,
+    "mypy": "PASS",
+    "flake8_owned": "PASS",
+    "app_js_syntax": "PASS",
+    "strategy_record_access": "PASS:35 reviewed callers"
+  },
+  "http_ui_qa": {
+    "state": "PASS_DESKTOP",
+    "url_used": "http://127.0.0.1:51089/",
+    "browser": "Codex in-app browser",
+    "tab_id": "4",
+    "synthetic_preview": ".agent/acceptance/phase7-c2-dashboard-preview/index.html",
+    "observed": [
+      "300308.SZ new position, +100 shares, fee-inclusive cost 2205.02",
+      "Owner-declared evidence and pending broker reconciliation",
+      "Official close with zero new trade/order/fill counts",
+      "Risk policy revalidation required",
+      "Read-only financial-publication wording without an incorrect NO_ACTION claim"
+    ],
+    "screenshot_visually_reviewed": true,
+    "responsive_specific_viewport_tested": false,
+    "tab_closed": true,
+    "server_session_id": 13120,
+    "server_stopped": true,
+    "server_stop": "explicit Ctrl-C after QA"
+  },
+  "boundaries": {
+    "native_financial_and_corporate_modules": true,
+    "synthetic_account_data": true,
+    "five_domain_and_full_eod_admission": "explicit controlled test seams",
+    "actual_full_native_dag": false,
+    "installed_release_validation": false,
+    "scheduler_cutover": false,
+    "real_provider_calls": false,
+    "actual_account_mutation": false,
+    "real_unattended_receipt": false,
+    "file_browser_native_qa": "previous policy block remains; Node file-route contract is not native file-browser proof"
+  },
+  "remaining": [
+    "Original request custody/time checks for finalized registered recovery",
+    "Complete configured current-source native DAG with real five-domain/full EOD admission",
+    "Final current-source CI/install/scheduler and consecutive unattended trading days",
+    "Remaining original financial profile/historical ordering and diagnostics requirements"
+  ],
+  "source_sha256": {
+    "quant_investor/operations/registered_dashboard.py": "5f702fa9299efa210aa53b437fb18ed7910c46213b0b2f37049a12fe42d11818",
+    "quant_investor/operations/dashboard_serving_contract.py": "8b4f0790a5663bffdf6b12550344c96bbbbc734353ffe59f131adbce150607b8",
+    "quant_investor/strategy_records/close_plan_contracts.py": "3b7a60bbb3fafc0aa440cb84c713c9ab0c5c39e27f84fc5cb11821e7a6d5b182",
+    "scripts/daily_dashboard_history.py": "6b4c38f01059491c2b7737769e86c3273fee025ba6d04143a90580715bef00cd",
+    "scripts/cn_dashboard_v2.py": "355c429b899ae84235427a38fc1b7f7bab56b6a2044c33e8655153035b1be10c",
+    "scripts/cn_dashboard_common.py": "0ce4da965e354d570284d54177a2ff2a636175d1cdec42b60b27c93da541c3d9",
+    "scripts/daily_dashboard_sealed.py": "7cf6fb51666c4b9d61a98449dc2a654386cec049fbd792f80a14998e21ff237b",
+    "scripts/daily_native_registry.py": "698206dd1d7c3b9718785e3aa029751c53f685ba77595837f9e4845fc3fb6b35",
+    "scripts/daily_completion_dashboard.py": "a8cbb2d01a48072c56407093b8f46878b11eb385d4aa3137a05d63c967efdade",
+    "scripts/daily_dashboard_publication.py": "c255a726347dc96e3ce64e95014193b55a835797cefd3d44d1f08205f86a8068",
+    "portfolio_dashboard/app.js": "fa709442ea044680dece8ba11aedb578c29942964759f37e957bf2e31e357d5c",
+    "portfolio_dashboard/styles.css": "07579a52ab8a5afe33f18e9801e1cf2dd0e1ee7ea5f7f06560940a8c4813735f",
+    "portfolio_dashboard/index.html": "2bae49fefe1a4483c4d5a5b55492e95cc6cd2b819863ccf7ef9ea643a3c7bf5b",
+    "portfolio_dashboard/js/cn_daily_dashboard_contract_v1.js": "f0be3a7d81cd9c3463904eb741ac4fad8b1425cc040646017207693cbeb9abe4",
+    "portfolio_dashboard/tests/cn_daily_dashboard_contract_v1.test.js": "44d672325a28a4575699abc5940ef1fdff6413805093e4e467abd879eda9f9a6",
+    "portfolio_dashboard/tests/fixtures/daily_registered_synthetic_raw.json": "51e0b2f88b7d47b2680d4d9419453ec3f265b53b1b3bbb063557fa36bdf7077b",
+    "tests/unit/test_registered_dashboard_sources.py": "18af6f69ef2acdc3899c707216a9c537ac6d99944fcece40829b2a1382787029",
+    "tests/unit/test_registered_dashboard_pipeline.py": "99b0216ac0cabef4205a3d66d4afc438d57aed14326be7b41e14315d71d75b05"
+  }
+}

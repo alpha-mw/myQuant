@@ -352,13 +352,17 @@ def test_malicious_narratives_cannot_create_holdings_or_formal_actions(
     _write_json(
         daily,
         {
-            "schema_id": "cn_weekly_daily_review_input.v1",
+            "schema_id": "cn_weekly_daily_review_input.v2",
             "report_week": report_week,
             "items": [
                 {
                     "title": "A股量化投资与日度复盘",
                     "automation_id": "automation",
-                    "last_run": "2026-08-10T09:00:00Z",
+                    "last_run": "2026-08-09T09:00:00Z",
+                    "thread_id": "thread-test", "run_id": "run-test",
+                    "started_at": "2026-08-10T01:00:00Z",
+                    "completed_at": "2026-08-10T02:00:00Z",
+                    "run_status": "COMPLETED", "research_status": "PARTIAL",
                     "trade_date": "2026-08-10",
                     "summary": malicious,
                 }

@@ -1,0 +1,66 @@
+{
+  "observed_at": "2026-09-15T21:12:26.412866+00:00",
+  "child_pid": 81355,
+  "completed_calls": [
+    {
+      "trade_date": "20260831",
+      "call": 1,
+      "seconds": 1739.34
+    },
+    {
+      "trade_date": "20260831",
+      "call": 2,
+      "seconds": 1884.06
+    },
+    {
+      "trade_date": "20260831",
+      "call": 3,
+      "seconds": 1836.15
+    },
+    {
+      "trade_date": "20260831",
+      "call": 4,
+      "seconds": 1810.79
+    },
+    {
+      "trade_date": "20260831",
+      "call": 5,
+      "seconds": 1701.71
+    },
+    {
+      "trade_date": "20260901",
+      "call": 6,
+      "seconds": 1703.71
+    },
+    {
+      "trade_date": "20260901",
+      "call": 7,
+      "seconds": 1706.52
+    },
+    {
+      "trade_date": "20260831",
+      "call": 8,
+      "seconds": 1706.62
+    },
+    {
+      "trade_date": "20260901",
+      "call": 9,
+      "seconds": 1705.96
+    },
+    {
+      "trade_date": "20260901",
+      "call": 10,
+      "seconds": 1702.4
+    }
+  ],
+  "started_call": {
+    "trade_date": "20260901",
+    "call": 11
+  },
+  "log_ref": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/configured-successor-20260901.log",
+  "caller_identity": "UNCONFIRMED_FROM_LOG_ONLY",
+  "synthetic": true,
+  "production_deployed": false,
+  "full_stage_acceptance_proven": false,
+  "state": "FINAL_DISPATCH_REPLAYS_IN_PROGRESS"
+}

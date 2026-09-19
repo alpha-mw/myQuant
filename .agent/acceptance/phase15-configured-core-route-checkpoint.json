@@ -1,0 +1,82 @@
+{
+  "state": "CONFIGURED_NATIVE_CORE_ROUTE_OBSERVED",
+  "observed_at": "2026-09-13T19:44:36.994071+00:00",
+  "synthetic": true,
+  "producer_commit": "f7968454dcf537b20369a762bdbb16f56b2ee019",
+  "root": "/private/tmp/myquant-configured-clock-20260913T192045Z",
+  "original_request_ref": {
+    "path": "results/operations/daily_production/CN/20260827/preparation/25ab04a52b9fc06d88ab7b4f2f5b3b934faf9ae20f46c5d5133c1befdf8f615b/request.json",
+    "sha256": "5d4493c0edd9579dd8fdd7663fb7ac13062274aa9d52bc549be1a3c3a94a145c"
+  },
+  "core_handoff_ref": {
+    "path": "results/operations/daily_production/CN/20260827/core-handoff.v1.json",
+    "sha256": "4cd708078b79f6d9eaa9a0ed5e380695d605d13225cfc791d66fcccd6360ecbb"
+  },
+  "release_ref": {
+    "path": "results/factors/objects/system.release/54854f22bbc8a47bb3e18e3a2c7e9dcfe427a2a17df1a0db2dde89349e79f4c3.json",
+    "sha256": "54854f22bbc8a47bb3e18e3a2c7e9dcfe427a2a17df1a0db2dde89349e79f4c3"
+  },
+  "factor_as_of": "20260827",
+  "node_terminal_refs": {
+    "calendar": {
+      "terminal_ref": {
+        "path": "results/operations/daily_production/CN/20260827/nodes/calendar/b7300cec708e6c91aaba9655cd1910901071f33548548300ee3f9a4641c8dc06/attempt-0001/terminal.json",
+        "sha256": "badc69ddfc5efe7eaf3f21a34e5201062ac33d99ad562a4dc04a001a4bb8146c"
+      },
+      "state": "SUCCEEDED",
+      "finished_at": "2026-08-27T13:20:00Z"
+    },
+    "factor": {
+      "terminal_ref": {
+        "path": "results/operations/daily_production/CN/20260827/nodes/factor/ee61f376cb697a688826ea53e7037853cfbed6d3524bd87acad3ce2aa57e0be6/attempt-0001/terminal.json",
+        "sha256": "3025e079b04fc150fb2c9edf49eb56fc665ca240db6d9f9f178c2f096e6d4db7"
+      },
+      "state": "SUCCEEDED",
+      "finished_at": "2026-08-27T13:20:00Z"
+    },
+    "low_observation": {
+      "terminal_ref": {
+        "path": "results/operations/daily_production/CN/20260827/nodes/low_observation/5eff033a0c30c3811adac3220f643346812fcf7862fea939ce24d55284ce8460/attempt-0001/terminal.json",
+        "sha256": "ec184cf3aa8ad13628e4336c7cb1ee7a8e55098a10b08df2a462830d0d8bb48d"
+      },
+      "state": "SUCCEEDED",
+      "finished_at": "2026-08-27T13:20:00Z"
+    },
+    "market": {
+      "terminal_ref": {
+        "path": "results/operations/daily_production/CN/20260827/nodes/market/474f681843d949200a0e1714cd6957a70be7fa4856b38350ee7f3d5c6433751b/attempt-0001/terminal.json",
+        "sha256": "0a9e5a66d0706d4073e2cd7da92cfdf1c6cfed9b473d633e3e3e0c8053edef8a"
+      },
+      "state": "SUCCEEDED",
+      "finished_at": "2026-08-27T13:20:00Z"
+    },
+    "pit": {
+      "terminal_ref": {
+        "path": "results/operations/daily_production/CN/20260827/nodes/pit/1c2f3f0360ceb1c8960f1471c5651ab7155e8dc4d808c8610c886a4944965c53/attempt-0001/terminal.json",
+        "sha256": "d97567e3ee625a729525b042a150cd3d878ecbd4e6634692f93b7c87ec7c036a"
+      },
+      "state": "SUCCEEDED",
+      "finished_at": "2026-08-27T13:20:00Z"
+    },
+    "top100": {
+      "terminal_ref": {
+        "path": "results/operations/daily_production/CN/20260827/nodes/top100/b043fa87ce202cb3d7ac43df63b9fb4b201608c97d801569bed58140f227e082/attempt-0001/terminal.json",
+        "sha256": "3df80fa516b6e2f33490653979c14e8d5c087fe3df32a9a18d30b3625ba1d9bb"
+      },
+      "state": "SUCCEEDED",
+      "finished_at": "2026-08-27T13:20:00Z"
+    },
+    "w80_observation": {
+      "terminal_ref": {
+        "path": "results/operations/daily_production/CN/20260827/nodes/w80_observation/11f6cef5eb586edd9fb7dd35be8e987008803496313b8cc13b819f831e8759ca/attempt-0001/terminal.json",
+        "sha256": "8935c120e0d7498452106bc85708e9ae206ba6d9a30c3d70a57d14ecaf804ef2"
+      },
+      "state": "SUCCEEDED",
+      "finished_at": "2026-08-27T13:20:00Z"
+    }
+  },
+  "scope": "Readback of the running installed producer original request/Core handoff/7 selected successful terminal bytes; full downstream EOD and independent full native replay remain pending.",
+  "eod_complete": false,
+  "production_deployed": false,
+  "full_goal_complete": false
+}

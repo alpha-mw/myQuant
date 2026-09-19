@@ -1,0 +1,11 @@
+{
+  "observed_at": "2026-09-16T04:06:01.101767+00:00",
+  "state": "EOD_SEALED_FINAL_ACCEPTANCE_PENDING",
+  "completion_ref": {
+    "path": "results/operations/daily_production/CN/20260902/completion.v1.json",
+    "sha256": "ed19267e54f23465c6ca36fa6a910ddf20945001ff5811bf392de9f20ebc2d4b"
+  },
+  "node_terminal_hashes_verified": true,
+  "synthetic": true,
+  "full_stage_acceptance_proven": false
+}

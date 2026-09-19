@@ -1,0 +1,33 @@
+{
+  "observed_at": "2026-09-14T03:02:26.931877+00:00",
+  "case": 9,
+  "state": "CURRENT_INSTALLED_ORIGINAL_REQUEST_IDEMPOTENCE_PASS",
+  "root": "/private/tmp/myquant-configured-catalog-20260913T202622Z",
+  "producer_commit": "bf078d3235de3ade1379e8082d5d4a49e109f7d5",
+  "step": {
+    "stage": "repeat",
+    "exit_code": 0,
+    "seconds": 6454.59,
+    "log": "/private/tmp/myquant-configured-catalog-20260913T202622Z/configured-successor-repeat.log"
+  },
+  "duration_clock": "driver monotonic clock; host sleep is not included on this machine",
+  "proof_ref": {
+    "path": "/private/tmp/myquant-configured-catalog-20260913T202622Z/configured-repeat-proof.json",
+    "sha256": "bb649cf4a56e470d0b2e7193ea43a9a9a5f164dad88e0a412693acb1972ab384"
+  },
+  "request_ref": {
+    "path": "results/operations/daily_production/CN/20260827/preparation/deb3a8278fca35a7cb3e56d81a1b35da2c190fa1709f16a5d211bf9634568779/request.json",
+    "sha256": "6e226f204ef60f759a21c46c37366d359ed5c4614fb8632780f9a1757db48ea7"
+  },
+  "completion_ref": {
+    "path": "results/operations/daily_production/CN/20260827/completion.v1.json",
+    "sha256": "a67133c2735471808e73eb89201483ada7ccf53456a2e9e9785e075503e98027"
+  },
+  "execution_state": "NO_ACTION",
+  "business_state": "COMPLETE",
+  "workspace_bytes_modes_mtimes_unchanged": true,
+  "maintenance_factor_and_financial_calls_forbidden": true,
+  "synthetic": true,
+  "production_deployed": false,
+  "full_goal_complete": false
+}

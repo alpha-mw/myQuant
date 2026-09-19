@@ -1,0 +1,22 @@
+{
+  "observed_at": "2026-09-18T10:17:57.954319+00:00",
+  "state": "VERIFIED_LIVE_SECOND_DAY_REPLAY_PROGRESS",
+  "runtime_commit": "5060dee2d4b39b50a735393d056ebe5adb4efe3b",
+  "tool_session": 75106,
+  "tool_session_state": "UNKNOWN_PROCESS_ID",
+  "actual_processes": "52155 90633 S    01-13:59:16   0:00.08 /opt/homebrew/Cellar/python@3.13/3.13.7/Frameworks/Python.framework/Versions/3.13/Resources/Python.app/Contents/MacOS/Python\n65324 52155 R    01-12:14:01 182:36.30 /opt/homebrew/Cellar/python@3.13/3.13.7/Frameworks/Python.framework/Versions/3.13/Resources/Python.app/Contents/MacOS/Python\n90633     1 Ss   01-17:39:36   0:00.06 /opt/homebrew/Cellar/python@3.13/3.13.7/Frameworks/Python.framework/Versions/3.13/Resources/Python.app/Contents/MacOS/Python\n",
+  "log_path": "/private/tmp/myquant-canonical-scan-20260916T152008Z/configured-successor-20260828.log",
+  "log_snapshot_sha256": "3e9b3b2caa34d2a55deaa000a580e4469eef287a133dec3bdb4f87e3755183b1",
+  "last_log_lines": [
+    "PASS 20260828 configured-native-macro-source",
+    "PASS 20260828 configured-source-result",
+    "START native full replay 20260827 call 1",
+    "PASS native full replay 20260827 call 1 seconds 1526.51",
+    "START native full replay 20260827 call 2",
+    "PASS native full replay 20260827 call 2 seconds 1519.29",
+    "START native full replay 20260827 call 3"
+  ],
+  "second_day_complete": false,
+  "restart_performed": false,
+  "full_goal_complete": false
+}

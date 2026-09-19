@@ -1,0 +1,16 @@
+{
+  "state": "STATIC_PREFLIGHT_BLOCKED",
+  "config_ref": {
+    "path": ".agent/acceptance/phase12-5060-daily-source-config.json",
+    "sha256": "981569ade265421e53961555ac8b4a381c6b565740a9329c45d512a5751a5867"
+  },
+  "synthetic_refs_used": false,
+  "prediction_deadline_unconfirmed": true,
+  "exposure_policy": "No invented exposure; native source path must provide or explicitly block",
+  "target_date_for_offline_static_check": "20260918",
+  "provider_calls": false,
+  "scheduler_changed": false,
+  "error_type": "CanonicalJSONError",
+  "error": "artifact is not exact canonical JSON",
+  "release_object_present": false
+}

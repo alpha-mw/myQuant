@@ -1,0 +1,27 @@
+{
+  "observed_at": "2026-09-12T17:37:46.457537+00:00",
+  "scope": "NATIVE_FROZEN_RISK_CONSUMER_AND_REPORT_WITH_OUTER_ADMISSION_SEAMS",
+  "root": "/private/var/folders/cp/539tc5k549l2jzdy90ptl6cm0000gn/T/phase10-v3-native-consumer-492esrb1",
+  "synthetic": true,
+  "full_native_eod_admission": false,
+  "live_admission": false,
+  "seams": [
+    "full EOD and Decision semantic admission",
+    "next-session Calendar admission"
+  ],
+  "native_segments": [
+    "Store closure",
+    "Market/Calendar/Event/corporate sources",
+    "Sina raw-byte parsing",
+    "owner risk formula",
+    "v3 consumer/report"
+  ],
+  "report_path": "/Users/maxwell/mySpace/myQuant/.agent/acceptance/phase10-morning-v3-synthetic-review.md",
+  "report_sha256": "123aad9f64e49fc559b0c624fd5836031b862c98a8b37d32ee7396fb5cc4fe8e",
+  "review_sha256": "78f83ed9ec660c7e95ce80d2e67c626c1d953bf572bbac73d1745632b289aa57",
+  "review_state": "COMPLETE_RESEARCH_REVIEW",
+  "row_count": 1,
+  "source_count": 36,
+  "previous_trade_date": "20260827",
+  "run_date": "20260828"
+}

@@ -1,0 +1,80 @@
+{
+  "observed_at": "2026-09-16T14:35:07.926096+00:00",
+  "state": "LOCAL_V3_PRODUCER_AND_MORNING_INTEGRATION_VERIFIED",
+  "source_refs": [
+    {
+      "path": "quant_investor/market/future_calendar_context.py",
+      "sha256": "b0248984f604565e80d34106c4e7dc2ab4e9ebb21e6d583fcdd1d8e77e5a7efe"
+    },
+    {
+      "path": "quant_investor/market/future_calendar_producer.py",
+      "sha256": "16e46172b6cf15234fc1a2a8ec22308669ae36fa6ca8e47f99d5988a0b89f38e"
+    },
+    {
+      "path": "quant_investor/market/production_future_calendar.py",
+      "sha256": "a9b0f21cb69144687d78106c68850dbcded0f8b765750c4309122c59eb09b777"
+    },
+    {
+      "path": "quant_investor/market/daily_factor_loop.py",
+      "sha256": "3f719c596ae1f94785e7680942b0edf4d84457ef30578ab77ab6cb6a264a1a96"
+    },
+    {
+      "path": "scripts/daily_morning_consumer.py",
+      "sha256": "b6c28e30a53b1056b33f773217c0eae9add2e1a42921224cf0cb5cc934cafde6"
+    },
+    {
+      "path": "tests/unit/test_production_future_calendar.py",
+      "sha256": "949ca68de3e2c7428210198abdb5430e2200fa1f221dd69f7da587453ef55390"
+    },
+    {
+      "path": "tests/unit/test_daily_evidence_morning_consumer.py",
+      "sha256": "b13efdfc80fb66881fc61269aeadbb7cdf1d66410b940f8f5cd96dd5482bdb65"
+    },
+    {
+      "path": "tests/unit/test_morning_v3_consumer.py",
+      "sha256": "857a34eaa88e829f522a939af0ee181c4587d3b55888168752f5deec97e38b8b"
+    },
+    {
+      "path": "tests/unit/test_morning_v3_receipt.py",
+      "sha256": "fecb8620667cafefd70d7de826098bf35362ff7d597aea4edd1d1768004fa4bb"
+    },
+    {
+      "path": "tests/unit/test_daily_evidence_morning_history.py",
+      "sha256": "8549306a73f080d1eeb7e06b6a5057db984b876032995052f8395a34f85b6385"
+    },
+    {
+      "path": "tests/unit/test_daily_evidence_morning_seal.py",
+      "sha256": "c8e802245095493c68ea06a8dea212610daf0b5afdc6df20cff899903cdccc16"
+    }
+  ],
+  "tests": [
+    {
+      "scope": "legacy future/Core/context/diagnostics/native flow",
+      "passed": 80,
+      "seconds": 11.07
+    },
+    {
+      "scope": "final v3 production state/routing/crash recovery",
+      "passed": 22,
+      "seconds": 1.28
+    },
+    {
+      "scope": "Morning consumer/history/v3 receipt/seal including explicit provenance and recheck",
+      "passed": 49,
+      "seconds": 12.56
+    }
+  ],
+  "static": "F checks, Black and tracked diff whitespace PASS",
+  "native_admission_controlled_in_new_routing_tests": true,
+  "morning_live_eod_and_proof_admission_controlled_in_component_tests": true,
+  "real_provider_calls": false,
+  "new_installed_runtime_exercised": false,
+  "production_deployed": false,
+  "full_goal_complete": false,
+  "next": [
+    "Native production evidence integration test with explicit offline transport seam",
+    "Isolated installed version verification",
+    "Final source-frozen CI and original acceptance cases",
+    "Real source/config/owner-fact/scheduler/unattended gates"
+  ]
+}

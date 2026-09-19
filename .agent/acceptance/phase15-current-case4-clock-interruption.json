@@ -1,0 +1,21 @@
+{
+  "observed_at": "2026-09-16T19:16:11.461785+00:00",
+  "case": 4,
+  "state": "RETAINED_CLOCK_HARNESS_INTERRUPTION_BEFORE_RECOVERY",
+  "root": "/private/tmp/myquant-current-case4-20260916T173928Z",
+  "commit": "5060dee2d4b39b50a735393d056ebe5adb4efe3b",
+  "failure": "unexpected datetime binding: quant_investor.market._calendar_fixture_capability",
+  "failed_before_recovery_entry": true,
+  "native_missing_store_boundary_verified": true,
+  "original_initial_public_result_retained": true,
+  "planned_next_step": "Existing resume-retained driver in fresh process with one logical clock scope",
+  "runtime_or_frozen_helper_edits": false,
+  "preimage_sha256": {
+    "missing-store-driver-status.json": "34a28fae1bad5a418e5a9d020a6ea985c3136cb95ec5de8cee5f6912cad49b93",
+    "missing-store-native.log": "f718290cb3c2797d4b88ba9a1da33af45cda243a33d9a043053c9fe1aee4ca53",
+    "missing-store-first-result.json": "0c7f9b0f9a178f4b86f7ef865de68ad380fb88e7d501262d6e78b1d6d424d8d0",
+    "missing-store-interruption.json": "ed499e28b578bcbf514da7bb2b051617467f932a9d4d93650d5dbab535f7fd1b",
+    "configured-source-result.json": "3568312bcfed0f116df81e076b745602ff09a9e402664b263f5fc2416f20e207"
+  },
+  "full_case_pass_claimed": false
+}

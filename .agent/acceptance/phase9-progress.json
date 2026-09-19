@@ -1,0 +1,69 @@
+{
+  "observed_at": "2026-09-12T16:11:55.523914+00:00",
+  "status": "CORE_LOCAL_VALIDATION_PASSED",
+  "full_phase9_complete": false,
+  "scope": "PHASE9_COMPLETION_BOUND_DASHBOARD",
+  "review": "Architect amendments accepted; Critic APPROVE",
+  "current_checks": [
+    {
+      "session": 8476,
+      "passed": 72,
+      "seconds": 15.02
+    },
+    {
+      "session": 2210,
+      "passed": 6,
+      "seconds": 4.2,
+      "scope": "native publisher with outer EOD admission seam"
+    },
+    {
+      "session": 42293,
+      "passed": 30,
+      "seconds": 1.35
+    },
+    {
+      "session": 13815,
+      "passed": 17,
+      "seconds": 5.56
+    }
+  ],
+  "source_map": ".agent/acceptance/phase9-native-draft-evidence.json",
+  "ui_fixture": ".agent/acceptance/phase9-ui-fixture.json",
+  "browser": {
+    "http": "PASS actual IAB:100companies,42research-approved,58paper-candidate; tampered head bytes block all Dashboard content; exact restoration returns dated EOD view; visual layout readback passed",
+    "file": "NOT_EXERCISED: Browser Use URL security policy rejected file://; no alternate-browser or indirect file-protocol workaround attempted"
+  },
+  "remaining": [
+    "Actual file-browser verification is policy blocked; Node route checks are not browser proof",
+    "Current-source installed full native EOD/DAG and five-day acceptance belong to final whole-path gate",
+    "Phase7 nonempty/manual adoption and Phases10-15 remain"
+  ],
+  "sources": {
+    "quant_investor/operations/dashboard_evidence.py": "fa86b161a2a8346896d4ef28c1abfdf71d16399f92a9eb70c3d265f1dda7734e",
+    "quant_investor/operations/dashboard_serving_contract.py": "038e49c2d38c7f99fab50ed446e00489ba508dece477b4f72decc274096fb87c",
+    "quant_investor/operations/dashboard_publication_guard.py": "40d6140cdcb34052b36555e6ce86262102d752b5896f2680385fc0b7557a031e",
+    "scripts/daily_dashboard_sealed.py": "6b02e46a1ebee16f250daa77b52bf5323b3041f08331f74f09c336f7fad815f0",
+    "scripts/daily_dashboard_publication.py": "56e8cd337d0bfe7911b4fb700ae9d92f3bd60161e2013d4d8442c55f91f5f2d0",
+    "scripts/daily_completion.py": "52354f1c6b7bc993041d740641536050587a02de8679092ed095104fdc49dfe5",
+    "scripts/daily_completion_dashboard.py": "0b4151a5a6f1dbcca467862d4dc044b3d4d181c0d398d07e228d90bf3006a32e",
+    "scripts/daily_completion_store.py": "8023834c31c1a6b5b941521def59f2b76f5c2924199f898a17b0450bb3583ca4",
+    "scripts/daily_completion_replay.py": "1808bd2749e741e990dbddb12e2aad610131a2dce3126772f901e213fb26b52e",
+    "scripts/daily_native_inputs.py": "3c5a914d639886f5d4baa5edd0780af28c9f798523d943ed07c388cde5fe1cd1",
+    "scripts/daily_native_registry.py": "cd3a062a18e42410fb2541538898b4d7a98a1359bf98f13d2dd70f1bd3891abc",
+    "scripts/daily_materialization.py": "195bfe735812cdd523f22d39f12cacecc7c4d5c2493547a91e5cf02dc2ad0797",
+    "scripts/daily_catchup.py": "75ad677ceec0498610161b53fdb87687f1f66b8e0249a5cc00a5f97d0b436b1b",
+    "quant_investor/operations/daily_status.py": "69ed7c5ef3830ec33b630fd5dd882c3b6c50ed83b04dd34d624b9c3b6a25e6fd",
+    "portfolio_dashboard/index.html": "89474daa708f94aa9e8ec6950dea17b3c090649fce7f9ef873ca3c6aa7bfe24c",
+    "portfolio_dashboard/app.js": "aad2eb86b4ff0fca3d35c920cb42857cf1c6f9c5ea7a65a66ad38fef5007962e",
+    "portfolio_dashboard/js/cn_daily_dashboard_contract_v1.js": "ca1ee5097e0d23dea3706e74ea343dfe4868d9a5f9ab08730f86409841ec529f"
+  },
+  "real_account_writes": 0,
+  "live_providers": 0,
+  "deployment_changes": 0,
+  "current_validation": ".agent/acceptance/phase9-validation.json",
+  "phase10_followup": {
+    "receipt": ".agent/acceptance/phase10-validation.json",
+    "scope": "Store replay extended to native v4 frozen proof; v5 behavior unchanged; native v4/v5 head-removal tests pass",
+    "note": "Original Phase9 source hashes precede this owned followup"
+  }
+}

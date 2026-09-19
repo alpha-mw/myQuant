@@ -1,0 +1,28 @@
+{
+  "observed_at": "2026-09-13T01:46:31.945638+00:00",
+  "scope": "READ_ONLY_NATIVE_CURRENT_BOOK",
+  "record_id": "20260904_110322-b02",
+  "catalog_generation_id": "g-daily-close-20260903-a4b3d496a4f12be2",
+  "manual_manifest_ref": {
+    "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260904_110322-b02/manual_execution_manifest.json",
+    "sha256": "ab971ad19f5852f7332bc95271e1950efb596c33ff1d0f34d787a5e349599e61"
+  },
+  "recorded_at": "2026-09-04T03:03:22Z",
+  "valuation_trade_date": "20260903",
+  "record_origin": "official_strict_market_close_revaluation",
+  "execution_status": "no_action_carry_forward_official_valuation",
+  "no_trade_performed": true,
+  "owner_reported_external_fills": false,
+  "trade_count": 0,
+  "interpretation": "The September4 filename is a recording timestamp; the economic close is September3 and is no-action official revaluation, not a newly reported September4 trade.",
+  "missing_financial_period": [
+    "20260904",
+    "20260907",
+    "20260908",
+    "20260909",
+    "20260910",
+    "20260911"
+  ],
+  "owner_change_confirmation": "PENDING_USER_REPLY",
+  "source_mutation": false
+}

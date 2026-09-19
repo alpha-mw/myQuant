@@ -1,0 +1,19 @@
+{
+  "state": "CURRENT_INSTALLED_NATIVE_EOD_SEALED_FINAL_RUN_PENDING",
+  "observed_at": "2026-09-13T22:22:18.046006+00:00",
+  "root": "/private/tmp/myquant-configured-catalog-20260913T202622Z",
+  "producer_commit": "bf078d3235de3ade1379e8082d5d4a49e109f7d5",
+  "trade_date": "20260827",
+  "completion_ref": {
+    "path": "results/operations/daily_production/CN/20260827/completion.v1.json",
+    "sha256": "a67133c2735471808e73eb89201483ada7ccf53456a2e9e9785e075503e98027"
+  },
+  "schema_version": "cn-daily-eod-completion.v2",
+  "synthetic": true,
+  "prospective_admission_state": "LEDGER_INELIGIBLE",
+  "node_count": 16,
+  "process_handle": 37364,
+  "process_state": "RUNNING",
+  "independent_full_run_proof": false,
+  "full_goal_complete": false
+}

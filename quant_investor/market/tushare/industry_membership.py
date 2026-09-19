@@ -151,6 +151,30 @@ def build_industry_membership_partition_capture(
         taxonomy_plan=taxonomy_plan,
         taxonomy_capture=taxonomy_capture,
     )
+    return _build_partition_from_plan(
+        plan=plan,
+        plan_ref=content_ref(plan, identity_field="membership_plan_id"),
+        partition_key=partition_key,
+        partition_ordinal=partition_ordinal,
+        provider_request_id=provider_request_id,
+        reported_count=reported_count,
+        rows=rows,
+        captured_at=captured_at,
+    )
+
+
+def _build_partition_from_plan(
+    *,
+    plan,
+    plan_ref,
+    partition_key,
+    partition_ordinal,
+    provider_request_id,
+    reported_count,
+    rows,
+    captured_at,
+):
+    """Only owning callers supply this invocation's fully validated native plan."""
     keyset = plan["endpoint_plan"]["ordered_expected_partition_keyset"]
     if (
         type(partition_ordinal) is not int
@@ -174,10 +198,7 @@ def build_industry_membership_partition_capture(
         {
             "kind": INDUSTRY_MEMBERSHIP_PARTITION_KIND,
             **common_fields(timestamp_value=captured),
-            "membership_plan_ref": content_ref(
-                plan,
-                identity_field="membership_plan_id",
-            ),
+            "membership_plan_ref": dict(plan_ref),
             "partition_key": partition_key,
             "partition_ordinal": partition_ordinal,
             "provider_request_id": provider_request_id,
@@ -198,14 +219,22 @@ def validate_industry_membership_partition_capture(
     taxonomy_plan: Mapping[str, Any],
     taxonomy_capture: Mapping[str, Any],
 ) -> dict[str, Any]:
+    plan = validate_industry_membership_execution_plan(
+        membership_plan, taxonomy_plan=taxonomy_plan, taxonomy_capture=taxonomy_capture
+    )
+    return _validate_partition_from_plan(
+        document, plan=plan, plan_ref=content_ref(plan, identity_field="membership_plan_id")
+    )
+
+
+def _validate_partition_from_plan(document, *, plan, plan_ref):
     value = validate_seal(document, identity_field="partition_capture_id")
     require_exact_keys(value, _PARTITION_FIELDS, label="industry membership partition")
     if value.get("kind") != INDUSTRY_MEMBERSHIP_PARTITION_KIND:
         _fail("industry membership partition kind mismatch")
-    expected = build_industry_membership_partition_capture(
-        membership_plan=membership_plan,
-        taxonomy_plan=taxonomy_plan,
-        taxonomy_capture=taxonomy_capture,
+    expected = _build_partition_from_plan(
+        plan=plan,
+        plan_ref=plan_ref,
         partition_key=value["partition_key"],
         partition_ordinal=value["partition_ordinal"],
         provider_request_id=value["provider_request_id"],
@@ -216,6 +245,21 @@ def validate_industry_membership_partition_capture(
     if value != expected:
         _fail("industry membership partition replay mismatch")
     return value
+
+
+@_contract
+def _validate_membership_partitions(
+    *, membership_plan, taxonomy_plan, taxonomy_capture, partition_documents
+):
+    """Validate the common plan once, while fully replaying every separate partition."""
+    plan = validate_industry_membership_execution_plan(
+        membership_plan, taxonomy_plan=taxonomy_plan, taxonomy_capture=taxonomy_capture
+    )
+    plan_ref = content_ref(plan, identity_field="membership_plan_id")
+    return [
+        _validate_partition_from_plan(value, plan=plan, plan_ref=plan_ref)
+        for value in partition_documents
+    ]
 
 
 @_contract
@@ -291,12 +335,12 @@ def build_industry_membership_capture(
     total = 0
     empty = 0
     latest = plan["created_at"]
+    plan_ref = content_ref(plan, identity_field="membership_plan_id")
     for ordinal, (partition_key, raw_document) in enumerate(zip(keyset, partition_documents)):
-        document = validate_industry_membership_partition_capture(
+        document = _validate_partition_from_plan(
             raw_document,
-            membership_plan=plan,
-            taxonomy_plan=taxonomy_plan,
-            taxonomy_capture=taxonomy_capture,
+            plan=plan,
+            plan_ref=plan_ref,
         )
         if document["partition_ordinal"] != ordinal or document["partition_key"] != partition_key:
             _fail("industry membership capture keyset mismatch")

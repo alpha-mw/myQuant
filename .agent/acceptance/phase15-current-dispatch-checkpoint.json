@@ -1,0 +1,71 @@
+{
+  "observed_at": "2026-09-13T23:48:54.586099+00:00",
+  "root": "/private/tmp/myquant-configured-catalog-20260913T202622Z",
+  "producer_commit": "bf078d3235de3ade1379e8082d5d4a49e109f7d5",
+  "state": "CURRENT_INSTALLED_DISPATCH_COMPLETE_INDEPENDENT_ACCEPTANCE_PENDING",
+  "synthetic": true,
+  "dispatch_result_ref": {
+    "path": "/private/tmp/myquant-configured-catalog-20260913T202622Z/configured-native-eod-result.json",
+    "sha256": "0e954f13b69c37a0e4b5f2611a1f27f96ad7582a0c00fb476713d1f0f8d92ea9"
+  },
+  "dispatch_result_written_at": "2026-09-13T23:44:16.835500+00:00",
+  "result": {
+    "schema_version": "cn-daily-production-result.v1",
+    "action": "EXECUTE",
+    "target_trade_date": "20260827",
+    "execution_state": "SUCCEEDED",
+    "business_state": "COMPLETE",
+    "days": [
+      {
+        "trade_date": "20260827",
+        "execution_state": "SUCCEEDED",
+        "business_state": "COMPLETE",
+        "completion_ref": {
+          "path": "results/operations/daily_production/CN/20260827/completion.v1.json",
+          "sha256": "a67133c2735471808e73eb89201483ada7ccf53456a2e9e9785e075503e98027"
+        }
+      }
+    ],
+    "authority": {
+      "broker": false,
+      "order": false,
+      "trade": false,
+      "actual_holdings_mutation": false,
+      "system": false,
+      "mainline": false
+    }
+  },
+  "completion_ref": {
+    "path": "results/operations/daily_production/CN/20260827/completion.v1.json",
+    "sha256": "a67133c2735471808e73eb89201483ada7ccf53456a2e9e9785e075503e98027"
+  },
+  "native_node_count": 16,
+  "serving_refs": {
+    "serving-publication.v2.json": {
+      "path": "results/operations/daily_production/CN/20260827/dashboard/serving-publication.v2.json",
+      "sha256": "97efeff3b27824f5b417ddbebba7e72fdc30e22e0f3153742817b5bb64ab0af7"
+    },
+    "selector-commit.v1.json": {
+      "path": "results/operations/daily_production/CN/20260827/dashboard/selector-commit.v1.json",
+      "sha256": "ff5eeca84d15698b88bd2e527e49ad3ac01447989aa8090482ce1255782d6a38"
+    }
+  },
+  "native_installed_serving_readback": {
+    "sealed_evidence_ref": {
+      "path": "results/operations/daily_production/CN/20260827/completion.v1.json",
+      "sha256": "a67133c2735471808e73eb89201483ada7ccf53456a2e9e9785e075503e98027"
+    },
+    "publication_state": "RECORDED_EOD_PUBLICATION_EXPIRED",
+    "publication_ref": {
+      "path": "results/operations/daily_production/CN/20260827/dashboard/serving-publication.v2.json",
+      "sha256": "97efeff3b27824f5b417ddbebba7e72fdc30e22e0f3153742817b5bb64ab0af7"
+    },
+    "validation_scope": "RECORDED_SERVING_BYTES_ONLY"
+  },
+  "serving_readback_scope": "Actual wall-clock read confirms historical synthetic serving receipt/selector bindings; EXPIRED is expected for Aug27 fixture read in Sep14, not production readiness.",
+  "independent_acceptance_process_handle": 37364,
+  "independent_acceptance_process_pid": 14119,
+  "independent_acceptance_final_proof": false,
+  "production_deployed": false,
+  "full_goal_complete": false
+}

@@ -1,0 +1,10 @@
+{
+  "root": "/private/tmp/myquant-public-history-native-20260909T031046Z",
+  "producer_commit": "3c46cb36918ca00d4fb61707bcfc16ca06b5c2a1",
+  "installation_root": "/private/tmp/myquant-final-source-native-20260909T030031Z",
+  "canonical_repository": "/private/tmp/myquant-public-history-native-20260909T031046Z/repository",
+  "synthetic": true,
+  "status": "BASELINE_RUNNING",
+  "prior_preparation_failure_ref": "/private/tmp/myquant-public-history-native-20260909T031046Z/preparation-failure.v1.json",
+  "driver_sha256": "9d2a86cc48a5e0ea317a264818d2276f9f0a10661b0f5b280e86f2d3d702c1f1"
+}

@@ -1,0 +1,7 @@
+{
+  "state": "FAIL",
+  "exit_code": 1,
+  "seconds": 2955.73,
+  "log": ".agent/acceptance/phase15-current-unit-20260913T101052Z.log",
+  "freeze": ".agent/acceptance/phase15-current-freeze-20260913T101052Z.json"
+}

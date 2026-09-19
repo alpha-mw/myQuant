@@ -1,0 +1,30 @@
+{
+  "observed_at": "2026-09-14T14:57:47.542168+00:00",
+  "state": "LIVE_POST_PUBLICATION_OUTER_LEDGER_REPLAY",
+  "pid": 20637,
+  "signal_count_for_process": 2,
+  "phase_change_evidence": "serving-publication.v2.json written after the first diagnostic",
+  "stack_ref": {
+    "path": "/Users/maxwell/mySpace/myQuant/.agent/acceptance/phase15-c3-post-publication-stack.txt",
+    "sha256": "01478e0aaa5f64212785c55cc84870e7849bd0f45bcbb1fdc084b6d29b1a00c8"
+  },
+  "call_chain": [
+    "dispatch_daily_request (after inner COMPLETE)",
+    "replay_native_completion (ledger stage)",
+    "replay_completed_ledger",
+    "native_portfolio_is_late",
+    "read_decision_recipe",
+    "read_cutoff_inputs",
+    "SourceBundle/Theme/Core/Factor historical validation"
+  ],
+  "prior_segments_passed_in_this_call": [
+    "Decision",
+    "Corporate actions",
+    "Dashboard",
+    "completion bytes unchanged"
+  ],
+  "full_public_return_or_driver_complete": false,
+  "sample_is_not_terminal_proof": true,
+  "runtime_changes": [],
+  "producer_restart": false
+}

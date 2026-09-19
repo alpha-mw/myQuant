@@ -1,0 +1,17 @@
+{
+  "observed_at": "2026-09-15T05:50:33.900771+00:00",
+  "child_pid": 3772,
+  "signal_count": 3,
+  "trade_date": "20260831",
+  "phase": "NATIVE_FACTOR_ROLLOVER_ACTIVATION_PREPARATION",
+  "caller": "run_upstream_catchup459 -> execute_daily_recipe299 -> native maintenance1456 -> daily_factor_loop.advance332 -> factor_production_rollover817 -> prepare_rollover_activation3187 -> factor closure replay -> running release verification -> git manifest",
+  "trace_ref": {
+    "path": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/configured-successor-20260831-post-replays.stack.txt",
+    "sha256": "cdb594a2fb3279fd1bfe8f64c52d8d7caca94991162a22b611686db1d2025024"
+  },
+  "factor_publication_verified": false,
+  "third_day_eod_verified": false,
+  "synthetic": true,
+  "production_deployed": false,
+  "do_not_repeat_signal_for_same_phase": true
+}

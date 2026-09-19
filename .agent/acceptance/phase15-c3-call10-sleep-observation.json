@@ -1,0 +1,19 @@
+{
+  "observed_at": "2026-09-15T01:54:17.956898+00:00",
+  "child_pid": 29285,
+  "before": {
+    "elapsed": "07:55:58",
+    "cpu": "472:47.28"
+  },
+  "after": {
+    "elapsed": "09:04:07",
+    "cpu": "475:16.12"
+  },
+  "state": "RUNNING",
+  "active_replay_call": 10,
+  "sleep_log_ref": ".agent/acceptance/phase15-sep15-morning-sleep-events.txt",
+  "wake_local": "2026-09-15 09:53:16 +0800",
+  "interpretation": "System sleep contributed to wall time without equivalent CPU progress; native completion still unproven.",
+  "process_restarted": false,
+  "power_settings_changed": false
+}

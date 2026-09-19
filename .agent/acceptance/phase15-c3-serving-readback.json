@@ -1,0 +1,20 @@
+{
+  "state": "INSTALLED_RECORDED_SERVING_BYTES_VERIFIED",
+  "runtime_commit": "c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b",
+  "synthetic_fixture": true,
+  "current_wall_clock_expiry_preserved": true,
+  "result": {
+    "sealed_evidence_ref": {
+      "path": "results/operations/daily_production/CN/20260827/completion.v1.json",
+      "sha256": "f1acaf5e510b0193bb3e010d226d58e6a6337fb2a3bf2efb4ac38ae57bb44c57"
+    },
+    "publication_state": "RECORDED_EOD_PUBLICATION_EXPIRED",
+    "publication_ref": {
+      "path": "results/operations/daily_production/CN/20260827/dashboard/serving-publication.v2.json",
+      "sha256": "6b65c9686cc9cd4412f24c73c8f564ad5a8ef3ab299c292653f1440c80d91dc6"
+    },
+    "validation_scope": "RECORDED_SERVING_BYTES_ONLY"
+  },
+  "native_admission_or_new_publication": false,
+  "observed_at": "2026-09-14T14:54:44.164583+00:00"
+}

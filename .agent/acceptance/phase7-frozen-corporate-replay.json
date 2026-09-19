@@ -1,0 +1,12 @@
+{
+  "scope": "COMPLETED_CORPORATE_ACTION_NATIVE_REPLAY",
+  "completion_ref": {
+    "path": "results/operations/daily_production/CN/20260828/completion.v1.json",
+    "sha256": "b5f4e863dc7ac5cb4158c142868ee60862d6a06df2282753c3b9b4ee13a718b5"
+  },
+  "consumer_admission": false,
+  "event_state": "VERIFIED_CLOSED_EMPTY",
+  "current_event_head_calls": 0,
+  "seconds": 2.6434989589615725,
+  "original_completion_sha_unchanged": true
+}

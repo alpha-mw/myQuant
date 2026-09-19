@@ -1,0 +1,62 @@
+{
+  "status": "INITIAL_BUY_PROFILE_IMPLEMENTED_LOCAL_VALIDATION",
+  "observed_at": "2026-09-13T12:36:03Z",
+  "plan": "docs/plans/phase07_registered_event_evidence.md",
+  "review": "Architect amendments accepted; Critic APPROVE",
+  "tests": {
+    "session": 32545,
+    "terminal_exit_code": 0,
+    "result": "221 passed in 34.20s",
+    "log": ".agent/acceptance/phase7-registered-event-part-b-final-tests.log"
+  },
+  "earlier_tests": [
+    {
+      "session": 96352,
+      "result": "1 native BUY registration/publication/replay passed in1.14s"
+    },
+    {
+      "session": 18590,
+      "result": "43 existing source/Event tests passed in6.44s"
+    },
+    {
+      "session": 58611,
+      "result": "21 tests passed in5.94s"
+    },
+    {
+      "session": 62932,
+      "result": "37 tests passed in8.13s"
+    },
+    {
+      "session": 99230,
+      "result": "13 closed-module/bridge tests passed in4.95s"
+    }
+  ],
+  "counts_overlap": true,
+  "static": {
+    "black": "PASS:7 source/test files; owned manager functions formatted separately",
+    "flake8": "PASS:7 selected files and fatal manager checks",
+    "mypy": "PASS:registered contract/helper/bridge",
+    "strategy_record_access": "PASS:35 reviewed callers"
+  },
+  "source_sha256": {
+    "quant_investor/strategy_records/registered_event_contracts.py": "d084c182ede3aac6d24f0c878c1f47738cd04b5d80dca41dbeae6e7cab4d8f1c",
+    "scripts/registered_daily_event_sources.py": "b4d02a60cbc374e07c6e0c3332c34e3f44249d3b9a2e8b08c31ad9fbfa39bef4",
+    "scripts/manage_cn_strategy_records.py": "cd8c086555d7477d36ca63b21843c696cab53f799305122b13f2299ff82ae302",
+    "quant_investor/operations/native_bridge.py": "934d71c285afb551990095e1983943bc457b752b0fd6bbc80e099d3272c8ebaf",
+    "tests/unit/_registered_event_fixture.py": "7de399e9361c708b1bd33fabd695e1da9443d4d8865ed8e8392f55ff1ca88a53",
+    "tests/unit/test_registered_event_declaration.py": "1e1994c90c2856c1c1b3dd007f4830084d2955393cf60b31a42a0b0630355e06"
+  },
+  "scope": {
+    "native_synthetic_registration_exercised": true,
+    "source_plan_or_batch_v2_wiring": false,
+    "same_day_no_trade_head_test": "CATALOG_ADMISSION_SEAM_ONLY",
+    "supported_profile": "OWNER_DECLARED_BUYS_V1",
+    "broker_statement_verified": false,
+    "actual_owner_or_financial_writes": false,
+    "actual_provider_calls": false,
+    "production_deployment": false,
+    "full_phase7_complete": false,
+    "full_goal_complete": false
+  },
+  "post_test_change": "Nonsemantic formatting of the two owned manager functions and new dispatch/parser lines only."
+}

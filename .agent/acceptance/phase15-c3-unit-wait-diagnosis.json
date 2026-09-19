@@ -1,0 +1,17 @@
+{
+  "observed_at": "2026-09-14T06:40:48.547904+00:00",
+  "scope": "READ_ONLY_LIVE_UNIT_PROCESS_DIAGNOSIS",
+  "pid": 43464,
+  "handle": 80804,
+  "state": "LIVE_TEST_PROGRESS_CONFIRMED",
+  "observed_open_fixture": "/private/var/folders/cp/539tc5k549l2jzdy90ptl6cm0000gn/T/pytest-of-maxwell/pytest-931/test_missing_report_emitted_be0",
+  "matching_test": "tests/unit/test_daily_evidence_low_frequency.py::test_missing_report_emitted_before_input_missing_and_can_revise",
+  "observed_artifact": "results/operations/daily_production/CN/20260828/nodes/fundamental/revisions/0001.json",
+  "latest_progress_line": "........................................................................ [ 27%]",
+  "progress_advanced_from_percent": 23,
+  "progress_advanced_to_at_least_percent": 27,
+  "terminal_result_available": false,
+  "source_changes": [],
+  "restart_performed": false,
+  "interpretation": "Open-file inspection located the existing test fixture; its request revision was already persisted. Unit output subsequently advanced. This is progress evidence, not a complete-suite success or a general proof against loops."
+}

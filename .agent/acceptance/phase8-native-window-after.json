@@ -1,0 +1,56 @@
+{
+  "observed_at": "2026-09-12T04:49:02.874944+00:00",
+  "scope": "RETROSPECTIVE_NATIVE_SOURCE_FULL_WINDOW_PROJECTION_ONLY",
+  "source_ref": {
+    "path": "data/parquet/cn/_snapshots/20260911T135213Z/serving/bars/symbol=601899.SH/bars.parquet",
+    "sha256": "e32c27afeab6970cc7da4dbe8d61cb6c3eaa208aa7a0c3520d6ed61910122705"
+  },
+  "calendar_pointer_sha256": "213fee873931826b3b83bc460778e3b9cc59e60bbd3b3958daef7b18a0fb11f6",
+  "result": {
+    "symbol": "601899.SH",
+    "tracking_start_date": "20260819",
+    "window_state": "VERIFIED",
+    "required_dates": [
+      "20260819",
+      "20260820",
+      "20260821",
+      "20260824",
+      "20260825",
+      "20260826",
+      "20260827",
+      "20260828",
+      "20260831",
+      "20260901",
+      "20260902",
+      "20260903"
+    ],
+    "market_ref": {
+      "path": "data/parquet/cn/_snapshots/20260911T135213Z/serving/bars/symbol=601899.SH/bars.parquet",
+      "sha256": "e32c27afeab6970cc7da4dbe8d61cb6c3eaa208aa7a0c3520d6ed61910122705"
+    },
+    "transitions": [
+      {
+        "kind": "ADJUSTMENT_FACTOR_CHANGE",
+        "previous_trade_date": "20260820",
+        "trade_date": "20260821",
+        "before_factor": "2.2091",
+        "after_factor": "2.2365",
+        "event_ids": []
+      }
+    ],
+    "events": [],
+    "threshold_state": "NON_EXECUTABLE",
+    "blocker_codes": [
+      "NAMED_EVENT_EVIDENCE_MISSING"
+    ]
+  },
+  "real_account_mutations": 0,
+  "source_writes": 0,
+  "provider_calls": 0,
+  "full_native_v4_dag_proof": false,
+  "limitations": [
+    "Uses retained Sep11 Market source to diagnose Sep03 retrospectively",
+    "No named issuer/account/owner reconciliation supplied; preserves unresolved threshold",
+    "Phase6/DAG integration validated separately in synthetic native fixtures"
+  ]
+}

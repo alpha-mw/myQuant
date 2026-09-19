@@ -1,0 +1,259 @@
+{
+  "observed_at": "2026-09-14T06:05:14.242572+00:00",
+  "state": "LOCAL_CUTOVER_PREPARATION_NOT_READY_TO_APPLY",
+  "execution_authorized": false,
+  "scheduler_update_ready": false,
+  "production_deployed": false,
+  "full_goal_complete": false,
+  "candidate_only": {
+    "commit": "5060dee2d4b39b50a735393d056ebe5adb4efe3b",
+    "root": "/private/tmp/myquant-canonical-scan-20260916T152008Z",
+    "verified_normal_days": 1,
+    "required_normal_days": 5,
+    "final_ci": "PASS",
+    "first_day": "PASS",
+    "case8": "PASS",
+    "eligible_as_production_binding": false,
+    "case_index": ".agent/acceptance/phase15-case-evidence-index.json",
+    "case4": "PASS",
+    "case9": "PASS"
+  },
+  "production_bindings": {
+    "python": "/Users/maxwell/mySpace/myQuant-release-authority/5060dee2d4b39b50a735393d056ebe5adb4efe3b-unified-dag/installs/5060dee2d4b39b50a735393d056ebe5adb4efe3b-42a7933da56d08cfe3dcc1ccf5fd14cb7deadbea94b77423d2d74d8602602c7a/bin/python",
+    "expected_import_root": "/Users/maxwell/mySpace/myQuant-release-authority/5060dee2d4b39b50a735393d056ebe5adb4efe3b-unified-dag/installs/5060dee2d4b39b50a735393d056ebe5adb4efe3b-42a7933da56d08cfe3dcc1ccf5fd14cb7deadbea94b77423d2d74d8602602c7a",
+    "release_repository_root": "/Users/maxwell/mySpace/myQuant-release-checkouts/5060dee2d4b39b50a735393d056ebe5adb4efe3b",
+    "release_install_ref": {
+      "path": "results/releases/69b322cf7f748ee1c67a716978750ef9fa9f911c5c41491f50767bc34d7c40a8/release-install-input.json",
+      "sha256": "69b322cf7f748ee1c67a716978750ef9fa9f911c5c41491f50767bc34d7c40a8"
+    },
+    "daily_source_config_ref": {
+      "path": ".agent/acceptance/phase12-5060-daily-source-config.json",
+      "sha256": "fded62e6d8f1821471e44da6e00dc366c5def7fad5dd08e012d06477df199c17"
+    },
+    "factor_loop_context_ref": {
+      "path": ".agent/acceptance/phase12-5060-factor-loop-context.json",
+      "sha256": "52baf60086b56796ea1f688964829c8ea9e6a22ee1fdae79e7de2767a0e6d95f"
+    },
+    "morning_policy_ref": {
+      "path": ".agent/acceptance/phase12-5060-morning-quote-policy.json",
+      "sha256": "a8fa0909e03abb4622b941c5aa985861ad18cfb4fde521fc3d364225b990e24b"
+    },
+    "morning_trailing_policy_ref": {
+      "path": "results/policies/risk/aggressive_tech_manufacturing/trailing-anchor.v1/owner-trailing-anchor-policy-20260901-v1.json",
+      "sha256": "b313aa91e1f7ca1e8922b2d22f7735ceee3190675c2e8dab3955c69f0f1d342a"
+    },
+    "morning_initial_stop_policy_ref": {
+      "path": "results/policies/risk/aggressive_tech_manufacturing/initial-risk-stop.v1/owner-stop-policy-20260828-v1.json",
+      "sha256": "11eb7018ff6abde2d276c7b997e0e61e2cd6b170407872734bb8d407b334c178"
+    }
+  },
+  "verified_existing_static_refs": {
+    "corporate_action_template_ref": {
+      "path": ".agent/acceptance/phase12-static-source-inputs-20260913/corporate-template.json",
+      "sha256": "b232475e020c6c2e67b42ef35149c0a0351f7204eadb6fcfab042dc5f2d37263"
+    },
+    "industry_source_ref": {
+      "path": ".agent/acceptance/phase12-static-source-inputs-20260913/industry-source.json",
+      "sha256": "02267a901bc092cd49ada0522c43eeebdaab01a3e4fbf717c54d95422784c76f"
+    },
+    "research_policy_ref": {
+      "path": ".agent/acceptance/phase12-static-source-inputs-20260913/research-policy.json",
+      "sha256": "e76ac718a855864b40628d2683b52040559a7b21354b8a2e2e9db8d87da8c9db"
+    },
+    "risk_free_ref": {
+      "path": "portfolio_dashboard/inputs/cn_govt_bond_yield.csv",
+      "sha256": "4a8dbd5725bf376e0c7e6362e9a536de8457ab73dafbddec20f9bcf1437529e7"
+    },
+    "store_policy_ref": {
+      "path": "operations/policies/cn-daily-official-close-policy.v1.json",
+      "sha256": "da0e378f69ad52022c16012bd2d568dea56a2093bc421766167ec508ae132a29"
+    },
+    "theme_acquisition_ref": {
+      "path": ".agent/acceptance/phase12-static-source-inputs-20260913/theme-acquisition.json",
+      "sha256": "e3795282735c2d47eddddf0e73caf1edf9bbf7766a4ae8574072e435b1352f9b"
+    },
+    "timing_policy_ref": {
+      "path": ".agent/acceptance/phase12-static-source-inputs-20260913/timing-policy.json",
+      "sha256": "45ca30d1187b8077638bdfe408036712c875783c4d1f2448f15d9cdd136828ab"
+    }
+  },
+  "static_source_inventory_receipt": ".agent/acceptance/phase12-current-owner-stop-readback.json",
+  "static_inventory_validation_scope": "EXACT_BYTES_AND_POLICY_GRAMMAR_ONLY_NOT_CURRENT_COVERAGE_OR_CUSTODY",
+  "resolved_blockers": [
+    {
+      "code": "MORNING_LEGACY_OWNER_STOP_READER_UNSUPPORTED",
+      "evidence": ".agent/acceptance/phase12-current-owner-stop-readback.json",
+      "scope": "CURRENT_INSTALLED_NATIVE_POLICY_GRAMMAR"
+    }
+  ],
+  "remaining_inputs": [
+    "PREDICTION_DEADLINE_UNANSWERED",
+    "SEP04_SEP16_OWNER_EVENT_FACTS_UNANSWERED",
+    "CORPORATE_NAMED_EVENTS_AND_ANCHOR_REVIEWS_UNCONFIRMED"
+  ],
+  "current_macro_veto": {
+    "present": true,
+    "path": "data/private/cn_daily_maintenance/MACRO_WRITE_VETO.json",
+    "sha256": "0730ed36967ce75453486aed0967d1c238c344b1073c369843184f65fcf26c4b",
+    "document": {
+      "attempt_root": "/Users/maxwell/mySpace/myQuant/data/private/cn_daily_maintenance/attempts/20260906T025456Z-2020-aee4f49b05bda325",
+      "attempt_slot": "2020",
+      "blockers": [
+        "MACRO_RELEASE_CONTRACT_BLOCKED"
+      ],
+      "created_at": "2026-09-06T02:54:56Z",
+      "schema_version": "cn-daily-maintenance-macro-write-veto.v1",
+      "target_date": "20260904"
+    }
+  },
+  "fresh_execution_gates": [
+    "CURRENT_SOURCE_NATIVE_FIVE_DAY_CHAIN_AND_MORNING_PASS",
+    "FORMAL_STORE_EVENT_HISTORY_OWNER_FACTS_CONFIRMED",
+    "FORMAL_MACRO_NATIVE_RECOVERY_VETO_RESOLVED",
+    "PRODUCTION_INSTALLED_RELEASE_AND_REAL_SOURCE_CONFIG_BOUND",
+    "OLD_PENDING_REQUEST_OWNERSHIP_RECONCILED",
+    "CONCRETE_SCHEDULER_CUTOVER_REVIEW_AND_AUTHORIZATION",
+    "INDEPENDENT_UNATTENDED_NATIVE_RECEIPT",
+    "PRODUCTION_FUTURE_CALENDAR_ISSUER_AND_MORNING_NON_REPLAY_VERIFIED"
+  ],
+  "existing_automations": [
+    {
+      "id": "automation",
+      "path": "/Users/maxwell/.codex/automations/automation/automation.toml",
+      "sha256": "143145a8779582ee0aaa883ea41fc4885058e0878760461720ac48526ff27ae9",
+      "unchanged_since_prior_audit": true
+    },
+    {
+      "id": "cn-daily-data-update",
+      "path": "/Users/maxwell/.codex/automations/cn-daily-data-update/automation.toml",
+      "sha256": "15c5d85e70c3d5a5018e31507ace6c10d817e7ef9e9a7bbcfacdcba33e932be3",
+      "unchanged_since_prior_audit": true
+    },
+    {
+      "id": "cn-evening-review-fallback",
+      "path": "/Users/maxwell/.codex/automations/cn-evening-review-fallback/automation.toml",
+      "sha256": "83a5ca8a350016ea9f8ce68d048b1b6a71ff57145da3b3cea50a476769ef6467",
+      "unchanged_since_prior_audit": true
+    },
+    {
+      "id": "cn-dashboard",
+      "path": "/Users/maxwell/.codex/automations/cn-dashboard/automation.toml",
+      "sha256": "d29f5601fc620b8d6ecbae68f1b0c12dea3de15a03489d7f7e39c880787ec7f7",
+      "unchanged_since_prior_audit": true
+    }
+  ],
+  "plan": "docs/plans/phase12_scheduler_cutover_packet.md",
+  "scheduler_changes": [],
+  "source_or_financial_changes": [],
+  "trailing_policy_validation_receipt": ".agent/acceptance/phase12-current-trailing-policy-readback.json",
+  "morning_quote_policy_search": {
+    "state": "PREPARED_NATIVE_SCHEMA_AND_ADDITIONAL_SYMBOLS_VALIDATED",
+    "ref": {
+      "path": ".agent/acceptance/phase12-5060-morning-quote-policy.json",
+      "sha256": "a8fa0909e03abb4622b941c5aa985861ad18cfb4fde521fc3d364225b990e24b"
+    },
+    "effective_through": "20260930",
+    "source_scope": "Existing scheduled automation: current verified holdings plus002384.SZ/002463.SZ",
+    "holdings_resolved_at_runtime": true,
+    "full_morning_validated": false,
+    "provisional_date_window": true
+  },
+  "packet_validation": {
+    "state": "PASS_AS_NON_EXECUTABLE_PREPARATION",
+    "launcher_flags_checked": [
+      "--attempt-slot",
+      "--daily-source-config",
+      "--expected-daily-source-config-sha256",
+      "--expected-import-root",
+      "--expected-release-install-input-sha256",
+      "--python",
+      "--release-install-input",
+      "--release-repository-root",
+      "--run-root",
+      "--workspace-root"
+    ],
+    "exact_static_refs_checked": 7,
+    "missing_values_preserved_not_substituted": true,
+    "runtime_files_modified": false
+  },
+  "latest_formal_frontier_receipt": ".agent/acceptance/phase15-evening-formal-frontier.json",
+  "production_capability_audit": {
+    "observed_at": "2026-09-16T21:43:19.148431+00:00",
+    "state": "IMPLEMENTED_AND_INSTALLED_OFFLINE_COMPONENT_VERIFIED_REAL_SOURCE_UNPROVEN",
+    "implementation_source_hashes_rechecked": true,
+    "integration_receipt": ".agent/acceptance/phase12-production-calendar-integration.json",
+    "installed_component_receipt": ".agent/acceptance/phase15-canonical-scan-installed-smoke.json",
+    "final_ci_receipt": ".agent/acceptance/phase15-canonical-scan-final-ci-pass.json",
+    "offline_https_and_guard_test_seams": true,
+    "core_inputs_shape_only_in_component_smoke": true,
+    "real_source_verified": false,
+    "production_changes_applied": false,
+    "remaining_evidence": [
+      "REAL_SOURCE_CAPTURE_AND_PROVENANCE_READBACK",
+      "MORNING_NON_REPLAY_ADMISSION_VALIDATION",
+      "INDEPENDENT_UNATTENDED_NATIVE_RECEIPT"
+    ]
+  },
+  "prior_candidate_only": {
+    "commit": "c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b",
+    "root": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z",
+    "synthetic_first_day_running": true,
+    "eligible_as_production_binding": false
+  },
+  "prior_production_capability_audit": {
+    "observed_at": "2026-09-16T13:52:57.135087+00:00",
+    "state": "PRODUCTION_FUTURE_CALENDAR_ISSUER_NOT_IMPLEMENTED",
+    "source_evidence": [
+      "quant_investor/market/future_calendar_context.py",
+      "quant_investor/market/next_session_proof.py",
+      "scripts/daily_morning_consumer.py"
+    ],
+    "supported_configured_modes": [
+      "DISABLED",
+      "SYNTHETIC_FIXTURE_ONLY"
+    ],
+    "synthetic_acceptance_does_not_close_live_gate": true,
+    "required_evidence": [
+      "REVIEWED_PRODUCTION_ISSUER_DESIGN",
+      "NATIVE_PRODUCTION_PROVENANCE_PUBLICATION_AND_READBACK",
+      "MORNING_NON_REPLAY_ADMISSION_VALIDATION"
+    ],
+    "production_changes_applied": false
+  },
+  "latest_owner_input_receipt": ".agent/acceptance/phase12-owner-inputs-pending-20260917.json",
+  "latest_automation_byte_check": {
+    "observed_at": "2026-09-16T21:43:19.148431+00:00",
+    "checks": [
+      {
+        "id": "automation",
+        "matches_saved_sha": true
+      },
+      {
+        "id": "cn-daily-data-update",
+        "matches_saved_sha": true
+      },
+      {
+        "id": "cn-evening-review-fallback",
+        "matches_saved_sha": true
+      },
+      {
+        "id": "cn-dashboard",
+        "matches_saved_sha": true
+      }
+    ],
+    "scope": "SAVED_BYTES_ONLY_NOT_EFFECTIVE_PERMISSION_OR_UNATTENDED_RUN"
+  },
+  "reconciled_at": "2026-09-16T21:43:19.148431+00:00",
+  "production_install_preparation_ref": ".agent/acceptance/phase12-5060-production-install-result.json",
+  "production_install_running_origin_verified": true,
+  "factor_loop_context_scope": "INSTALLED_SCHEMA_VALIDATED_CONFIG_ONLY_NO_LIVE_CAPTURE_OR_CORE",
+  "daily_source_config_validation_ref": ".agent/acceptance/phase12-5060-static-preflight-final.json",
+  "macro_current_admission": {
+    "state": "BLOCKED",
+    "native_error": "MACRO_READINESS_LIVE_VETO_PRESENT",
+    "receipt": ".agent/acceptance/phase12-current-macro-admission-20260918.json",
+    "low_frequency_lag_does_not_override_closure_date_or_veto": true,
+    "current_market_complete_date": "20260916",
+    "current_macro_observation_date": "20260903"
+  }
+}

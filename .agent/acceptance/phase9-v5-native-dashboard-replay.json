@@ -1,0 +1,15 @@
+{
+  "observed_at": "2026-09-12T16:05:46.694675+00:00",
+  "scope": "NATIVE_DASHBOARD_V5_REBUILD_AND_FIVE_DOMAIN_COLLECTOR",
+  "result": "PASS",
+  "root": "/private/var/folders/cp/539tc5k549l2jzdy90ptl6cm0000gn/T/phase9-source-collector-soive1ew",
+  "full_native_eod_admission": false,
+  "store_frozen_commit_inspected": true,
+  "outer_seams": [
+    "EOD recorded-completion admission",
+    "Selected source journal wrappers are synthetic; Store replay and frozen commit are native"
+  ],
+  "no_writes_during_replay": true,
+  "serving_head_independent": true,
+  "count": 100
+}

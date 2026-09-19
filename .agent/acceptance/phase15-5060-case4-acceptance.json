@@ -1,0 +1,37 @@
+{
+  "observed_at": "2026-09-17T06:37:08.203764+00:00",
+  "case": 4,
+  "state": "CURRENT_INSTALLED_RETAINED_RECOVERY_PASS",
+  "runtime_commit": "5060dee2d4b39b50a735393d056ebe5adb4efe3b",
+  "proof_ref": {
+    "path": "/private/tmp/myquant-current-case4-20260916T173928Z/configured-missing-store-proof.json",
+    "sha256": "bdcc0f041c38c25d56b70d0cd1c40ec0ce4a94ed238a25e6adc9eeb7251203fa"
+  },
+  "driver_status_ref": {
+    "path": "/private/tmp/myquant-current-case4-20260916T173928Z/missing-store-scoped-resume-driver-status.json",
+    "sha256": "3a7d716236ba76148c5f5ab5e48b687ddbe7d19d470559a9ac7c14c987e548c6"
+  },
+  "original_first_result_ref": {
+    "path": "/private/tmp/myquant-current-case4-20260916T173928Z/missing-store-first-result.json",
+    "sha256": "0c7f9b0f9a178f4b86f7ef865de68ad380fb88e7d501262d6e78b1d6d424d8d0"
+  },
+  "original_first_business_state": "INCOMPLETE",
+  "proof_local_first_result_flag": false,
+  "first_result_flag_explanation": "Fresh recovery process has no first-call local variable; original first result exists separately and is pinned here.",
+  "native_financial_cas_count": 1,
+  "native_replay_nodes": 16,
+  "completion_ref": {
+    "path": "results/operations/daily_production/CN/20260827/completion.v1.json",
+    "sha256": "cac96f8adcbb4f9d54339c125d4ca4ed3e92cb88cd6abf0b87244effc69d5b37"
+  },
+  "original_cutoff_upstream_and_pool_unchanged": true,
+  "missing_day_closed_exactly_once": "2026-08-27",
+  "prior_harness_failures_retained": true,
+  "prior_harness_failure_receipts": [
+    ".agent/acceptance/phase15-current-case4-clock-interruption.json",
+    ".agent/acceptance/phase15-current-case4-provenance-refusal.json"
+  ],
+  "synthetic": true,
+  "production_deployed": false,
+  "full_goal_complete": false
+}

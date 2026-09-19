@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections import Counter
+from contextvars import ContextVar
+from functools import wraps
 from decimal import Decimal
 import errno
 import hashlib
@@ -17,6 +20,8 @@ import time
 import unicodedata
 from types import MappingProxyType
 from typing import Any, Final, Mapping, NoReturn, Sequence
+
+from quant_investor.system.errors import SystemSecurityError
 
 OFFICIAL_TUSHARE_URL: Final = "https://api.tushare.pro/"
 OFFICIAL_TUSHARE_HOST: Final = "api.tushare.pro"
@@ -694,6 +699,9 @@ class OfficialTushareHttpsClient:
         raise AssertionError("validated request did not return")
 
     def _fetch_raw(self, body: bytes) -> bytes:
+        from ._calendar_production_transport import _begin_response, _complete_response
+
+        calendar_ticket = _begin_response("PROVIDER")
         connection: http.client.HTTPSConnection | None = None
         started_at = _MONOTONIC()
         phase = "TLS_CONTEXT"
@@ -728,8 +736,9 @@ class OfficialTushareHttpsClient:
             raw = response.read(self._max_response_bytes + 1)
             if len(raw) > self._max_response_bytes:
                 _fail("TUSHARE_RESPONSE_TOO_LARGE")
+            _complete_response(calendar_ticket, raw=raw, tls_context=context)
             return raw
-        except TushareHttpsError:
+        except (TushareHttpsError, SystemSecurityError):
             raise
         except Exception as exc:
             diagnostic = _transport_diagnostic(
@@ -762,14 +771,20 @@ class OfficialTushareHttpsClient:
             params=params,
             expected_fields=expected_fields,
         )
-        raw = self._fetch_raw(body)
-        return _decode_response(
-            raw,
-            api_name=api_name,
-            expected_fields=fields,
-            strict_decimal_decode=self._strict_decimal_decode,
-            max_response_items=self._max_response_items,
-        )
+        requests = _OPERATION_REQUESTS.get()
+        if requests is not None:
+            requests.append(api_name)
+        from ._calendar_production_transport import _provider_request_scope
+
+        with _provider_request_scope(api_name=api_name, params=params, expected_fields=fields):
+            raw = self._fetch_raw(body)
+            return _decode_response(
+                raw,
+                api_name=api_name,
+                expected_fields=fields,
+                strict_decimal_decode=self._strict_decimal_decode,
+                max_response_items=self._max_response_items,
+            )
 
     def diagnose_schema(
         self,
@@ -811,3 +826,39 @@ __all__ = [
     "replay_tushare_response_bytes",
     "validate_official_endpoint",
 ]
+_OPERATION_REQUESTS: ContextVar[list[str] | None] = ContextVar(
+    "cn_operation_requests", default=None
+)
+
+# Private identity anchors for the opt-in installed Calendar observer. They do
+# not change ordinary transport routing or make this process a security sandbox.
+_ORIGINAL_CALENDAR_CLIENT = OfficialTushareHttpsClient
+_ORIGINAL_REQUEST = OfficialTushareHttpsClient.request
+_ORIGINAL_FETCH_RAW = OfficialTushareHttpsClient._fetch_raw
+_ORIGINAL_PREPARE = OfficialTushareHttpsClient._prepare_request
+_ORIGINAL_HTTPS_CONNECTION = _HTTPS_CONNECTION
+_ORIGINAL_CREATE_CONTEXT = _CREATE_DEFAULT_CONTEXT
+
+
+def operation_provider_summary() -> dict[str, Any]:
+    requests = _OPERATION_REQUESTS.get()
+    return {
+        "provider_calls": bool(requests) if requests is not None else "UNCONFIRMED",
+        "provider_request_attempts": dict(Counter(requests or [])),
+        "request_count_scope": "OFFICIAL_TRANSPORT_CURRENT_OPERATION_CONTEXT",
+    }
+
+
+def record_operation_provider_calls(function):
+    """Count endpoint requests only; never retain parameters, bodies or credentials."""
+
+    @wraps(function)
+    def recorded(*args, **kwargs):
+        token = _OPERATION_REQUESTS.set([])
+        try:
+            result = function(*args, **kwargs)
+            return {**result, **operation_provider_summary()}
+        finally:
+            _OPERATION_REQUESTS.reset(token)
+
+    return recorded

@@ -1,0 +1,23 @@
+{
+  "state": "CONFIG_INPUT_REPAIRED_WITH_UNCHANGED_POLICY_SEMANTICS",
+  "original_policy_ref": {
+    "path": "operations/policies/cn-daily-official-close-policy.v1.json",
+    "sha256": "da0e378f69ad52022c16012bd2d568dea56a2093bc421766167ec508ae132a29"
+  },
+  "canonical_policy_ref": {
+    "path": ".agent/acceptance/phase12-5060-official-close-policy.canonical.json",
+    "sha256": "dfc1d334e5b0771084395fe23b81f4083fd442819e26573e48f291e559dca7f6"
+  },
+  "original_policy_unchanged": true,
+  "release_ref": {
+    "path": "results/factors/objects/system.release/6bbad9d61d6fc31c754ca06fa15ff961968c8b34aa453a600965f47d543c43cc.json",
+    "sha256": "6bbad9d61d6fc31c754ca06fa15ff961968c8b34aa453a600965f47d543c43cc"
+  },
+  "release_publication": "EXISTING_NATIVE_APPEND_ONLY_ARTIFACT_WRITER_ONLY",
+  "activation_performed": false,
+  "config_ref": {
+    "path": ".agent/acceptance/phase12-5060-daily-source-config.json",
+    "sha256": "fded62e6d8f1821471e44da6e00dc366c5def7fad5dd08e012d06477df199c17"
+  },
+  "runtime_code_changed": false
+}

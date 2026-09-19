@@ -1,0 +1,15 @@
+{
+  "scope": "CURRENT_CANONICAL_EVENT_PROVENANCE_READ_ONLY",
+  "trade_date": "20260824",
+  "event_pointer_ref": {
+    "path": "results/strategy_records/CN/aggressive_tech_manufacturing/_event_store/current.v1.json",
+    "sha256": "3ab06e301cf197ee33b242f27c42d6a18f063a07c2860d3f9682662ca03349a9"
+  },
+  "result": {
+    "status": "REJECTED",
+    "error_type": "SystemSecurityError",
+    "error": "SYSTEM_STORAGE_SECURITY:source mode is not owner-only, non-executable, readable"
+  },
+  "threshold_inputs_provided": false,
+  "writes": false
+}

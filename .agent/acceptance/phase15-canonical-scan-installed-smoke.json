@@ -1,0 +1,35 @@
+{
+  "state": "PASS",
+  "scope": "INSTALLED_CALENDAR_COMPONENT_WITH_OFFLINE_HTTPS_AND_GUARD_TEST_SEAMS",
+  "commit": "5060dee2d4b39b50a735393d056ebe5adb4efe3b",
+  "import_origin": "/private/tmp/myquant-canonical-scan-20260916T152008Z/release/installs/5060dee2d4b39b50a735393d056ebe5adb4efe3b-42a7933da56d08cfe3dcc1ccf5fd14cb7deadbea94b77423d2d74d8602602c7a/lib/python3.13/site-packages/quant_investor/__init__.py",
+  "installed_verifier_mocked": false,
+  "real_provider_calls": false,
+  "production_deployed": false,
+  "core_inputs_shape_only": true,
+  "full_eod_proof": false,
+  "morning_proof": false,
+  "phases": [
+    "CORE_READY",
+    "CAPTURE_SEALED",
+    "TRANSPORT_BOUND",
+    "FUTURE_BOUND"
+  ],
+  "next_open_session": "20260917",
+  "workspace": "/private/tmp/myquant-canonical-scan-20260916T152008Z/production-calendar-offline-workspace",
+  "publication_ref": {
+    "path": "results/operations/daily_production/CN/20260916/calendar-future/publications/53f7d57f11bd306889f8523258e16fa704c58817b6054b30b85cac3542a11734.json",
+    "sha256": "2cf9c7f58a63a8c160fde7bfdf82274927a1b33015163229c97863d8dcfe0691"
+  },
+  "transport_evidence_ref": {
+    "path": "results/operations/daily_production/CN/20260916/calendar-future/production-transport/a89c335d6b1360e286192b9490e5efdcf8384b0cfc2054ee5b9abf0a6e5c6b75.json",
+    "sha256": "c08e4bf239c00d561e1290ab95fe7f3705a87909e25821d9692c2271e04fc6d0"
+  },
+  "finished_at": "2026-09-16T15:23:33.166035+00:00",
+  "receipt_ref": {
+    "path": "/private/tmp/myquant-canonical-scan-20260916T152008Z/production-calendar-installed-smoke-proof.json",
+    "sha256": "bf87415f0e6f58ec1b084e6428388f5d5c87ee975e6f52c3a88d215510b773d5"
+  },
+  "exact_sha_readback": "PASS",
+  "full_goal_complete": false
+}

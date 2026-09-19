@@ -1,0 +1,8 @@
+{
+  "commit": "5060dee2d4b39b50a735393d056ebe5adb4efe3b",
+  "tree": "a2152124b228278a6972474eb0e90f408fb8b28f",
+  "repository": "/Users/maxwell/mySpace/myQuant-release-checkouts/5060dee2d4b39b50a735393d056ebe5adb4efe3b",
+  "release_root": "/Users/maxwell/mySpace/myQuant-release-authority/5060dee2d4b39b50a735393d056ebe5adb4efe3b-unified-dag",
+  "source_frozen_receipt": ".agent/acceptance/phase15-canonical-scan-final-ci-pass.json",
+  "activated": false
+}

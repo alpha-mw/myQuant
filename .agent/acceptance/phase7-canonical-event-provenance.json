@@ -1,0 +1,78 @@
+{
+  "scope": "CANONICAL_FOUR_CATALOG_RECEIPTS_AND_NATIVE_EVENT_PROVENANCE",
+  "cases": [
+    {
+      "trade_date": "20260824",
+      "source_receipt_ref": {
+        "path": "catalog:g20260828T142512-4ff10dbe#receipt:automation-20260824-daily-review-v1",
+        "sha256": "9a517d20aa104a1e2d5a1ea05df084d4b767366c9956b3a9ff4b0b3dba1ec225"
+      },
+      "catalog_ref": {
+        "path": "results/strategy_records/CN/aggressive_tech_manufacturing/_record_store/catalogs/g20260828T142512-4ff10dbe/catalog.v3.json",
+        "sha256": "1a76bb9b49b60b21ecdde60d4248a9d367d9a76c2d7c023edc05883ea06d55d6"
+      },
+      "financial_event_state": "VERIFIED_CLOSED_EMPTY"
+    },
+    {
+      "trade_date": "20260826",
+      "source_receipt_ref": {
+        "path": "catalog:g20260828T142512-4ff10dbe#receipt:automation-20260826-daily-review-v1",
+        "sha256": "8c6f9a4e807bfc2d54f4d973f6c8760eae1fe2c6a5e748ebfea498ffd11d6a79"
+      },
+      "catalog_ref": {
+        "path": "results/strategy_records/CN/aggressive_tech_manufacturing/_record_store/catalogs/g20260828T142512-4ff10dbe/catalog.v3.json",
+        "sha256": "1a76bb9b49b60b21ecdde60d4248a9d367d9a76c2d7c023edc05883ea06d55d6"
+      },
+      "financial_event_state": "VERIFIED_CLOSED_EMPTY"
+    },
+    {
+      "trade_date": "20260827",
+      "source_receipt_ref": {
+        "path": "catalog:g20260828T142512-4ff10dbe#receipt:automation-20260827-daily-review-v1",
+        "sha256": "99f41bfb9fb3b82ecc7d6e2d90fb40215cff243674b4ded9f8fd29e89bba7b9e"
+      },
+      "catalog_ref": {
+        "path": "results/strategy_records/CN/aggressive_tech_manufacturing/_record_store/catalogs/g20260828T142512-4ff10dbe/catalog.v3.json",
+        "sha256": "1a76bb9b49b60b21ecdde60d4248a9d367d9a76c2d7c023edc05883ea06d55d6"
+      },
+      "financial_event_state": "VERIFIED_CLOSED_EMPTY"
+    },
+    {
+      "trade_date": "20260828",
+      "source_receipt_ref": {
+        "path": "catalog:g20260828T142512-4ff10dbe#receipt:automation-20260828-daily-review-v1",
+        "sha256": "15b5c4305423495f8db3c9bef5b19653e6e2d73eae6e9491c2411b69662abfa3"
+      },
+      "catalog_ref": {
+        "path": "results/strategy_records/CN/aggressive_tech_manufacturing/_record_store/catalogs/g20260828T142512-4ff10dbe/catalog.v3.json",
+        "sha256": "1a76bb9b49b60b21ecdde60d4248a9d367d9a76c2d7c023edc05883ea06d55d6"
+      },
+      "financial_event_state": "VERIFIED_CLOSED_EMPTY"
+    }
+  ],
+  "regression_rejections": [
+    {
+      "case": "seal_before_cutoff",
+      "error": "event closure cutoff/session ordering invalid"
+    },
+    {
+      "case": "invalid_timestamp",
+      "error": "event closure seal timestamp is invalid"
+    },
+    {
+      "case": "missing_cutoff",
+      "error": "event closure cutoff timestamp is invalid"
+    },
+    {
+      "case": "extra_field",
+      "error": "event closure fields/schema mismatch"
+    }
+  ],
+  "source_bytes_and_mtimes_unchanged": true,
+  "event_pointer_ref": {
+    "path": "results/strategy_records/CN/aggressive_tech_manufacturing/_event_store/current.v1.json",
+    "sha256": "3ab06e301cf197ee33b242f27c42d6a18f063a07c2860d3f9682662ca03349a9"
+  },
+  "threshold_market_inputs_supplied": false,
+  "full_store_or_dag_claim": false
+}

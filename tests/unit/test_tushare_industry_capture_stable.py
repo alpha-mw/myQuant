@@ -30,6 +30,65 @@ from tests.unit.tushare_response_fixtures import make_tushare_response
 NOW = "2026-08-11T07:30:00Z"
 
 
+def test_bulk_partition_replay_keeps_bytes_and_validates_shared_plan_once(monkeypatch):
+    from quant_investor.market.tushare import industry_membership as native
+    from quant_investor.market.tushare._core import seal
+
+    taxonomy, taxonomy_capture, plan = _membership_plan()
+    parts = [
+        build_industry_membership_partition_capture(
+            membership_plan=plan,
+            taxonomy_plan=taxonomy,
+            taxonomy_capture=taxonomy_capture,
+            partition_key=key,
+            partition_ordinal=index,
+            provider_request_id=f"bulk-{index}",
+            reported_count=0,
+            rows=[],
+            captured_at=NOW,
+        )
+        for index, key in enumerate(plan["endpoint_plan"]["ordered_expected_partition_keyset"][:3])
+    ]
+    expected = [
+        validate_industry_membership_partition_capture(
+            part,
+            membership_plan=plan,
+            taxonomy_plan=taxonomy,
+            taxonomy_capture=taxonomy_capture,
+        )
+        for part in parts
+    ]
+    original = native.validate_industry_membership_execution_plan
+    calls = []
+
+    def checked(*args, **kwargs):
+        calls.append(True)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(native, "validate_industry_membership_execution_plan", checked)
+    kwargs = dict(
+        membership_plan=plan,
+        taxonomy_plan=taxonomy,
+        taxonomy_capture=taxonomy_capture,
+        partition_documents=parts,
+    )
+    assert native._validate_membership_partitions(**kwargs) == expected == parts
+    assert len(calls) == 1
+    changed = deepcopy(parts)
+    changed[1]["reported_count"] = 1
+    for field in ("partition_capture_id", "contract_sha256", "semantic_sha256"):
+        changed[1].pop(field)
+    changed[1] = seal(changed[1], identity_field="partition_capture_id")
+    with pytest.raises(TushareContractError, match="reported count"):
+        native._validate_membership_partitions(**{**kwargs, "partition_documents": changed})
+    assert len(calls) == 2
+    bad_plan = deepcopy(plan)
+    bad_plan["endpoint_plan"]["ordered_expected_partition_keyset"].pop()
+    with pytest.raises(TushareContractError):
+        native._validate_membership_partitions(**{**kwargs, "membership_plan": bad_plan})
+    assert len(calls) == 3
+
+
 def _rows(level: str, count: int) -> list[dict[str, Any]]:
     result = []
     for index in range(count):

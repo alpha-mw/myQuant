@@ -1,0 +1,77 @@
+{
+  "observed_at": "2026-09-14T02:48:50.162751+00:00",
+  "case": 4,
+  "root": "/private/tmp/myquant-configured-missing-store-20260914T012539Z",
+  "state": "NATIVE_CORE_AND_FIVE_RESEARCH_SOURCE_NODES_SUCCEEDED",
+  "successful_node_refs": {
+    "calendar": {
+      "path": "results/operations/daily_production/CN/20260827/nodes/calendar/ae38a7ef65da76772f48d46861d521ccc2177d80dc05ffd1864d87bb2a1b38c8/attempt-0001/terminal.json",
+      "sha256": "fcd7bb421054ab14c51733f782a561e959cba75e40fee264e2583cfef3b338b2"
+    },
+    "exposure": {
+      "path": "results/operations/daily_production/CN/20260827/nodes/exposure/ccadd50283b43c09a589683d76572d99efab59a8f66398a2cae0a7ddd579a8c7/attempt-0001/terminal.json",
+      "sha256": "0f61f4decc593c816772589b34f1375c586599a7762c119f526e6da73c017ef6"
+    },
+    "factor": {
+      "path": "results/operations/daily_production/CN/20260827/nodes/factor/8d7619bf7f93d5b0e4d88208500190ba4d077bfc61f51137b7a092295cb55a16/attempt-0001/terminal.json",
+      "sha256": "ffce5086a40611f15149143e105855fd1c454b080a3a06e0055226132c8b64b6"
+    },
+    "fundamental": {
+      "path": "results/operations/daily_production/CN/20260827/nodes/fundamental/c359aa540ff4906c0a3964e9cc667457da645d9814f53f3024ec68a2e5150fca/attempt-0001/terminal.json",
+      "sha256": "768aefeeb71c08dca5e2f71ccc001b9b105ace2c4ffd1af5ece5658e91b8e178"
+    },
+    "industry": {
+      "path": "results/operations/daily_production/CN/20260827/nodes/industry/1e8b1f81aaac5cc2ac68e5f91a073fb4e67482c480fc1e1fa906930e7c65df87/attempt-0001/terminal.json",
+      "sha256": "cde88cdec0d43f8af4a3009ff200bdf299bec68c6025981fa63b5c2d7706c635"
+    },
+    "low_observation": {
+      "path": "results/operations/daily_production/CN/20260827/nodes/low_observation/0276981884000c62c52940fd9d730159a2682233cf731497e6b169f5cdba6e30/attempt-0001/terminal.json",
+      "sha256": "0cc1c1bfb95dce664ea7cbac3a61f059b5bd38f947cf25bfb818c8f99a313f1f"
+    },
+    "macro": {
+      "path": "results/operations/daily_production/CN/20260827/nodes/macro/9ff21d69aea2eb5a3e609e23936fc5f1ac0da383a24ecc9f5cf9abf92ff415b2/attempt-0001/terminal.json",
+      "sha256": "fd6a8ee8f1c68c98cdf86c910dd9afc80c62613c180ee4d185945ce9f119b4f3"
+    },
+    "market": {
+      "path": "results/operations/daily_production/CN/20260827/nodes/market/355de99bfe92cbd2bcdbc422f3eefd918a7ab902198e635ef452d1c1c5c72741/attempt-0001/terminal.json",
+      "sha256": "e2fb22199b6ca127f00f3bb3453426d839318d9618e0230cf112fa7dd516dbf1"
+    },
+    "pit": {
+      "path": "results/operations/daily_production/CN/20260827/nodes/pit/c345485b3dceef16ea2c81429b561d8ed3967645de723f8302660a111cf1b54f/attempt-0001/terminal.json",
+      "sha256": "b001545de904d45272d554b6547a99ca06d00c3ff64b75b4f8a7922646ec7328"
+    },
+    "theme": {
+      "path": "results/operations/daily_production/CN/20260827/nodes/theme/00c7880eda2ad3ab6e557219a5591a7b7c3ca1cc34dbf70f203a1229c6471bce/attempt-0001/terminal.json",
+      "sha256": "626691da22afe3f1a31b4806e45fe16444f048d5b5fcf103052f49353b67ebfa"
+    },
+    "top100": {
+      "path": "results/operations/daily_production/CN/20260827/nodes/top100/4f41d6d8ff290540d584d0642c2743ad6645c1152d34f2c100f306eac91706aa/attempt-0001/terminal.json",
+      "sha256": "8c7d8b7eb586d190b274a684e57a8ad35add1e4299c069a0f9a63edd349505b1"
+    },
+    "w80_observation": {
+      "path": "results/operations/daily_production/CN/20260827/nodes/w80_observation/e897e5f0815c1d90b94d9a936d213203cebf8afcfebf8b430438464dddca7a4c/attempt-0001/terminal.json",
+      "sha256": "3dc7c4eb1856ceb917d921890dbf9a041977d687c58a9739c988e455770f1871"
+    }
+  },
+  "all_node_states": {
+    "calendar": "SUCCEEDED",
+    "corporate_action_recon": "RUNNING",
+    "dashboard": "NOT_STARTED",
+    "decision": "NOT_STARTED",
+    "exposure": "SUCCEEDED",
+    "factor": "SUCCEEDED",
+    "fundamental": "SUCCEEDED",
+    "industry": "SUCCEEDED",
+    "low_observation": "SUCCEEDED",
+    "macro": "SUCCEEDED",
+    "market": "SUCCEEDED",
+    "pit": "SUCCEEDED",
+    "store": "NOT_STARTED",
+    "theme": "SUCCEEDED",
+    "top100": "SUCCEEDED",
+    "w80_observation": "SUCCEEDED"
+  },
+  "validation_scope": "NATIVE_SELECTED_JOURNAL_AND_OUTPUT_BYTES",
+  "full_case_proof": false,
+  "production_deployed": false
+}

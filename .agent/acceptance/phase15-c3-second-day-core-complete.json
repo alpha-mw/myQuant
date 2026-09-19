@@ -1,0 +1,57 @@
+{
+  "observed_at": "2026-09-14T20:13:43.604811+00:00",
+  "state": "CORE_7_NODES_SUCCEEDED_DOWNSTREAM_PENDING",
+  "trade_date": "20260828",
+  "top100_verified_refs": {
+    "terminal": {
+      "path": "results/operations/daily_production/CN/20260828/nodes/top100/0654bd307296e6c6b5af6fdc0ff848dad8e8534edf9fb86a915250c017fc26e2/attempt-0001/terminal.json",
+      "sha256": "04775e8902fcde4dce3ed0b8497e5ad29c5338ff2cfbfef4f4a1a62a59528617"
+    },
+    "factor_research_rank.json": {
+      "path": "results/intelligence/research_pool/aggressive_tech_manufacturing/2026-08-28/factor_research_rank.json",
+      "sha256": "9e03b8f033a6dc4614fb4f82639a49d089a67cb5e0e9e024f7230a5aa177c3d6"
+    },
+    "manifest.json": {
+      "path": "results/intelligence/research_pool/aggressive_tech_manufacturing/2026-08-28/manifest.json",
+      "sha256": "f90d14bdfe6052826711d4471af520aeec130a1a375924e36608feb746f1d244"
+    },
+    "publish_receipt.json": {
+      "path": "results/intelligence/research_pool/aggressive_tech_manufacturing/2026-08-28/publish_receipt.json",
+      "sha256": "6bc08307f581cf234b91e1a30144358391ef50f1a7248a810c5a0d23b366df7d"
+    },
+    "selected_symbols.json": {
+      "path": "results/intelligence/research_pool/aggressive_tech_manufacturing/2026-08-28/selected_symbols.json",
+      "sha256": "0b68a10c3cb70e49aed7aed476c7c32ddd8f0038b8c13d707740d117f6542bab"
+    },
+    "top100.parquet": {
+      "path": "results/intelligence/research_pool/aggressive_tech_manufacturing/2026-08-28/top100.parquet",
+      "sha256": "e8ec3572d1ad082f419300a8af7320d16b10e66f30bf6872d8a5c04ae45c008e"
+    }
+  },
+  "core_handoff_ref": {
+    "path": "results/operations/daily_production/CN/20260828/core-handoff.v1.json",
+    "sha256": "a8dc1e4893f87d75230b2a6dffa03a7b9e6ec5f954dfaf07ce7b3f5873dbb547"
+  },
+  "node_states": {
+    "calendar": "SUCCEEDED",
+    "corporate_action_recon": "BLOCKED",
+    "dashboard": "SKIPPED",
+    "decision": "SKIPPED",
+    "exposure": "SKIPPED",
+    "factor": "SUCCEEDED",
+    "fundamental": "BLOCKED",
+    "industry": "BLOCKED",
+    "low_observation": "SUCCEEDED",
+    "macro": "BLOCKED",
+    "market": "SUCCEEDED",
+    "pit": "SUCCEEDED",
+    "store": "SKIPPED",
+    "theme": "BLOCKED",
+    "top100": "SUCCEEDED",
+    "w80_observation": "SUCCEEDED"
+  },
+  "downstream_input_missing_is_intermediate_snapshot": true,
+  "outer_dispatch_terminal": false,
+  "synthetic": true,
+  "production_deployed": false
+}

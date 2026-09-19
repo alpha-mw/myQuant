@@ -1,0 +1,111 @@
+{
+  "observed_at": "2026-09-14T13:24:40.378073+00:00",
+  "state": "CURRENT_FROZEN_FULL_GATES_PASS",
+  "runtime_commit": "c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b",
+  "root": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z",
+  "status_ref": {
+    "path": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/final-gates/status.json",
+    "sha256": "b75c4b1ad213a74dadfeda090e13f00a2f3c1d4fb8e98ef2d6d69ca68d34a853"
+  },
+  "source_manifest_ref": {
+    "path": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/final-gates/source-manifest.json",
+    "sha256": "9b3e59fbaac0daeeed3c09d966366d69923ddbfe0dd32537c04a5dd4546ea4f8"
+  },
+  "unit_log_ref": {
+    "path": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/final-gates/unit.log",
+    "sha256": "f30647947381cdd0a74d6379b8c89ef8baa2aa06fb3981f794c226835a0b8d5d"
+  },
+  "passed": 4931,
+  "skipped": 3,
+  "warnings": 87,
+  "test_seconds": 5088.62,
+  "driver_unit_seconds": 5090.62,
+  "finished_at": "2026-09-14T09:04:44.527953+00:00",
+  "steps": [
+    {
+      "step": "access",
+      "exit_code": 0,
+      "seconds": 5.03,
+      "log": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/final-gates/access.log"
+    },
+    {
+      "step": "fatal-lint",
+      "exit_code": 0,
+      "seconds": 4.23,
+      "log": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/final-gates/fatal-lint.log"
+    },
+    {
+      "step": "stable-lint",
+      "exit_code": 0,
+      "seconds": 1.44,
+      "log": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/final-gates/stable-lint.log"
+    },
+    {
+      "step": "stable-black",
+      "exit_code": 0,
+      "seconds": 2.73,
+      "log": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/final-gates/stable-black.log"
+    },
+    {
+      "step": "stable-mypy",
+      "exit_code": 0,
+      "seconds": 4.28,
+      "log": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/final-gates/stable-mypy.log"
+    },
+    {
+      "step": "dashboard-v1",
+      "exit_code": 0,
+      "seconds": 0.22,
+      "log": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/final-gates/dashboard-v1.log"
+    },
+    {
+      "step": "dashboard-v2",
+      "exit_code": 0,
+      "seconds": 0.05,
+      "log": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/final-gates/dashboard-v2.log"
+    },
+    {
+      "step": "dashboard-daily",
+      "exit_code": 0,
+      "seconds": 0.13,
+      "log": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/final-gates/dashboard-daily.log"
+    },
+    {
+      "step": "syntax-app",
+      "exit_code": 0,
+      "seconds": 0.04,
+      "log": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/final-gates/syntax-app.log"
+    },
+    {
+      "step": "syntax-cn_aggressive_input",
+      "exit_code": 0,
+      "seconds": 0.03,
+      "log": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/final-gates/syntax-cn_aggressive_input.log"
+    },
+    {
+      "step": "syntax-cn_aggressive_dashboard_contract_v1",
+      "exit_code": 0,
+      "seconds": 0.03,
+      "log": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/final-gates/syntax-cn_aggressive_dashboard_contract_v1.log"
+    },
+    {
+      "step": "unit",
+      "exit_code": 0,
+      "seconds": 5090.62,
+      "log": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/final-gates/unit.log"
+    }
+  ],
+  "final_source_drift": [],
+  "current_runtime_source_drift": [],
+  "skip_reasons": {
+    "legacy_recipe_has_no_versioned_freshness_ref": 2,
+    "case_insensitive_filesystem_cannot_represent_collision": 1
+  },
+  "warning_categories": [
+    "datetime.utcnow deprecation",
+    "fork from multi-threaded process deprecation"
+  ],
+  "full_native_five_day_proof_separate": true,
+  "production_deployed": false,
+  "full_goal_complete": false
+}

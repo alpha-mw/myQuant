@@ -15,6 +15,7 @@ from typing import Any, Callable
 from urllib.request import Request, urlopen
 
 from quant_investor.contracts import canonical_json_bytes, parse_canonical_json_bytes
+from quant_investor.intelligence.sina_quotes import SinaQuoteParseError, parse_sina_quote_response
 from quant_investor.intelligence.morning import (
     SINA_CAPTURE_SCHEMA,
     classify_sina_quote_timing,
@@ -137,39 +138,9 @@ def _fetch(url: str) -> bytes:
 
 def _parse(raw: bytes, mappings: list[dict[str, str]]) -> list[dict[str, str]]:
     try:
-        text = raw.decode("gb18030", errors="strict")
-    except UnicodeError as exc:
-        raise SinaCaptureError("SINA_RESPONSE_DECODE_FAILED") from exc
-    by_provider = {row["provider_symbol"]: row["symbol"] for row in mappings}
-    rows: dict[str, dict[str, str]] = {}
-    for line in text.splitlines():
-        prefix = "var hq_str_"
-        if not line.startswith(prefix) or '="' not in line or not line.endswith('";'):
-            continue
-        provider_symbol, payload = line[len(prefix) :].split('="', 1)
-        if provider_symbol not in by_provider:
-            continue
-        fields = payload[:-2].split(",")
-        if len(fields) < 32 or not fields[0]:
-            raise SinaCaptureError("SINA_RESPONSE_FIELDS_INVALID")
-        symbol = by_provider[provider_symbol]
-        rows[symbol] = {
-            "symbol": symbol,
-            "name": fields[0],
-            "open": fields[1],
-            "previous_close": fields[2],
-            "price": fields[3],
-            "high": fields[4],
-            "low": fields[5],
-            "volume": fields[8],
-            "amount": fields[9],
-            "provider_date": fields[30],
-            "provider_time": fields[31],
-        }
-    ordered = [rows[row["symbol"]] for row in mappings if row["symbol"] in rows]
-    if [row["symbol"] for row in ordered] != [row["symbol"] for row in mappings]:
-        raise SinaCaptureError("SINA_RESPONSE_SYMBOL_SET_INCOMPLETE")
-    return ordered
+        return parse_sina_quote_response(raw, mappings)
+    except SinaQuoteParseError as exc:
+        raise SinaCaptureError(str(exc)) from exc
 
 
 def run(

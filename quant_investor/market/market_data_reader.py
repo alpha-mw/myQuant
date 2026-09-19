@@ -378,12 +378,39 @@ class MarketDataReader:
         market: str = "CN",
         data_root: str | Path | None = None,
         mode_policy: str = "strict",
+        frozen_snapshot_ref: Mapping[str, str] | None = None,
     ) -> None:
         self.market = str(market or "").strip().upper()
         self.data_root = Path(data_root or "data")
         self.mode_policy = str(mode_policy or "strict").strip().lower() or "strict"
         self.parquet_market_root = self.data_root / "parquet" / self.market.lower()
         self.latest_pointer_path = self.parquet_market_root / "_latest.json"
+        self._frozen_snapshot_sha: str | None = None
+        if frozen_snapshot_ref is not None:
+            if (
+                self.market != "CN"
+                or self.mode_policy != "strict"
+                or set(frozen_snapshot_ref) != {"path", "sha256"}
+                or type(frozen_snapshot_ref["path"]) is not str
+                or type(frozen_snapshot_ref["sha256"]) is not str
+            ):
+                raise MarketDataUnavailableError("frozen snapshot selector invalid")
+            ref_path = Path(frozen_snapshot_ref["path"])
+            digest = frozen_snapshot_ref["sha256"]
+            if (
+                ref_path.is_absolute()
+                or ref_path.parts[:3] != ("parquet", "cn", "_snapshots")
+                or len(ref_path.parts) != 4
+                or ref_path.suffix != ".json"
+                or "\\" in frozen_snapshot_ref["path"]
+                or not frozen_snapshot_ref["path"].isascii()
+                or ref_path.as_posix() != frozen_snapshot_ref["path"]
+                or len(digest) != 64
+                or any(c not in "0123456789abcdef" for c in digest)
+            ):
+                raise MarketDataUnavailableError("frozen snapshot path or SHA invalid")
+            self.latest_pointer_path = self.data_root / ref_path
+            self._frozen_snapshot_sha = digest
         self.catalog_path = self.parquet_market_root / "_catalog.json"
         self.issues: list[DataQualityIssue] = []
         self._latest_payload: dict[str, Any] | None = None
@@ -461,6 +488,7 @@ class MarketDataReader:
         path: Path,
         *,
         label: str,
+        expected_sha256: str | None = None,
     ) -> dict[str, Any]:
         """Read a governed JSON file through one non-symlink file descriptor."""
 
@@ -503,6 +531,11 @@ class MarketDataReader:
                     f"{label}: file changed or replaced during read"
                 )
             try:
+                if (
+                    expected_sha256 is not None
+                    and hashlib.sha256(encoded).hexdigest() != expected_sha256
+                ):
+                    raise MarketDataUnavailableError(f"{label}: exact snapshot SHA mismatch")
                 payload = json.loads(encoded.decode("utf-8"))
             except Exception as exc:
                 raise MarketDataUnavailableError(
@@ -842,10 +875,16 @@ class MarketDataReader:
         if self._latest_payload is not None and not refresh:
             return dict(self._latest_payload)
         try:
-            payload = self._read_stable_json_object(
-                self.latest_pointer_path,
-                label="strict Parquet snapshot pointer unreadable",
-            )
+            kwargs = {"label": "strict Parquet snapshot pointer unreadable"}
+            if self._frozen_snapshot_sha is not None:
+                kwargs["expected_sha256"] = self._frozen_snapshot_sha
+            payload = self._read_stable_json_object(self.latest_pointer_path, **kwargs)
+            if self._frozen_snapshot_sha is not None and (
+                self.latest_pointer_path.stem != payload.get("snapshot_id")
+                or payload.get("coverage", {}).get("coverage_schema_version")
+                != "cn-full-a-coverage.v4"
+            ):
+                raise MarketDataUnavailableError("frozen snapshot identity/schema mismatch")
         except MarketDataUnavailableError as exc:
             raise MarketDataUnavailableError(
                 f"strict Parquet snapshot pointer unreadable: {self.latest_pointer_path}: {exc}"
@@ -1360,6 +1399,8 @@ class MarketDataReader:
         return list(symbols)
 
     def _load_components(self) -> dict[str, Any]:
+        if self._frozen_snapshot_sha is not None:
+            raise MarketDataUnavailableError("frozen snapshot has no current component authority")
         if self.market == "CN":
             from .scope_transition import assert_scope_readable
 
@@ -1725,6 +1766,8 @@ class MarketDataReader:
             return None
         path = snapshot.serving_root / f"symbol={normalized}" / "bars.parquet"
         if for_write:
+            if self._frozen_snapshot_sha is not None:
+                raise MarketDataUnavailableError("frozen snapshot reader cannot allocate writes")
             path.parent.mkdir(parents=True, exist_ok=True)
             return path
         return path if path.exists() else None
@@ -2198,6 +2241,8 @@ class MarketDataReader:
         return frame.reset_index(drop=True)
 
     def _load_catalog(self) -> dict[str, Any]:
+        if self._frozen_snapshot_sha is not None:
+            raise MarketDataUnavailableError("frozen snapshot has no current catalog authority")
         if self._catalog_payload is not None:
             return dict(self._catalog_payload)
         if not self.catalog_path.exists():

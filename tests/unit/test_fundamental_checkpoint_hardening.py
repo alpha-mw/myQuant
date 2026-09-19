@@ -215,7 +215,7 @@ def test_batch_one_crash_resume_persists_coverage_and_replaces_failed_rows(
     monkeypatch.setattr(
         fundamental_mart,
         "_validate_canonical_scope_evidence",
-        lambda _value, _symbols: evidence,
+        lambda _value, _symbols, **_kwargs: evidence,
     )
     checkpoint_root = tmp_path / "checkpoint"
     original_write = fundamental_mart._write_fetch_checkpoint

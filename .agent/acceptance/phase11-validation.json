@@ -1,0 +1,170 @@
+{
+  "observed_at": "2026-09-12T20:04:58.894582+00:00",
+  "status": "COMPLETED_LOCAL_VALIDATION",
+  "full_goal_complete": false,
+  "scope": "PHASE11_PART_A_AND_PART_B",
+  "sources": [
+    {
+      "path": "quant_investor/market/requested_session.py",
+      "sha256": "72f7c0d9062a352d3591ff7ffa2f0ecd8566626bb8b3ad131c0a2801508fff53"
+    },
+    {
+      "path": "quant_investor/market/maintenance_journal.py",
+      "sha256": "3616b57dc50cfa9e3b1885fafcc675ed7ddb21f7d0d216731b6e6bffb9c724dd"
+    },
+    {
+      "path": "quant_investor/market/daily_maintenance.py",
+      "sha256": "c18ff67b3edd1ca3ffe3f96fc38bfaa09783965cf1f75be2ec128783ba04ccfb"
+    },
+    {
+      "path": "quant_investor/operations/catchup_binding.py",
+      "sha256": "9284497651f9969b4302ed22c6ef5fd5e43aa375b5e205ed5da68747d5d0c550"
+    },
+    {
+      "path": "quant_investor/operations/maintenance_readback.py",
+      "sha256": "9f4f5b9c6abf38a01f9ecf1d156fbdac5911ab1b11109d9f76b9a1718e0923ff"
+    },
+    {
+      "path": "quant_investor/operations/maintenance_handoff.py",
+      "sha256": "619e2cedeace078b552c626ddc97c23258ad4575265f619530c52483f94b8b9e"
+    },
+    {
+      "path": "scripts/daily_materialization.py",
+      "sha256": "96836ce72da5326689a6712d116db43788193e79eace4aa87d8d6421e36355ee"
+    },
+    {
+      "path": "scripts/daily_catchup.py",
+      "sha256": "3f501713f8bbac64c877daf763eae35a5b0ebcb74d31cb1088411e8404e1a1ba"
+    },
+    {
+      "path": "quant_investor/operations/automatic_catchup_contract.py",
+      "sha256": "d6bf393975965e720addf033908c1c94204c28f3b27f6834292c2fe4c9890c21"
+    },
+    {
+      "path": "quant_investor/operations/automatic_catchup_resolution.py",
+      "sha256": "cfc3ba76b3c2e0e6b038cd6d0eafbf365b5238c4dccb31a182a0071c021e0de6"
+    },
+    {
+      "path": "quant_investor/operations/automatic_catchup_storage.py",
+      "sha256": "72350985cc7dc6a05b2ee1305ee6a0a74408447fcb267366d367f8c1d0d386d8"
+    },
+    {
+      "path": "quant_investor/operations/automatic_catchup_closure.py",
+      "sha256": "1f27255002f73c077657402fd78fb7c290c80944e25d9ed60ce17655bfa68d7e"
+    },
+    {
+      "path": "quant_investor/operations/journal_storage.py",
+      "sha256": "1c5251af872cd3dd46c128e3fd74f44cdd55c624e4bd65ba433439acc9b7a629"
+    },
+    {
+      "path": "quant_investor/operations/native_bridge.py",
+      "sha256": "22c3b5733492d70ec4bfcf20efc1e1a6a228bd29fffed1a19bf6859c1afa520a"
+    },
+    {
+      "path": "quant_investor/cli/daily_production.py",
+      "sha256": "db0dac59482642f24d084f70c93d706b7f68b8bdacb8ee3a8835127d17ea3174"
+    },
+    {
+      "path": "quant_investor/cli/main.py",
+      "sha256": "3ba1e732c4f507abeb9528a8ad5f3c1d8fcc8f572a5ec9160a67b942b9102f21"
+    },
+    {
+      "path": "scripts/daily_production.py",
+      "sha256": "c698d1858ef6e967898c732e517933dfd135c0e4befaa49606bef30e5fa9e693"
+    },
+    {
+      "path": "scripts/daily_automatic_catchup.py",
+      "sha256": "ee8d2bb1d0879322daeb71412d638142904ce7f8601ae466f96accd2836a5252"
+    }
+  ],
+  "tests": [
+    {
+      "path": "tests/unit/_public_catchup_fixture.py",
+      "sha256": "9e4f9b51995323ae8cee26a8eff53b544fb55428b6953dc6f97e11f1a89daf12"
+    },
+    {
+      "path": "tests/unit/test_daily_evidence_catchup_routing.py",
+      "sha256": "554a93c2f6a43c32b82bf8cf361202697fce0ee0be283d120469c9f21f9a3ae9"
+    },
+    {
+      "path": "tests/unit/test_daily_evidence_public_catchup.py",
+      "sha256": "51f5ba5b91fd60cb95240318ddbfc9bfd841fa8ec4c7384693f4cdcd4f1d503c"
+    },
+    {
+      "path": "tests/unit/test_daily_evidence_requested_maintenance.py",
+      "sha256": "7bf612fcbd86baa5b1f28e50eb32b1c568b8835f01714db9a149bb2b51f8694a"
+    },
+    {
+      "path": "tests/unit/test_daily_evidence_maintenance_handoff.py",
+      "sha256": "365778ab71b127b1d5b54db320bd34ef1b68984779410775f44fa0fc24775423"
+    },
+    {
+      "path": "tests/unit/test_daily_evidence_historical_handoff.py",
+      "sha256": "a36e2edc5fe9d3e8c777bdb0ee0a47f2c4b6b25ebe95ee4f7f89582f86ff3944"
+    },
+    {
+      "path": "tests/unit/test_automatic_catchup_resolution.py",
+      "sha256": "bcb5f5987c813fac4a9551e4823a3bccdeac5e5f1e7bc1ccffc6e3f749aad51c"
+    },
+    {
+      "path": "tests/unit/test_automatic_catchup_storage.py",
+      "sha256": "23ba02414444b2b5e32900e60567592651bd692d2894af06dc9bb96533266d66"
+    },
+    {
+      "path": "tests/unit/test_automatic_catchup_closure.py",
+      "sha256": "7c98d5ec08c1b6cca7c0dfcb7cc381f89b0e4a13fee354eb8c588aa8b0992468"
+    },
+    {
+      "path": "tests/unit/test_automatic_catchup_execution.py",
+      "sha256": "b609d9402e7d3be62f0259847c7fbb5049bae070994d284d2bf9b2b74beb0564"
+    },
+    {
+      "path": "tests/unit/test_automatic_catchup_cli.py",
+      "sha256": "81bcc3f1edab1fafe62ea345f26e69ae5da1397e7a0f54127c677d28243867b9"
+    },
+    {
+      "path": "tests/unit/test_daily_evidence_daily_close_cli.py",
+      "sha256": "2963b336284c90812f403f77b723d6bc1a1f6c545485e479817838da8c8fe9da"
+    }
+  ],
+  "final_check": {
+    "session": 40879,
+    "exit_code": 0,
+    "result": "382 passed in 33.54s",
+    "log": {
+      "path": "/tmp/myquant-phase11-final-current-tests.txt",
+      "sha256": "8640e54477fc053fadb5d9f90ba049e55aa89f5984eb13c6ca72a224e30b4b01"
+    }
+  },
+  "static": {
+    "part_a_mypy_sources": 8,
+    "part_b_mypy_sources": 9,
+    "part_a_black_files": 14,
+    "part_b_black_files": 16,
+    "scoped_flake8": "PASS",
+    "public_cli_complexity10": "PASS"
+  },
+  "native_historical_dashboard": {
+    "path": ".agent/acceptance/phase11-native-historical-dashboard.json",
+    "sha256": "233fa8b0dfa960c53a5e3310e58185602e92bda84879508bcc29637b9162a8b7"
+  },
+  "part_a_receipt": {
+    "path": ".agent/acceptance/phase11-part-a-validation.json",
+    "sha256": "ce7364373f9fc25bdb46c2dd5b990414f7737c5ff148bb7eed4904e6db0e7f2e"
+  },
+  "capabilities": [
+    "Native Calendar selected close and strict head-or-seed contiguous anchor",
+    "Exact-ref immutable resolution and original source replay without mutable head",
+    "Nonblocking lock, bounded pending lease, exact capability and safe unstarted expiry closure",
+    "Existing Part A mixed-date native dispatch; current serving failure does not claim success",
+    "Read-only PLAN, repeated completed execution unchanged, public schema and 0/2/3 exits"
+  ],
+  "limitations": [
+    "Synthetic Calendar/native financial sources; full EOD admission and unrelated business producer boundaries explicitly controlled in orchestration tests",
+    "Installed current-source full DAG/five-day and unattended scheduler receipts are not certified here",
+    "Legacy CLI controlled EOD fixture now explicitly controls its serving boundary as it contains no native input/physical EOD closure"
+  ],
+  "old_frozen_failure_preserved": true,
+  "scheduler_or_live_portfolio_changed": false,
+  "last_review_correction": "Expiry exclusion replays each native attempt actual Calendar/historical target, not only its logical claim date; Saturday ordinary maintenance targeting Friday prevents closure, while a proven older historical target remains distinct."
+}

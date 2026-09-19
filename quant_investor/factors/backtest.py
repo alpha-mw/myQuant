@@ -954,7 +954,14 @@ def build_quantile_weight_matrix(
                 continue
             if execution_start_index >= date_count:
                 continue
-            if execution_returns[row_index][execution_start_index] is None:
+            if (
+                config.selection_requires_future_return
+                and execution_returns[row_index][execution_start_index] is None
+            ):
+                # Legacy path: a missing forward return removes the candidate.
+                # That is a signal-date decision made with post-signal
+                # information, and it also shifts every other candidate's
+                # quantile because it changes len(eligible).
                 continue
             score = factor_value * expected_direction
             eligible.append((symbol, row_index, score))
@@ -1003,7 +1010,12 @@ def build_quantile_weight_matrix(
                 "finite_factor_value": True,
                 "universe_mask_signal_date": True,
                 "tradability_mask_execution_start_date": True,
-                "execution_return_required": True,
+                # Must mirror the config, not assert the legacy default: this
+                # field is how a stored result says whether its weights were
+                # decided using post-signal information.
+                "execution_return_required": bool(
+                    config.selection_requires_future_return
+                ),
             },
             "execution_price": execution_price,
             "delay_days": config.delay_days,

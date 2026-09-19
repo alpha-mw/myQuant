@@ -1,0 +1,58 @@
+{
+  "observed_at": "2026-09-15T02:30:54.255278+00:00",
+  "state": "PASS",
+  "runtime_commit": "c3c0b38263f8cd045b9a7f18e1d5fff2b4c2848b",
+  "trade_date": "20260828",
+  "proof_ref": {
+    "path": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/configured-native-proof-20260828.json",
+    "sha256": "dc9d98507f34e100d4d56f916b5a3271510c6567b70724544109a6195f6f0629"
+  },
+  "request_ref": {
+    "path": "results/operations/daily_production/CN/20260828/preparation/1335469cd918f263243cf08e8d972e99c4ae41f2a22cc7085a7b2f590ebcdc32/request.json",
+    "sha256": "aa50a3f2ef4f484fde335ab821394d330f272a522a43cde1b76601bf7fbda24b"
+  },
+  "completion_ref": {
+    "path": "results/operations/daily_production/CN/20260828/completion.v1.json",
+    "sha256": "2bbd9f4f1318be1eb80602350e4e9d4fc017aa667d0c7fdc37c9c4941f01cd30"
+  },
+  "previous_completion_ref": {
+    "path": "results/operations/daily_production/CN/20260827/completion.v1.json",
+    "sha256": "f1acaf5e510b0193bb3e010d226d58e6a6337fb2a3bf2efb4ac38ae57bb44c57"
+  },
+  "config_ref": {
+    "path": "configured-inputs/source-config.json",
+    "sha256": "1335469cd918f263243cf08e8d972e99c4ae41f2a22cc7085a7b2f590ebcdc32"
+  },
+  "exact_refs_sha_verified": true,
+  "native_validated_nodes": [
+    "calendar",
+    "corporate_action_recon",
+    "dashboard",
+    "decision",
+    "exposure",
+    "factor",
+    "fundamental",
+    "industry",
+    "low_observation",
+    "macro",
+    "market",
+    "pit",
+    "store",
+    "theme",
+    "top100",
+    "w80_observation"
+  ],
+  "helper_drift": [],
+  "dispatch_state": "SUCCEEDED",
+  "dispatch_business_state": "COMPLETE",
+  "observed_current_day_native_replay_returns": 5,
+  "synthetic": true,
+  "production_deployed": false,
+  "completed_dates": [
+    "20260827",
+    "20260828"
+  ],
+  "next_active_date": "20260831",
+  "next_child_pid": 3772,
+  "full_goal_complete": false
+}

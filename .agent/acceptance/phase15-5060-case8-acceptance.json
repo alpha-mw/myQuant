@@ -1,0 +1,58 @@
+{
+  "observed_at": "2026-09-16T21:23:20.795547+00:00",
+  "case": 8,
+  "state": "CURRENT_INSTALLED_FULL_EOD_ENTRY_SHA_REJECTION_PASS",
+  "runtime_commit": "5060dee2d4b39b50a735393d056ebe5adb4efe3b",
+  "root": "/private/tmp/myquant-canonical-scan-20260916T152008Z",
+  "proof_ref": {
+    "path": "/private/tmp/myquant-canonical-scan-20260916T152008Z/configured-current-source-mismatch-proof-guard-fixed.json",
+    "sha256": "827a7ae4777acae6cc07fb6829799e6244dbf29d5396cde7d8fd23695a7e297e"
+  },
+  "driver_status_ref": {
+    "path": "/private/tmp/myquant-canonical-scan-20260916T152008Z/current-source-mismatch-guard-driver-status.json",
+    "sha256": "57c4b9db13545bf9c5c27bf553714cb8e36510e5e89112b461f53cff318c552b"
+  },
+  "fresh_positive_native_nodes": 16,
+  "cases": [
+    {
+      "node": "market",
+      "rejection": "EOD_READBACK_TERMINAL_CHANGED:market",
+      "read_counts": {
+        "wrapper_calls": 530,
+        "target_redirects": 2,
+        "successful_physical_reads": 2,
+        "non_target_redirects": 0,
+        "recursive_calls": 0,
+        "restored": true
+      },
+      "original_output_ref": {
+        "path": "results/factors/objects/factor.production_market_input/dfc88dc6d91f1f1dc28d56ffa0e926a0625163dfcd90ea09e9eda918067f963c.json",
+        "sha256": "dfc88dc6d91f1f1dc28d56ffa0e926a0625163dfcd90ea09e9eda918067f963c"
+      }
+    },
+    {
+      "node": "pit",
+      "rejection": "EOD_READBACK_TERMINAL_CHANGED:pit",
+      "read_counts": {
+        "wrapper_calls": 530,
+        "target_redirects": 2,
+        "successful_physical_reads": 2,
+        "non_target_redirects": 0,
+        "recursive_calls": 0,
+        "restored": true
+      },
+      "original_output_ref": {
+        "path": "results/factors/objects/factor.production_market_pit_selection/11e8de7300e4921f7727175d3a63b8de3672b211a1ec0783f67c53c51928a920.json",
+        "sha256": "11e8de7300e4921f7727175d3a63b8de3672b211a1ec0783f67c53c51928a920"
+      }
+    }
+  ],
+  "selected_inventory_files_rechecked": 298,
+  "selected_original_bytes_and_identity_unchanged": true,
+  "capture_root_identity_unchanged": true,
+  "fault_scope": "ONE_PHYSICAL_OUTPUT_CORRUPTION_WITH_EXACT_READ_ROUTING_TEST_SEAM",
+  "prior_helper_failures_retained": true,
+  "synthetic": true,
+  "production_deployed": false,
+  "full_goal_complete": false
+}

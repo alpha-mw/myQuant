@@ -1,0 +1,275 @@
+{
+  "observed_at": "2026-09-13T00:35:45.497778+00:00",
+  "status": "PROFILE_IMPLEMENTED_VALIDATION_IN_PROGRESS",
+  "phase12_complete": false,
+  "full_goal_complete": false,
+  "architect": "APPROVE_WITH_CHANGES; 10 amendments adopted",
+  "critic": "APPROVE before timing writer/profile edits",
+  "plan": "docs/plans/phase12_cutoff_commitment.md",
+  "source_refs": [
+    {
+      "path": "quant_investor/operations/portfolio_binding.py",
+      "sha256": "86f5b23be7d830829ede9bdd7d524779046538391f4528f287db0191bd7ac2a5"
+    },
+    {
+      "path": "quant_investor/operations/research_timing.py",
+      "sha256": "5688d77a00c718148b20b3bb7bfcc678f3fc339f3543d0cc70fee84015009043"
+    },
+    {
+      "path": "quant_investor/operations/research_source_bundle.py",
+      "sha256": "29b2fa72418c03a351dcf9924f80720897eea48d8037080a1f21df42d1ce5b7b"
+    },
+    {
+      "path": "quant_investor/operations/research_corporate_inputs.py",
+      "sha256": "f20317a46235c6aa3b546702f9a053181606301ab9da4cca778a6470b0a721de"
+    },
+    {
+      "path": "quant_investor/operations/research_cutoff_contract.py",
+      "sha256": "c4ee0df2eec8cc9fb2e877ac692d47b0678346bea790a7a6db795f49c724ff20"
+    },
+    {
+      "path": "quant_investor/operations/research_cutoff.py",
+      "sha256": "0425847e21f0763adefef1947454921d25e1e07ce14b80af8ba317b936d3f997"
+    },
+    {
+      "path": "quant_investor/operations/research_request.py",
+      "sha256": "1195335b544cb3fd47fdd929b37b96c0b9226763e4176709b6e11f5d68450ecc"
+    },
+    {
+      "path": "quant_investor/operations/research_sources.py",
+      "sha256": "0315f5d1007f1a5403a881f9ee9f06a29c1bd84a7be8174b03dbfdcef751fcc2"
+    },
+    {
+      "path": "quant_investor/operations/research_recipes.py",
+      "sha256": "f7b25f919756aeb68d138b2d285a94190a65bfeeab424ec962f96871fef7cfde"
+    },
+    {
+      "path": "quant_investor/operations/research_capture.py",
+      "sha256": "a9957c8ef1c37d5e4dfa58231f72e9aeba8005b93ed4447ce709e9106cdf6a8a"
+    },
+    {
+      "path": "quant_investor/operations/research_materialization.py",
+      "sha256": "423750be5a4a763b06ccc4c945484c1ded11f2f28362c195f35575070daeddd9"
+    },
+    {
+      "path": "quant_investor/operations/prospective_sources.py",
+      "sha256": "448956a59b90bd9a6efb6f6c08c7948456222cbd61bb988857e8e6b05fc0658f"
+    },
+    {
+      "path": "quant_investor/operations/decision_recipe.py",
+      "sha256": "5b8c4c9f3ee86e6525e162cf9b4b653945d0e509791a59e9443fc206d3d9dee1"
+    },
+    {
+      "path": "quant_investor/operations/execution_recipe.py",
+      "sha256": "31f51005c4f5ae97f558499863addd556ba14b5e6be7392930008b09214c6e32"
+    },
+    {
+      "path": "quant_investor/operations/execution_controls.py",
+      "sha256": "cab4caeed2742655d49c618bf14e18d0763d780333a9915d079e90d1e495aa44"
+    },
+    {
+      "path": "quant_investor/operations/materialization_contract.py",
+      "sha256": "4a04e5b01ed2070519eaa3d5fe37e710fa9768f812bdbc9928ca097e2226bb51"
+    },
+    {
+      "path": "quant_investor/operations/native_input_contract.py",
+      "sha256": "e256c34006856e6d5a0ec37560643cfb2f41f5fbd52f126940e42ce4b0275938"
+    },
+    {
+      "path": "quant_investor/operations/theme_acquisition.py",
+      "sha256": "0e94ce5306b14f51ef9a7c0dbea88511adb912f6abb5164e3b8da40ba7c10453"
+    },
+    {
+      "path": "quant_investor/operations/theme_core_binding.py",
+      "sha256": "d68dad0e0e3859fc9475bcd468036486e4df1d691df5571cba29569d3690995d"
+    },
+    {
+      "path": "quant_investor/operations/theme_capture_stage.py",
+      "sha256": "451decdc250c3c0703767b630844b3d9dbbbdce43c100027a9243d612d5da1fe"
+    },
+    {
+      "path": "quant_investor/operations/theme_handoff.py",
+      "sha256": "29897ddcb607643ea5f1716977ef0ce63b60b997512a5ede0cf8424d40bda42a"
+    },
+    {
+      "path": "quant_investor/operations/theme_handoff_publish.py",
+      "sha256": "7cf3f18b038bb56c35215d14ff3ba286988ce55f56ddec2af4c3229b099e30d3"
+    },
+    {
+      "path": "quant_investor/operations/theme_handoff_readback.py",
+      "sha256": "aa618ca0f764617aeb9d37c916ab1d2512f6e29e30ac0d697f0f2662e6322a61"
+    },
+    {
+      "path": "quant_investor/operations/corporate_actions.py",
+      "sha256": "fe366bd242fc162b6ca71d712494473dfc23e730ebd934518260d5916250ca20"
+    },
+    {
+      "path": "quant_investor/operations/corporate_adapter.py",
+      "sha256": "b041ea2f28df657f3857b6eb7fec66c0dc8774acbfec4c2b5bbfbe313cea542f"
+    },
+    {
+      "path": "quant_investor/operations/morning_risk_sources.py",
+      "sha256": "dc8323ac34b440c5ecaf99437263e6362e108472f744886cff19eee599616544"
+    },
+    {
+      "path": "quant_investor/operations/completion_research.py",
+      "sha256": "a8911a0b55e13cdcea7019006a6399aa59f4e2588d542d59c5ecba57e0aaa1dc"
+    },
+    {
+      "path": "quant_investor/operations/completion_macro.py",
+      "sha256": "1b045cd0ac245cf5b92170b5b99528c3b4f9357d19c753cc69306df4c3bc2784"
+    },
+    {
+      "path": "quant_investor/operations/completion_decision.py",
+      "sha256": "ca57a968116771cd586fac966f9f59dab5ee94695f340c6102e5ebff42c01399"
+    },
+    {
+      "path": "quant_investor/operations/completion_corporate.py",
+      "sha256": "daa04120a71d65004b0733de17c99945cc22f422279abdb0e658e932465dab46"
+    },
+    {
+      "path": "quant_investor/operations/catchup_binding.py",
+      "sha256": "7741a040e2a1dd9e341a621f971e3f6307b09db857a72b859db0e1a2d34b7120"
+    },
+    {
+      "path": "quant_investor/operations/automatic_catchup_contract.py",
+      "sha256": "b259a36fc09d5aae833efe73f80d76a77a971963b6a3aca4204155b184f8d82b"
+    },
+    {
+      "path": "quant_investor/operations/automatic_catchup_resolution.py",
+      "sha256": "b8e3b1cd934b4075feefd61f8bb3cdc00be60190551cb4aa875dc976e2ec534c"
+    },
+    {
+      "path": "quant_investor/macro/readiness_closure.py",
+      "sha256": "54163dec989c38be7df4181ee04b2072dc3835ad62741a4197148fc095a7d403"
+    },
+    {
+      "path": "quant_investor/cli/unified.py",
+      "sha256": "f1be3f31fb166dc1a874c2a033188b1d0e348bb0e7ec8704b55f3f2f28ca073c"
+    },
+    {
+      "path": "quant_investor/cli/daily_production.py",
+      "sha256": "321ff2fd0b5a314f1a0cc002dac92fa577386958ca6fe237efe860f83954eaf4"
+    },
+    {
+      "path": "scripts/daily_materialization.py",
+      "sha256": "616f721ff506727dca6e7d53a5cbfdde36ea9c9f01275f637bd46687ad45eac3"
+    },
+    {
+      "path": "scripts/daily_native_inputs.py",
+      "sha256": "d7e9d48bc6c0cb40471b58c81da7134bed93fd2e8e606db1287194d2d55fa337"
+    },
+    {
+      "path": "scripts/daily_native_registry.py",
+      "sha256": "90d15170d9db5f9b8d0575b92e03f05e1ea0f2f677b6c51bddd36a2e63fbb4fa"
+    },
+    {
+      "path": "scripts/daily_completion_store.py",
+      "sha256": "4f16f8c12b5ad4bc5084adcbcc5777ccd93180ad579c4216f8db31dd0e634d40"
+    },
+    {
+      "path": "scripts/daily_completion_dashboard.py",
+      "sha256": "9754fce6c788f0b5dc8eb9f52eb1027b911113d577559029291c84f4b09d38a2"
+    },
+    {
+      "path": "scripts/daily_ledger.py",
+      "sha256": "ee00b830cbd29e9cbc707d386646b93321fda052f5a85cf730bcd892d08be749"
+    },
+    {
+      "path": "scripts/daily_ledger_replay.py",
+      "sha256": "5ca440b81ee574d204cd683ee49b644dc09135fce5a6f3bc8620405f6d5a5f61"
+    },
+    {
+      "path": "scripts/daily_dashboard_publication.py",
+      "sha256": "910c5cd5ae58a99d730ae9157772ffc4b333fcc51e05912f6add83b6093738c7"
+    },
+    {
+      "path": "scripts/daily_catchup.py",
+      "sha256": "6d11a45167c6a9970c5dba9d9f54cef197d8a04068881d72707cab7eea507374"
+    },
+    {
+      "path": "scripts/daily_production.py",
+      "sha256": "7394f022d2f8ee177ec9db7c5cfd3b27e1027abf97c625c94af40ae919def7f9"
+    }
+  ],
+  "test_refs": [
+    {
+      "path": "tests/unit/test_daily_evidence_cutoff_commitment.py",
+      "sha256": "8723215bb10cdbe290f1fb5560a02d76c7c77591a34beb2098582f2c53a62b01"
+    },
+    {
+      "path": "tests/unit/test_daily_evidence_research_timing.py",
+      "sha256": "2a15e2196fecadb0f2f7232f93bd286397e7fa48f7edeb3b38195e6b7560fc56"
+    },
+    {
+      "path": "tests/unit/test_daily_evidence_timing_routing.py",
+      "sha256": "c2e0671b77a49df356186467c23e7e8c604c2ef967c4d692abdc540769bb2e25"
+    },
+    {
+      "path": "tests/unit/test_daily_evidence_portfolio_binding.py",
+      "sha256": "f10bae41c94312e813c1792c89a7ebf54ea9bd968d353d808defaed3eb85d026"
+    },
+    {
+      "path": "tests/unit/test_daily_evidence_theme_core_binding.py",
+      "sha256": "c7e16057c46707a38f020bdccb7171e00b7f4c29ac8e73f82f36375e30864de7"
+    },
+    {
+      "path": "tests/unit/test_daily_evidence_materialization_contract.py",
+      "sha256": "6ec3143c8d155d9b17818e1b6464a400c08ce5273fea187a6417f890c199c54d"
+    }
+  ],
+  "combined_focused_validation": {
+    "session": 31330,
+    "exit_code": 0,
+    "result": "158 passed, 2 skipped in 10.83s"
+  },
+  "native_portfolio_refactor": {
+    "session": 56933,
+    "exit_code": 0,
+    "result": "34 passed in 2.08s"
+  },
+  "native_theme_recipe_v5_roundtrip": {
+    "session": 78957,
+    "exit_code": 0,
+    "result": "26 passed in 21.65s",
+    "seams": "native recipe/pool/capture/handoff; core/PIT context, clock and provider transport controlled"
+  },
+  "cutoff_transaction_and_wrapper": {
+    "session": 6496,
+    "exit_code": 0,
+    "result": "8 passed in 1.93s",
+    "seams": "actual native book/storage/clock transaction; SourceBundle and corporate proof builders controlled; no full-source or EOD claim"
+  },
+  "static": {
+    "mypy": "20 selected source files PASS",
+    "public_cli_complexity10": "PASS for unified.py and daily_production.py",
+    "scoped_flake8": "PASS",
+    "git_diff_check": "PASS"
+  },
+  "implemented": [
+    "native source/book custody before cutoff",
+    "code-owned timing policy and recipe5",
+    "raw Theme policy/handoff3",
+    "immutable source bundle and cutoff commitment before state/payload/corporate/wrapper writes",
+    "exact missing-object recovery and history/custody distinction",
+    "research wrapper2 and Exposure selector propagation",
+    "materialization5/native6 readers and serving/ledger/Morning integration",
+    "collection/binding3/automatic2 version routing with compatible completed legacy prefixes"
+  ],
+  "remaining_validation": [
+    "SourceBundle positive/native five-domain and corporate derivation integration",
+    "full new native6 materialization and compiler receipt with real native source fixtures",
+    "critical null and source ownership drift before bundle freeze",
+    "full conflict/tamper and deadline/crash matrix",
+    "actual current Macro head advancement after commitment versus fresh Decision guard",
+    "broader applicable current-source integration/static checks"
+  ],
+  "remaining_phase12": [
+    "daily input/bootstrap provisioning",
+    "current-source installed release",
+    "existing scheduler cutover/readback",
+    "independent unattended real run"
+  ],
+  "production_state_mutation": false,
+  "provider_calls": false
+}

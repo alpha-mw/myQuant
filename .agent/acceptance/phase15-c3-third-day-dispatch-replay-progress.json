@@ -1,0 +1,74 @@
+{
+  "observed_at": "2026-09-15T12:35:28.460614+00:00",
+  "child_pid": 3772,
+  "state": "FULL_THIRD_DAY_STAGE_PASS",
+  "completed_calls": [
+    {
+      "trade_date": "20260828",
+      "call": 1,
+      "seconds": 1651.67
+    },
+    {
+      "trade_date": "20260828",
+      "call": 2,
+      "seconds": 1682.72
+    },
+    {
+      "trade_date": "20260828",
+      "call": 3,
+      "seconds": 1683.39
+    },
+    {
+      "trade_date": "20260828",
+      "call": 4,
+      "seconds": 1673.45
+    },
+    {
+      "trade_date": "20260828",
+      "call": 5,
+      "seconds": 1678.13
+    },
+    {
+      "trade_date": "20260831",
+      "call": 6,
+      "seconds": 1727.54
+    },
+    {
+      "trade_date": "20260831",
+      "call": 7,
+      "seconds": 1908.72
+    },
+    {
+      "trade_date": "20260828",
+      "call": 8,
+      "seconds": 1971.22
+    },
+    {
+      "trade_date": "20260831",
+      "call": 9,
+      "seconds": 1682.97
+    },
+    {
+      "trade_date": "20260831",
+      "call": 10,
+      "seconds": 1681.33
+    },
+    {
+      "trade_date": "20260831",
+      "call": 11,
+      "seconds": 1791.93
+    }
+  ],
+  "started_call": {
+    "trade_date": "20260831",
+    "call": 11
+  },
+  "log_ref": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/configured-successor-20260831.log",
+  "caller_identity": "UNCONFIRMED_FROM_LOG_ONLY",
+  "third_day_eod_verified": true,
+  "synthetic": true,
+  "production_deployed": false,
+  "target_day_native_replay_passed": true,
+  "full_stage_acceptance_proven": true,
+  "acceptance_ref": ".agent/acceptance/phase15-c3-third-day-acceptance.json"
+}

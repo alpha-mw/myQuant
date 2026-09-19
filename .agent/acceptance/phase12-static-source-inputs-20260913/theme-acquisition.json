@@ -1,0 +1,1 @@
+{"fallback_mode":"NATIVE_DC_PARTITION_FALLBACK","maximum_companies":100,"provider_priority":["TUSHARE_DC","TUSHARE_TDX"],"schema_version":"cn-daily-theme-acquisition.v3","special_company_keyset":["002384.SZ","002463.SZ"]}

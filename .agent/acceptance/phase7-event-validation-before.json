@@ -1,0 +1,23 @@
+{
+  "scope": "PHASE7_NATIVE_EVENT_VALIDATOR_REPRODUCTION",
+  "source_sha256": "8c282266f3e12f46bc844e2f903883b25b4f832bc33f3f64fb8ca86784c6cd87",
+  "cases": [
+    {
+      "case": "seal_before_cutoff",
+      "result": "ACCEPTED"
+    },
+    {
+      "case": "invalid_timestamp",
+      "result": "ACCEPTED"
+    },
+    {
+      "case": "missing_cutoff",
+      "result": "ACCEPTED"
+    },
+    {
+      "case": "extra_field",
+      "result": "ACCEPTED"
+    }
+  ],
+  "store_mutation": false
+}

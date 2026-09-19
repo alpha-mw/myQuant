@@ -1,0 +1,66 @@
+{
+  "phase": 1,
+  "status": "COMPLETED_LOCAL_VALIDATION",
+  "baseline_producer_commit": "3c46cb36918ca00d4fb61707bcfc16ca06b5c2a1",
+  "changed_existing_paths": [
+    "quant_investor/factors/backtest.py",
+    "quant_investor/factors/schema.py",
+    "quant_investor/market/fundamental_generation.py",
+    "quant_investor/market/fundamental_mart.py",
+    "quant_investor/operations/daily_runner.py",
+    "quant_investor/operations/daily_status.py",
+    "scripts/build_research_historical_root.py",
+    "scripts/check_strategy_record_access.py",
+    "scripts/research_historical_consumption.py"
+  ],
+  "added_phase1_paths": [
+    "quant_investor/operations/status_projection.py",
+    "tests/unit/test_daily_evidence_status_projection.py"
+  ],
+  "source_sha256": {
+    "quant_investor/factors/backtest.py": "79afd11e996986862ef8eb1f88924b8b7926138a4a8dc8cd0a1d85d60bb0c25a",
+    "quant_investor/factors/schema.py": "3a02d0e6a19d3e6865d89e6f14cd587fa68022067f9867d36378a9d83856da78",
+    "quant_investor/market/fundamental_generation.py": "3a51874a32e5cc407518557bbf28ba5ced13a447648c9376fb0a66830976b76f",
+    "quant_investor/market/fundamental_mart.py": "5ae7f1a94a1ce04bfe1254bcdec3342c6c886a07cdc0a4d3d55d26cbc369ffa9",
+    "quant_investor/operations/daily_runner.py": "36b249b59d1f7dbf853ee772f7b736ae97c48d7a45a4f1abf5f17f3fb60eb107",
+    "quant_investor/operations/daily_status.py": "b729725cc2868e50034b4c17536fbbc317ec704ac00d6b5cbad1c567dcbf5e1c",
+    "scripts/build_research_historical_root.py": "4f68bff5072b23553e79fb8a4ce0140fc1d99a7d6c8146e863c415aabc8d2292",
+    "scripts/check_strategy_record_access.py": "0c53738bf8dca12b39112863a19fa97220f4eeb2d214ec4a5bbb9081f8e74a3d",
+    "scripts/research_historical_consumption.py": "05b161e1267dfa76ddb1d1efdfb5db1635f98dd3a94172927d4b0edf16f680f2",
+    "quant_investor/operations/status_projection.py": "50fc9574a29fdf5a9e33f103cbfb329e27a4ca9edede2184ac0d4c1f8dd9baca",
+    "tests/unit/test_daily_evidence_status_projection.py": "e5f9e9f38ca5e53ecae2f12b664f2501a2b7791904cddedb9a073a4a28576eba"
+  },
+  "focused_tests": "83 passed in 28.35s",
+  "mypy": "3 source files passed",
+  "flake8": "4 files passed",
+  "black": "4 files passed",
+  "native_journal_readback": "16 nodes, 285 read sources unchanged; completion admission not inferred",
+  "old_audit_only_delta_no_longer_describes_current_main": true,
+  "whole_goal_complete": false,
+  "concurrent_existing_changes_not_made_by_this_task": [
+    "quant_investor/factors/backtest.py",
+    "quant_investor/factors/schema.py",
+    "quant_investor/market/fundamental_generation.py",
+    "quant_investor/market/fundamental_mart.py",
+    "scripts/build_research_historical_root.py",
+    "scripts/research_historical_consumption.py"
+  ],
+  "all_new_paths_since_freeze": [
+    "quant_investor/market/cn_research_suspension_evidence.py",
+    "quant_investor/operations/status_projection.py",
+    "scripts/research_collect_suspension_evidence.py",
+    "scripts/research_historical_reconciliation.py",
+    "scripts/research_historical_time_semantics.py",
+    "tests/unit/test_backtest_signal_time_semantics.py",
+    "tests/unit/test_daily_evidence_status_projection.py",
+    "tests/unit/test_research_suspension_evidence.py",
+    "tests/unit/test_zero_bar_admission_gate.py"
+  ],
+  "phase1_owned_paths": [
+    "quant_investor/operations/status_projection.py",
+    "quant_investor/operations/daily_runner.py",
+    "quant_investor/operations/daily_status.py",
+    "tests/unit/test_daily_evidence_status_projection.py"
+  ],
+  "concurrent_changes_preserved": true
+}

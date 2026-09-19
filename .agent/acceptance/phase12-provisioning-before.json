@@ -1,0 +1,33 @@
+{
+  "observed_at": "2026-09-12T20:19:56.789906+00:00",
+  "scope": "READ_ONLY_FIXED_PATH_PROVISIONING_CHECK",
+  "paths": [
+    {
+      "path": "/Users/maxwell/mySpace/myQuant/results/operations/daily_production/CN",
+      "present": false,
+      "is_file": false,
+      "is_symlink": false
+    },
+    {
+      "path": "/Users/maxwell/mySpace/myQuant/portfolio_dashboard/private/generated/cn_daily_completed_head.v1.json",
+      "present": false,
+      "is_file": false,
+      "is_symlink": false
+    },
+    {
+      "path": "/Users/maxwell/mySpace/myQuant/portfolio_dashboard/private/generated/cn_daily_completed_head.v1.js",
+      "present": false,
+      "is_file": false,
+      "is_symlink": false
+    },
+    {
+      "path": "/Users/maxwell/mySpace/myQuant/data/private/cn_daily_maintenance/factor_loop_contexts/7b26ac2ee9dfdd4b4a0016841c68eb5ecbbd6216.json",
+      "present": true,
+      "is_file": true,
+      "is_symlink": false,
+      "sha256": "ff914f6147e56c7b85198b2b4076f0f593c7e759d96946730d95eb50e845839b"
+    }
+  ],
+  "runtime_anchor_selected": false,
+  "mutations": []
+}

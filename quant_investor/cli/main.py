@@ -501,12 +501,47 @@ def _add_deployed_release_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _daily_trade_date_argument(value: str) -> str:
+    try:
+        parsed = datetime.strptime(value, "%Y%m%d")
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("trade date must be YYYYMMDD") from exc
+    if parsed.strftime("%Y%m%d") != value:
+        raise argparse.ArgumentTypeError("trade date must be YYYYMMDD")
+    return value
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = MachineArgumentParser(
         prog="quant-investor",
         description="Quant-Investor 单一主线 CLI。",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    production_parser = subparsers.add_parser("production", help="日生产证据状态")
+    production_commands = production_parser.add_subparsers(dest="production_command", required=True)
+    daily_status_parser = production_commands.add_parser(
+        "daily-status", help="只读核验日生产日志与输出"
+    )
+    _add_workspace_argument(daily_status_parser)
+    daily_status_parser.add_argument("--market", choices=("CN",), required=True)
+    daily_status_parser.add_argument(
+        "--strategy", choices=("aggressive_tech_manufacturing",), required=True
+    )
+    daily_status_parser.add_argument("--trade-date", type=_daily_trade_date_argument, required=True)
+
+    daily_close_parser = production_commands.add_parser(
+        "daily-close", help="按精确请求计划、执行、恢复或补跑日结"
+    )
+    _add_exact_request_arguments(daily_close_parser)
+    daily_close_parser.add_argument("--release-repository-root")
+    daily_close_parser.add_argument("--release-install-input")
+    daily_close_parser.add_argument("--expected-release-install-input-sha256")
+    daily_close_parser.add_argument(
+        "--no-producers",
+        action="store_true",
+        help="仅重放完整日结或恢复已封存展示，不启动生产节点",
+    )
 
     system_parser = subparsers.add_parser("system", help="统一系统状态与激活")
     system_subparsers = system_parser.add_subparsers(dest="system_command", required=True)
@@ -710,9 +745,21 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     factor_observe_parser = factor_subparsers.add_parser(
         "production-observe",
-        help="为当前活动 LOW/W80 generation 登记不可变非授权前瞻观察",
+        help="为已封存 LOW/W80 generation 登记不可变非授权信号观察",
     )
     _add_workspace_argument(factor_observe_parser)
+    factor_observe_parser.add_argument("--recover-history", action="store_true")
+    factor_settle_parser = factor_subparsers.add_parser(
+        "production-settle", help="结算已登记生产观察的非授权到期收益与因子诊断"
+    )
+    _add_workspace_argument(factor_settle_parser)
+    factor_settle_parser.add_argument("--calendar-receipt", required=True)
+    factor_settle_parser.add_argument(
+        "--expected-calendar-sha256", required=True, type=_sha256_argument
+    )
+    factor_settle_parser.add_argument("--as-of")
+    factor_settle_parser.add_argument("--limit", type=int, default=32)
+    factor_settle_parser.add_argument("--cursor", type=int)
     factor_activate_parser = factor_subparsers.add_parser(
         "production-activate",
         help="从严格 source closure 执行唯一 expected-EMPTY Factor 首次激活",
@@ -763,6 +810,10 @@ def _build_parser() -> argparse.ArgumentParser:
     ):
         research_candidate = research_subparsers.add_parser(name, help=help_text)
         _add_exact_request_arguments(research_candidate)
+        if name in {"morning-strategy", "morning-cutover"}:
+            research_candidate.add_argument("--release-repository-root")
+            research_candidate.add_argument("--release-install-input")
+            research_candidate.add_argument("--expected-release-install-input-sha256")
     research_policy_publish = research_subparsers.add_parser(
         "policy-publish", help="publish exact immutable Phase A research policy"
     )
@@ -869,6 +920,11 @@ def _build_parser() -> argparse.ArgumentParser:
     market_daily_maintain.add_argument(
         "--expected-scope-transition-sha256", default=None, type=_sha256_argument
     )
+    market_daily_maintain.add_argument("--factor-loop-context")
+    market_daily_maintain.add_argument(
+        "--expected-factor-loop-context-sha256", type=_sha256_argument
+    )
+    market_daily_maintain.add_argument("--recover-only", action="store_true")
     market_daily_maintain.add_argument(
         "--attempt-slot",
         default="auto",
@@ -1324,10 +1380,67 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _validate_daily_mode_arguments(args: argparse.Namespace) -> None:
+    """Keep routine Factor work separate from governed scope-transition recovery."""
+    from quant_investor.market.daily_maintenance import DailyMaintenanceError
+
+    transition = bool(args.scope_transition_request or args.expected_scope_transition_sha256)
+    retirement = bool(args.retire_coverage_declaration_sha256)
+    factor = bool(args.factor_loop_context or args.expected_factor_loop_context_sha256)
+    if (transition or retirement) and (factor or args.recover_only):
+        raise DailyMaintenanceError("DAILY_MAINTENANCE_MODES_CONFLICT")
+    if bool(args.scope_transition_request) != bool(args.expected_scope_transition_sha256):
+        raise DailyMaintenanceError("SCOPE_TRANSITION_ARGUMENTS_REQUIRED_TOGETHER")
+    if retirement and not transition:
+        raise DailyMaintenanceError("SCOPE_TRANSITION_REQUEST_REQUIRED_FOR_DECLARATION_RETIREMENT")
+    if bool(args.factor_loop_context) != bool(args.expected_factor_loop_context_sha256):
+        raise DailyMaintenanceError("DAILY_FACTOR_CONTEXT_ARGUMENTS_INVALID")
+    if args.recover_only and not factor:
+        raise DailyMaintenanceError("DAILY_FACTOR_RECOVERY_CONTEXT_REQUIRED")
+    if (transition or factor or args.recover_only) and (
+        args.mode != "execute" or args.attempt_slot != "2020"
+    ):
+        raise DailyMaintenanceError("DAILY_MAINTENANCE_EXECUTE_2020_REQUIRED")
+
+
 def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
     """Route the explicit public command tree without dynamic dispatch."""
     parser = _build_parser()
     args = parser.parse_args(argv)
+
+    if args.command == "production" and args.production_command == "daily-status":
+        from quant_investor.operations.daily_status import read_daily_status
+
+        _print_json(read_daily_status(args.workspace_root, args.trade_date))
+        return
+
+    if args.command == "production" and args.production_command == "daily-close":
+        from quant_investor.cli.daily_production import run_daily_close
+        from quant_investor.operations.production_result import production_result_exit_code
+
+        result = run_daily_close(
+            workspace=args.workspace_root,
+            request_path=args.request,
+            expected_request_sha256=args.expected_request_sha256,
+            release_repository_root=args.release_repository_root,
+            release_install_input_path=args.release_install_input,
+            expected_release_install_input_sha256=args.expected_release_install_input_sha256,
+            no_producers=args.no_producers,
+        )
+        _print_json(result)
+        from quant_investor.operations.automatic_catchup_contract import (
+            RESULT_SCHEMA as AUTO_RESULT_SCHEMA,
+            automatic_result_exit_code,
+        )
+
+        exit_code = (
+            automatic_result_exit_code(result)
+            if result.get("schema_version") == AUTO_RESULT_SCHEMA
+            else production_result_exit_code(result)
+        )
+        if exit_code:
+            raise SystemExit(2)
+        return
 
     if args.command == "paper":
         from quant_investor.paper import (
@@ -1539,7 +1652,26 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
         return
 
     if args.command == "factor" and args.factor_command == "production-observe":
-        _print_json(factor_production_observe(workspace_root=args.workspace_root))
+        _print_json(
+            factor_production_observe(
+                workspace_root=args.workspace_root, recover_history=args.recover_history
+            )
+        )
+        return
+
+    if args.command == "factor" and args.factor_command == "production-settle":
+        from quant_investor.factors.production_outcomes import settle_production_observations
+
+        _print_json(
+            settle_production_observations(
+                workspace_root=args.workspace_root,
+                calendar_receipt=args.calendar_receipt,
+                expected_calendar_sha256=args.expected_calendar_sha256,
+                as_of=args.as_of,
+                limit=args.limit,
+                cursor=args.cursor,
+            )
+        )
         return
 
     if args.command == "factor" and args.factor_command == "production-activate":
@@ -1617,12 +1749,34 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
         "compile-evidence": research_compile_evidence,
         "compile-daily": research_compile_daily,
         "pool-publish": research_publish_pool,
-        "morning-strategy": research_morning_strategy,
-        "morning-cutover": research_morning_cutover,
         "morning-evaluate": research_morning_evaluate,
         "readiness": research_readiness,
         "inspect": research_inspect,
     }
+    if args.command == "research" and args.research_command == "morning-strategy":
+        _print_json(
+            research_morning_strategy(
+                workspace_root=args.workspace_root,
+                request_path=args.request,
+                expected_request_sha256=args.expected_request_sha256,
+                release_repository_root=args.release_repository_root,
+                release_install_input_path=args.release_install_input,
+                expected_release_install_input_sha256=args.expected_release_install_input_sha256,
+            )
+        )
+        return
+    if args.command == "research" and args.research_command == "morning-cutover":
+        _print_json(
+            research_morning_cutover(
+                workspace_root=args.workspace_root,
+                request_path=args.request,
+                expected_request_sha256=args.expected_request_sha256,
+                release_repository_root=args.release_repository_root,
+                release_install_input_path=args.release_install_input,
+                expected_release_install_input_sha256=args.expected_release_install_input_sha256,
+            )
+        )
+        return
     if args.command == "research" and args.research_command in research_handlers:
         _print_json(
             research_handlers[args.research_command](
@@ -1671,6 +1825,22 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
     if args.command == "market" and args.market_command == "daily-maintain":
         from quant_investor.market.daily_maintenance import cli_exit_required
 
+        _validate_daily_mode_arguments(args)
+        loop = None
+        if args.factor_loop_context:
+            from quant_investor.market.daily_factor_loop import DailyFactorLoop
+
+            loop = DailyFactorLoop(
+                workspace_root=args.workspace_root,
+                run_root=args.run_root,
+                context_path=args.factor_loop_context,
+                context_sha256=args.expected_factor_loop_context_sha256,
+            )
+        if args.recover_only:
+            if loop is None:
+                raise ValueError("DAILY_FACTOR_RECOVERY_CONTEXT_REQUIRED")
+            _print_json(loop.recover())
+            return
         result = run_cn_daily_maintenance(
             workspace_root=args.workspace_root,
             run_root=args.run_root,
@@ -1689,7 +1859,10 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
                 if args.scope_transition_request or args.expected_scope_transition_sha256
                 else {}
             ),
+            core_completed=loop.core_completed if loop is not None else None,
         )
+        if loop is not None:
+            result["daily_factor_report"] = loop.report(maintenance=result)
         _print_json(result)
         if cli_exit_required(result):
             raise SystemExit(2)

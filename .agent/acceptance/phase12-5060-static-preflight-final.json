@@ -1,0 +1,11 @@
+{
+  "config_ref": {
+    "path": ".agent/acceptance/phase12-5060-daily-source-config.json",
+    "sha256": "fded62e6d8f1821471e44da6e00dc366c5def7fad5dd08e012d06477df199c17"
+  },
+  "target_date": "20260918",
+  "scope": "OFFLINE_NATIVE_STATIC_CONTROLS_ONLY",
+  "provider_calls": false,
+  "production_ready": false,
+  "state": "PASS"
+}

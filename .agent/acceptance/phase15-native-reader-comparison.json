@@ -1,0 +1,17 @@
+{
+  "scope": "isolated retained D input, unprofiled reads; no runtime modification or full EOD claim",
+  "results": {
+    "recorded": {
+      "state": "COMPLETE",
+      "normalized_sha256": "c843aa2b721963904b5488f8b58a8e4baab4f7c625012d5ba871c613365048b3",
+      "seconds": 20.539
+    },
+    "historical": {
+      "state": "COMPLETE",
+      "normalized_sha256": "c843aa2b721963904b5488f8b58a8e4baab4f7c625012d5ba871c613365048b3",
+      "seconds": 20.44
+    }
+  },
+  "decision": "NO_READER_ROUTING_CHANGE: observed20.539s recorded versus20.440s historical; normalized view hashes identical, no demonstrated performance benefit.",
+  "goal_complete": false
+}

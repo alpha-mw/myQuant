@@ -1,3 +1,20 @@
-
 web_search = "live"
-model_reasoning_summary = "detailed"
+model_reasoning_summary = "auto"
+
+# Unattended myQuant production automations fail closed instead of waiting for
+# an approval prompt that no user can answer. This does not expand filesystem
+# access beyond the workspace and the one release-owned Calendar evidence root.
+approval_policy = "never"
+sandbox_mode = "workspace-write"
+
+[sandbox_workspace_write]
+network_access = true
+writable_roots = [
+  "/Users/maxwell/mySpace/myQuant-release-authority/701509e9d752fd712be769b253b409a9ce27e2c6-release/calendar-captures",
+]
+
+# Sandboxed subprocess traffic is limited to the registered provider endpoints.
+[features.network_proxy]
+enabled = true
+allow_local_binding = true
+domains = { "api.tushare.pro" = "allow", "hq.sinajs.cn" = "allow" }

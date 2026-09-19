@@ -45,6 +45,7 @@ LEGACY_CONTRACT_FIELDS: Final = frozenset(
 _SHA256_RE: Final = re.compile(r"^[0-9a-f]{64}$")
 _KIND_RE: Final = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
 _FIELD_RE: Final = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
+_CONTROL_CHARACTER_RE: Final = re.compile(r"[\x00-\x1f]")
 
 
 class ContractError(ValueError):
@@ -79,7 +80,7 @@ def _validate_string(value: str, *, label: str) -> None:
         raise CanonicalJSONError(f"{label} exceeds the canonical byte bound")
     if unicodedata.normalize("NFC", value) != value:
         raise CanonicalJSONError(f"{label} must be Unicode NFC")
-    if any(ord(character) < 0x20 for character in value):
+    if _CONTROL_CHARACTER_RE.search(value) is not None:
         raise CanonicalJSONError(f"{label} contains a control character")
 
 
@@ -121,7 +122,7 @@ def _validate_canonical_value(  # noqa: C901
     for key, item in value.items():
         if type(key) is not str or not key or not key.isascii():
             raise CanonicalJSONError(f"{label} contains a noncanonical object key")
-        if any(ord(character) < 0x20 for character in key):
+        if _CONTROL_CHARACTER_RE.search(key) is not None:
             raise CanonicalJSONError(f"{label} contains a noncanonical object key")
         _validate_canonical_value(
             item,

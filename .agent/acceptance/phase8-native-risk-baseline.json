@@ -1,0 +1,248 @@
+{
+  "generated_at": "2026-09-12T04:07:30.438935+00:00",
+  "scope": "READ_ONLY_CANONICAL_NATIVE_RISK_BASELINE",
+  "as_of": "2026-09-03",
+  "store_pointer_sha256": "f037197e370c09e824e97da9ce1ac86c0687def67ca7dd32d211fee2170e913c",
+  "policy_ref": {
+    "path": "results/policies/risk/aggressive_tech_manufacturing/trailing-anchor.v1/owner-trailing-anchor-policy-20260901-v1.json",
+    "sha256": "b313aa91e1f7ca1e8922b2d22f7735ceee3190675c2e8dab3955c69f0f1d342a"
+  },
+  "policy_invalidation": "EARLIEST_OF_OWNER_REVISION_POSITION_REMOVAL_NEW_ENTRY_ADD_OR_CORPORATE_ACTION",
+  "risk_status": "PARTIAL",
+  "risk_blockers": [
+    "601899.SH:CORPORATE_ACTION_OR_ADJUSTMENT_REVIEW_REQUIRED"
+  ],
+  "zijin_rows": [
+    {
+      "symbol": "601899.SH",
+      "name": "紫金矿业",
+      "as_of": "20260903",
+      "tracking_start_date": "20260819",
+      "calculation_state": "UNCONFIRMED",
+      "threshold_state": "NON_EXECUTABLE",
+      "moving_take_profit_review_price": null,
+      "moving_take_profit_reduce_price": null,
+      "moving_stop_price": null,
+      "peak_price": null,
+      "peak_date": null,
+      "strict_close": null,
+      "profit_giveback_ratio": null,
+      "trailing_trigger": "NOT_CONFIGURED",
+      "owner_stop_price": "31.60",
+      "owner_stop_trigger": "CLEAR",
+      "owner_review_state": "NOT_APPLICABLE",
+      "actions": [],
+      "executable": false,
+      "investment_authority": false,
+      "blockers": [
+        "CORPORATE_ACTION_OR_ADJUSTMENT_REVIEW_REQUIRED"
+      ],
+      "trailing_blockers": [
+        "CORPORATE_ACTION_OR_ADJUSTMENT_REVIEW_REQUIRED"
+      ],
+      "owner_stop_blockers": [],
+      "audit_ledger_thresholds": {
+        "stage_target_price": null,
+        "stage_stop_price": null,
+        "trailing_profit_review_price": null,
+        "trailing_profit_reduce_price": null,
+        "trailing_stop_price": null,
+        "trailing_take_profit_status": "unconfirmed_new_position",
+        "executable": false
+      },
+      "content_sha256": "e1e5b30b8f142f0f8527f5e8f8474fe21fa2a50d06e11b49665c19777a0083bf"
+    }
+  ],
+  "source_refs": [
+    {
+      "path": "data/parquet/cn/_latest.json",
+      "sha256": "55dc1b23df37eba0541d279a844e393969859d9e81d641c33a02fb8f2025cbd2"
+    },
+    {
+      "path": "data/parquet/cn/_snapshots/20260911T135213Z.json",
+      "sha256": "e66af370e1b47c974001c2c15a1d4810d6d16c6931727836d55d627bd8684ecb"
+    },
+    {
+      "path": "data/parquet/cn/_snapshots/20260911T135213Z/serving/bars/symbol=002008.SZ/bars.parquet",
+      "sha256": "d89d888d2178616ba676bc35bd0bb78374a276ffcff62b926b6be40f5c7325f0"
+    },
+    {
+      "path": "data/parquet/cn/_snapshots/20260911T135213Z/serving/bars/symbol=002384.SZ/bars.parquet",
+      "sha256": "7398b664afa3eec306ea411a19d26439f22b83209d77a2af426db5962b2686b1"
+    },
+    {
+      "path": "data/parquet/cn/_snapshots/20260911T135213Z/serving/bars/symbol=002463.SZ/bars.parquet",
+      "sha256": "80bf406173c1f793f9ca9789ff55da8ab373464a2fd25fb7c7e9f22e26f7dbe3"
+    },
+    {
+      "path": "data/parquet/cn/_snapshots/20260911T135213Z/serving/bars/symbol=002916.SZ/bars.parquet",
+      "sha256": "b65aaac52c2c99970735c22b9cdd0b58419ff9059f68bb24a4b66ad2b927a457"
+    },
+    {
+      "path": "data/parquet/cn/_snapshots/20260911T135213Z/serving/bars/symbol=601899.SH/bars.parquet",
+      "sha256": "e32c27afeab6970cc7da4dbe8d61cb6c3eaa208aa7a0c3520d6ed61910122705"
+    },
+    {
+      "path": "data/parquet/cn/_snapshots/20260911T135213Z/serving/bars/symbol=605358.SH/bars.parquet",
+      "sha256": "8d0aae995c9fddad7227128c0ed955531b7bca22dbd113721615086b565b595e"
+    },
+    {
+      "path": "data/parquet/cn/_snapshots/20260911T135213Z/serving/bars/symbol=688183.SH/bars.parquet",
+      "sha256": "664a3b03500df119440996d7022f5432544c91cbc4bc93ef504d1845e7b10889"
+    },
+    {
+      "path": "data/parquet/cn/macro_release_calendar/_latest.json",
+      "sha256": "213fee873931826b3b83bc460778e3b9cc59e60bbd3b3958daef7b18a0fb11f6"
+    },
+    {
+      "path": "results/policies/risk/aggressive_tech_manufacturing/initial-risk-stop.v1/owner-stop-policy-20260828-v1.json",
+      "sha256": "11eb7018ff6abde2d276c7b997e0e61e2cd6b170407872734bb8d407b334c178"
+    },
+    {
+      "path": "results/policies/risk/aggressive_tech_manufacturing/trailing-anchor.v1/owner-trailing-anchor-policy-20260901-v1.json",
+      "sha256": "b313aa91e1f7ca1e8922b2d22f7735ceee3190675c2e8dab3955c69f0f1d342a"
+    },
+    {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260810_1948/manual_execution_manifest.json",
+      "sha256": "3e6f8003898ee4623422688e14dbe13fb422b69b1f88bd56700b84696465c026"
+    },
+    {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260820_1321/manual_execution_manifest.json",
+      "sha256": "c59a118376c9bceeef54219fb7796c6e0cd92f963418f65e41e84a91bd8fabae"
+    },
+    {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260822_0045/ledger_after_manual_switch.parquet",
+      "sha256": "c40c7fa32a0eb90a7c590e3faaa5ff9db3ad100298629972794c934c699ebe11"
+    },
+    {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260901_121818-b01/ledger_after_manual_switch.parquet",
+      "sha256": "128a6aa52272a60f844f514681170c8db682c07806035f31284818a584900823"
+    },
+    {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260901_121818-b01/manual_execution_manifest.json",
+      "sha256": "b7c6112ba9b33269121ebf6d9c7f08e0eeca53e33a8a3675c48cfa63539c9727"
+    },
+    {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260901_121818-b02/ledger_after_manual_switch.parquet",
+      "sha256": "ba3f5a98e0debbb579aff13a2e079cd075cdbed8e3e32e993aac1ae1e6a5943d"
+    },
+    {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260901_121818-b02/manual_execution_manifest.json",
+      "sha256": "f39ece7da7e7ba752ea2d396b6ff2b33708c1c6fbb35f6239fa616be7ce5fa5a"
+    },
+    {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260901_121818-b03/ledger_after_manual_switch.parquet",
+      "sha256": "8725a81c38f89d0510093e808b304cdcd3f1e798dd1f860c7bf1c315976454ff"
+    },
+    {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260901_121818-b03/manual_execution_manifest.json",
+      "sha256": "9bf9200e54736f24e00423f1b188c305eb6362bd67cddd91d40f9835bc98d9f6"
+    },
+    {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260901_121818-b04/ledger_after_manual_switch.parquet",
+      "sha256": "57cfb2be38bd46ca400c3d62bf6e5ab8315712ff0415c67704fd53566a80139a"
+    },
+    {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260901_121818-b04/manual_execution_manifest.json",
+      "sha256": "09f0b6e234d6574929f248e94b4d1ddedaacfa50237a48cdb899b3e18c5b9f79"
+    },
+    {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260901_121818-b05/ledger_after_manual_switch.parquet",
+      "sha256": "d8ae7768e5c1f57f71b49db056f74ac9925cd38cc57afe26f4c5946b4cf5af30"
+    },
+    {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260901_121818-b05/manual_execution_manifest.json",
+      "sha256": "e5ab0e9f63562f66ea0a7581defcebe4a0944de99eabe9cc0d823e2f2658a69a"
+    },
+    {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260901_121818-b06/ledger_after_manual_switch.parquet",
+      "sha256": "7d05f8793b889c6feb4797cb51dcda35e070c9668e60345d57262fa39acb807f"
+    },
+    {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260901_121818-b06/manual_execution_manifest.json",
+      "sha256": "5daaa24cdb2db35a40e3e8ecd60cfb1ee3c64a8ce5fda0c54d2e53391bd15b6e"
+    },
+    {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260902_152918-b01/ledger_after_manual_switch.parquet",
+      "sha256": "36b807396d18952030f586b5a0e5463c9e36cf1c105e896ed307efd913315154"
+    },
+    {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260902_152918-b01/manual_execution_manifest.json",
+      "sha256": "876ecc6c4d9d220a7a9f78adbf0d3fcb81bc8d3a603fcf4f59bb4d4d4027962f"
+    },
+    {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260904_110322-b01/ledger_after_manual_switch.parquet",
+      "sha256": "7038fa1442e87ede355dab3043ca6773191bbc95276c7c8d047f4d7e36c5d172"
+    },
+    {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260904_110322-b01/manual_execution_manifest.json",
+      "sha256": "d856e377fcbca52b60fc0d381c06cd502b3b6667bc3cff065d0586d825dda28a"
+    },
+    {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260904_110322-b02/ledger_after_manual_switch.parquet",
+      "sha256": "e56c920ab9a91452bf13f34d8fcdcc89f8788182f5b6de6ad620e85b496971be"
+    },
+    {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260904_110322-b02/manual_execution_manifest.json",
+      "sha256": "ab971ad19f5852f7332bc95271e1950efb596c33ff1d0f34d787a5e349599e61"
+    },
+    {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/_event_store/current.v1.json",
+      "sha256": "3ab06e301cf197ee33b242f27c42d6a18f063a07c2860d3f9682662ca03349a9"
+    },
+    {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/_event_store/generations/event-close-20260903-daily-policy-v1.v1.json",
+      "sha256": "5887491baeff7a379c3a0bfa533f8f9b699e91fe2d2f284563b76175bbca46f4"
+    },
+    {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/_record_store/catalogs/g-daily-close-20260903-a4b3d496a4f12be2/catalog.v3.json",
+      "sha256": "393a92d2c8a43cd81d78c2fee612c62a6d36214613c8a1d123e10c2898ba96de"
+    },
+    {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/_record_store/current.v1.json",
+      "sha256": "f037197e370c09e824e97da9ce1ac86c0687def67ca7dd32d211fee2170e913c"
+    },
+    {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/_record_store/performance/p-daily-close-20260903-a4b3d496a4f12be2/manifest.v1.json",
+      "sha256": "f4f7700db4e1792e117eff8db0296c7b83320054122dea21bb165089935f0cca"
+    },
+    {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/_record_store/performance/p-daily-close-20260903-a4b3d496a4f12be2/owner_declaration.v1.json",
+      "sha256": "78df4bfcbc8de6130cf9f4b9870775f209e2f4f2866e7b72e2f078df93d47d96"
+    },
+    {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/_record_store/performance/p-daily-close-20260903-a4b3d496a4f12be2/series.parquet",
+      "sha256": "8b96856dd2a8740c0fd0e1135dcf50d9f7975b0792082e903001ceb589659d04"
+    }
+  ],
+  "store_bytes_and_mtime_unchanged": true,
+  "provider_calls": 0,
+  "financial_writes": 0,
+  "code_findings": [
+    "CorporateActionEvidence only compares previous and target dates, with no named action source or explicit financial/anchor adjustments",
+    "Research risk correctly rejects any adj_factor change within full tracking window",
+    "Owner policy invalidates anchors at corporate action; automatic anchor transformation cannot restore authority"
+  ],
+  "anchor_window_factor_changes": [
+    {
+      "previous_trade_date": "20260820",
+      "trade_date": "20260821",
+      "before": "2.2091",
+      "after": "2.2365"
+    }
+  ],
+  "last_daily_window": [
+    {
+      "trade_date": "20260902",
+      "adj_factor": "2.2365"
+    },
+    {
+      "trade_date": "20260903",
+      "adj_factor": "2.2365"
+    }
+  ],
+  "limitations": [
+    "Retrospective read-only diagnosis on 2026-09-12 using retained Market snapshot 20260911T135213Z; not an original 2026-09-03 PIT production receipt",
+    "Factor change establishes an adjustment event, not split/dividend/rights/bonus/conversion identity or account entitlements"
+  ]
+}

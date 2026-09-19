@@ -1,0 +1,10 @@
+{
+  "workspace": "/Users/maxwell/mySpace/myQuant",
+  "isolated_copy": "/var/folders/cp/539tc5k549l2jzdy90ptl6cm0000gn/T/myquant-owner-stop-fix-wja0v4na",
+  "ownership": [
+    "quant_investor/strategy_records/risk_policy_contract.py",
+    "tests/unit/test_initial_stop_policy_compatibility.py",
+    "tests/unit/test_morning_threshold_review.py"
+  ],
+  "integration_requires_source_freeze_unchanged": true
+}

@@ -1,0 +1,22 @@
+{
+  "observed_at": "2026-09-14T01:41:37.116213+00:00",
+  "case": 4,
+  "state": "NATIVE_BASELINES_AND_TARGET_MARKET_AUDIT_COMPLETE_SCENARIO_RUNNING",
+  "root": "/private/tmp/myquant-configured-missing-store-20260914T012539Z",
+  "refs": {
+    "full-baseline-activation.json": {
+      "path": "/private/tmp/myquant-configured-missing-store-20260914T012539Z/full-baseline-activation.json",
+      "sha256": "5c8a8f38d8b6323137bedf2a604f102efd89ef57b7edb986aa0f6d3d94bd0ee5"
+    },
+    "configured-baseline-store.json": {
+      "path": "/private/tmp/myquant-configured-missing-store-20260914T012539Z/configured-baseline-store.json",
+      "sha256": "8b1022a09c20bb251fb17787f34a9d51a20ef5cd719bafb4ebf870c26bc30a03"
+    },
+    "successor-market-audit-2026-08-27.json": {
+      "path": "/private/tmp/myquant-configured-missing-store-20260914T012539Z/successor-market-audit-2026-08-27.json",
+      "sha256": "1c3b46714a18c4fea9ce80878191e28d8fd6d5b8fdd90b6d7808475c12476915"
+    }
+  },
+  "full_dag_proof": false,
+  "production_deployed": false
+}

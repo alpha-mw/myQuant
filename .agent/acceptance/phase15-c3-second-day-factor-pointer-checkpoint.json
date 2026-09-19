@@ -1,0 +1,18 @@
+{
+  "observed_at": "2026-09-14T20:10:43.935907+00:00",
+  "state": "TARGET_DAY_FACTOR_POINTER_INPUT_EXISTS",
+  "pointer_ref": {
+    "path": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/factor-workspace/results/operations/daily_production/CN/20260828/inputs/factor-pointer-1bdd040f3fa2008f008d1bae56e2196e80f668513ad435add0ed3bcc60826ac3.json",
+    "sha256": "1bdd040f3fa2008f008d1bae56e2196e80f668513ad435add0ed3bcc60826ac3"
+  },
+  "pointer": {
+    "activated_at": "2026-08-28T13:20:00Z",
+    "authority_scope": "FACTOR_PRODUCTION",
+    "factor_generation_id": "factor-production-generation-5304dba34796a5001697c124b8d9490eabcb798a669172619935c57f8a537397",
+    "factor_generation_sha256": "ed6a05ecc72b2dc163ef5570aa76ac109c0e28d62bbf08292e3b364ee7f78691",
+    "os_actor": "uid:501",
+    "previous_pointer_sha256": "a7c5472c59258718ace2dd5e3f863304c2f05fce16ea2afbbcb776721222b02a"
+  },
+  "full_native_factor_verification_exercised_this_turn": false,
+  "target_eod_complete": false
+}

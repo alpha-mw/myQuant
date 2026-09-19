@@ -1,0 +1,25 @@
+{
+  "observed_at": "2026-09-16T14:57:04.152880+00:00",
+  "pid": 34708,
+  "method": "registered SIGUSR1 diagnostic stack dump after exact process command verification",
+  "trace_ref": {
+    "path": "/private/tmp/myquant-future-calendar-scoped-clock-20260916T125157Z/configured-native.stack.txt",
+    "sha256": "50316922d1f984716d86c7325b0c75b587d0afce7c555dc122d312c8637df8f3"
+  },
+  "observed_stage": "EOD_SEALING_NATIVE_LEDGER_REPLAY",
+  "stack_chain": [
+    "run_materialized_native_input",
+    "seal_materialized_completion",
+    "publish_native_ledger",
+    "assemble_native_ledger",
+    "ResearchDecisionAdapter.probe",
+    "research_compile_daily",
+    "read_theme_handoff",
+    "bind_theme_acquisition",
+    "read_historical_research_inputs"
+  ],
+  "terminal_eod_proof_claimed": false,
+  "process_restarted": false,
+  "runtime_modified": false,
+  "interpretation": "The last progress log was stale relative to execution stage; this snapshot proves current replay work, not completion or absence of all performance defects."
+}

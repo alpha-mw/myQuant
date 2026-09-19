@@ -1,0 +1,15 @@
+{
+  "observed_at": "2026-09-15T07:32:12.759851+00:00",
+  "child_pid": 3772,
+  "trade_date": "20260831",
+  "node": "corporate_action_recon",
+  "state": "SUCCEEDED",
+  "attempt": 1,
+  "verified_terminal_ref": {
+    "path": "results/operations/daily_production/CN/20260831/nodes/corporate_action_recon/083f626a26ba7b3a17a4055b45609d0891238625ea3807ba0d1620490aad3644/attempt-0001/terminal.json",
+    "sha256": "6c6e47ae0a66ae587b3347972bc91e06291106ec57b5792b69a9decdd7522ca7"
+  },
+  "synthetic": true,
+  "production_deployed": false,
+  "third_day_eod_verified": false
+}

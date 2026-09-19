@@ -1,0 +1,19 @@
+{
+  "observed_at": "2026-09-18T10:19:48.781754+00:00",
+  "runtime_commit": "5060dee2d4b39b50a735393d056ebe5adb4efe3b",
+  "state": "CURRENT_THIRD_REPLAY_CALL_SITE_IDENTIFIED",
+  "diagnostic_stack_ref": {
+    "path": "/private/tmp/myquant-canonical-scan-20260916T152008Z/configured-successor-20260828.stack.txt",
+    "snapshot_sha256": "0bae7e7005d071a49c7d9239b336c875db8deaaed0c1649ef817bb29809f17fd"
+  },
+  "actual_current_caller": "scripts/daily_catchup.py:395 run_upstream_catchup -> replay -> native full ledger/materialization/Factor source recomputation",
+  "bounded_iteration": "for day in ordered_trade_dates; current request has one target date20260828",
+  "other_static_replay_sites": [
+    "quant_investor/operations/automatic_catchup_resolution.py:309 automatic anchor validation",
+    "scripts/daily_catchup.py:330 predecessor validation before date processing"
+  ],
+  "earlier_call_numbers_not_individually_stack_captured": true,
+  "observer_wrapper_retries": false,
+  "runtime_or_frozen_helper_changes": false,
+  "remaining_scope": "Full Aug28 execution and acceptance still pending; this diagnostic does not establish overall completion or global absence of loops."
+}

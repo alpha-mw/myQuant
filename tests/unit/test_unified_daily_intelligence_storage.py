@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 import quant_investor.intelligence.daily as daily
-from quant_investor.contracts import canonical_json_bytes
+from quant_investor.contracts import canonical_json_bytes, seal_artifact
 from quant_investor.cli.main import main
 from quant_investor.cli import unified as unified_cli
 from quant_investor.intelligence import IntelligenceError
@@ -115,6 +115,38 @@ def _rank(policy: dict, *, signal_date: str = "20260824") -> dict:
             "strategy_id": "aggressive_tech_manufacturing",
         },
     )
+
+
+def _pool_rank(root, policy, *, signal_date="20260824", pointer_sha=None):
+    """Synthetic rank with real native observations in their immutable source paths."""
+    from test_unified_factor_production_observation import _inputs
+    from quant_investor.factors.production_observation import build_factor_production_observation
+
+    rank = _rank(policy, signal_date=signal_date)
+    inputs = _inputs()
+    inputs.update(signal_date=signal_date, factor_pointer_sha256=pointer_sha or "a" * 64)
+    payload = rank["payload"]
+    payload["factor_pointer_sha256"] = inputs["factor_pointer_sha256"]
+    payload["factor_generation_ref"].update(
+        artifact_id=inputs["factor_generation_id"], byte_sha256=inputs["factor_generation_sha256"]
+    )
+    observations = []
+    for factor in inputs["factor_rows"]:
+        factor.update(
+            symbol_count=payload["common_symbol_count"],
+            signal_symbol_set_sha256=payload["common_symbol_set_sha256"],
+        )
+        value = build_factor_production_observation(
+            inputs=inputs, factor_row=factor, registered_at=rank["created_at"]
+        )
+        path = root / (
+            f"results/factors/observations/{signal_date[:4]}/{signal_date[4:6]}/{signal_date[6:]}/"
+            f"{factor['factor_alias']}.json"
+        )
+        _write_request(path, value)
+        observations.append(artifact_ref(value))
+    payload["observation_refs"] = sorted(observations, key=lambda r: (r["kind"], r["artifact_id"]))
+    return seal_artifact(rank["kind"], payload, created_at=rank["created_at"])
 
 
 def test_approved_policy_is_exact_prospective_and_idempotent(tmp_path: Path) -> None:
@@ -246,7 +278,7 @@ def test_unconfigured_policy_is_pool_only() -> None:
 def test_pool_publication_is_atomic_idempotent_and_conflicting(tmp_path: Path) -> None:
     policy_result = publish_phase_a_policy(tmp_path)
     policy = approved_phase_a_policy()
-    rank = _rank(policy)
+    rank = _pool_rank(tmp_path, policy)
     calls = []
     store = DailyResearchPoolStore(tmp_path)
     first = store.publish(
@@ -269,6 +301,7 @@ def test_pool_publication_is_atomic_idempotent_and_conflicting(tmp_path: Path) -
         "manifest.json",
         "publish_receipt.json",
         "selected_symbols.json",
+        "top100.parquet",
     ]
     assert all(path.stat().st_mode & 0o777 == 0o600 for path in root.iterdir())
     manifest = json.loads((root / "manifest.json").read_bytes())
@@ -304,7 +337,7 @@ def test_active_theme_v2_can_publish_factor_pool_without_executing_theme_gate(
     policy = approved_theme_policy_v2()
     store = DailyResearchPoolStore(tmp_path)
     result = store.publish(
-        rank=_rank(policy, signal_date="20260827"),
+        rank=_pool_rank(tmp_path, policy, signal_date="20260827"),
         expected_policy_sha256=policy_result["daily_policy_sha256"],
         policy_path=THEME_POLICY_V2_RELATIVE_PATH,
         before_publish=lambda: None,
@@ -431,7 +464,7 @@ def test_pre_rename_failure_leaves_no_final_pool(tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError, match="fault-before-rename"):
         store.publish(
-            rank=_rank(policy, signal_date="20260825"),
+            rank=_pool_rank(tmp_path, policy, signal_date="20260825"),
             expected_policy_sha256=policy_result["policy_sha256"],
             before_publish=fail,
         )
@@ -444,6 +477,7 @@ def test_pre_rename_failure_leaves_no_final_pool(tmp_path: Path) -> None:
         "manifest.json",
         "publish_receipt.json",
         "selected_symbols.json",
+        "top100.parquet",
     ]
 
 

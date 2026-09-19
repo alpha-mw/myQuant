@@ -1,0 +1,15 @@
+{
+  "observed_at": "2026-09-14T21:18:47.651572+00:00",
+  "child_pid": 29285,
+  "state": "MATERIALIZED_EXECUTION_PRIOR_EOD_REPLAY_LEDGER",
+  "signals_sent_current_child": 4,
+  "trace_ref": {
+    "path": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/configured-successor-20260828-post-core.stack.txt",
+    "sha256": "61131fe8e96e5d1894c967c592e01d0fe91bfa03a618533de6c69b97956931f0"
+  },
+  "observed_replay_call": 5,
+  "replayed_trade_date": "20260827",
+  "caller": "scripts/daily_completion.py:410 run_materialized_native_input",
+  "finding": "After Core7 succeeded, execute_daily_recipe.finish.resume calls run_materialized_native_input, which replays previous completion before constructing MaterializedInputs. Captured at prior-day v2 ledger -> verify_materialized_inputs -> cutoff validation. Current downstream INPUT_MISSING snapshot does not establish outer dispatch failure.",
+  "target_eod_complete": false
+}

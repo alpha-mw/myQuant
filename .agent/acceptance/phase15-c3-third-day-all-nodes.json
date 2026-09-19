@@ -1,0 +1,123 @@
+{
+  "observed_at": "2026-09-15T07:56:44.204566+00:00",
+  "child_pid": 3772,
+  "trade_date": "20260831",
+  "state": "ALL_16_NODES_SUCCEEDED",
+  "verified_nodes": {
+    "calendar": {
+      "attempt": 1,
+      "terminal_ref": {
+        "path": "results/operations/daily_production/CN/20260831/nodes/calendar/9249a2a57019a85944b86101f310944d22f1057e28fa9bf73a120f77bd0063ed/attempt-0001/terminal.json",
+        "sha256": "b6140e8e546ca25aee31a29b4613e69d6fcc9229b4c4fcf6aa7b33c21652a5ed"
+      }
+    },
+    "corporate_action_recon": {
+      "attempt": 1,
+      "terminal_ref": {
+        "path": "results/operations/daily_production/CN/20260831/nodes/corporate_action_recon/083f626a26ba7b3a17a4055b45609d0891238625ea3807ba0d1620490aad3644/attempt-0001/terminal.json",
+        "sha256": "6c6e47ae0a66ae587b3347972bc91e06291106ec57b5792b69a9decdd7522ca7"
+      }
+    },
+    "dashboard": {
+      "attempt": 1,
+      "terminal_ref": {
+        "path": "results/operations/daily_production/CN/20260831/nodes/dashboard/cc6d4f0927cc3ac2faacc85ccdbdd6d7bc7569560fbaa929828b7dba65c7ca5d/attempt-0001/terminal.json",
+        "sha256": "3a35c189b6b65ccfffc754340a258fc32613183588f3241cfa5525a81ee66ace"
+      }
+    },
+    "decision": {
+      "attempt": 1,
+      "terminal_ref": {
+        "path": "results/operations/daily_production/CN/20260831/nodes/decision/0e734e2684acba15a50fb945f032e42a9351dc77ef636f10617444f6a2042191/attempt-0001/terminal.json",
+        "sha256": "04dfb9193683a4b0b560da773964008d1a7ccc0885811f90a75aad0b139dd349"
+      }
+    },
+    "exposure": {
+      "attempt": 1,
+      "terminal_ref": {
+        "path": "results/operations/daily_production/CN/20260831/nodes/exposure/fc48b70e1de0f165c3362f0ea9c76a45bcb5b00dec7855669d94183dc49a2184/attempt-0001/terminal.json",
+        "sha256": "d48e8f068a3d52ce702fd1d11d7f902b764ba602c107ae1b0bd2e5c1f9f73153"
+      }
+    },
+    "factor": {
+      "attempt": 1,
+      "terminal_ref": {
+        "path": "results/operations/daily_production/CN/20260831/nodes/factor/f434ec1c1510146bb0c2a5f72d2407fd88fd3951cd563f1cd3a6460bfa010aef/attempt-0001/terminal.json",
+        "sha256": "3385ac1f16c3b5ceea56cfa5a147dfc34f185ae61b7a7ca8b8883b689fac1199"
+      }
+    },
+    "fundamental": {
+      "attempt": 1,
+      "terminal_ref": {
+        "path": "results/operations/daily_production/CN/20260831/nodes/fundamental/86c790977efa5de5cab330dba6d1101d0d8dddcfc52de11e7fe90453bef12d1b/attempt-0001/terminal.json",
+        "sha256": "1d00dc5cbf183bc6cd2cf40598b68fd07df1d2bab6c94a80fb6fa5e23e2cbe16"
+      }
+    },
+    "industry": {
+      "attempt": 1,
+      "terminal_ref": {
+        "path": "results/operations/daily_production/CN/20260831/nodes/industry/1ad8764b5cf665b1edbf266b711b5f3c638738b49f14749cc8e0b78bc622398a/attempt-0001/terminal.json",
+        "sha256": "9a7e1540c0c58a083a91a52e1cbb35f1d6b5ac1cb73f7432809b7efc31eebca9"
+      }
+    },
+    "low_observation": {
+      "attempt": 1,
+      "terminal_ref": {
+        "path": "results/operations/daily_production/CN/20260831/nodes/low_observation/b93874669092cc4eed7401676f8682901a90577fd57a584f115507cb977bc143/attempt-0001/terminal.json",
+        "sha256": "fd65797cb767cf405fd32770263a7791eae769ea408d7496523726235d0d7d7e"
+      }
+    },
+    "macro": {
+      "attempt": 1,
+      "terminal_ref": {
+        "path": "results/operations/daily_production/CN/20260831/nodes/macro/b68afffb1d716f396badc027a2d5584b620b7e41a2b802b1c1d1c08cfd6668d1/attempt-0001/terminal.json",
+        "sha256": "43da997db3e781270a80287b52212993955bf5fbbb4beec391064ccfce93daa3"
+      }
+    },
+    "market": {
+      "attempt": 1,
+      "terminal_ref": {
+        "path": "results/operations/daily_production/CN/20260831/nodes/market/ecb71bc4c0518c84aaf12ad86483b947a35a4130eca74db94d4a8cdce83c1142/attempt-0001/terminal.json",
+        "sha256": "532cacbb666291d4315b587ebff17186c2073cc41279d27ca05e9eb491253d9a"
+      }
+    },
+    "pit": {
+      "attempt": 1,
+      "terminal_ref": {
+        "path": "results/operations/daily_production/CN/20260831/nodes/pit/215b83d2daea56136f3af82796506bc69d4a1340fc732ab3434f930a2c3eb0d1/attempt-0001/terminal.json",
+        "sha256": "75e8661f2fa71b09ba708e7fa8352ccbb2c33450c87c5f58e455823a1c66514d"
+      }
+    },
+    "store": {
+      "attempt": 1,
+      "terminal_ref": {
+        "path": "results/operations/daily_production/CN/20260831/nodes/store/69f45b89039b59d0980f71f99c4f6ff53f5b72c3344c573348a6b01bc1f59749/attempt-0001/terminal.json",
+        "sha256": "9cda9603cb2e44c8b0381b645dcbb2499a15c2335f2eed5541a05b9552890dc2"
+      }
+    },
+    "theme": {
+      "attempt": 1,
+      "terminal_ref": {
+        "path": "results/operations/daily_production/CN/20260831/nodes/theme/221facc0e2249c1c3643fad445e14118eb6f9e640de21673de2a33321d79b865/attempt-0001/terminal.json",
+        "sha256": "7d2abf117b5b11d8a5d1cde4484096f7f3db3314abe85f1f13677a8b3f70b3fb"
+      }
+    },
+    "top100": {
+      "attempt": 1,
+      "terminal_ref": {
+        "path": "results/operations/daily_production/CN/20260831/nodes/top100/2e9eb76994d62ea120d7bced24eb1aef8e3fe38ca03ebda6a05f7995350aca8e/attempt-0001/terminal.json",
+        "sha256": "8352d33e22bd847058c934a5fc8fc8f43777eb6ece0bf275548aed49d79fe509"
+      }
+    },
+    "w80_observation": {
+      "attempt": 1,
+      "terminal_ref": {
+        "path": "results/operations/daily_production/CN/20260831/nodes/w80_observation/836128c866cbcfb44cf90024dacd0d259e1ed80f83df067994c591e182cf45a0/attempt-0001/terminal.json",
+        "sha256": "91d1edb0029ed9e7cbb32d07a63a7ee5d7977e429bb6b9f22ae7d7361c918237"
+      }
+    }
+  },
+  "synthetic": true,
+  "production_deployed": false,
+  "third_day_eod_verified": false
+}

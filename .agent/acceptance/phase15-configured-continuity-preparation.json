@@ -1,0 +1,68 @@
+{
+  "status": "HELPERS_IMPLEMENTED_NOT_YET_FIVE_DAY_PROOF",
+  "observed_at": "2026-09-13T19:38:42Z",
+  "runtime_commit": "f7968454dcf537b20369a762bdbb16f56b2ee019",
+  "runtime_changed": false,
+  "source_sha256": {
+    "tests/unit/_native_synthetic_clock.py": "541d52e1a5e6ddd9aa384d2c0edcbfbcaddcd03bc1646503b2f529678d587211",
+    "tests/unit/test_native_synthetic_clock.py": "69291fa979f4fcb8f9fcde8c7d6e28fb86752b7d2acf408d1480cbd4415fe0cd",
+    "tests/unit/_native_configured_daily_scenario.py": "cafb93197cd87dd4518b6e59e8ddd22b88f668c7336ad8f89aecd6e8ac24ca36",
+    "tests/unit/_native_configured_successor.py": "49fc3a6b1450bdf63300bc3826c81032410362c456a0fdc846d4b8598d9e809a",
+    "tests/unit/_native_daily_store_fixture.py": "07a15088f8c08d503cc7d347983a38ed899416d531ba21998c3c1098f156ce66",
+    "tests/unit/_native_morning_replay_fixture.py": "51d5baa1b77ebf4ae8c0e1b7d53cf34a93f17778dad00bb95d032bf4000f46eb",
+    "tests/unit/_verify_five_native_days.py": "9c4d561c2623415441fc15db9afed112f79c90560d113502917a1208faa88d64",
+    ".agent/acceptance/run_configured_native_acceptance.py": "c9a780db845ad0bbe7f9858dae35f9a295d69955f228fcf52032b94dad47abaa",
+    ".agent/acceptance/run_configured_successors.py": "3ef3190ef7ac685d0e25572049b8cb86e13ab057db0d4eb3b6052d5657d00f02",
+    "tests/unit/_native_configured_boundary_checks.py": "ea2eeaf6ebe1f6c2c4ac5eaf86c0e98b39a2e451e5e15081e21304519c894a9b"
+  },
+  "clock_scope": "47 named native/DAG modules, including downstream handoff, ledger, EOD and serving seals; scoped local datetime imports covered; actual monotonic time, filesystem times, installation verification and locks unchanged",
+  "clock_tests": {
+    "passed": 2,
+    "seconds": 1.43,
+    "log": "/Users/maxwell/mySpace/myQuant/.agent/acceptance/phase15-synthetic-clock-validation.log"
+  },
+  "fixture_defaults": {
+    "passed": 44,
+    "seconds": 10.96,
+    "log": "/Users/maxwell/mySpace/myQuant/.agent/acceptance/phase15-successor-fixture-defaults.log"
+  },
+  "future_sequence": [
+    "20260828",
+    "20260831",
+    "20260901",
+    "20260902"
+  ],
+  "successor_entry": "Same original config reference -> configured source preparation -> native automatic CATCH_UP dispatch before Core; previous full native EOD replay required",
+  "risk_free_source": "Retain original input bytes/mtime; native yield reader retains authority over usability, no freshness override",
+  "verification": "Existing native five-day verifier accepts exact completion_refs; all chain, calendar, native replay and no-write invariants retained. Existing Morning fixture accepts exact EOD date/ref.",
+  "driver": ".agent/acceptance/run_configured_successors.py",
+  "driver_precondition": "Initial configured-driver-status PASS and exact original native proof; no blind repeat when stage marker/status exists. Stop on first failed day.",
+  "new_root": "/private/tmp/myquant-configured-clock-20260913T192045Z",
+  "native_initial_result": "RUNNING",
+  "five_day_result": "NOT_STARTED",
+  "morning_result": "NOT_STARTED",
+  "production_deployed": false,
+  "full_goal_complete": false,
+  "new_process_handle": 93332,
+  "new_process_pid": 89390,
+  "old_clock_fixture": {
+    "root": "/private/tmp/myquant-configured-current-20260913T190006Z",
+    "state": "INTERRUPTED_FOR_CONFIRMED_TEST_CLOCK_GAP",
+    "driver_exit_code": -2,
+    "handle": 9081,
+    "workspace_preserved": true,
+    "reason_ref": "/private/tmp/myquant-configured-current-20260913T190006Z/configured-clock-gap-interruption.json"
+  },
+  "additional_prepared_cases": {
+    "repeat": 9,
+    "closed": 10,
+    "actual_execution": "NOT_STARTED"
+  },
+  "case_index": ".agent/acceptance/phase15-case-evidence-index.json",
+  "native_process_sample": {
+    "path": "/private/tmp/myquant-configured-clock-20260913T192045Z/native-process-sample.txt",
+    "scope": "1-second read-only native stack sample; main thread Python/NumPy computation, not proof of completion",
+    "maintenance_input_checkpoint": "CORE_COMPLETE",
+    "latest_process_cpu_percent": 100.0
+  }
+}

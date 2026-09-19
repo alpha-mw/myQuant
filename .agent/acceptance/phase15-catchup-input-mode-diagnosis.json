@@ -1,0 +1,39 @@
+{
+  "observed_at": "2026-09-14T05:28:00.333165+00:00",
+  "state": "NATIVE_PRODUCER_CONSUMER_SOURCE_MODE_CONTRACT_MISMATCH_REPRODUCED",
+  "root": "/private/tmp/myquant-configured-catalog-20260913T202622Z",
+  "request_ref": {
+    "path": "results/operations/daily_production/CN/20260828/preparation/deb3a8278fca35a7cb3e56d81a1b35da2c190fa1709f16a5d211bf9634568779/request.json",
+    "sha256": "77d10bc50c8d82c63e97b02813e06e8edb23cc287b3b1e3edf3b393b0ea5ba16"
+  },
+  "runtime_commit": "bf078d3235de3ade1379e8082d5d4a49e109f7d5",
+  "sources": [
+    {
+      "role": "benchmark_ref",
+      "ref": {
+        "path": "portfolio_dashboard/inputs/cn_index_benchmark.csv",
+        "sha256": "902303e172839d19b28d819ba378904aab0b70035649d98851781b84fdbf0ac1"
+      },
+      "mode": "0o644",
+      "expected_sha_matches": true,
+      "preparation_native_read_and_recheck": "PASS",
+      "catchup_strict_read_error": "SYSTEM_STORAGE_SECURITY:source mode is not owner-only, non-executable, readable",
+      "original_bytes_mode_inode_times_unchanged": true
+    },
+    {
+      "role": "risk_free_ref",
+      "ref": {
+        "path": "portfolio_dashboard/inputs/cn_govt_bond_yield.csv",
+        "sha256": "cb8005d0ce809e0f3c90612b88b979d4ef2877308e32dad9988182f0a92406f3"
+      },
+      "mode": "0o644",
+      "expected_sha_matches": true,
+      "preparation_native_read_and_recheck": "PASS",
+      "catchup_strict_read_error": "SYSTEM_STORAGE_SECURITY:source mode is not owner-only, non-executable, readable",
+      "original_bytes_mode_inode_times_unchanged": true
+    }
+  ],
+  "runtime_modification": false,
+  "proof_scope": "READ_ONLY_ACTUAL_RETAINED_TEMPLATE_REFS",
+  "full_goal_complete": false
+}

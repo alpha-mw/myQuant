@@ -1,0 +1,29 @@
+{
+  "observed_at": "2026-09-16T13:21:33.699900+00:00",
+  "state": "INITIAL_FULL_RUN_FAILED_KNOWN_REPAIRED_CASES",
+  "counts": {
+    "failed": 11,
+    "passed": 4979,
+    "skipped": 3,
+    "warnings": 87
+  },
+  "log_ref": {
+    "path": "/private/tmp/myquant-future-calendar-full-unit-20260916.log",
+    "sha256": "899966c950cbc1abfaee3121a1d96516d20ad302fe20cf4881771f97be19e82b"
+  },
+  "failed_tests": [
+    "tests/unit/test_daily_evidence_core_pool.py::test_registered_core_hook_runs_pool_before_settlement_and_auxiliary_return",
+    "tests/unit/test_daily_evidence_dependency_diagnostics.py::test_producer_context_invalid_before_directory_or_writer[missing_commit]",
+    "tests/unit/test_daily_evidence_dependency_diagnostics.py::test_producer_context_invalid_before_directory_or_writer[short_commit]",
+    "tests/unit/test_daily_evidence_dependency_diagnostics.py::test_producer_context_invalid_before_directory_or_writer[wrong_commit]",
+    "tests/unit/test_daily_evidence_dependency_diagnostics.py::test_producer_context_invalid_before_directory_or_writer[missing_parent]",
+    "tests/unit/test_daily_evidence_dependency_diagnostics.py::test_producer_context_invalid_before_directory_or_writer[relative]",
+    "tests/unit/test_daily_evidence_dependency_diagnostics.py::test_producer_context_invalid_before_directory_or_writer[dotdot]",
+    "tests/unit/test_daily_evidence_dependency_diagnostics.py::test_producer_context_invalid_before_directory_or_writer[double_slash]",
+    "tests/unit/test_daily_evidence_dependency_diagnostics.py::test_producer_context_invalid_before_directory_or_writer[symlink]",
+    "tests/unit/test_daily_evidence_dependency_diagnostics.py::test_producer_context_invalid_before_directory_or_writer[file]",
+    "tests/unit/test_daily_evidence_dependency_diagnostics.py::test_producer_context_can_declare_missing_tail_without_creating_it"
+  ],
+  "focused_repair_suite_passed": 81,
+  "final_frozen_full_gate_required": true
+}

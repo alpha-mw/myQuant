@@ -1,0 +1,184 @@
+{
+  "state": "DECLARED_SNAPSHOT_ANCESTRY_INVENTORY_ONLY",
+  "root_pointer_ref": {
+    "path": "data/parquet/cn/_latest.json",
+    "sha256": "2b6e9be509eb6eb71292c325ce0269d6bff4561ba96a14f0a0af7f6dc74f329a"
+  },
+  "rows": [
+    {
+      "snapshot_id": "20260916T082247Z",
+      "date": "20260916",
+      "manifest_ref": {
+        "path": "/Users/maxwell/mySpace/myQuant/data/parquet/cn/_snapshots/20260916T082247Z.json",
+        "sha256": "69e35d21e86c650ba261c0ac2eb4b1b6b200069a6b673ef9c15f3bcadb253fd7"
+      },
+      "previous_snapshot_id": "20260915T082220Z",
+      "coverage_equal": true,
+      "capture_ref": {
+        "path": "/Users/maxwell/mySpace/myQuant/data/private/cn_daily_maintenance/attempts/20260916T082156Z-1620-c4bd01e2b5f8a966/market_capture/manifest.json",
+        "sha256": "b380d7ffa0334d66f2a2fb58140d8269678b3b9097098125e5c0ccccc69ccb3a"
+      },
+      "capture_hash_match": true,
+      "capture_dates": [
+        "20260916"
+      ]
+    },
+    {
+      "snapshot_id": "20260915T082220Z",
+      "date": "20260915",
+      "manifest_ref": {
+        "path": "/Users/maxwell/mySpace/myQuant/data/parquet/cn/_snapshots/20260915T082220Z.json",
+        "sha256": "ac098d7e0db6b7b7604d3c4940f9ef6d35f9950f17f77602850b9f21b7c4a55f"
+      },
+      "previous_snapshot_id": "20260914T132202Z",
+      "coverage_equal": true,
+      "capture_ref": {
+        "path": "/Users/maxwell/mySpace/myQuant/data/private/cn_daily_maintenance/attempts/20260915T082123Z-1620-359f51a541d736bb/market_capture/manifest.json",
+        "sha256": "70e546bb90107a2b051158aad48af75461d79149007caa94921666bf3e3296c0"
+      },
+      "capture_hash_match": true,
+      "capture_dates": [
+        "20260915"
+      ]
+    },
+    {
+      "snapshot_id": "20260914T132202Z",
+      "date": "20260914",
+      "manifest_ref": {
+        "path": "/Users/maxwell/mySpace/myQuant/data/parquet/cn/_snapshots/20260914T132202Z.json",
+        "sha256": "d2333e89051bcee16ebc57cdb5823776eb10043caba2f4af8247e32c0dc414a5"
+      },
+      "previous_snapshot_id": "20260911T135213Z",
+      "coverage_equal": true,
+      "capture_ref": {
+        "path": "/Users/maxwell/mySpace/myQuant/data/private/cn_daily_maintenance/attempts/20260914T132113Z-2020-94f1d2736ed203df/market_capture/manifest.json",
+        "sha256": "c07f288555b8de6221b29b23c7d90cd11e059e518a11bfbc1c988ae9b9f1b892"
+      },
+      "capture_hash_match": true,
+      "capture_dates": [
+        "20260914"
+      ]
+    },
+    {
+      "snapshot_id": "20260911T135213Z",
+      "date": "20260911",
+      "manifest_ref": {
+        "path": "/Users/maxwell/mySpace/myQuant/data/parquet/cn/_snapshots/20260911T135213Z.json",
+        "sha256": "e66af370e1b47c974001c2c15a1d4810d6d16c6931727836d55d627bd8684ecb"
+      },
+      "previous_snapshot_id": "20260909T142713Z",
+      "coverage_equal": true,
+      "capture_ref": {
+        "path": "/Users/maxwell/mySpace/myQuant/data/private/cn_daily_maintenance/attempts/20260911T135111Z-2020-c3fc0db656d4f550/market_capture/manifest.json",
+        "sha256": "ad29bdcb45ce9420a51369c38a06c53c922739b880cf329b72e371e104ce45b1"
+      },
+      "capture_hash_match": true,
+      "capture_dates": [
+        "20260910",
+        "20260911"
+      ]
+    },
+    {
+      "snapshot_id": "20260909T142713Z",
+      "date": "20260909",
+      "manifest_ref": {
+        "path": "/Users/maxwell/mySpace/myQuant/data/parquet/cn/_snapshots/20260909T142713Z.json",
+        "sha256": "7c7d9c01cb57c5c4a03a47fe65780afa9b9018bf2e5ce885de191d38bb6437d1"
+      },
+      "previous_snapshot_id": "20260908T082152Z",
+      "coverage_equal": true,
+      "capture_ref": {
+        "path": "/Users/maxwell/mySpace/myQuant/data/private/cn_daily_maintenance/attempts/20260909T142626Z-2020-4f241c25a2bddb9f/market_capture/manifest.json",
+        "sha256": "87a82f7c39380f796c33206341bf179495bc9ff6e9298b543612fbb49e4227ab"
+      },
+      "capture_hash_match": true,
+      "capture_dates": [
+        "20260909"
+      ]
+    },
+    {
+      "snapshot_id": "20260908T082152Z",
+      "date": "20260908",
+      "manifest_ref": {
+        "path": "/Users/maxwell/mySpace/myQuant/data/parquet/cn/_snapshots/20260908T082152Z.json",
+        "sha256": "4d86f459f4a7c8346cf1c62b33e11085aad9fe470c2538a2435174b88d154e34"
+      },
+      "previous_snapshot_id": "20260907T082202Z",
+      "coverage_equal": true,
+      "capture_ref": {
+        "path": "/Users/maxwell/mySpace/myQuant/data/private/cn_daily_maintenance/attempts/20260908T082110Z-1620-21dc3895032a8d5d/market_capture/manifest.json",
+        "sha256": "f7d674203c5610779de8a9f590d7a533beddc6171f741c1107716119c73fcf6f"
+      },
+      "capture_hash_match": true,
+      "capture_dates": [
+        "20260908"
+      ]
+    },
+    {
+      "snapshot_id": "20260907T082202Z",
+      "date": "20260907",
+      "manifest_ref": {
+        "path": "/Users/maxwell/mySpace/myQuant/data/parquet/cn/_snapshots/20260907T082202Z.json",
+        "sha256": "7402087d74602caba5c31ac07e8b7d210d25deca9c088225ac11b8d9fbb2274e"
+      },
+      "previous_snapshot_id": "20260905T163546Z",
+      "coverage_equal": true,
+      "capture_ref": {
+        "path": "/Users/maxwell/mySpace/myQuant/data/private/cn_daily_maintenance/attempts/20260907T082121Z-1620-c9634965996ef262/market_capture/manifest.json",
+        "sha256": "8106f9814174eb7d2e6402bdf6435f511f4cc8329f8d844a4cdc8484585a3357"
+      },
+      "capture_hash_match": true,
+      "capture_dates": [
+        "20260907"
+      ]
+    },
+    {
+      "snapshot_id": "20260905T163546Z",
+      "date": "20260904",
+      "manifest_ref": {
+        "path": "/Users/maxwell/mySpace/myQuant/data/parquet/cn/_snapshots/20260905T163546Z.json",
+        "sha256": "90d348cf9dfca556afbedf20c044115c9c2116b6266f8de4311737350a177b76"
+      },
+      "previous_snapshot_id": "20260905T163228Z",
+      "coverage_equal": false
+    },
+    {
+      "snapshot_id": "20260905T163228Z",
+      "date": "20260904",
+      "manifest_ref": {
+        "path": "/Users/maxwell/mySpace/myQuant/data/parquet/cn/_snapshots/20260905T163228Z.json",
+        "sha256": "b4ea6c41dc8d33bc2ed51098458822d3b50c78740dc21a0d36debf2168bda4b9"
+      },
+      "previous_snapshot_id": "20260903T083159Z",
+      "coverage_equal": true,
+      "capture_ref": {
+        "path": "/Users/maxwell/mySpace/myQuant/data/private/cn_daily_maintenance/attempts/20260905T163145Z-2020-5b470afef77ab5f8/market_capture/manifest.json",
+        "sha256": "949c0343e301047d7084871d25cf10b621813099d5bdd92eb4a78925f6560b83"
+      },
+      "capture_hash_match": true,
+      "capture_dates": [
+        "20260904"
+      ]
+    },
+    {
+      "snapshot_id": "20260903T083159Z",
+      "date": "20260903",
+      "manifest_ref": {
+        "path": "/Users/maxwell/mySpace/myQuant/data/parquet/cn/_snapshots/20260903T083159Z.json",
+        "sha256": "4dbbe0691277a41dcdb3c20714a8cd95ac12b49a64b7cd32f12ec007e4cbc116"
+      },
+      "previous_snapshot_id": "20260902T082253Z",
+      "coverage_equal": true,
+      "capture_ref": {
+        "path": "/Users/maxwell/mySpace/myQuant/data/private/cn_daily_maintenance/attempts/20260903T083122Z-1620-7c9a134ff1d5dca7/market_capture/manifest.json",
+        "sha256": "639072648945862f3c1d0a2a60f98a01fe9b3a388dbffafd0552f9b51a86cfc5"
+      },
+      "capture_hash_match": true,
+      "capture_dates": [
+        "20260903"
+      ]
+    }
+  ],
+  "native_per_date_semantic_validation": false,
+  "canonical_writes": false
+}

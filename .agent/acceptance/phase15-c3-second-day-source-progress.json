@@ -1,0 +1,11 @@
+{
+  "observed_at": "2026-09-14T17:17:58.593839+00:00",
+  "state": "NATIVE_MACRO_SOURCE_PREPARED",
+  "date": "20260828",
+  "child_pid": 29285,
+  "log_ref": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/configured-successor-20260828.log",
+  "prior_day_independent_native_replay_returned": true,
+  "target_day_completion_proven": false,
+  "synthetic": true,
+  "production_deployed": false
+}

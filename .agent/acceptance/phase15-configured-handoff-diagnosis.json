@@ -1,0 +1,21 @@
+{
+  "state": "DIAGNOSED_FIXTURE_REFERENCE_ALIAS",
+  "observed_at": "2026-09-13T18:59:32.623133+00:00",
+  "original_run_root": "/private/tmp/myquant-configured-native-20260913T182952Z",
+  "original_request_ref": {
+    "path": "results/operations/daily_production/CN/20260827/preparation/d96f39c32ab2da8dc7da959b1f3c5d0b97f78acfc29880df1f4819a18af09159/request.json",
+    "sha256": "3167050b568bb941693ae4dd6f34fe31c6e2dcf5d6d011991c9e5c2e90b86bf6"
+  },
+  "recipe_release_ref": {
+    "path": "configured-inputs/release.json",
+    "sha256": "f198acd9a40c9f5199e4d310304443d19c10f0a5b26b61e4ed46916fa337ab27"
+  },
+  "core_release_ref": {
+    "path": "results/factors/objects/system.release/f198acd9a40c9f5199e4d310304443d19c10f0a5b26b61e4ed46916fa337ab27.json",
+    "sha256": "f198acd9a40c9f5199e4d310304443d19c10f0a5b26b61e4ed46916fa337ab27"
+  },
+  "same_bytes": true,
+  "production_validation_changed": false,
+  "original_run_rewritten": false,
+  "recovery": "Original immutable request binds a different release path; preserve failed run and use exact native release reference in a new isolated scenario."
+}

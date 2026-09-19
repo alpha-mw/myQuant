@@ -1,0 +1,17 @@
+{
+  "observed_at": "2026-09-13T01:15:14.983650+00:00",
+  "scope": "READ_ONLY_RETAINED_NATIVE_INDUSTRY",
+  "request_ref": {
+    "path": "data/private/daily_intelligence/requests/daily-20260827-v4.json",
+    "sha256": "1dd0b4ac091a3b278fe1df53628bcd5568d7ebf36bc5a535b28f7886b6f5701e"
+  },
+  "as_of": "2026-08-27T14:20:51Z",
+  "native_status": "READY",
+  "blockers": [],
+  "physical_refs_rechecked": 696,
+  "projection_sha256": "fec700ecba0d29dce54b351db98c8ec1065a153ec7fba667cbe22b67186ff99f",
+  "elapsed_seconds": 2.196,
+  "source_mutation": false,
+  "provider_calls": false,
+  "full_eod_claim": false
+}

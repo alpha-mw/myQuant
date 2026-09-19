@@ -1,0 +1,26 @@
+{
+  "observed_at": "2026-09-16T14:46:46.163320+00:00",
+  "state": "FAILED_FROZEN_FINAL_CI",
+  "candidate": "d2b2398cbf675026984e19518ca2759d7344812d",
+  "root": "/private/tmp/myquant-future-calendar-scoped-clock-20260916T125157Z",
+  "status_ref": {
+    "path": "/private/tmp/myquant-future-calendar-scoped-clock-20260916T125157Z/final-gates/status.json",
+    "sha256": "8a769bb2032d7fa2c77523f1f52d49aa4bad962fe6027bac84d20ba21d9eb323"
+  },
+  "unit_log_sha256": "5cc3166a57b130ee17330786f4ecb086a7c8e0ec4ffb8376a399e930bd57f4ef",
+  "passed": 4995,
+  "failed": 1,
+  "skipped": 3,
+  "warnings": 87,
+  "seconds": 4514.38,
+  "first_11_gates_pass": true,
+  "source_drift": [],
+  "failed_test": "tests/unit/test_unified_factor_store_contextual.py::test_full_prospective_store_context_replays_1442_raw_sources_without_activation",
+  "failure": "SYSTEM_STORAGE_SECURITY:contextual validation time bound exceeded",
+  "native_timeout_seconds": 180,
+  "cause_beyond_timeout": "UNCONFIRMED",
+  "original_pytest_workspace_already_cleaned": true,
+  "separate_reproduction_location": ".agent/acceptance/phase15-contextual-timeout-repro-location.json",
+  "limits_relaxed": false,
+  "full_goal_complete": false
+}

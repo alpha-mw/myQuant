@@ -1,0 +1,34 @@
+{
+  "observed_at": "2026-09-18T18:50:09.692011+00:00",
+  "state": "CURRENT_INSTALLED_SECOND_DAY_PASS",
+  "runtime_commit": "5060dee2d4b39b50a735393d056ebe5adb4efe3b",
+  "proof_ref": {
+    "path": "/private/tmp/myquant-canonical-scan-20260916T152008Z/configured-native-proof-20260828.json",
+    "sha256": "ace95050879c6a37f180e1296e747fa4376adeab78c7a680816d9c880874b9ef"
+  },
+  "stage": {
+    "stage": "20260828",
+    "exit_code": 0,
+    "seconds": 31172.82,
+    "log": "/private/tmp/myquant-canonical-scan-20260916T152008Z/configured-successor-20260828.log"
+  },
+  "completion_ref": {
+    "path": "results/operations/daily_production/CN/20260828/completion.v1.json",
+    "sha256": "785644c1a8fd61e371b9e392a92fa11f16765c8a62aeb9330b028fada1d73676"
+  },
+  "previous_completion_ref": {
+    "path": "results/operations/daily_production/CN/20260827/completion.v1.json",
+    "sha256": "18f3b67149b23c9f153994d900efcc99d6c8e0e0618e3518b9f275c07f64d6fd"
+  },
+  "config_ref": {
+    "path": "configured-inputs/source-config.json",
+    "sha256": "72e16c92935cc66ccb2bb4b5882c0173835595c3ed0921a31ec06b1ce6284a9f"
+  },
+  "native_replay_nodes": 16,
+  "replay_evidence_origin": "ACTUAL_NATIVE_FULL_REPLAY_RETURN_INSIDE_SUCCESSFUL_DISPATCH",
+  "synthetic": true,
+  "production_deployed": false,
+  "completed_normal_days": 2,
+  "required_normal_days": 5,
+  "full_goal_complete": false
+}

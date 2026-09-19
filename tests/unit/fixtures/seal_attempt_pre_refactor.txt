@@ -1,0 +1,44 @@
+def _seal_attempt(
+    *,
+    attempt_root: Path,
+    payload: Mapping[str, Any],
+    state: Mapping[str, Any],
+    logical_claim_ref: Mapping[str, str],
+) -> dict[str, Any]:
+    claim_raw = _read_owner_file(Path(logical_claim_ref["path"]), code="LOGICAL_CLAIM_UNSAFE")
+    if hashlib.sha256(claim_raw).hexdigest() != logical_claim_ref["sha256"]:
+        raise DailyMaintenanceError("LOGICAL_CLAIM_CHANGED_BEFORE_SEAL")
+    state_path = attempt_root / "state.json"
+    receipt_path = attempt_root / "attempt.json"
+    state_sha = _write_once(state_path, _canonical_json_bytes(state))
+    final_payload = {**payload, "logical_claim_ref": dict(logical_claim_ref)}
+    final_payload.update(operation_provider_summary())
+    for name, field in (
+        ("started.json", "started_ref"),
+        ("core-completion.json", "core_completion_ref"),
+    ):
+        record = attempt_root / name
+        if record.exists():
+            raw = _read_owner_file(record, code="ATTEMPT_RECORD_UNSAFE")
+            final_payload[field] = {"path": str(record), "sha256": hashlib.sha256(raw).hexdigest()}
+    final_payload["state_ref"] = {
+        "path": str(state_path),
+        "sha256": state_sha,
+    }
+    receipt_sha = _write_once(receipt_path, _canonical_json_bytes(final_payload))
+    final_payload["attempt_receipt_ref"] = {
+        "path": str(receipt_path),
+        "sha256": receipt_sha,
+    }
+    _write_once(
+        attempt_root / "ended.json",
+        _canonical_json_bytes(
+            {
+                "state": "COMPLETED",
+                "workflow_status": final_payload["status"],
+                "receipt_ref": final_payload["attempt_receipt_ref"],
+                "ended_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            }
+        ),
+    )
+    return final_payload

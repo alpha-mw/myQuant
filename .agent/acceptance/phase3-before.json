@@ -1,0 +1,27 @@
+{
+  "native_root": "/private/tmp/myquant-final-source-native-20260909T030031Z",
+  "producer_commit": "3c46cb36918ca00d4fb61707bcfc16ca06b5c2a1",
+  "manifest_kind": "daily_research_pool_manifest",
+  "pool_directory": "/private/tmp/myquant-final-source-native-20260909T030031Z/factor-workspace/results/intelligence/research_pool/aggressive_tech_manufacturing/2026-08-27",
+  "leaves": {
+    "factor_research_rank.json": "9e31568ee6bfc6896b84189e899793fedeb917db0836175f8b91d55253f379e9",
+    "manifest.json": "a8388d43ea3a4e0dcb0e5d87f40a1531512f59b52ab6e22b937b4e5a8d91160a",
+    "publish_receipt.json": "9889473b2bb216431ea9e652ddffa407cf8c923f1a5f8176197decef8b81df66",
+    "selected_symbols.json": "5e4aa4f63b71f1b3ab5195c731387f15d253bd36d33739f4acdbcb4f4e26e0eb"
+  },
+  "requested_parquet_exists": false,
+  "requested_manifest_fields_missing": [
+    "factor_generation_id",
+    "factor_pointer_sha",
+    "generated_at",
+    "low_observation_sha",
+    "market_pointer_sha",
+    "pit_pointer_sha",
+    "policy_sha",
+    "row_count",
+    "top100_sha",
+    "trade_date",
+    "w80_observation_sha"
+  ],
+  "old_artifacts_unchanged": true
+}

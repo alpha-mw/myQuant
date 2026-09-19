@@ -1,0 +1,14 @@
+{
+  "state": "PASS",
+  "scope": "Local native Theme/Exposure projection of retained synthetic D source rows; not old request acceptance or full EOD",
+  "results": {
+    "pool": {
+      "status": "READY",
+      "company_count": 100
+    },
+    "focus": {
+      "status": "READY",
+      "company_count": 2
+    }
+  }
+}

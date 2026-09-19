@@ -1,0 +1,5 @@
+Traceback (most recent call last):
+  File "/Users/maxwell/mySpace/myQuant/.agent/acceptance/verify_catchup_dashboard_input_modes.py", line 93, in <module>
+    assert read_daily_status(str(workspace), '20260828') == status_before
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError

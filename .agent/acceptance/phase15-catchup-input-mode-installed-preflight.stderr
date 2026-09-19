@@ -1,0 +1,20 @@
+Traceback (most recent call last):
+  File "/Users/maxwell/mySpace/myQuant/.agent/acceptance/verify_catchup_dashboard_input_modes.py", line 64, in <module>
+    from scripts.daily_launch_inspection import _producer_controls
+  File "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/repository/scripts/daily_launch_inspection.py", line 33, in <module>
+    from scripts.daily_catchup import _serving_gate, run_upstream_catchup
+  File "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/repository/scripts/daily_catchup.py", line 12, in <module>
+    from scripts.daily_completion import run_materialized_native_input
+  File "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/repository/scripts/daily_completion.py", line 21, in <module>
+    from scripts.daily_native_inputs import load_native_inputs
+  File "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/repository/scripts/daily_native_inputs.py", line 15, in <module>
+    from scripts.daily_native_registry import NativeDailyInputs
+  File "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/repository/scripts/daily_native_registry.py", line 21, in <module>
+    from scripts.daily_production_store_adapter import StoreCloseAdapter
+  File "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/repository/scripts/daily_production_store_adapter.py", line 11, in <module>
+    from scripts import cn_official_close_batch as native
+  File "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/repository/scripts/cn_official_close_batch.py", line 63, in <module>
+    from close_cn_dashboard_official_valuation import (
+    ...<3 lines>...
+    )
+ModuleNotFoundError: No module named 'close_cn_dashboard_official_valuation'

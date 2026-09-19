@@ -1,0 +1,14 @@
+{
+  "observed_at": "2026-09-14T17:03:34.294539+00:00",
+  "child_pid": 29285,
+  "active_step": "20260828",
+  "actual_phase": "PRIOR_20260827_NATIVE_REPLAY_LEDGER",
+  "trace_ref": {
+    "path": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/configured-successor-20260828-initial-replay.stack.txt",
+    "sha256": "abaccde6fda0ce80dd1bf1a35bcc7926cdf8a53840c660ead1c51d583f65b739"
+  },
+  "signals_sent_current_child": 1,
+  "target_day_directory_exists": false,
+  "finding": "Pinned successor run line110 independently replays prior day before preparing target inputs. Captured stack is v2 Ledger -> native inputs -> Decision recipe -> research cutoff -> Theme/Core handoff. Earlier Decision/Corporate/Dashboard calls in this replay have returned; full prior replay and target-day production remain unproven.",
+  "next_action": "Await original child; do not repeat same-phase diagnostic or launch another driver."
+}

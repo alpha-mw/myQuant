@@ -1,0 +1,36 @@
+{
+  "observed_at": "2026-09-15T14:03:01.205813+00:00",
+  "state": "REQUEST_AVAILABLE_REFS_VERIFIED",
+  "trade_date": "20260901",
+  "source_result_ref": {
+    "path": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z/configured-source-result-20260901.json",
+    "sha256": "558c158674e5912be9305bb2590b1770add3f29277459e89aa140f2a6d2a22a5"
+  },
+  "verified_refs": {
+    "config_ref": {
+      "path": "configured-inputs/source-config.json",
+      "sha256": "1335469cd918f263243cf08e8d972e99c4ae41f2a22cc7085a7b2f590ebcdc32"
+    },
+    "release_install_ref": {
+      "path": "configured-inputs/installation.json",
+      "sha256": "c0a485747ac3bcd2ed60e1d6f3e1b1a2e54867d2644865f1bb2dfd3d07cf4e13"
+    },
+    "request_ref": {
+      "path": "results/operations/daily_production/CN/20260901/preparation/1335469cd918f263243cf08e8d972e99c4ae41f2a22cc7085a7b2f590ebcdc32/request.json",
+      "sha256": "f19f4d7cbd64b14b752088d1ff4f1dbfe27b17397d11faa68de46c5877f98959"
+    },
+    "calendar_capture_ref": {
+      "path": "results/operations/daily_production/CN/20260901/preparation/1335469cd918f263243cf08e8d972e99c4ae41f2a22cc7085a7b2f590ebcdc32/sources/calendar-capture.v1.json",
+      "sha256": "1ca274252e07c3fc8dff892d10e799302c38d79fa602f1123c5d48b860343b77"
+    },
+    "preparation_commitment_ref": {
+      "path": "results/operations/daily_production/CN/20260901/preparation/1335469cd918f263243cf08e8d972e99c4ae41f2a22cc7085a7b2f590ebcdc32/commitment.v1.json",
+      "sha256": "31e47dd439af690d4c6ec58fe915884e3d69050b3ab1719d4efad70c3e77dbfa"
+    }
+  },
+  "unchanged_configuration": true,
+  "synthetic": true,
+  "production_deployed": false,
+  "full_stage_acceptance_proven": false,
+  "child_pid": 81355
+}

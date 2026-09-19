@@ -1,0 +1,46 @@
+{
+  "observed_at": "2026-09-16T14:20:17.590747+00:00",
+  "state": "LOCAL_PRODUCTION_RECEIPT_AND_PROOF_COMPONENT_VERIFIED",
+  "source_refs": [
+    {
+      "path": "quant_investor/market/production_calendar_evidence.py",
+      "sha256": "3db59a3415b2e9fede44eaa70e27ef733f02ebef847b7939557efba48b32be87"
+    },
+    {
+      "path": "quant_investor/market/production_calendar_proof.py",
+      "sha256": "d63c9963dce3ab533c0a057a43430014fbce3e441ca0e3412b456e686cbde162"
+    },
+    {
+      "path": "quant_investor/market/next_session_proof.py",
+      "sha256": "209f6227ad81837ac6cfe3f7a79966315732c0685d0279a906518e72d4614800"
+    },
+    {
+      "path": "tests/unit/test_production_calendar_evidence.py",
+      "sha256": "1459a7d2b9a5f0b7b01b1f171e6a53df2e0024d4fff17e3bcc62e94a6d255837"
+    },
+    {
+      "path": "tests/unit/test_production_calendar_proof.py",
+      "sha256": "6cf17492b01def2c79d630146784b56f0c8e412605e260b73d1e0532f8b8dd2f"
+    }
+  ],
+  "tests": {
+    "passed": 34,
+    "seconds": 5.17,
+    "scope": [
+      "production receipt",
+      "production v2 proof",
+      "existing synthetic proof",
+      "existing native synthetic future flow"
+    ]
+  },
+  "static": "F checks, Black, tracked diff whitespace PASS",
+  "test_seams": [
+    "Production component tests control native capture admission and installed release metadata; wheel bytes/hashes and immutable receipt/proof custody are exercised",
+    "Existing synthetic native flow retains its disclosed installation seam"
+  ],
+  "initial_test_failure": "Cross-version test reached malformed controlled native fixture; added explicit v1 proof-schema rejection before native replay; final 34 pass",
+  "production_mode_connected": false,
+  "actual_provider_calls": false,
+  "production_deployed": false,
+  "full_goal_complete": false
+}

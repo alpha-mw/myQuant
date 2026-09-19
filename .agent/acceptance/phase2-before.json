@@ -1,0 +1,46 @@
+{
+  "fixture_root": "/private/tmp/phase2-observation-diagnostic-6gjoe3jm",
+  "scope": "real observation parser with controlled other adapters",
+  "declared_expected_date": "20260820",
+  "actual_observation_date": "20260819",
+  "low": {
+    "state": "FAILED",
+    "failure": {
+      "code": "VALIDATION_FAILED",
+      "retryable": false,
+      "owner_action_required": false,
+      "canonical_state_may_have_changed": false,
+      "recommended_next_node": "low_observation"
+    },
+    "trigger_reason": "BLOCKING_FAILURE",
+    "blocking_reason": "VALIDATION_FAILED",
+    "retryable": false,
+    "upstream_refs": {},
+    "output_refs": {},
+    "started_at": null,
+    "finished_at": null,
+    "attempt": null
+  },
+  "top100": {
+    "state": "SKIPPED",
+    "failure": {
+      "code": "UPSTREAM_INCOMPLETE",
+      "retryable": true,
+      "owner_action_required": false,
+      "canonical_state_may_have_changed": false,
+      "recommended_next_node": "top100"
+    },
+    "blocking_nodes": [
+      "low_observation"
+    ],
+    "trigger_reason": "WAITING_UPSTREAM",
+    "blocking_reason": "UPSTREAM_INCOMPLETE",
+    "retryable": true,
+    "upstream_refs": {},
+    "output_refs": {},
+    "started_at": null,
+    "finished_at": null,
+    "attempt": null
+  },
+  "top100_writer_called": false
+}

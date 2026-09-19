@@ -1,0 +1,14 @@
+{
+  "validation_scope": "REAL_RETAINED_LEGACY_SOURCE_BINDING_THEN_REQUIRED_V3_FRESHNESS_REJECTION",
+  "trade_date": "20260828",
+  "source_workspace": "/private/tmp/myquant-final-source-native-20260909T030031Z/factor-workspace",
+  "expected_failure": "DECISION_FRESHNESS_REPORT_MISSING",
+  "observed_refs": 234,
+  "source_sha_unchanged": true,
+  "v3_report_published": false,
+  "native_source_current_heads_selected": false,
+  "decision_terminal_ref": {
+    "path": "results/operations/daily_production/CN/20260828/nodes/decision/9103979a9c531fd9418ac2a70e641a37562605178c29097fa97f90a667ef188c/attempt-0001/terminal.json",
+    "sha256": "37c5bdaca1251a24efaa5cfdff5ee4771ae3c2dd942e6d8701ba42e6fdab2f41"
+  }
+}

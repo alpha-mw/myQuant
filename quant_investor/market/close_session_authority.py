@@ -200,6 +200,33 @@ def acquire_close_session_authority(
     return CloseSessionAuthorityResult(receipt=receipt, raw_response_bytes=raw)
 
 
+def replay_close_session_authority(
+    receipt: Mapping[str, Any], raw: bytes
+) -> CloseSessionAuthorityResult:
+    """Replay the complete close contract from sealed bytes, with no provider call."""
+
+    from .tushare_transport import replay_tushare_response_bytes
+
+    response = replay_tushare_response_bytes(
+        raw, api_name=API_NAME, expected_fields=EXPECTED_FIELDS
+    )
+
+    class SealedClient:
+        def request(self, **_kwargs: Any) -> Any:
+            return response
+
+    try:
+        observed_at = datetime.strptime(str(receipt["captured_at"]), "%Y-%m-%dT%H:%M:%SZ")
+        result = acquire_close_session_authority(
+            now=observed_at.replace(tzinfo=timezone.utc), client=SealedClient()
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise CloseSessionAuthorityError("CLOSE_RECEIPT_INVALID") from exc
+    if any(receipt.get(key) != value for key, value in result.receipt.items()):
+        raise CloseSessionAuthorityError("CLOSE_RECEIPT_REPLAY_MISMATCH")
+    return result
+
+
 __all__ = [
     "CloseSessionAuthorityError",
     "CloseSessionAuthorityResult",

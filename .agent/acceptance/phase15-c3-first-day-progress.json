@@ -1,0 +1,26 @@
+{
+  "observed_at": "2026-09-14T13:24:40.378073+00:00",
+  "root": "/private/tmp/myquant-catchup-input-mode-20260914T054810Z",
+  "trade_date": "20260827",
+  "scope": "NATIVE_JOURNAL_AND_OUTPUT_BYTES_ONLY",
+  "nodes": {
+    "calendar": "SUCCEEDED",
+    "corporate_action_recon": "SUCCEEDED",
+    "dashboard": "SUCCEEDED",
+    "decision": "SUCCEEDED",
+    "exposure": "SUCCEEDED",
+    "factor": "SUCCEEDED",
+    "fundamental": "SUCCEEDED",
+    "industry": "SUCCEEDED",
+    "low_observation": "SUCCEEDED",
+    "macro": "SUCCEEDED",
+    "market": "SUCCEEDED",
+    "pit": "SUCCEEDED",
+    "store": "SUCCEEDED",
+    "theme": "SUCCEEDED",
+    "top100": "SUCCEEDED",
+    "w80_observation": "SUCCEEDED"
+  },
+  "completion_status": "AWAITING_NATIVE_COMPLETION_VALIDATION",
+  "full_eod_replay_claimed": false
+}

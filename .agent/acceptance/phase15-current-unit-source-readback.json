@@ -1,0 +1,9 @@
+{
+  "status": "PASS",
+  "observed_at": "2026-09-13T11:00:41.536396+00:00",
+  "freeze_ref": ".agent/acceptance/phase15-current-freeze-20260913T101052Z.json",
+  "frozen_file_count": 914,
+  "changed_files": [],
+  "unit_session": 87610,
+  "unit_session_terminal": true
+}

@@ -1,0 +1,14 @@
+{
+  "status": "PASS",
+  "observed_at": "2026-09-13T11:04:19.370046+00:00",
+  "policy_ref": {
+    "path": "results/policies/risk/aggressive_tech_manufacturing/initial-risk-stop.v1/owner-stop-policy-20260828-v1.json",
+    "sha256": "11eb7018ff6abde2d276c7b997e0e61e2cd6b170407872734bb8d407b334c178"
+  },
+  "policy_mtime_ns": 1787898828767197324,
+  "byte_and_mtime_unchanged": true,
+  "rows": 2,
+  "fixed_stop_legacy": "35.32",
+  "validation_scope": "CURRENT_MAIN_READER_ACTUAL_POLICY_ONLY",
+  "actual_eod_morning_verified": false
+}

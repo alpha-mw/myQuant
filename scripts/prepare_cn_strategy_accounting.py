@@ -328,9 +328,8 @@ def _normalize_trade(
     }
 
 
-def _ledger_rows(raw: bytes, *, suffix: str) -> list[dict[str, Any]]:
-    if suffix == ".parquet":
-        return pd.read_parquet(io.BytesIO(raw)).to_dict("records")
+def _historical_audit_rows(raw: bytes) -> list[dict[str, Any]]:
+    """Decode exact registered historical evidence only; never prospective lots."""
     return list(csv.DictReader(io.StringIO(raw.decode("utf-8-sig"))))
 
 
@@ -348,7 +347,7 @@ def _extract_historical_audit(
     if opening_member is None:
         raise StrategyAccountingError("historical opening ledger is unavailable")
     opening_raw, opening_path = opening_member
-    opening_rows = _ledger_rows(opening_raw, suffix=".csv")
+    opening_rows = _historical_audit_rows(opening_raw)
     opening_shares = {
         str(row["symbol"]): int(float(row["shares"]))
         for row in opening_rows
@@ -421,9 +420,7 @@ def _extract_historical_audit(
             manual_rows: list[Mapping[str, Any]] = []
             if manual_orders_member is not None:
                 manual_orders_raw, manual_orders_path = manual_orders_member
-                all_manual_rows = list(
-                    csv.DictReader(io.StringIO(manual_orders_raw.decode("utf-8-sig")))
-                )
+                all_manual_rows = _historical_audit_rows(manual_orders_raw)
                 manual_rows = [
                     row for row in all_manual_rows if _manual_fill_status(row.get("status"))
                 ]
@@ -443,7 +440,7 @@ def _extract_historical_audit(
             if orders_member is not None:
                 orders_raw, source_path = orders_member
                 source_sha = _sha(orders_raw)
-                source_rows = list(csv.DictReader(io.StringIO(orders_raw.decode("utf-8-sig"))))
+                source_rows = _historical_audit_rows(orders_raw)
         fallback_date = str(lineage.get("valuation_date") or "")
         for index, raw in enumerate(source_rows, start=1):
             try:

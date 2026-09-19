@@ -1,0 +1,83 @@
+{
+  "observed_at": "2026-09-14T01:59:03.915038+00:00",
+  "root": "/private/tmp/myquant-configured-missing-store-20260914T012539Z",
+  "case": 4,
+  "trade_date": "20260827",
+  "validation_scope": "NATIVE_SELECTED_JOURNAL_OUTPUT_BYTES_AND_CORE_HANDOFF_READBACK",
+  "successful_nodes": {
+    "calendar": {
+      "state": "SUCCEEDED",
+      "terminal_ref": {
+        "path": "results/operations/daily_production/CN/20260827/nodes/calendar/ae38a7ef65da76772f48d46861d521ccc2177d80dc05ffd1864d87bb2a1b38c8/attempt-0001/terminal.json",
+        "sha256": "fcd7bb421054ab14c51733f782a561e959cba75e40fee264e2583cfef3b338b2"
+      }
+    },
+    "market": {
+      "state": "SUCCEEDED",
+      "terminal_ref": {
+        "path": "results/operations/daily_production/CN/20260827/nodes/market/355de99bfe92cbd2bcdbc422f3eefd918a7ab902198e635ef452d1c1c5c72741/attempt-0001/terminal.json",
+        "sha256": "e2fb22199b6ca127f00f3bb3453426d839318d9618e0230cf112fa7dd516dbf1"
+      }
+    },
+    "pit": {
+      "state": "SUCCEEDED",
+      "terminal_ref": {
+        "path": "results/operations/daily_production/CN/20260827/nodes/pit/c345485b3dceef16ea2c81429b561d8ed3967645de723f8302660a111cf1b54f/attempt-0001/terminal.json",
+        "sha256": "b001545de904d45272d554b6547a99ca06d00c3ff64b75b4f8a7922646ec7328"
+      }
+    },
+    "factor": {
+      "state": "SUCCEEDED",
+      "terminal_ref": {
+        "path": "results/operations/daily_production/CN/20260827/nodes/factor/8d7619bf7f93d5b0e4d88208500190ba4d077bfc61f51137b7a092295cb55a16/attempt-0001/terminal.json",
+        "sha256": "ffce5086a40611f15149143e105855fd1c454b080a3a06e0055226132c8b64b6"
+      }
+    },
+    "low_observation": {
+      "state": "SUCCEEDED",
+      "terminal_ref": {
+        "path": "results/operations/daily_production/CN/20260827/nodes/low_observation/0276981884000c62c52940fd9d730159a2682233cf731497e6b169f5cdba6e30/attempt-0001/terminal.json",
+        "sha256": "0cc1c1bfb95dce664ea7cbac3a61f059b5bd38f947cf25bfb818c8f99a313f1f"
+      }
+    },
+    "w80_observation": {
+      "state": "SUCCEEDED",
+      "terminal_ref": {
+        "path": "results/operations/daily_production/CN/20260827/nodes/w80_observation/e897e5f0815c1d90b94d9a936d213203cebf8afcfebf8b430438464dddca7a4c/attempt-0001/terminal.json",
+        "sha256": "3dc7c4eb1856ceb917d921890dbf9a041977d687c58a9739c988e455770f1871"
+      }
+    },
+    "top100": {
+      "state": "SUCCEEDED",
+      "terminal_ref": {
+        "path": "results/operations/daily_production/CN/20260827/nodes/top100/4f41d6d8ff290540d584d0642c2743ad6645c1152d34f2c100f306eac91706aa/attempt-0001/terminal.json",
+        "sha256": "8c7d8b7eb586d190b274a684e57a8ad35add1e4299c069a0f9a63edd349505b1"
+      }
+    }
+  },
+  "core_handoff_ref": {
+    "path": "results/operations/daily_production/CN/20260827/core-handoff.v1.json",
+    "sha256": "48063980ed42fbe4346d2504640a29624112d86fc5135c14ef78d68dbeb2cd25"
+  },
+  "all_node_states": {
+    "calendar": "SUCCEEDED",
+    "corporate_action_recon": "NOT_STARTED",
+    "dashboard": "NOT_STARTED",
+    "decision": "NOT_STARTED",
+    "exposure": "NOT_STARTED",
+    "factor": "SUCCEEDED",
+    "fundamental": "NOT_STARTED",
+    "industry": "NOT_STARTED",
+    "low_observation": "SUCCEEDED",
+    "macro": "NOT_STARTED",
+    "market": "SUCCEEDED",
+    "pit": "SUCCEEDED",
+    "store": "NOT_STARTED",
+    "theme": "NOT_STARTED",
+    "top100": "SUCCEEDED",
+    "w80_observation": "SUCCEEDED"
+  },
+  "process_handle": 28287,
+  "full_case_proof": false,
+  "production_deployed": false
+}

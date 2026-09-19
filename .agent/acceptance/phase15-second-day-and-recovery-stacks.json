@@ -1,0 +1,42 @@
+{
+  "observed_at": "2026-09-14T04:07:06.270199+00:00",
+  "scope": "ONE_SAFE_ACTUAL_PYTHON_STACK_PER_CURRENT_CHILD",
+  "checks_before_signal": [
+    "current status PID",
+    "ready marker PID/signal/trace",
+    "actual command root and stage",
+    "empty current trace file"
+  ],
+  "observations": [
+    {
+      "root": "/private/tmp/myquant-configured-catalog-20260913T202622Z",
+      "pid": 87782,
+      "handle": 63358,
+      "signal": "SIGUSR1",
+      "signal_count_for_current_child": 1,
+      "trace_ref": {
+        "path": "/private/tmp/myquant-configured-catalog-20260913T202622Z/configured-successor-20260828.stack.txt",
+        "sha256": "0f1f4efae5795a3802408c2209e755232d66500cb2db00a8d672aacb5810aed3"
+      },
+      "trace_written_at": "2026-09-14T04:05:49.113695+00:00",
+      "observed_phase": "configured_source_inputs._inspect._completed_target replays previous completed EOD before target-day configured request is ready",
+      "restart_or_source_modification": false
+    },
+    {
+      "root": "/private/tmp/myquant-configured-missing-store-20260914T012539Z",
+      "pid": 93409,
+      "handle": 6375,
+      "signal": "SIGUSR1",
+      "signal_count_for_current_child": 1,
+      "trace_ref": {
+        "path": "/private/tmp/myquant-configured-missing-store-20260914T012539Z/missing-store-resume.stack.txt",
+        "sha256": "f5926c6e9655a531da96ef2c8cee1eb0bc7cafb614f0c9bee067bd7538ff8dbf"
+      },
+      "trace_written_at": "2026-09-14T04:05:49.228683+00:00",
+      "observed_phase": "recover_bootstrap_committed -> materialize_locked._recorded -> original Decision recipe/research cutoff readback before native financial recovery",
+      "restart_or_source_modification": false
+    }
+  ],
+  "single_samples_prove_completion_or_no_loop": false,
+  "full_goal_complete": false
+}

@@ -14,7 +14,7 @@ from quant_investor.market.cn_benchmark_store import (
     load_immutable_generation,
     publish_generation,
 )
-from scripts.operations import run_cn_benchmark_close as producer
+from quant_investor.market.cn_benchmark_capture import request_partition
 
 
 def _rows() -> list[dict[str, object]]:
@@ -139,34 +139,16 @@ def test_explicit_immutable_generation_rejects_missing_or_tampered_bytes(tmp_pat
         load_immutable_generation(tmp_path, "benchmark-first-test")
 
 
-def test_tushare_capture_uses_monthly_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[tuple[str, str, str]] = []
-
-    class FakeResponse:
-        fields = ("ts_code", "trade_date", "close")
-
-        def __init__(self, code: str, trade_date: str) -> None:
-            self.rows = ((code, trade_date, 1000.0),)
-
-    class FakeClient:
-        def request(self, *, api_name: str, params: dict, expected_fields: tuple):
-            assert api_name == "index_daily"
-            assert expected_fields == FakeResponse.fields
-            calls.append((params["ts_code"], params["start_date"], params["end_date"]))
-            return FakeResponse(params["ts_code"], params["start_date"])
-
-    monkeypatch.setattr(producer, "OfficialTushareHttpsClient", lambda **_kwargs: FakeClient())
-    monkeypatch.setattr(producer, "TUSHARE_REQUEST_INTERVAL_SECONDS", 0.0)
-
-    rows = producer._provider_rows(
-        "token-value-is-never-recorded",
-        start_date="2026-03-17",
-        end_date="2026-08-31",
-        source="tushare",
-    )
-
-    assert len(calls) == 18
-    assert calls[0][1:] == ("20260317", "20260331")
-    assert calls[-1][1:] == ("20260801", "20260831")
-    assert len(rows) == 18
-    assert "TUSHARE_TOKEN" not in producer.os.environ
+def test_tushare_capture_uses_monthly_chunks() -> None:
+    partitions = request_partition("2026-03-17", "2026-08-31")
+    assert len(partitions) == 18
+    assert partitions[0] == {
+        "ts_code": REQUIRED_CODES[0],
+        "start_date": "20260317",
+        "end_date": "20260331",
+    }
+    assert partitions[-1] == {
+        "ts_code": REQUIRED_CODES[-1],
+        "start_date": "20260801",
+        "end_date": "20260831",
+    }

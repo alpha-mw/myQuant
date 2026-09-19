@@ -1,0 +1,20 @@
+{
+  "rank_source": "/private/tmp/myquant-final-source-native-20260909T030031Z/factor-workspace/results/intelligence/research_pool/aggressive_tech_manufacturing/2026-08-27/factor_research_rank.json",
+  "rank_sha256": "9e31568ee6bfc6896b84189e899793fedeb917db0836175f8b91d55253f379e9",
+  "synthetic": true,
+  "pool_size": 100,
+  "focus_companies": {
+    "002384.SZ": {
+      "in_top100": false,
+      "required_daily_focus_scope": true
+    },
+    "002463.SZ": {
+      "in_top100": false,
+      "required_daily_focus_scope": true
+    }
+  },
+  "current_acquisition_maximum_pool_companies": 100,
+  "current_acquisition_focus_scope": null,
+  "code_gap": "acquisition scope derives only from Top100; current artifacts cannot guarantee named companies or separate focus evidence",
+  "whole_goal_complete": false
+}

@@ -1,0 +1,17 @@
+{
+  "observed_at": "2026-09-14T03:02:26.931877+00:00",
+  "root": "/private/tmp/myquant-configured-catalog-20260913T202622Z",
+  "phase": "SUCCESSOR_ACCEPTANCE",
+  "process_handle": 63358,
+  "child_pid": 87782,
+  "process_state": "RUNNING",
+  "active_step": "20260828",
+  "process_observation": "87782 04:46   4:42.93  98.6 R",
+  "first_day_native_acceptance": "PASS",
+  "case9": "PASS",
+  "first_day_original_process_handle": 37364,
+  "first_day_original_exit_code": 0,
+  "five_day_proof": false,
+  "production_deployed": false,
+  "full_goal_complete": false
+}

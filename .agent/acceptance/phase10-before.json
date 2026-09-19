@@ -1,0 +1,21 @@
+{
+  "observed_at": "2026-09-12T16:14:28.806984+00:00",
+  "status": "AUDIT_COMPLETE_IMPLEMENTATION_NOT_STARTED",
+  "scope": "PHASE10_OWNER_THRESHOLD_AND_REPORT_BINDING",
+  "findings": [
+    "v2 owner_policy_ref specifies quote scope only",
+    "Morning report validator checks authority/timing declarations, not deterministic threshold content",
+    "Native risk exporter selects mutable heads, so it cannot be called unchanged by pure prior-EOD consumer"
+  ],
+  "pinned_owner_policy_hashes_verified": true,
+  "source_hashes": {
+    "scripts/daily_morning_consumer.py": "216bdd5978ad0251e93ec88ee5b7ebfa9d80ec39548f54322a359b84844e7314",
+    "quant_investor/operations/morning_contract.py": "3a88bc44b698474eb96e218ac5936a7f61fe4dabd0bc8fcd101abe665978d8a0",
+    "quant_investor/operations/morning_report.py": "0bcfba4f1828025ebbcca228b1eec6c9453e7b23541c80d1fba18c05b820f25b",
+    "scripts/export_cn_research_risk.py": "5b66f58a3858a24251492b92a8f4374dc705edf0682811bc10e624a8d6b0a02f",
+    "quant_investor/strategy_records/research_risk.py": "b1d6b00ce69e0a1a2fe926aa56c059a97e0a5fb4b2c61623aaece810f10fbd9a"
+  },
+  "source_edits": false,
+  "policy_changes": false,
+  "plan": "docs/plans/phase10_morning_threshold_audit.md"
+}

@@ -1,0 +1,21 @@
+{
+  "observed_at": "2026-09-16T16:40:10.803959+00:00",
+  "state": "INTENTIONALLY_STOPPED_SUPERSEDED_SYNTHETIC_CANDIDATE",
+  "old_root": "/private/tmp/myquant-future-calendar-scoped-clock-20260916T125157Z",
+  "old_commit": "d2b2398cbf675026984e19518ca2759d7344812d",
+  "pid": 34708,
+  "signal": "SIGTERM",
+  "reason": "Current candidate5060dee2 passed all12 final CI gates and has started its own finite five-day acceptance; obsolete candidate was still in first-day sealing replay without terminal proof. Preserve all old artifacts and avoid duplicate obsolete computation.",
+  "status_and_log_preimage_sha256": {
+    "configured-chain-status.json": "b5480ce6eef47ec8d8660f4fb8629936d6b1e8e0fc63885d2140fbf85b3333fc",
+    "configured-driver-status.json": "7ee15e31ce46041c6b81da9cf96b059037da838f901ddc3190ca4543203d5b80",
+    "configured-native.log": "156b911a6577a9217c7207a657c2eac1a26a81d9cceb5b2bc64bccc84b7ed682"
+  },
+  "runtime_files_modified": false,
+  "old_run_completed_claimed": false,
+  "production_changed": false,
+  "new_root": "/private/tmp/myquant-canonical-scan-20260916T152008Z",
+  "verified_at": "2026-09-16T16:40:42.507489+00:00",
+  "driver_terminal_state": "FAIL",
+  "chain_terminal_state": "FAIL"
+}

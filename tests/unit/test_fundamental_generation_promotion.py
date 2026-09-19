@@ -35,6 +35,27 @@ from quant_investor.market.fundamental_provider_contract import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_coverage_declaration(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Keep these tests independent of the repository's coverage declaration.
+
+    ``build_canonical_scope_evidence`` folds
+    ``data/cn_universe/daily_basic_coverage_boundaries.json`` into the evidence it
+    derives, so whether that file exists changes the evidence these tests bind and
+    later re-validate. With a v2 declaration present, every promotion test here
+    failed with "canonical scope evidence changed after binding" — a property of
+    the working tree, not of the code under test. Point the constant at a path
+    that does not exist so the evidence comes from fixtures alone.
+    """
+    monkeypatch.setattr(
+        fundamental_mart,
+        "DAILY_BASIC_COVERAGE_BOUNDARY_PATH",
+        tmp_path / "absent-coverage-declaration.json",
+    )
+
+
 def _tables(symbol: str) -> dict[str, pd.DataFrame]:
     trade_dates = pd.bdate_range("2023-05-10", "2024-05-10")
     return {
@@ -281,10 +302,14 @@ def _publish_verified_primary(
     requested_financial_start: str = "20210510",
     canonical_bar_start: str = "20230510",
     expected_pointer_sha256: str | None = None,
+    symbols_override: list[str] | None = None,
+    evidence_namespace: str | None = None,
 ) -> None:
     symbols = sorted(
         set(
-            (
+            symbols_override
+            if symbols_override is not None
+            else (
                 tables_override["fundamental_daily"]["ts_code"].astype(str).tolist()
                 if tables_override is not None
                 else ["000002.SZ"]
@@ -292,6 +317,10 @@ def _publish_verified_primary(
         )
     )
     evidence_dir = root / "evidence"
+    if evidence_namespace is not None:
+        if Path(evidence_namespace).name != evidence_namespace or evidence_namespace in {"", ".", ".."}:
+            raise ValueError("fixture evidence namespace must be one path component")
+        evidence_dir = evidence_dir / evidence_namespace
     evidence_dir.mkdir(parents=True, exist_ok=True)
     scope_path = evidence_dir / "scope.json"
     market_pointer_path = evidence_dir / "market_latest.json"

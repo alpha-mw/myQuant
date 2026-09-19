@@ -1,0 +1,14 @@
+{
+  "observed_at": "2026-09-16T12:19:53.386108+00:00",
+  "state": "PASS",
+  "root": "/private/tmp/myquant-future-calendar-20260916T114925Z",
+  "receipt_ref": {
+    "path": "/private/tmp/myquant-future-calendar-20260916T114925Z/calendar-installed-smoke-proof.json",
+    "sha256": "d1b5ec13548586fc4a53f5dd5fa6fd26dd358e1258a26b98874cc91d913a1cdf"
+  },
+  "native_publication_sha_verified": true,
+  "scope": "INSTALLED_NATIVE_FUTURE_CALENDAR_PRODUCER_AND_CUSTODY_ONLY",
+  "full_eod_or_morning_proven": false,
+  "synthetic": true,
+  "production_deployed": false
+}

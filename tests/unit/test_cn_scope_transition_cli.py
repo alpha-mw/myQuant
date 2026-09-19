@@ -123,7 +123,11 @@ root=Path("""
 a=sys.argv[1:]
 if '-c' in a:
     code=a[a.index('-c')+1]
-    print(str(root/'quant_investor/__init__.py') if 'import pathlib,quant_investor' in code else 'unit-test-token')
+    if 'write_launcher_record' in code:
+        (Path(a[a.index('-c')+2])/'launcher_attempts'/a[a.index('-c')+3]).mkdir(parents=True,exist_ok=True)
+        print('{}')
+    else:
+        print(str(root/'quant_investor/__init__.py') if 'import pathlib,quant_investor' in code else 'unit-test-token')
 elif 'credential-preflight' in a:
     p=Path(a[a.index('--run-root')+1])/'credential_preflight'/(a[a.index('--receipt-id')+1]+'.json')
     p.parent.mkdir(parents=True,exist_ok=True);p.write_text('{}')

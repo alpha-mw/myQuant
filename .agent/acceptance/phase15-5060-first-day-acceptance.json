@@ -1,0 +1,100 @@
+{
+  "observed_at": "2026-09-16T20:23:06.634225+00:00",
+  "state": "CURRENT_INSTALLED_CONFIGURED_FIRST_DAY_PASS",
+  "runtime_commit": "5060dee2d4b39b50a735393d056ebe5adb4efe3b",
+  "root": "/private/tmp/myquant-canonical-scan-20260916T152008Z",
+  "driver_status_ref": {
+    "path": "/private/tmp/myquant-canonical-scan-20260916T152008Z/configured-driver-status.json",
+    "sha256": "adaf858b71a5b28a1a1a5f0af3cc67bdb93ea0f2b970bf3aecb530567032d935"
+  },
+  "native_proof_ref": {
+    "path": "/private/tmp/myquant-canonical-scan-20260916T152008Z/configured-native-proof.json",
+    "sha256": "aba83e30ec30484c68d5c1b9f701251c63cb9ce007b9462bacd27e08e3d92677"
+  },
+  "helper_manifest_ref": {
+    "path": "/private/tmp/myquant-canonical-scan-20260916T152008Z/validation-helper-manifest.json",
+    "sha256": "52f04b59900b695319ef5d8771698f5edd690a319fd2e392593e10c046ab56bf"
+  },
+  "finished_at": "2026-09-16T20:18:41.902785+00:00",
+  "original_request_ref": {
+    "path": "results/operations/daily_production/CN/20260827/preparation/72e16c92935cc66ccb2bb4b5882c0173835595c3ed0921a31ec06b1ce6284a9f/request.json",
+    "sha256": "e01334885c534a66badbc1a3a62e701d670db8156da2084c399477c400c83c5c"
+  },
+  "config_ref": {
+    "path": "configured-inputs/source-config.json",
+    "sha256": "72e16c92935cc66ccb2bb4b5882c0173835595c3ed0921a31ec06b1ce6284a9f"
+  },
+  "completion_ref": {
+    "path": "results/operations/daily_production/CN/20260827/completion.v1.json",
+    "sha256": "18f3b67149b23c9f153994d900efcc99d6c8e0e0618e3518b9f275c07f64d6fd"
+  },
+  "native_replay_validated": true,
+  "validated_nodes": [
+    "calendar",
+    "corporate_action_recon",
+    "dashboard",
+    "decision",
+    "exposure",
+    "factor",
+    "fundamental",
+    "industry",
+    "low_observation",
+    "macro",
+    "market",
+    "pit",
+    "store",
+    "theme",
+    "top100",
+    "w80_observation"
+  ],
+  "pre_core_configuration": true,
+  "factor_core_and_release_verifier_mocked": false,
+  "no_trade_store": {
+    "manual_ref": {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/20260827_212000-b04/manual_execution_manifest.json",
+      "sha256": "bfd5f95aa90bc830d48be641f9c9e6ad66ab51c7abd239b972671985b1cdbe34"
+    },
+    "completion_ref": {
+      "path": "results/strategy_records/CN/aggressive_tech_manufacturing/_record_store/daily_close_transactions/daily-close-20260827-c41a3584d5600a4e/completion.v1.json",
+      "sha256": "e0a4c796beb2a978073995b5cae123d2397afa2720da4197d949331616c0a5c0"
+    },
+    "committed_through": "2026-08-27",
+    "trade_count": 0,
+    "order_count": 0,
+    "fill_count": 0
+  },
+  "fundamental_lag": {
+    "freshness_ref": {
+      "path": "results/operations/daily_production/CN/20260827/research/artifacts/bd5f152f75317231734795d9c816fd1ce0d1eef5787ab8457586757790b794cc.json",
+      "sha256": "bd5f152f75317231734795d9c816fd1ce0d1eef5787ab8457586757790b794cc"
+    },
+    "state": "STALE_WARNING",
+    "entries": 100,
+    "warnings": 100,
+    "critical_missing": 0,
+    "decision_rows": 100
+  },
+  "ledger": {
+    "ledger_ref": {
+      "path": "results/prospective/CN/20260827/evidence-ledger.v1.json",
+      "sha256": "dc606fa02dc14994d1737fe4d208f479b52c9af5f49bb8873fac7e7a4d248d5b"
+    },
+    "classification": "RETROSPECTIVE_RECOMPUTE",
+    "prospective": false,
+    "synthetic": true,
+    "recomputed": true,
+    "validation_scope": "NATIVE_LEDGER_DERIVATION",
+    "native_business_replay_required": true
+  },
+  "synthetic": true,
+  "production_deployed": false,
+  "real_provider_calls": false,
+  "current_normal_days_completed": 1,
+  "required_normal_days": 5,
+  "full_goal_complete": false,
+  "limitations": [
+    "synthetic prices, external transports and logical clock",
+    "maintenance verifies native preproduced Market/PIT/history through fixture NO_ACTION adapters",
+    "one configured bootstrap day; successor automatic/five-session and Morning acceptance remain"
+  ]
+}

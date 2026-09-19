@@ -1,0 +1,34 @@
+{
+  "status": "PREPARED",
+  "release_install_input_path": "/Users/maxwell/mySpace/myQuant/results/releases/69b322cf7f748ee1c67a716978750ef9fa9f911c5c41491f50767bc34d7c40a8/release-install-input.json",
+  "release_install_input_relative_path": "results/releases/69b322cf7f748ee1c67a716978750ef9fa9f911c5c41491f50767bc34d7c40a8/release-install-input.json",
+  "release_install_input_sha256": "69b322cf7f748ee1c67a716978750ef9fa9f911c5c41491f50767bc34d7c40a8",
+  "release_ref": {
+    "artifact_id": "unified-release-30718ba6df659ddffbd6a05aa47bd6116d11c1e2c649303bdd026f6b2238fbe0",
+    "byte_sha256": "6bbad9d61d6fc31c754ca06fa15ff961968c8b34aa453a600965f47d543c43cc",
+    "contract_sha256": "c498d7d2294e79d458d948adbbc2b9a2a227d5ca811365e92863d1e6b9a84953",
+    "kind": "system.release",
+    "semantic_sha256": "146d62f3c3bee058d76a986755cdeabc23e7f11df7454c60326d81366cb2be6f"
+  },
+  "installed_python": "/Users/maxwell/mySpace/myQuant-release-authority/5060dee2d4b39b50a735393d056ebe5adb4efe3b-unified-dag/installs/5060dee2d4b39b50a735393d056ebe5adb4efe3b-42a7933da56d08cfe3dcc1ccf5fd14cb7deadbea94b77423d2d74d8602602c7a/bin/python",
+  "import_origin": "/Users/maxwell/mySpace/myQuant-release-authority/5060dee2d4b39b50a735393d056ebe5adb4efe3b-unified-dag/installs/5060dee2d4b39b50a735393d056ebe5adb4efe3b-42a7933da56d08cfe3dcc1ccf5fd14cb7deadbea94b77423d2d74d8602602c7a/lib/python3.13/site-packages/quant_investor/__init__.py",
+  "verification": {
+    "state": "PASS",
+    "release_ref": {
+      "artifact_id": "unified-release-30718ba6df659ddffbd6a05aa47bd6116d11c1e2c649303bdd026f6b2238fbe0",
+      "byte_sha256": "6bbad9d61d6fc31c754ca06fa15ff961968c8b34aa453a600965f47d543c43cc",
+      "contract_sha256": "c498d7d2294e79d458d948adbbc2b9a2a227d5ca811365e92863d1e6b9a84953",
+      "kind": "system.release",
+      "semantic_sha256": "146d62f3c3bee058d76a986755cdeabc23e7f11df7454c60326d81366cb2be6f"
+    },
+    "source_archive_sha256": "2fcd2fc16d2ef985ab0a15afde51ff569ad1472eb2cd94e38dd369d582df99a1",
+    "wheel_sha256": "42a7933da56d08cfe3dcc1ccf5fd14cb7deadbea94b77423d2d74d8602602c7a",
+    "code_tree_sha256": "d94dfda76950d390822fb71064ee0b452965e8b36c4cb99e8ab9c34d09e43382",
+    "installed_code_manifest_sha256": "3bfed8da9a4182b6fc3db92e8e437c5e7003cfeeabb846076ac3558b7a229f4b",
+    "contract_catalog_sha256": "bf33e0e64f9c316edf78ba6289535e2d7c39311a4c1feac70ce2da43afc981fb",
+    "import_origin": "/Users/maxwell/mySpace/myQuant-release-authority/5060dee2d4b39b50a735393d056ebe5adb4efe3b-unified-dag/installs/5060dee2d4b39b50a735393d056ebe5adb4efe3b-42a7933da56d08cfe3dcc1ccf5fd14cb7deadbea94b77423d2d74d8602602c7a/lib/python3.13/site-packages/quant_investor/__init__.py"
+  },
+  "grants_system_authority": false,
+  "grants_factor_authority": false,
+  "grants_trading_authority": false
+}

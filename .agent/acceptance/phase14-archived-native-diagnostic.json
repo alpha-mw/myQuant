@@ -1,0 +1,11 @@
+{
+  "recorded_at": "2026-09-13T04:44:43.091140+00:00",
+  "status": "REJECTED",
+  "elapsed_seconds": 163.99929329100996,
+  "instrumentation": "Popen wait captures bounded existing stderr only; verification and result unchanged",
+  "result": {
+    "error_class": "ContractError",
+    "error": "OUTCOME_NATIVE_CHILD_FAILED"
+  },
+  "stderr_file": "/Users/maxwell/mySpace/myQuant/.agent/acceptance/phase14-archived-child-stderr.txt"
+}

@@ -1,0 +1,86 @@
+{
+  "observed_at": "2026-09-12T22:18:50.432662+00:00",
+  "status": "EXISTING_PROFILE_FIX_COMPLETED_LOCAL_VALIDATION",
+  "phase12_complete": false,
+  "full_goal_complete": false,
+  "source_refs": [
+    {
+      "path": "quant_investor/operations/theme_core_binding.py",
+      "sha256": "9aa3d20877105b8ce63ac6366f84aac111b334adbf9f07bc5d9ad124b68cac60"
+    },
+    {
+      "path": "tests/unit/test_daily_evidence_theme_core_binding.py",
+      "sha256": "606bf1af9f8da1173cd3a47d4a164bb46883abdaec21ebcb1b279c166f116dbc"
+    }
+  ],
+  "tested_refs": [
+    {
+      "path": "tests/unit/test_daily_evidence_theme_core_binding.py",
+      "sha256": "606bf1af9f8da1173cd3a47d4a164bb46883abdaec21ebcb1b279c166f116dbc"
+    },
+    {
+      "path": "tests/unit/test_daily_evidence_theme_capture_stage.py",
+      "sha256": "c6f89b3d54350b1f625fabcbc9412d60430e8334d700f574b3947f2da318641a"
+    },
+    {
+      "path": "tests/unit/test_daily_evidence_theme_handoff_contract.py",
+      "sha256": "ce8211ab2fd7b44a5c246adaab635e6144190d3307f580a76ad951ce6fd6c471"
+    },
+    {
+      "path": "tests/unit/test_daily_evidence_theme_acquisition_contract.py",
+      "sha256": "8ea8445f7d3b8e8ab164782be7837b753a0e9dd79bc7fc7f3518543647d87b7f"
+    },
+    {
+      "path": "tests/unit/test_daily_evidence_focus_acquisition.py",
+      "sha256": "c23ec4db1ff77a7b2d7d10f8d156cfbc29581595a09775027add60b3657030c0"
+    }
+  ],
+  "regression_before": {
+    "session": 46121,
+    "exit_code": 1,
+    "result": "1 failed, 6 passed in 4.13s",
+    "failure": "EXECUTE_RECIPE_V2_FIELDS_INVALID for supported recipe v3"
+  },
+  "final_validation": {
+    "session": 7683,
+    "exit_code": 0,
+    "result": "59 passed in 21.63s"
+  },
+  "static": {
+    "mypy": "PASS, 1 source file",
+    "black": "PASS, 2 Python files",
+    "flake8": "PASS, 2 Python files"
+  },
+  "exercised": [
+    "owning recipe v2/v3/v4 dispatch",
+    "native tabular pool verification",
+    "ordinary and two-company focus native captures",
+    "real binder through handoff publication and readback for recipes v3/v4",
+    "post-cutoff exact replay with providers/writes forbidden",
+    "invalid corporate refs, serving policy, unknown versions, extra fields, legacy non-acquisition rejection before native core"
+  ],
+  "test_seams": [
+    "Factor core inspector and CoreContext are explicit controlled fixtures",
+    "bound focus PIT callback is controlled",
+    "provider transport uses FakeClient",
+    "clock is controlled for capture/replay"
+  ],
+  "not_exercised": [
+    "installed current-source full DAG",
+    "live provider acquisition",
+    "real financial-state writes",
+    "scheduler deployment",
+    "new dynamic cutoff profile"
+  ],
+  "full_unit_diagnostic": {
+    "session": 48704,
+    "exit_code": 2,
+    "result": "1 failed, 803 passed, 2 skipped in 329.80s",
+    "disposition": "INTERRUPTED_AFTER_5M29S; not a full-unit acceptance pass",
+    "failure": "tests/unit/test_cn_weekly_factor_consumer.py::test_exact_maintenance_observations_policy_rank_and_pool_replay",
+    "reason": "fixture expected FRESH but native daily component closure was unproven",
+    "scope": "outside Theme binder change; no weekly source or fixture edits",
+    "interrupted_process_pid": 49333
+  },
+  "next": "Finish exact timing/source input contracts and Critic review; input/bootstrap/install/automation/full-path acceptance remain."
+}

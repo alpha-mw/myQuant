@@ -1,0 +1,42 @@
+def _seal_core_checkpoint(
+    context: MaintenanceContext,
+    results: list[dict[str, Any]],
+    *,
+    logical_claim_ref: Mapping[str, str],
+) -> dict[str, str]:
+    claim_raw = _read_owner_file(Path(logical_claim_ref["path"]), code="LOGICAL_CLAIM_UNSAFE")
+    if hashlib.sha256(claim_raw).hexdigest() != logical_claim_ref["sha256"]:
+        raise DailyMaintenanceError("LOGICAL_CLAIM_CHANGED_BEFORE_CORE")
+    started = context.attempt_root / "started.json"
+    stages = [context.attempt_root / f"stage-{row['stage']}.json" for row in results]
+
+    def exact(path: Path) -> dict[str, str]:
+        return {
+            "path": str(path),
+            "sha256": hashlib.sha256(
+                _read_owner_file(path, code="CORE_CHECKPOINT_SOURCE_UNSAFE")
+            ).hexdigest(),
+        }
+
+    path = context.attempt_root / "core-completion.json"
+    payload = {
+        "schema_version": "cn-daily-maintenance-core.v1",
+        "logical_claim_ref": dict(logical_claim_ref),
+        "producer": "quant_investor.market.daily_maintenance",
+        "scope": "FACTOR_INPUTS_ONLY",
+        "other_authority": "NONE",
+        "mode": context.mode,
+        "target_date": context.target_date,
+        "status": "CORE_COMPLETE",
+        "maintenance_status": "IN_PROGRESS",
+        "started_ref": exact(started),
+        "stage_refs": [exact(p) for p in stages],
+        "stage_results": results,
+        "blockers": [],
+        "provider_activity": operation_provider_summary(),
+        "close_session_receipt_ref": {
+            "path": str(context.close_session_receipt_path),
+            "sha256": context.close_session_receipt_sha256,
+        },
+    }
+    return {"path": str(path), "sha256": _write_once(path, _canonical_json_bytes(payload))}
