@@ -205,18 +205,21 @@ def test_verify_active_lineage_result_is_cached_and_returns_isolated_copy(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from quant_investor.factors.production_authority import _LINEAGE_VERIFICATION_CACHE
+
+    _LINEAGE_VERIFICATION_CACHE.clear()
     store, prepared = _native_store_and_prepared(tmp_path, monkeypatch)
     _activate(store, prepared)
 
     first = store.verify_active()
     assert first["factor_authority"] == "ACTIVE"
     # Deep-closure replay is cached once per immutable (pointer, marker) pair.
-    assert len(store._lineage_verification_cache) == 1
+    assert len(_LINEAGE_VERIFICATION_CACHE) == 1
 
     second = store.verify_active()
     assert second == first
     # Same head must not add a second cache entry.
-    assert len(store._lineage_verification_cache) == 1
+    assert len(_LINEAGE_VERIFICATION_CACHE) == 1
 
     # Returned dict is an isolated shallow copy: mutating it must not poison
     # the cached verification for the next reader.
