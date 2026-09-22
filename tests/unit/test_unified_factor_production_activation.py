@@ -201,6 +201,30 @@ def _activate(store: FactorProductionStore, prepared: dict) -> dict:
     )
 
 
+def test_verify_active_lineage_result_is_cached_and_returns_isolated_copy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, prepared = _native_store_and_prepared(tmp_path, monkeypatch)
+    _activate(store, prepared)
+
+    first = store.verify_active()
+    assert first["factor_authority"] == "ACTIVE"
+    # Deep-closure replay is cached once per immutable (pointer, marker) pair.
+    assert len(store._lineage_verification_cache) == 1
+
+    second = store.verify_active()
+    assert second == first
+    # Same head must not add a second cache entry.
+    assert len(store._lineage_verification_cache) == 1
+
+    # Returned dict is an isolated shallow copy: mutating it must not poison
+    # the cached verification for the next reader.
+    second["factor_authority"] = "MUTATED"
+    third = store.verify_active()
+    assert third["factor_authority"] == "ACTIVE"
+
+
 def _take_factor_active_lock_in_process(
     workspace_root: str,
     barrier: multiprocessing.synchronize.Barrier,

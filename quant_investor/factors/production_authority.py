@@ -2693,6 +2693,11 @@ class FactorProductionStore:
         self._storage = _FactorSecureStorage(workspace_root)
         self.workspace_root = self._storage.workspace_root
         self._source_custody = source_custody
+        # Cache for _verify_pointer_lineage results, keyed by the immutable
+        # (pointer, marker) byte SHAs it validates.  Deep-closure replay is a
+        # pure read-only function of those two bytes, so within one store
+        # instance a repeated verification of the same head is redundant.
+        self._lineage_verification_cache: dict[tuple[str, str], dict[str, Any]] = {}
         if release_repository_root is None:
             self._release_repository_root: Path | None = None
         else:
@@ -3752,6 +3757,10 @@ class FactorProductionStore:
         self, pointer_stored: FactorStoredBytes, marker_stored: FactorStoredBytes
     ) -> dict[str, Any]:
         """Native immutable lineage replay shared by current and recorded readers."""
+        cache_key = (pointer_stored.byte_sha256, marker_stored.byte_sha256)
+        cached = self._lineage_verification_cache.get(cache_key)
+        if cached is not None:
+            return dict(cached)
         active_pointer = validate_factor_active_pointer(pointer_stored.data)
         marker = validate_factor_production_marker(marker_stored.data)
         genesis_pointer = self._read_artifact_ref(
@@ -3896,7 +3905,7 @@ class FactorProductionStore:
             validation_mode="HISTORICAL_RECOVERY",
             current_release_root=None,
         )
-        return {
+        verification = {
             "activation_scope": FACTOR_PRODUCTION_SCOPE,
             "factor_readiness": FACTOR_READINESS_READY,
             "factor_authority": FACTOR_AUTHORITY_ACTIVE,
@@ -3927,6 +3936,8 @@ class FactorProductionStore:
             "system_pointer_touched": False,
             "blockers": [],
         }
+        self._lineage_verification_cache[cache_key] = verification
+        return verification
 
     def inspect_recorded_research_inputs(
         self, *, pointer_raw: bytes, expected_pointer_sha256: str, expected_trade_date: str
