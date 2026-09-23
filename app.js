@@ -3,6 +3,8 @@
 
   var Contract = window.CNAggressiveDashboardContractV1;
   var PrivateDashboardContract = window.__cnAggressivePrivateDashboardContract;
+  var DailyDashboardContract = window.CNDailyDashboardContract;
+  var renderSequence = 0;
   var Analysis = window.CNAggressiveDashboardAnalysisV1;
   var PublicMode = window.CNPublicDashboard === true;
   var activeBundle = null;
@@ -504,7 +506,9 @@
     renderDrawdownChart(activeAnalysis);
   }
 
-  function renderBlockers(blockers) {
+  function renderBlockers(blockers, datedHistory) {
+    setText("blockerEyebrow", datedHistory ? "DATED SNAPSHOT" : "FAIL CLOSED");
+    setText("blockerTitle", datedHistory ? "快照已过期，可查看历史记录" : "Dashboard 不可用");
     var panel = byId("blockerPanel");
     var list = byId("blockerList");
     list.replaceChildren();
@@ -888,7 +892,8 @@
 
   function markedView(canonical, v2Snapshot) {
     if (!v2Snapshot || !v2Snapshot.bundle ||
-        v2Snapshot.status.freshness !== "UPDATED") return canonical;
+        v2Snapshot.status.freshness !== "UPDATED" &&
+        v2Snapshot.view_designation !== "LATEST_COMPLETED_EOD") return canonical;
     var mark = v2Snapshot.bundle.research_mark;
     var canonicalBySymbol = {};
     canonical.positions.forEach(function (position) {
@@ -941,8 +946,9 @@
         return {
           severity: "MEDIUM",
           code: "CURRENT_VIEW_CONTINUITY_MARK",
-          detail: "股数、现金和成本由财务状态锚点与当日 NO_ACTION 延续；价格按 " +
-            mark.mark_date + " 严格收盘只读估值，未写入 Store。"
+          detail: v2Snapshot.bundle.continuity_authority.status === "FINANCIAL_STATE_PUBLICATION"
+            ? "股数、现金和成本来自已发布的财务账本；页面按 " + mark.mark_date + " 严格收盘价格只读呈现。"
+            : "股数、现金和成本由财务状态锚点与当日 NO_ACTION 延续；价格按 " + mark.mark_date + " 严格收盘只读估值，未写入 Store。"
         };
       }
       if (risk.code === "EQUITY_CONCENTRATION") {
@@ -964,7 +970,8 @@
         v2Snapshot.bundle.completeness.benchmark_as_of
     );
     view.latest_data_date = mark.mark_date;
-    view.data_age_calendar_days = 0;
+    view.data_age_calendar_days = v2Snapshot.view_designation === "LATEST_COMPLETED_EOD"
+      ? v2Snapshot.age_calendar_days : 0;
     return view;
   }
 
@@ -979,7 +986,9 @@
     setText("latestRecord", bundle.latest_valid_record);
     setText(
       "holdingsSubtitle",
-      v2Snapshot && v2Snapshot.bundle
+      v2Snapshot && v2Snapshot.view_designation === "LATEST_COMPLETED_EOD"
+        ? "截至 " + v2Snapshot.bundle.research_mark.mark_date + " 的日终历史持仓；权益权重按股票仓位内部计算。"
+        : v2Snapshot && v2Snapshot.bundle
         ? "最新严格收盘研究估值，不改变 effective ledger；权益权重按股票仓位内部计算。"
         : "记录价格，不是当前行情；权益权重按股票仓位内部计算。"
     );
@@ -991,6 +1000,7 @@
     var assurance = bundle.assurance || {};
     setText(
       "dataAssuranceStatus",
+      v2Snapshot && v2Snapshot.status.freshness === "STALE" ? "STALE" :
       assurance.data && assurance.data.status === "VERIFIED"
         ? "UPDATED"
         : assurance.data
@@ -1085,7 +1095,96 @@
       });
   }
 
-  function render() {
+  function renderDailyEvidence(daily) {
+    var names = {store:"日终账本",factor:"因子证据",top100:"Top100 研究池",theme:"主题证据",decision:"研究结论"};
+    var labels = {THESIS_INVALIDATED:"逻辑失效",INSUFFICIENT_EVIDENCE:"证据不足",WATCHLIST:"观察",RESEARCH_APPROVED:"研究通过",PAPER_CANDIDATE:"模拟候选"};
+    var date = daily.head.trade_date;
+    var iso = date.slice(0,4)+"-"+date.slice(4,6)+"-"+date.slice(6,8);
+    setText("internalControlTitle", "已完成日终账本与证据总览");
+    var holdingsTitle = document.querySelector("#holdings h2");
+    if (holdingsTitle) holdingsTitle.textContent = "日终持仓与资产配置";
+    var holdingsEyebrow = document.querySelector("#holdings .eyebrow");
+    if (holdingsEyebrow) holdingsEyebrow.textContent = "COMPLETED EOD LEDGER";
+    var closureLabel = document.querySelector("#control .control-kicker");
+    if (closureLabel) closureLabel.textContent = "COMPLETED EOD CLOSURE";
+    var riskTitle = document.querySelector("#risk-register h2");
+    if (riskTitle) riskTitle.textContent = "日终风险提示 · " + iso;
+    var labelMap = {"当前数据日期":"日终数据日期", "当前持仓数":"日终持仓数", "当前组合总资产":"日终组合总资产", "当前未实现 P&L":"日终未实现 P&L"};
+    document.querySelectorAll("#control dt, #performanceList dt").forEach(function (node) {
+      if (labelMap[node.textContent]) node.textContent = labelMap[node.textContent];
+    });
+    document.querySelectorAll("#control a").forEach(function (node) {
+      if (node.textContent.trim().startsWith("当前持仓")) node.textContent = "日终持仓";
+    });
+
+    setText("dailyResearchDate", "日终日期 · " + iso);
+    setText("dailyResearchScope", "五项数据已匹配同一日终；展示截至研究截止时点的快照，不代表实时持仓。" +
+      (window.location.protocol === "file:" ? " 当前通过离线镜像读取。" : ""));
+    var rows = byId("dailyResearchSources");
+    rows.replaceChildren();
+    Object.keys(names).forEach(function (name) {
+      var row=document.createElement("tr");
+      makeCell(row,names[name]);
+      makeCell(row,name === "top100" ? daily.evidence.top100_count + " 家公司 · 已匹配" : "已匹配 · " + iso);
+      rows.appendChild(row);
+    });
+    setText("dailyDecisionCounts", Object.keys(labels).map(function (key) {
+      return labels[key] + " " + daily.evidence.decision_state_counts[key];
+    }).join(" · "));
+    byId("dailyResearchPanel").hidden = false;
+    renderRegisteredChanges(daily);
+  }
+
+  function renderRegisteredChanges(daily) {
+    var panel=byId("dailyRegisteredPanel");
+    if (!panel) return;
+    panel.hidden=!daily.registered;
+    if (!daily.registered) return;
+    var data=daily.registered, report=data.report, close=data.close;
+    setText("internalExecutionStatus", "收盘估值完成 · 未新增交易");
+    var day=daily.head.trade_date;
+    setText("dailyRegisteredDate", "交易日 · "+day.slice(0,4)+"-"+day.slice(4,6)+"-"+day.slice(6,8));
+    setText("dailyRegisteredEvidence", data.changes.length+" 只股票有已登记买入；证据来自用户申报，券商账单尚待核对。");
+    function local(value) { return new Date(value).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai",hour12:false}); }
+    setText("dailyRegisteredTimes", "申报于 "+local(report.owner_declared_at)+"；登记于 "+local(report.registered_at)+"（北京时间）。");
+    setText("dailyRegisteredClose", "已完成正式收盘估值；收盘环节新增成交 "+close.close_writer_trade_count+" 笔、订单 "+close.close_writer_order_count+" 笔、成交回报 "+close.close_writer_fill_count+" 笔。现金和持仓承接登记后的账本。");
+    setText("dailyRegisteredRisk", "截至这份日终记录，变动持仓的止损和跟踪策略仍待复核，未取得执行资格。");
+    var rows=byId("dailyRegisteredRows"); rows.replaceChildren();
+    data.changes.forEach(function(change){
+      var row=document.createElement("tr");
+      [change.symbol,change.change_kind==="NEW_POSITION"?"新增持仓":"加仓",number(change.shares_before),"+"+number(change.shares_delta),number(change.shares_after),money(change.cost_basis_delta),"策略待复核"].forEach(function(value){makeCell(row,value);});
+      rows.appendChild(row);
+    });
+  }
+
+  async function render() {
+    var sequence = ++renderSequence;
+    if (!PublicMode && DailyDashboardContract) {
+      try {
+        var daily = await DailyDashboardContract.fromPage(window);
+        if (sequence !== renderSequence) return;
+        if (daily.mode === "SEALED") {
+          scheduleFreshnessRecheck(null);
+          var dailyStatus = byId("runtimeStatus");
+          dailyStatus.textContent = daily.snapshot.holdings_label;
+          dailyStatus.className = "status-pill " + (daily.snapshot.status.freshness === "STALE" ? "partial" : "fresh");
+          renderBlockers(daily.snapshot.blockers, true);
+          renderBundle(daily.v1, daily.snapshot);
+          renderDailyEvidence(daily);
+          freshnessTimer = window.setTimeout(render, 30000);
+          return;
+        }
+      } catch (error) {
+        if (sequence !== renderSequence) return;
+        scheduleFreshnessRecheck(null);
+        byId("dashboardContent").hidden = true;
+        byId("runtimeStatus").textContent = "日终快照待发布";
+        byId("runtimeStatus").className = "status-pill blocked";
+        renderBlockers(["日终凭证与页面数据尚未完成一致性核验，暂不展示当前页面。", String(error.code || error.message || error)]);
+        if (window.location.protocol !== "file:") freshnessTimer = window.setTimeout(render, 30000);
+        return;
+      }
+    }
     var snapshot = Contract.deriveSnapshot(window.MyQuantCNAggressiveDashboard);
     var status = byId("runtimeStatus");
     var v2Snapshot = null;
