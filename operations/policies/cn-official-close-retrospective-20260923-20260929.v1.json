@@ -1,0 +1,59 @@
+{
+  "schema_id": "myquant.cn_official_close_retrospective_owner_declaration.v1",
+  "declaration_id": "cn-official-close-retrospective-20260923-20260929-v1",
+  "owner": "Maxwell",
+  "authorized_at": "2026-09-30T06:30:32Z",
+  "policy_id": "cn-daily-official-close-policy-v1",
+  "strategy_label": "aggressive_tech_manufacturing",
+  "retrospective_empty_event_closure_authorized": true,
+  "view_only_mark_is_cross_check_only": true,
+  "broker_order_trade_authority": false,
+  "actual_holdings_mutation_authority": false,
+  "cash_mutation_authority": false,
+  "dates": [
+    {
+      "trade_date": "2026-09-23",
+      "executions": [],
+      "orders": [],
+      "fills": [],
+      "funding": [],
+      "cost_basis_changes": [],
+      "corporate_actions": [],
+      "manual_changes": [],
+      "source_receipt_id": null
+    },
+    {
+      "trade_date": "2026-09-24",
+      "executions": [],
+      "orders": [],
+      "fills": [],
+      "funding": [],
+      "cost_basis_changes": [],
+      "corporate_actions": [],
+      "manual_changes": [],
+      "source_receipt_id": null
+    },
+    {
+      "trade_date": "2026-09-28",
+      "executions": [],
+      "orders": [],
+      "fills": [],
+      "funding": [],
+      "cost_basis_changes": [],
+      "corporate_actions": [],
+      "manual_changes": [],
+      "source_receipt_id": null
+    },
+    {
+      "trade_date": "2026-09-29",
+      "executions": [],
+      "orders": [],
+      "fills": [],
+      "funding": [],
+      "cost_basis_changes": [],
+      "corporate_actions": [],
+      "manual_changes": [],
+      "source_receipt_id": null
+    }
+  ]
+}
