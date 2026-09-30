@@ -3752,10 +3752,17 @@ def _common_record_root(parser: argparse.ArgumentParser) -> None:
 
 
 def command_publish_event_closures(args: argparse.Namespace) -> dict[str, Any]:
-    """Publish explicit owner-authorized CLOSED_EMPTY event-state rows."""
+    """Publish explicit owner-authorized CLOSED_EMPTY event-state rows.
+
+    The successor carries every current closure forward unchanged and appends the
+    declared dates; a declared date that is already closed is refused rather than
+    restated.
+    """
 
     from quant_investor.strategy_records.event_store import (
+        EMPTY_POINTER_SHA256,
         build_empty_closure,
+        load_generation,
         publish_generation,
     )
 
@@ -3865,12 +3872,21 @@ def command_publish_event_closures(args: argparse.Namespace) -> dict[str, Any]:
                 source_receipt_ref=source_ref,
             )
         )
+    retained: list[dict[str, Any]] = []
+    if args.expected_event_pointer_sha256 != EMPTY_POINTER_SHA256:
+        retained = list(load_generation(root / "_event_store")["closures"])
+        closed = {row["trade_date"] for row in retained}
+        already = sorted(row["trade_date"] for row in closures if row["trade_date"] in closed)
+        if already:
+            raise StrategyRecordStoreError(
+                "retrospective declaration repeats closed dates:" + ",".join(already)
+            )
     published = publish_generation(
         root / "_event_store",
         generation_id=args.generation_id,
         generated_at=sealed_at,
         expected_pointer_sha256=args.expected_event_pointer_sha256,
-        closures=closures,
+        closures=[*retained, *closures],
         policy_ref={"path": args.policy_path, "sha256": args.policy_sha256},
     )
     return {

@@ -23,7 +23,7 @@ FACTOR_LOOP_CONTEXT_SHA="15fab00b8ef865c49b64bf1df0c8cf11b5f39d962626cf94c8059bb
 # ---- 周末判断（Mon=1 ... Sun=7），周末跳过 ----
 DOW="$(date +%u)"
 if (( DOW >= 6 )); then
-  print -u2 -- "[$(date -Is)] 周末（weekday=$DOW），跳过 factor loop"
+  print -u2 -- "[$(date -Iseconds)] 周末（weekday=$DOW），跳过 factor loop"
   exit 0
 fi
 
