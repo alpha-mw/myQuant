@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from pathlib import Path
 
 import pandas as pd
@@ -340,9 +341,7 @@ def test_absolute_repository_data_root_cross_binds_neutral_relative_recovery_pat
     recovery = pointer["recovery"]
     assert pointer["manifest_path"] == ("data/parquet/cn/_snapshots/snapshot-good-v4.json")
     assert pointer["table_root"] == ("data/parquet/cn/_snapshots/snapshot-good-v4/table/bars")
-    assert pointer["derived_serving_root"] == (
-        "data/parquet/cn/_snapshots/snapshot-good-v4/serving/bars"
-    )
+    assert "derived_serving_root" not in pointer
     assert set(recovery) == {
         "schema_version",
         "recovery_id",
@@ -369,9 +368,10 @@ def test_absolute_repository_data_root_cross_binds_neutral_relative_recovery_pat
     assert receipt["intent_sha256"] == recovery["intent_sha256"]
     assert receipt["new_market_pointer_sha256"] == _sha256(latest_path)
     assert receipt["new_market_pointer_sha256"] == result["new_market_pointer_sha256"]
-    assert receipt["source_validation"]["table_logical_rowset_sha256"] == (
-        receipt["source_validation"]["serving_logical_rowset_sha256"]
-    )
+    assert not {
+        "serving_inventory_sha256",
+        "serving_logical_rowset_sha256",
+    } & set(receipt["source_validation"])
     binding = snapshot_recovery_binding.validate_recovery_pointer_binding(
         pointer,
         pointer_sha256=_sha256(latest_path),
@@ -433,27 +433,28 @@ def test_reactivate_rejects_noncanonical_source_manifest_before_recovery_write(
     assert not (tmp_path / "data" / "parquet" / "cn" / "_recoveries").exists()
 
 
-@pytest.mark.parametrize("mutation", ["value", "key"])
-def test_reactivate_rejects_table_serving_value_or_key_difference(
+@pytest.mark.parametrize("mutation", ["value", "removed"])
+def test_reactivate_validates_canonical_table_and_ignores_serving_projection(
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     mutation: str,
 ) -> None:
-    fixture = _write_reactivation_fixture(tmp_path)
+    monkeypatch.setattr(market_data_store, "_REPOSITORY_ROOT", tmp_path)
+    monkeypatch.setattr(snapshot_recovery_binding, "REPO_ROOT", tmp_path)
+    fixture = _write_reactivation_fixture(tmp_path, repository_layout=True)
     serving_path = Path(fixture["serving_a"])
-    serving = pd.read_parquet(serving_path)
     if mutation == "value":
+        serving = pd.read_parquet(serving_path)
         serving.loc[serving["trade_date"].eq("20260103"), "close"] = 999.0
+        serving.to_parquet(serving_path, index=False)
     else:
-        serving = serving.loc[serving["trade_date"].ne("20260102")].copy()
-    serving.to_parquet(serving_path, index=False)
+        shutil.rmtree(Path(fixture["serving_root"]))
 
-    with pytest.raises(
-        ValueError,
-        match="snapshot_table_serving_.*_mismatch",
-    ):
-        _run(tmp_path, fixture)
+    result = _run(tmp_path, fixture, commit=True)
 
-    assert not (tmp_path / "parquet" / "cn" / "_recoveries").exists()
+    assert result["status"] == "activated"
+    pointer = json.loads(Path(fixture["latest_path"]).read_text(encoding="utf-8"))
+    assert "derived_serving_root" not in pointer
 
 
 def test_reactivate_rolls_back_only_its_own_attempted_pointer(

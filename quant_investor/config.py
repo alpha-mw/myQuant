@@ -223,6 +223,12 @@ class Config:
         "MYQUANT_TUSHARE_DELETE_REDUNDANT_CSV",
         MAINLINE_ENV_DEFAULTS["MYQUANT_TUSHARE_DELETE_REDUNDANT_CSV"] == "1",
     )
+    # Transition switch for the retired per-symbol ``serving/`` projection.
+    # Readers in this release use the canonical table only, but runtimes pinned
+    # to older releases still require it. While on, CN publication keeps writing
+    # it (pruned to the newest few snapshots) and held-security refs keep
+    # citing it. Turn off in the release that follows the last such runtime.
+    CN_MARKET_SERVING_PROJECTION: bool = _env_bool("MYQUANT_CN_MARKET_SERVING_PROJECTION", True)
     # LLM / 外部 API 凭据
     KIMI_API_KEY: str = get_secret("KIMI_API_KEY")
     DEEPSEEK_API_KEY: str = get_secret("DEEPSEEK_API_KEY")

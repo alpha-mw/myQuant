@@ -127,3 +127,24 @@ def test_repair_requires_exact_v4_pit_generation_binding() -> None:
             coverage=coverage,
             audit_pit=stale_audit,
         )
+
+
+@pytest.mark.parametrize(
+    ("window", "accepted"),
+    [
+        ({"table_sha256": "a" * 64}, True),
+        ({"table_serving_match": True, "table_sha256": "a" * 64}, True),
+        ({"table_serving_match": False}, False),
+    ],
+)
+def test_source_audit_accepts_canonical_only_windows(window, accepted) -> None:
+    payload = _audit_payload()
+    payload["canonical_window_evidence"] = window
+    payload_without_sha = dict(payload)
+    payload_without_sha.pop("audit_sha256", None)
+    payload["audit_sha256"] = canonical_json_sha256(payload_without_sha)
+    if accepted:
+        MODULE._validate_source_audit_payload(payload)
+    else:
+        with pytest.raises(SystemExit, match="table/serving"):
+            MODULE._validate_source_audit_payload(payload)

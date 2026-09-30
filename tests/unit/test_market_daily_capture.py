@@ -749,14 +749,16 @@ def test_shadow_clones_full_history_publishes_candidate_and_preserves_canonical(
     }
     seed_manifest_path = shadow / "parquet" / "cn" / "_snapshots" / "seed.json"
     seed_manifest = json.loads(seed_manifest_path.read_text(encoding="utf-8"))
-    for field in ("manifest_path", "table_root", "derived_serving_root"):
+    for field in ("manifest_path", "table_root"):
         Path(seed_manifest[field]).relative_to(shadow)
-    assert {reference["role"] for reference in result["protected_production_refs"]} >= {
+    assert "derived_serving_root" not in seed_manifest
+    roles = {reference["role"] for reference in result["protected_production_refs"]}
+    assert roles >= {
         "production_market_pointer",
         "production_market_manifest",
         "production_market_table",
-        "production_market_serving",
     }
+    assert "production_market_serving" not in roles
     candidate_pointer = json.loads(
         Path(result["candidate_pointer_path"]).read_text(encoding="utf-8")
     )

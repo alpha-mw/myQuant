@@ -97,6 +97,60 @@ class MarketDataStore:
             return ""
         return str(payload.get("snapshot_id") or "") if isinstance(payload, Mapping) else ""
 
+    SERVING_PROJECTION_KEEP_RECENT = 3
+
+    def _publish_serving_projection(self) -> bool:
+        from quant_investor.config import config
+
+        return self.market == "CN" and bool(getattr(config, "CN_MARKET_SERVING_PROJECTION", False))
+
+    def _stage_serving_projection(
+        self,
+        *,
+        previous_serving_root: Path | None,
+        staged_table: Path,
+        staged_serving: Path,
+        incoming: pd.DataFrame,
+        table_files: list[Path],
+    ) -> None:
+        """Stage the transitional per-symbol projection for runtimes that still read it."""
+
+        if previous_serving_root is not None and previous_serving_root.is_dir():
+            self._copytree_hardlink_or_copy(previous_serving_root, staged_serving)
+            for symbol, symbol_incoming in incoming.groupby("ts_code", sort=True):
+                symbol_path = staged_serving / f"symbol={symbol}" / "bars.parquet"
+                existing = pd.read_parquet(symbol_path) if symbol_path.exists() else pd.DataFrame()
+                merged = self._merge_bars(existing, symbol_incoming)
+                self._atomic_write_parquet(merged.drop(columns=["_year", "_month"]), symbol_path)
+        else:
+            frame = pd.concat((pd.read_parquet(path) for path in table_files), ignore_index=True)
+            frame = frame.drop(columns=[c for c in ("year", "month") if c in frame.columns])
+            for symbol, group in frame.groupby(frame["ts_code"].astype(str), sort=True):
+                self._atomic_write_parquet(
+                    group.sort_values("trade_date").reset_index(drop=True),
+                    staged_serving / f"symbol={symbol}" / "bars.parquet",
+                )
+        serving_files = sorted(staged_serving.rglob("*.parquet"))
+        table_rows = sum(len(pd.read_parquet(path)) for path in table_files)
+        serving_rows = sum(len(pd.read_parquet(path)) for path in serving_files)
+        if not serving_files or table_rows != serving_rows:
+            raise ValueError(
+                f"table/serving row mismatch after upsert: {table_rows} != {serving_rows}"
+            )
+
+    def _prune_serving_after_publish(self) -> None:
+        """Bound the transitional projection to the newest published snapshots."""
+
+        try:
+            self.prune_snapshot_serving_layers(
+                keep_recent=self.SERVING_PROJECTION_KEEP_RECENT, dry_run=False
+            )
+        except Exception as exc:  # pruning must never fail a committed publish
+            self.append_health_event(
+                "snapshot_serving_layer_prune_failed",
+                {"status": "failed", "error": str(exc)},
+            )
+
     def prune_snapshot_serving_layers(
         self,
         *,
@@ -124,9 +178,16 @@ class MarketDataStore:
             return {"market": self.market, "candidates": [], "pruned": [], "dry_run": dry_run}
 
         active = self.active_snapshot_id()
+        def _published_at(path: Path) -> float:
+            # Snapshot ids are not uniformly time-ordered (e.g. named backfill
+            # snapshots sort after timestamps), so order by the immutable
+            # manifest's write time; an unmanifested directory sorts oldest.
+            manifest = root / f"{path.name}.json"
+            return manifest.stat().st_mtime if manifest.is_file() else float("-inf")
+
         snapshot_dirs = sorted(
             (path for path in root.iterdir() if path.is_dir()),
-            key=lambda path: path.name,
+            key=_published_at,
             reverse=True,
         )
         protected = {item.name for item in snapshot_dirs[:keep_recent]}
@@ -829,11 +890,11 @@ class MarketDataStore:
         staging_base = self.data_root / "parquet_staging" / self.market.lower() / resolved_snapshot_id
         staged_table = staging_base / "table" / "bars"
         staged_serving = staging_base / "serving" / "bars"
+        publish_serving = self._publish_serving_projection()
         if staging_base.exists():
             shutil.rmtree(staging_base)
         try:
             self._copytree_hardlink_or_copy(snapshot.table_root, staged_table)
-            self._copytree_hardlink_or_copy(snapshot.serving_root, staged_serving)
 
             for (year, month), month_incoming in incoming.groupby(["_year", "_month"], sort=True):
                 month_dir = staged_table / f"year={int(year)}" / f"month={int(month):02d}"
@@ -842,27 +903,26 @@ class MarketDataStore:
                 merged = self._merge_bars(existing, month_incoming)
                 self._atomic_write_parquet(merged.drop(columns=["_year", "_month"]), month_path)
 
-            for symbol, symbol_incoming in incoming.groupby("ts_code", sort=True):
-                symbol_dir = staged_serving / f"symbol={symbol}"
-                symbol_path = symbol_dir / "bars.parquet"
-                existing = pd.read_parquet(symbol_path) if symbol_path.exists() else pd.DataFrame()
-                merged = self._merge_bars(existing, symbol_incoming)
-                self._atomic_write_parquet(merged.drop(columns=["_year", "_month"]), symbol_path)
-
             table_files = sorted(staged_table.rglob("*.parquet"))
-            serving_files = sorted(staged_serving.rglob("*.parquet"))
-            if not table_files or not serving_files:
+            if not table_files:
                 raise ValueError("staged upsert produced no parquet files")
-            table_rows = sum(len(pd.read_parquet(path)) for path in table_files)
-            serving_rows = sum(len(pd.read_parquet(path)) for path in serving_files)
-            if table_rows != serving_rows:
-                raise ValueError(f"table/serving row mismatch after upsert: {table_rows} != {serving_rows}")
+            if publish_serving:
+                self._stage_serving_projection(
+                    previous_serving_root=snapshot.serving_root,
+                    staged_table=staged_table,
+                    staged_serving=staged_serving,
+                    incoming=incoming,
+                    table_files=table_files,
+                )
 
             snapshot_manifest_dir = self.data_root / "parquet" / self.market.lower() / "_snapshots"
             snapshot_manifest_path = snapshot_manifest_dir / f"{resolved_snapshot_id}.json"
             snapshot_payload_dir = snapshot_manifest_dir / resolved_snapshot_id
             published_table_root = snapshot_payload_dir / "table" / "bars"
             published_serving_root = snapshot_payload_dir / "serving" / "bars"
+            serving_fields = (
+                {"derived_serving_root": str(published_serving_root)} if publish_serving else {}
+            )
             if snapshot_manifest_path.exists() or snapshot_payload_dir.exists():
                 raise ValueError(
                     "immutable_snapshot_generation_already_exists:"
@@ -917,7 +977,7 @@ class MarketDataStore:
                 "latest_available_trade_date": latest_available,
                 "latest_complete_trade_date": latest_complete,
                 "table_root": str(published_table_root),
-                "derived_serving_root": str(published_serving_root),
+                **serving_fields,
                 "manifest_path": str(snapshot_manifest_path),
                 "readback_validated": True,
                 "parquet_size_bytes": int(parquet_size),
@@ -947,7 +1007,7 @@ class MarketDataStore:
                 "status": "OK",
                 "manifest_path": str(snapshot_manifest_path),
                 "table_root": str(published_table_root),
-                "derived_serving_root": str(published_serving_root),
+                **serving_fields,
                 "latest_available_trade_date": latest_available,
                 "latest_complete_trade_date": latest_complete,
                 "latest_trade_date": latest_complete,
@@ -957,10 +1017,8 @@ class MarketDataStore:
                 "updated_at": self._utc_now(),
             }
             self._copytree_hardlink_or_copy(staged_table, published_table_root)
-            self._copytree_hardlink_or_copy(
-                staged_serving,
-                published_serving_root,
-            )
+            if publish_serving:
+                self._copytree_hardlink_or_copy(staged_serving, published_serving_root)
             self._atomic_write_json(manifest, snapshot_manifest_path)
 
             def _write_pointer_and_validate() -> None:
@@ -1010,11 +1068,6 @@ class MarketDataStore:
                             published_table_root,
                         ),
                         (
-                            "serving_root",
-                            validation.get("serving_root"),
-                            published_serving_root,
-                        ),
-                        (
                             "manifest_path",
                             validation.get("manifest_path"),
                             snapshot_manifest_path,
@@ -1060,6 +1113,8 @@ class MarketDataStore:
             self.reader._latest_payload = None
             self.reader._snapshot_gate_cache = None
             self.reader._serving_symbols_cache = None
+            if publish_serving:
+                self._prune_serving_after_publish()
             return manifest
         finally:
             if staging_base.exists():
@@ -1558,9 +1613,6 @@ class MarketDataStore:
             "status": "OK",
             "manifest_path": str(manifest.get("manifest_path") or ""),
             "table_root": str(manifest.get("table_root") or ""),
-            "derived_serving_root": str(
-                manifest.get("derived_serving_root") or ""
-            ),
             "latest_available_trade_date": latest_available,
             "latest_complete_trade_date": latest_complete,
             "latest_trade_date": latest_complete,
@@ -1634,11 +1686,9 @@ class MarketDataStore:
         snapshot = candidate_reader._snapshot_from_payload(candidate_pointer)
         expected_manifest_path = snapshot_root / f"{snapshot_id}.json"
         expected_table_root = snapshot_root / snapshot_id / "table" / "bars"
-        expected_serving_root = snapshot_root / snapshot_id / "serving" / "bars"
         for label, actual, expected in (
             ("manifest", snapshot.manifest_path, expected_manifest_path),
             ("table", snapshot.table_root, expected_table_root),
-            ("serving", snapshot.serving_root, expected_serving_root),
         ):
             try:
                 same_path = actual.resolve(strict=True) == expected.resolve(
@@ -1653,13 +1703,7 @@ class MarketDataStore:
             snapshot.table_root,
             label="source_snapshot_table",
         )
-        serving_inventory, serving_paths = self._snapshot_file_inventory(
-            snapshot.serving_root,
-            label="source_snapshot_serving",
-        )
-        logical_columns, logical_types = self._snapshot_logical_schema(
-            [*table_paths, *serving_paths]
-        )
+        logical_columns, logical_types = self._snapshot_logical_schema(table_paths)
         table_summary = self._snapshot_logical_summary(
             root=snapshot.table_root,
             paths=table_paths,
@@ -1668,29 +1712,6 @@ class MarketDataStore:
             logical_types=logical_types,
             acknowledged_trade_date=acknowledged_trade_date,
         )
-        serving_summary = self._snapshot_logical_summary(
-            root=snapshot.serving_root,
-            paths=serving_paths,
-            layout="serving",
-            logical_columns=logical_columns,
-            logical_types=logical_types,
-            acknowledged_trade_date=acknowledged_trade_date,
-        )
-        for field in (
-            "logical_rowset_sha256",
-            "row_count",
-            "key_count",
-            "symbol_count",
-            "latest_trade_date",
-            "exact_date_symbol_count",
-            "exact_date_symbols_sha256",
-            "symbol_counts",
-            "symbol_first_dates",
-            "symbol_last_dates",
-            "symbol_digests",
-        ):
-            if table_summary[field] != serving_summary[field]:
-                raise ValueError(f"snapshot_table_serving_{field}_mismatch")
         if int(manifest.get("row_count") or -1) != int(
             table_summary["row_count"]
         ):
@@ -1763,14 +1784,8 @@ class MarketDataStore:
             snapshot.table_root,
             label="source_snapshot_table_postscan",
         )
-        serving_inventory_after, _ = self._snapshot_file_inventory(
-            snapshot.serving_root,
-            label="source_snapshot_serving_postscan",
-        )
         if table_inventory_after != table_inventory:
             raise ValueError("source_snapshot_table_inventory_changed")
-        if serving_inventory_after != serving_inventory:
-            raise ValueError("source_snapshot_serving_inventory_changed")
         manifest_after = self._read_fd_stable_bytes(
             manifest_path,
             label="source_snapshot_manifest_postscan",
@@ -1791,17 +1806,10 @@ class MarketDataStore:
         table_inventory_sha256 = hashlib.sha256(
             self._canonical_json_bytes(table_inventory)
         ).hexdigest()
-        serving_inventory_sha256 = hashlib.sha256(
-            self._canonical_json_bytes(serving_inventory)
-        ).hexdigest()
         source_validation = {
             "table_inventory_sha256": table_inventory_sha256,
-            "serving_inventory_sha256": serving_inventory_sha256,
             "logical_column_names": list(logical_columns),
             "table_logical_rowset_sha256": table_summary[
-                "logical_rowset_sha256"
-            ],
-            "serving_logical_rowset_sha256": serving_summary[
                 "logical_rowset_sha256"
             ],
             "row_count": int(table_summary["row_count"]),
@@ -1968,15 +1976,10 @@ class MarketDataStore:
             snapshot_root / snapshot_id / "table" / "bars",
             label="source_snapshot_table",
         )
-        source_snapshot_serving_path = self._sealed_recovery_path(
-            snapshot_root / snapshot_id / "serving" / "bars",
-            label="source_snapshot_serving",
-        )
         if commit:
             canonical_manifest_paths = {
                 "manifest_path": source_snapshot_manifest_path,
                 "table_root": source_snapshot_table_path,
-                "derived_serving_root": source_snapshot_serving_path,
             }
             for field, expected_path in canonical_manifest_paths.items():
                 if str(manifest.get(field) or "") != expected_path:
@@ -1986,7 +1989,7 @@ class MarketDataStore:
         pointer_manifest = dict(manifest)
         pointer_manifest["manifest_path"] = source_snapshot_manifest_path
         pointer_manifest["table_root"] = source_snapshot_table_path
-        pointer_manifest["derived_serving_root"] = source_snapshot_serving_path
+        pointer_manifest.pop("derived_serving_root", None)
         pointer_coverage = dict(manifest.get("coverage") or {})
         pointer_coverage["pit_membership_path"] = source_validation[
             "pit_membership_path"
@@ -2325,30 +2328,6 @@ class MarketDataStore:
             "manifest_path": str(meta_path),
         }
 
-    def materialize_serving(self) -> dict[str, Any]:
-        snapshot = self.reader._require_snapshot()
-        frame = self.reader._read_dataset(snapshot.table_root, date_column="trade_date")
-        if frame.empty or "ts_code" not in frame.columns:
-            raise MarketDataUnavailableError("canonical bars table cannot materialize serving without ts_code rows")
-        row_count = 0
-        symbol_count = 0
-        for symbol, group in frame.groupby(frame["ts_code"].astype(str).str.upper(), sort=True):
-            normalized = str(symbol or "").strip().upper()
-            if not normalized:
-                continue
-            target = snapshot.serving_root / f"symbol={normalized}" / "bars.parquet"
-            self._atomic_write_parquet(group.sort_values("trade_date").reset_index(drop=True), target)
-            row_count += int(len(group))
-            symbol_count += 1
-        return {
-            "status": "materialized",
-            "market": self.market,
-            "snapshot_id": snapshot.snapshot_id,
-            "symbol_count": symbol_count,
-            "row_count": row_count,
-            "serving_root": str(snapshot.serving_root),
-        }
-
     def materialize_features(
         self,
         *,
@@ -2558,10 +2537,6 @@ def run_storage_validate_clean(
     }
 
 
-def run_materialize_serving(*, market: str = "CN", data_root: str | Path | None = None) -> dict[str, Any]:
-    return MarketDataStore(market=market, data_root=data_root).materialize_serving()
-
-
 def run_materialize_features(
     *,
     market: str = "CN",
@@ -2578,7 +2553,6 @@ def run_storage_diff(*, market: str = "CN", data_root: str | Path | None = None)
 __all__ = [
     "MarketDataStore",
     "run_materialize_features",
-    "run_materialize_serving",
     "run_storage_diff",
     "run_storage_reactivate_snapshot",
     "run_storage_validate",

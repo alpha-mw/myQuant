@@ -50,12 +50,10 @@ class _Reader:
         self.latest_complete_trade_date = latest_complete_trade_date
         self.pointer = root / "data/parquet/cn/_latest.json"
         self.manifest = root / "data/parquet/cn/_snapshots/snapshot.json"
-        self.serving = (
-            root
-            / "data/parquet/cn/_snapshots/snapshot/serving/bars"
-            / f"symbol={SYMBOL}/bars.parquet"
+        self.partition = (
+            root / "data/parquet/cn/_snapshots/snapshot/table/bars/year=2026/month=08/part.parquet"
         )
-        _write(self.serving, b"fixture-serving-parquet")
+        _write(self.partition, b"fixture-table-partition-parquet")
         snapshot = self.snapshot()
         pointer = {
             "snapshot_id": snapshot["snapshot_id"],
@@ -98,9 +96,9 @@ class _Reader:
             },
         }
 
-    def resolve_symbol_path(self, symbol: str, **_: Any) -> Path:
-        assert symbol == SYMBOL
-        return self.serving
+    def table_partition_paths(self, start_date: str = "", end_date: str = "") -> list[Path]:
+        assert start_date[:6] == end_date[:6] == "202608"
+        return [self.partition]
 
     def read_symbol_frame(
         self,
@@ -1131,7 +1129,7 @@ def test_source_ref_and_self_hash_tampering_are_detected(
     inputs = _fixture(tmp_path, monkeypatch)
     bundle = _build(*inputs[:4])
     reader = inputs[3]
-    reader.serving.write_bytes(b"tampered")
+    reader.partition.write_bytes(b"tampered")
     assert any(
         "source_ref_sha256_mismatch" in error
         for error in v2.verify_v2_source_refs(bundle, tmp_path)

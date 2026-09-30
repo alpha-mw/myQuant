@@ -92,7 +92,8 @@ def test_recipe_preimage_drift_blocks_native_plan(tmp_path):
     assert pointer.read_bytes() == before
 
 
-def test_held_adjustment_refs_use_frozen_market_and_exact_native_ledger(tmp_path):
+def _materialize_held_refs(tmp_path, *, serving_projection: bool = False):
+    from quant_investor.config import config
     from scripts.daily_store_materialization import materialized_adjustment_refs
     from quant_investor.market.market_data_reader import MarketDataReader
 
@@ -113,8 +114,60 @@ def test_held_adjustment_refs_use_frozen_market_and_exact_native_ledger(tmp_path
         prepared = prepare_materialized_store_plan(journal=journal, recovered=recovered)
         # Subsequent source capture must not consult the mutable Market alias.
         (tmp_path / "data/parquet/cn/_latest.json").write_bytes(b"changed current head")
-        refs = materialized_adjustment_refs(journal=journal, recovered=recovered, prepared=prepared)
+        original = config.CN_MARKET_SERVING_PROJECTION
+        config.CN_MARKET_SERVING_PROJECTION = serving_projection
+        try:
+            refs = materialized_adjustment_refs(
+                journal=journal, recovered=recovered, prepared=prepared
+            )
+        finally:
+            config.CN_MARKET_SERVING_PROJECTION = original
     assert set(refs) == set(book.stocks)
     for ref in refs.values():
         assert hashlib.sha256((tmp_path / ref["path"]).read_bytes()).hexdigest() == ref["sha256"]
+        if serving_projection:
+            # Transition: cite the published serving file for older runtimes.
+            assert "/serving/bars/symbol=" in ref["path"]
+        else:
+            assert ref["path"].startswith(
+                f"results/operations/daily_production/CN/{journal.trade_date}/"
+            )
+            assert "/market_extracts/" in ref["path"] and "/serving/" not in ref["path"]
     assert (book.root / "_record_store/current.v1.json").read_bytes() == before
+    return tmp_path, snapshot_ref, refs
+
+
+@pytest.mark.parametrize("serving_projection", [False, True])
+def test_held_adjustment_refs_use_frozen_market_and_exact_native_ledger(
+    tmp_path, serving_projection
+):
+    workspace, snapshot_ref, refs = _materialize_held_refs(
+        tmp_path, serving_projection=serving_projection
+    )
+    from scripts.daily_store_materialization import verify_materialized_adjustment_refs
+
+    verify_materialized_adjustment_refs(workspace=workspace, snapshot_ref=snapshot_ref, refs=refs)
+
+
+def test_held_adjustment_refs_reject_extract_that_disagrees_with_snapshot(tmp_path):
+    import pandas as pd
+    from scripts.daily_store_materialization import verify_materialized_adjustment_refs
+    from quant_investor.operations.daily_contract import ContractError
+
+    workspace, snapshot_ref, refs = _materialize_held_refs(tmp_path)
+    verify_materialized_adjustment_refs(workspace=workspace, snapshot_ref=snapshot_ref, refs=refs)
+    symbol, ref = next(iter(refs.items()))
+    frame = pd.read_parquet(workspace / ref["path"])
+    frame["close"] = frame["close"] + 1.0
+    forged = workspace / "fixtures" / f"forged-{symbol}.parquet"
+    forged.parent.mkdir(parents=True, exist_ok=True)
+    frame.to_parquet(forged, index=False)
+    forged.chmod(0o600)
+    forged_ref = {
+        "path": str(forged.relative_to(workspace)),
+        "sha256": hashlib.sha256(forged.read_bytes()).hexdigest(),
+    }
+    with pytest.raises(ContractError, match="HELD_MARKET_PATH_MISMATCH"):
+        verify_materialized_adjustment_refs(
+            workspace=workspace, snapshot_ref=snapshot_ref, refs={**refs, symbol: forged_ref}
+        )

@@ -90,6 +90,12 @@ _RECOVERY_SOURCE_VALIDATION_FIELDS = {
     "pit_generation_manifest_path",
     "pit_generation_manifest_sha256",
 }
+# Receipts written before the serving projection was retired also bind its
+# inventory and semantic digests; canonical-only receipts omit both.
+_SERVING_VALIDATION_FIELDS = {"serving_inventory_sha256", "serving_logical_rowset_sha256"}
+_CANONICAL_RECOVERY_SOURCE_VALIDATION_FIELDS = (
+    _RECOVERY_SOURCE_VALIDATION_FIELDS - _SERVING_VALIDATION_FIELDS
+)
 
 
 class MarketSnapshotRecoveryBindingError(ValueError):
@@ -439,7 +445,10 @@ def _validate_recovery_source_validation(
     acknowledged_trade_date: str,
     snapshot_manifest: Mapping[str, Any],
 ) -> dict[str, Any]:
-    if not isinstance(raw, Mapping) or set(raw) != _RECOVERY_SOURCE_VALIDATION_FIELDS:
+    if not isinstance(raw, Mapping) or set(raw) not in (
+        _RECOVERY_SOURCE_VALIDATION_FIELDS,
+        _CANONICAL_RECOVERY_SOURCE_VALIDATION_FIELDS,
+    ):
         raise MarketSnapshotRecoveryBindingError("recovery source validation schema mismatch")
     validation = dict(raw)
     for key in (
@@ -450,8 +459,12 @@ def _validate_recovery_source_validation(
         "pit_membership_sha256",
         "pit_generation_manifest_sha256",
     ):
-        _require_sha256(validation.get(key), label=f"recovery {key}")
-    if validation["table_logical_rowset_sha256"] != validation["serving_logical_rowset_sha256"]:
+        if key in validation:
+            _require_sha256(validation.get(key), label=f"recovery {key}")
+    if (
+        "serving_logical_rowset_sha256" in validation
+        and validation["table_logical_rowset_sha256"] != validation["serving_logical_rowset_sha256"]
+    ):
         raise MarketSnapshotRecoveryBindingError("recovery table/serving semantic digest mismatch")
 
     logical_columns = validation.get("logical_column_names")
@@ -673,11 +686,19 @@ def validate_recovery_pointer_binding(
         "restored_trade_date": str(pointer_payload.get("latest_complete_trade_date") or ""),
         "inventory_digests": {
             "table_sha256": intent_validation["table_inventory_sha256"],
-            "serving_sha256": intent_validation["serving_inventory_sha256"],
+            **(
+                {"serving_sha256": intent_validation["serving_inventory_sha256"]}
+                if "serving_inventory_sha256" in intent_validation
+                else {}
+            ),
         },
         "semantic_digests": {
             "table_sha256": intent_validation["table_logical_rowset_sha256"],
-            "serving_sha256": intent_validation["serving_logical_rowset_sha256"],
+            **(
+                {"serving_sha256": intent_validation["serving_logical_rowset_sha256"]}
+                if "serving_logical_rowset_sha256" in intent_validation
+                else {}
+            ),
         },
         "source_validation_facts": {
             key: intent_validation[key]

@@ -17,7 +17,6 @@ __all__ = [
     "load_stock_names",
     "get_stock_name",
     "run_materialize_features",
-    "run_materialize_serving",
     "run_storage_diff",
     "run_storage_reactivate_snapshot",
     "run_storage_validate",
@@ -35,7 +34,6 @@ def __getattr__(name: str) -> Any:
         return getattr(name_map_mod, name)
     if name in {
         "run_materialize_features",
-        "run_materialize_serving",
         "run_storage_diff",
         "run_storage_reactivate_snapshot",
         "run_storage_validate",

@@ -60,6 +60,9 @@ LATE_FRESHNESS_REASON = "LATE_OFFICIAL_FINANCIAL_PUBLICATION_FOR_LATEST_LOCAL_CL
 NON_TRADING_FRESHNESS_REASON = "NON_TRADING_DAY_NO_ACTION"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _SYMBOL_RE = re.compile(r"^[0-9]{6}\.(?:SH|SZ|BJ)$")
+_TABLE_PARTITION_RE = re.compile(
+    r"/_snapshots/[^/]+/table/bars/(?:year=[0-9]{4}/month=[0-9]{2}/)?part\.parquet$"
+)
 _ATTEMPT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _RECORD_ID_RE = re.compile(r"^[0-9]{8}_[0-9]{4}$")
 _SHANGHAI_TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?\+08:00$")
@@ -895,16 +898,16 @@ def _row_close(row: Mapping[str, Any]) -> float:
     return float(value)
 
 
-def _serving_artifact(reader: Any, symbol: str, project_root: Path) -> _Artifact:
+def _price_partition_artifact(reader: Any, price_date: str, project_root: Path) -> _Artifact:
+    """Bind a marked price to the canonical table partition holding its session."""
+
     try:
-        path = reader.resolve_symbol_path(symbol, universe_key="full_a")
+        paths = reader.table_partition_paths(_compact_date(price_date), _compact_date(price_date))
     except Exception as exc:
-        raise DashboardV2Error(f"market_serving_path_unavailable:{symbol}") from exc
-    if not isinstance(path, Path):
-        path = Path(path) if path else None
-    if path is None:
-        raise DashboardV2Error(f"market_serving_path_unavailable:{symbol}")
-    return _stable_artifact(path, project_root)
+        raise DashboardV2Error(f"market_table_partition_unavailable:{price_date}") from exc
+    if len(paths) != 1:
+        raise DashboardV2Error(f"market_table_partition_unavailable:{price_date}")
+    return _stable_artifact(Path(paths[0]), project_root)
 
 
 def _mark_positions(
@@ -922,8 +925,6 @@ def _mark_positions(
     refs: list[dict[str, str]] = []
     for position in v1_positions:
         symbol = str(position["symbol"])
-        serving = _serving_artifact(reader, symbol, project_root)
-        refs.append(_source_ref(serving))
         try:
             exact_result = reader.read_symbol_frame(
                 symbol,
@@ -962,6 +963,9 @@ def _mark_positions(
             evidence = "BOUND_SUSPENSION_CARRY_FORWARD"
         price_date = _row_date(price_row)
         price = _row_close(price_row)
+        partition = _price_partition_artifact(reader, price_date, project_root)
+        if _source_ref(partition) not in refs:
+            refs.append(_source_ref(partition))
         shares = float(position["shares"])
         avg_cost = float(position["avg_cost"])
         cost_basis = float(position["cost_basis"])
@@ -982,7 +986,7 @@ def _mark_positions(
                 "unrealized_pnl": market_value - cost_basis,
                 "nav_weight": 0.0,
                 "equity_weight": 0.0,
-                "source_ref": _source_ref(serving),
+                "source_ref": _source_ref(partition),
             }
         )
     return marked, refs
@@ -2174,10 +2178,9 @@ def _validate_required_source_refs(
         if not isinstance(row, dict) or not _valid_source_ref(row.get("source_ref")):
             continue
         source = row["source_ref"]
-        expected_suffix = f"/serving/bars/symbol={row.get('symbol')}/bars.parquet"
         if source["path"] not in paths:
             errors.append(f"position_source_ref_not_registered:{row.get('symbol')}")
-        if not source["path"].endswith(expected_suffix):
+        if not _TABLE_PARTITION_RE.search(source["path"]):
             errors.append(f"position_source_ref_path_invalid:{row.get('symbol')}")
 
 

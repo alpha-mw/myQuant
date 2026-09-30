@@ -1082,7 +1082,6 @@ def _read_canonical_window(
     reader: MarketDataReader,
     *,
     table_root: Path,
-    serving_root: Path,
     start_date: str,
     end_date: str,
     selected_dates: Iterable[str],
@@ -1136,26 +1135,13 @@ def _read_canonical_window(
         )
 
     table = _read(table_root, "table")
-    serving = _read(serving_root, "serving")
     table_sha256 = dataframe_sha256(table)
-    serving_sha256 = dataframe_sha256(serving)
-    if table_sha256 != serving_sha256:
-        table_keys = set(zip(table["trade_date"], table["ts_code"]))
-        serving_keys = set(zip(serving["trade_date"], serving["ts_code"]))
-        raise RuntimeError(
-            "canonical table-serving window mismatch: "
-            f"table_only={len(table_keys - serving_keys)},"
-            f"serving_only={len(serving_keys - table_keys)}"
-        )
     return table, {
         "start_trade_date": start_date,
         "end_trade_date": end_date,
         "selected_trade_date_count": len(selected),
         "table_row_count": int(len(table)),
-        "serving_row_count": int(len(serving)),
         "table_sha256": table_sha256,
-        "serving_sha256": serving_sha256,
-        "table_serving_match": True,
         "duplicate_symbol_date_count": 0,
         "required_columns": columns,
     }
@@ -1381,7 +1367,6 @@ def run_cn_history_audit(
     bars, canonical_window_evidence = _read_canonical_window(
         reader,
         table_root=snapshot.table_root,
-        serving_root=snapshot.serving_root,
         start_date=selected_dates[0],
         end_date=selected_dates[-1],
         selected_dates=selected_dates,
@@ -1397,12 +1382,6 @@ def run_cn_history_audit(
         "manifest_path": str(manifest_path),
         "manifest_file_sha256": file_sha256(manifest_path),
         "table_window_sha256": canonical_window_evidence["table_sha256"],
-        "serving_window_sha256": canonical_window_evidence[
-            "serving_sha256"
-        ],
-        "table_serving_match": canonical_window_evidence[
-            "table_serving_match"
-        ],
     }
 
     suspended_by_date: dict[str, list[str]] = {}

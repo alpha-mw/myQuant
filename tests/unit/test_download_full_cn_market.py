@@ -338,11 +338,8 @@ def _active_cn_rows(data_root: Path) -> pd.DataFrame:
     if not latest_path.exists():
         return pd.DataFrame()
     latest = json.loads(latest_path.read_text(encoding="utf-8"))
-    serving_root = Path(str(latest.get("derived_serving_root") or ""))
-    frames = [
-        pd.read_parquet(path)
-        for path in sorted(serving_root.glob("symbol=*/bars.parquet"))
-    ]
+    table_root = Path(str(latest.get("table_root") or ""))
+    frames = [pd.read_parquet(path) for path in sorted(table_root.rglob("*.parquet"))]
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
@@ -412,7 +409,6 @@ def _publish_cn_v4_rows(
 
     payload_root = snapshot_root / snapshot_id
     table_root = payload_root / "table" / "bars"
-    serving_root = payload_root / "serving" / "bars"
     for (year, month), month_frame in combined.groupby(
         [combined["trade_date"].str[:4], combined["trade_date"].str[4:6]],
         sort=True,
@@ -425,10 +421,6 @@ def _publish_cn_v4_rows(
         )
         month_path.parent.mkdir(parents=True, exist_ok=True)
         month_frame.to_parquet(month_path, index=False)
-    for symbol, symbol_frame in combined.groupby("ts_code", sort=True):
-        symbol_path = serving_root / f"symbol={symbol}" / "bars.parquet"
-        symbol_path.parent.mkdir(parents=True, exist_ok=True)
-        symbol_frame.to_parquet(symbol_path, index=False)
 
     expected_scope_sha256 = hashlib.sha256(
         "".join(f"{symbol}\n" for symbol in symbols).encode("utf-8")
@@ -475,7 +467,6 @@ def _publish_cn_v4_rows(
         "latest_available_trade_date": latest_available,
         "latest_complete_trade_date": latest_complete,
         "table_root": str(table_root),
-        "derived_serving_root": str(serving_root),
         "manifest_path": str(manifest_path),
         "readback_validated": True,
         "coverage": coverage,
@@ -488,7 +479,6 @@ def _publish_cn_v4_rows(
         "status": "OK",
         "manifest_path": str(manifest_path),
         "table_root": str(table_root),
-        "derived_serving_root": str(serving_root),
         "latest_available_trade_date": latest_available,
         "latest_complete_trade_date": latest_complete,
         "latest_trade_date": latest_complete,
@@ -1610,7 +1600,7 @@ def test_get_all_components_falls_back_to_local_universe(monkeypatch):
     assert components["all"] == ["000001.SZ", "600001.SH"]
     assert components["stats"]["full_a"] == 2
     assert components["stats"]["total_unique"] == 2
-    assert components["resolver"]["resolution_strategy"] == "parquet_serving_inventory"
+    assert components["resolver"]["resolution_strategy"] == "parquet_canonical_inventory"
     assert components["resolver"]["parquet_inventory"]["status"] == "OK"
 
 

@@ -253,7 +253,13 @@ def _write_seed_snapshot(root: Path) -> None:
     )
 
 
-def test_upsert_bars_merges_target_day_without_replacing_history(tmp_path):
+@pytest.mark.parametrize("serving_projection", [False, True])
+def test_upsert_bars_merges_target_day_without_replacing_history(
+    tmp_path, monkeypatch, serving_projection
+):
+    from quant_investor.config import config
+
+    monkeypatch.setattr(config, "CN_MARKET_SERVING_PROJECTION", serving_projection)
     _write_seed_snapshot(tmp_path)
     store = MarketDataStore(market="CN", data_root=tmp_path)
     latest_path = tmp_path / "parquet" / "cn" / "_latest.json"
@@ -308,16 +314,25 @@ def test_upsert_bars_merges_target_day_without_replacing_history(tmp_path):
 
     latest = json.loads(latest_path.read_text(encoding="utf-8"))
     table_root = Path(latest["table_root"])
-    serving_root = Path(latest["derived_serving_root"])
     table = pd.read_parquet(table_root / "year=2026" / "month=03" / "part.parquet")
     assert manifest["snapshot_id"] == "upserted"
     assert manifest["row_count"] == 4
     assert table_root == (
         tmp_path / "parquet" / "cn" / "_snapshots" / "upserted" / "table" / "bars"
     )
-    assert serving_root == (
-        tmp_path / "parquet" / "cn" / "_snapshots" / "upserted" / "serving" / "bars"
-    )
+    serving_root = tmp_path / "parquet" / "cn" / "_snapshots" / "upserted" / "serving" / "bars"
+    if serving_projection:
+        # Transition: the projection is still published for older runtimes.
+        assert Path(latest["derived_serving_root"]) == serving_root
+        assert Path(manifest["derived_serving_root"]) == serving_root
+        served = pd.concat(pd.read_parquet(p) for p in serving_root.rglob("*.parquet"))
+        assert len(served) == len(
+            pd.concat(pd.read_parquet(p) for p in table_root.rglob("*.parquet"))
+        )
+    else:
+        assert "derived_serving_root" not in latest
+        assert "derived_serving_root" not in manifest
+        assert not serving_root.parent.exists()
     assert legacy_table_path.read_bytes() == legacy_table_bytes
     assert set(table["ts_code"]) == {"000001.SZ", "000002.SZ", "000003.SZ"}
     assert set(table["trade_date"]) == {"20260315", "20260316"}

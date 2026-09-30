@@ -190,7 +190,7 @@ def test_recorded_materialization_rejects_changed_held_prices(tmp_path):
         )
     ref = next(iter(first.inputs.adjustment_market_refs.values()))
     (tmp_path / ref["path"]).write_bytes(b"changed held prices")
-    with journal.locked(), pytest.raises(MarketDataUnavailableError):
+    with journal.locked(), pytest.raises(ContractError, match="HELD_MARKET_PATH_MISMATCH"):
         materializer.materialize_locked(
             journal=journal, recovered=recovered, auxiliary={"stages": {}}
         )

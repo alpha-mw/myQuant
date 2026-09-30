@@ -1,11 +1,22 @@
 """Prepare the existing native Store plan from recipe preimages and core handoff."""
 
-from pathlib import Path
+import hashlib
+from pathlib import Path, PurePosixPath
 from typing import Mapping
 
 from quant_investor.contracts import parse_canonical_json_bytes
 from quant_investor.operations.daily_contract import ContractError, validate_ref
 from quant_investor.operations.daily_journal import DailyJournal
+from quant_investor.operations.held_market_extract import (
+    held_market_extract_bytes,
+    held_market_frame,
+    legacy_serving_projection_root,
+    load_held_market_rows,
+)
+from quant_investor.strategy_records.event_receipts import (
+    StrategyEventStoreError,
+    read_event_source,
+)
 from quant_investor.system.storage import SecureSystemStorage
 from scripts.daily_production_store_adapter import RECORD_ROOT, prepare_store_plan, native
 
@@ -152,7 +163,6 @@ def materialized_adjustment_refs(
     """Capture held-security refs only from the exact frozen Market snapshot."""
     journal._require_lock()
     from quant_investor.market.market_data_reader import MarketDataReader
-    from quant_investor.strategy_records.store import regular_file_sha256
 
     workspace = journal.storage._io.workspace_root
     arguments = prepared["store_arguments"]
@@ -205,18 +215,30 @@ def materialized_adjustment_refs(
     refs = {}
     if len(symbols) != len(set(symbols)):
         raise ContractError("MATERIALIZATION_HOLDINGS_DUPLICATED")
+    extract_root = PurePosixPath(str(journal.root)) / "market_extracts"
+    legacy_serving = legacy_serving_projection_root(market)
     for symbol in symbols:
-        path = market.resolve_symbol_path(symbol)
-        if path is None:
-            raise ContractError("MATERIALIZATION_HELD_MARKET_SOURCE_MISSING")
-        market._assert_path_has_no_symlink(
-            path, boundary=market.data_root, label="held Market source", require_exists=True
-        )
-        digest, _ = regular_file_sha256(path, label="held Market source")
-        market._read_strict_catalog_parquet(
-            path, table_meta={"sha256": digest}, logical_table="corporate adjustment"
-        )
-        refs[symbol] = {"path": str(path.relative_to(workspace)), "sha256": digest}
+        try:
+            frame = held_market_frame(market, symbol)
+        except ContractError as exc:
+            raise ContractError("MATERIALIZATION_HELD_MARKET_SOURCE_MISSING") from exc
+        if legacy_serving is not None:
+            # Transition: runtimes pinned to older releases resolve these refs
+            # to the snapshot's serving file, so cite it while it is published.
+            legacy_path = legacy_serving / f"symbol={symbol}" / "bars.parquet"
+            if legacy_path.is_file():
+                legacy_raw = legacy_path.read_bytes()
+                load_held_market_rows(market, symbol, legacy_raw)
+                refs[symbol] = {
+                    "path": str(legacy_path.relative_to(workspace)),
+                    "sha256": hashlib.sha256(legacy_raw).hexdigest(),
+                }
+                continue
+        raw = held_market_extract_bytes(frame)
+        digest = hashlib.sha256(raw).hexdigest()
+        path = str(extract_root / f"{symbol}-{digest}.parquet")
+        stored = journal.storage.write(path, raw)
+        refs[symbol] = {"path": path, "sha256": stored.byte_sha256}
     if (
         portfolio_state is None
         and native._pointer_sha(root / "_record_store/current.v1.json") != expected_store
@@ -242,15 +264,10 @@ def verify_materialized_adjustment_refs(*, workspace, snapshot_ref: dict, refs: 
     )
     for symbol, ref in refs.items():
         validate_ref(ref)
-        selected = market.resolve_symbol_path(symbol)
-        if selected is None or selected != workspace / ref["path"]:
-            raise ContractError("MATERIALIZATION_HELD_MARKET_PATH_MISMATCH")
-        market._assert_path_has_no_symlink(
-            selected, boundary=market.data_root, label="held Market source", require_exists=True
-        )
-        market._read_strict_catalog_parquet(
-            selected, table_meta={"sha256": ref["sha256"]}, logical_table="corporate adjustment"
-        )
+        try:
+            load_held_market_rows(market, symbol, read_event_source(workspace, ref))
+        except (ContractError, StrategyEventStoreError) as exc:
+            raise ContractError("MATERIALIZATION_HELD_MARKET_PATH_MISMATCH") from exc
 
 
 def store_materialization_arguments(workspace, handoff, recipe):

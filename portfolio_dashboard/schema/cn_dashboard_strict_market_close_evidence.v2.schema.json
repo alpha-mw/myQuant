@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "cn_dashboard_strict_market_close_evidence.v1",
-  "title": "CN Dashboard strict local market close evidence",
+  "$id": "cn_dashboard_strict_market_close_evidence.v2",
+  "title": "CN Dashboard strict local market close evidence (canonical table bound)",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -17,10 +17,11 @@
     "benchmark_input_path",
     "benchmark_input_sha256",
     "stocks",
+    "table_partition_ref",
     "indices"
   ],
   "properties": {
-    "schema_version": {"const": "cn_dashboard_strict_market_close_evidence.v1"},
+    "schema_version": {"const": "cn_dashboard_strict_market_close_evidence.v2"},
     "market": {"const": "CN"},
     "trade_date": {"$ref": "#/$defs/compactDate"},
     "market_pointer_path": {"$ref": "#/$defs/projectPath"},
@@ -44,6 +45,7 @@
       "maxItems": 7,
       "items": {"$ref": "#/$defs/stockRow"}
     },
+    "table_partition_ref": {"$ref": "#/$defs/tablePartitionRef"},
     "indices": {
       "type": "array",
       "minItems": 3,
@@ -64,19 +66,23 @@
     "stockRow": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "symbol",
-        "trade_date",
-        "close",
-        "serving_parquet_path",
-        "serving_parquet_sha256"
-      ],
+      "required": ["symbol", "trade_date", "close"],
       "properties": {
         "symbol": {"$ref": "#/$defs/symbol"},
         "trade_date": {"$ref": "#/$defs/compactDate"},
-        "close": {"$ref": "#/$defs/close"},
-        "serving_parquet_path": {"$ref": "#/$defs/projectPath"},
-        "serving_parquet_sha256": {"$ref": "#/$defs/sha256"}
+        "close": {"$ref": "#/$defs/close"}
+      }
+    },
+    "tablePartitionRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/projectPath",
+          "pattern": "/_snapshots/[^/]+/table/bars/(?:year=[0-9]{4}/month=[0-9]{2}/)?part\\.parquet$"
+        },
+        "sha256": {"$ref": "#/$defs/sha256"}
       }
     },
     "indexRow": {

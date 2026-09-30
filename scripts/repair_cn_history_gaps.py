@@ -66,7 +66,9 @@ def _validate_source_audit_payload(audit: dict) -> None:
     pit = audit.get("pit_membership_evidence", {}) or {}
     if (canonical.get("storage_validation", {}) or {}).get("status") != "passed":
         raise SystemExit("Source audit canonical validation did not pass.")
-    if window.get("table_serving_match") is not True:
+    # Audits written before the serving projection was retired also recorded a
+    # table/serving comparison; only an explicit mismatch is disqualifying.
+    if window.get("table_serving_match") is False:
         raise SystemExit("Source audit table/serving evidence did not match.")
     if not canonical.get("snapshot_id") or not pit.get("sha256"):
         raise SystemExit("Source audit provenance binding is incomplete.")
@@ -286,13 +288,12 @@ def main(argv: Sequence[str] | None = None) -> dict:
     canonical_bars, current_window = _read_canonical_window(
         reader,
         table_root=snapshot.table_root,
-        serving_root=snapshot.serving_root,
         start_date=selected_dates[0],
         end_date=selected_dates[-1],
         selected_dates=selected_dates,
     )
     audit_window = audit.get("canonical_window_evidence", {}) or {}
-    for key in ("table_sha256", "serving_sha256", "table_row_count"):
+    for key in ("table_sha256", "table_row_count"):
         if current_window.get(key) != audit_window.get(key):
             raise SystemExit(
                 f"Source audit canonical window is stale: {key}."

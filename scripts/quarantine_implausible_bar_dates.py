@@ -3,7 +3,8 @@
 
 The command is offline and dry-run by default.  It never scans a snapshot,
 follows ``latest``, or guesses serving/table paths.  Mutation requires
-``--execute`` plus exact table/serving files, a new backup directory, a new
+``--execute`` plus exact table files (and, for snapshots that still carry a
+legacy serving projection, its serving files), a new backup directory, a new
 quarantine file, and a new evidence file.  Every input is backed up before the
 first replacement and every output is read back byte-for-byte.
 """
@@ -54,7 +55,7 @@ def _new_path(raw: str, *, label: str) -> Path:
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--table-file", action="append", required=True)
-    parser.add_argument("--serving-file", action="append", required=True)
+    parser.add_argument("--serving-file", action="append", default=[])
     parser.add_argument("--snapshot-id", required=True)
     parser.add_argument("--backup-dir")
     parser.add_argument("--quarantine-file")

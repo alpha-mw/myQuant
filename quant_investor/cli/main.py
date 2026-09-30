@@ -325,14 +325,6 @@ def run_storage_validate_clean(**kwargs):
     return _run_storage_validate_clean(**kwargs)
 
 
-def run_materialize_serving(**kwargs):
-    from quant_investor.market.market_data_store import (
-        run_materialize_serving as _run_materialize_serving,
-    )
-
-    return _run_materialize_serving(**kwargs)
-
-
 def run_materialize_features(**kwargs):
     from quant_investor.market.market_data_store import (
         run_materialize_features as _run_materialize_features,
@@ -1242,12 +1234,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="只读校验本地 clean/readiness lineage 可用性",
     )
     market_storage_validate_clean.add_argument("--market", required=True, choices=["CN"])
-
-    market_materialize_serving = market_subparsers.add_parser(
-        "materialize-serving",
-        help="从 Parquet canonical 重建 symbol serving layer",
-    )
-    market_materialize_serving.add_argument("--market", required=True, choices=["CN"])
 
     market_materialize_features = market_subparsers.add_parser(
         "materialize-features",
@@ -2339,10 +2325,6 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
 
     if args.command == "market" and args.market_command == "storage-validate-clean":
         _print_json(run_storage_validate_clean(market=args.market))
-        return
-
-    if args.command == "market" and args.market_command == "materialize-serving":
-        _print_json(run_materialize_serving(market=args.market))
         return
 
     if args.command == "market" and args.market_command == "materialize-features":

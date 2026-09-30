@@ -119,7 +119,7 @@ def _build_cn_snapshot(
             "category_symbol_counts": {},
             "date_distribution_top": [],
             "data_directories": [],
-            "resolver_priority": ["parquet_canonical", "parquet_serving"],
+            "resolver_priority": ["parquet_canonical"],
             "data_quality_issue_count": len(blockers),
             "summary_text": "本地 Parquet canonical snapshot 未通过 strict 校验；分析应 fail closed。",
             "missing_requested_symbols": list(requested_symbols),
@@ -177,11 +177,11 @@ def _build_cn_snapshot(
             }
         ] if local_latest_trade_date else []
 
-    data_directories = [str(Path(gate.get("serving_root", "")))] if gate.get("serving_root") else []
-    resolver_priority = ["parquet_serving", "parquet_canonical"]
+    data_directories = [str(Path(gate.get("table_root", "")))] if gate.get("table_root") else []
+    resolver_priority = ["parquet_canonical"]
     summary_parts = [
         f"本地 A 股数据更新至 {local_latest_trade_date or '未知日期'}",
-        "分析默认使用 Parquet canonical + serving layer",
+        "分析默认使用 Parquet canonical table",
     ]
     if category_symbol_counts:
         summary_parts.append(

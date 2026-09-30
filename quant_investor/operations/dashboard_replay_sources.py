@@ -149,33 +149,34 @@ def retained_store_inventory(
             ):
                 raise ValueError("DASHBOARD_REPLAY_STORE_INVENTORY_SHA_MISMATCH")
             sources[path.relative_to(project_root).as_posix()] = raw
-    # Native record validation also reads stock files named by its immutable
-    # strict-close evidence. Follow only those finite frozen-snapshot refs.
+    # Native record validation also reads the frozen snapshot manifest and the
+    # canonical table partition named by its immutable strict-close evidence.
+    # Follow only those finite refs.
     from quant_investor.operations.daily_contract import validate_ref
+    from quant_investor.operations.strict_close_table_source import (
+        STRICT_CLOSE_EVIDENCE_SCHEMAS,
+        StrictCloseTableSourceError,
+        closes_from_table_partition,
+        declared_table_partition,
+        snapshot_manifest_relative,
+        verify_evidence_closes,
+    )
 
     for evidence_path, evidence_raw in list(sources.items()):
         if not evidence_path.endswith("/strict_market_close_evidence.json"):
             continue
         evidence = json.loads(evidence_raw)
-        if evidence.get("schema_version") != "cn_dashboard_strict_market_close_evidence.v1":
+        if evidence.get("schema_version") not in STRICT_CLOSE_EVIDENCE_SCHEMAS:
             raise ValueError("DASHBOARD_REPLAY_CLOSE_EVIDENCE_SCHEMA_INVALID")
-        snapshot_id = evidence.get("snapshot_id")
-        if (
-            type(snapshot_id) is not str
-            or not snapshot_id
-            or "/" in snapshot_id
-            or snapshot_id in {".", ".."}
-        ):
-            raise ValueError("DASHBOARD_REPLAY_CLOSE_SNAPSHOT_INVALID")
-        manifest_relative = evidence["snapshot_manifest_path"]
+        try:
+            manifest_relative = snapshot_manifest_relative(evidence)
+        except StrictCloseTableSourceError as exc:
+            raise ValueError("DASHBOARD_REPLAY_CLOSE_SNAPSHOT_INVALID") from exc
+        snapshot_id = evidence["snapshot_id"]
         manifest_sha = evidence["snapshot_manifest_sha256"]
         validate_ref({"path": manifest_relative, "sha256": manifest_sha})
         manifest_path = project_root / manifest_relative
-        if (
-            manifest_path.name != snapshot_id + ".json"
-            or manifest_path.parent.name != "_snapshots"
-            or manifest_path.resolve(strict=True) != manifest_path.absolute()
-        ):
+        if manifest_path.resolve(strict=True) != manifest_path.absolute():
             raise ValueError("DASHBOARD_REPLAY_CLOSE_MANIFEST_NOT_FROZEN")
         metadata = manifest_path.stat()
         if (
@@ -193,33 +194,45 @@ def retained_store_inventory(
         ):
             raise ValueError("DASHBOARD_REPLAY_CLOSE_MANIFEST_SHA_MISMATCH")
         sources[manifest_relative] = manifest_raw
-        frozen_prefix = (
-            str((manifest_path.parent / snapshot_id / "serving").relative_to(project_root)) + "/"
-        )
-        for row in evidence["stocks"]:
-            relative = row.get("serving_parquet_path") or row.get("serving_path")
-            expected_sha = row.get("serving_parquet_sha256") or row.get("parquet_sha256")
-            validate_ref({"path": relative, "sha256": expected_sha})
-            if not relative.startswith(frozen_prefix):
-                raise ValueError("DASHBOARD_REPLAY_CLOSE_SOURCE_NOT_FROZEN")
-            path = project_root / relative
-            if path.resolve(strict=True) != path.absolute():
-                raise ValueError("DASHBOARD_REPLAY_CLOSE_SOURCE_PATH_INVALID")
-            metadata = path.stat()
-            if (
-                metadata.st_uid != os.geteuid()
-                or metadata.st_nlink != 1
-                or stat.S_IMODE(metadata.st_mode) not in {0o600, 0o644}
-                or metadata.st_size > 64 * 1024 * 1024
-            ):
-                raise ValueError("DASHBOARD_REPLAY_CLOSE_SOURCE_MODE_OR_SIZE_INVALID")
-            digest, _ = regular_file_sha256(path, label="retained Dashboard close source")
-            raw = path.read_bytes()
-            if digest != expected_sha or hashlib.sha256(raw).hexdigest() != expected_sha:
-                raise ValueError("DASHBOARD_REPLAY_CLOSE_SOURCE_SHA_MISMATCH")
-            if relative in sources and sources[relative] != raw:
-                raise ValueError("DASHBOARD_REPLAY_CLOSE_SOURCE_CONFLICT")
-            sources[relative] = raw
+        try:
+            candidates, pinned_sha = declared_table_partition(project_root, evidence, manifest_raw)
+        except StrictCloseTableSourceError as exc:
+            raise ValueError("DASHBOARD_REPLAY_CLOSE_MANIFEST_TABLE_INVALID") from exc
+        path = next((p for p in candidates if p.exists()), None)
+        if path is None:
+            raise ValueError("DASHBOARD_REPLAY_CLOSE_SOURCE_MISSING:" + snapshot_id)
+        if path.resolve(strict=True) != path.absolute():
+            raise ValueError("DASHBOARD_REPLAY_CLOSE_SOURCE_PATH_INVALID")
+        # Canonical table partitions are hardlinked across snapshots, so the
+        # single-link rule applied to record files does not hold here.
+        metadata = path.stat()
+        if (
+            metadata.st_uid != os.geteuid()
+            or not stat.S_ISREG(metadata.st_mode)
+            or stat.S_IMODE(metadata.st_mode) not in {0o600, 0o644}
+            or metadata.st_size > 256 * 1024 * 1024
+        ):
+            raise ValueError("DASHBOARD_REPLAY_CLOSE_SOURCE_MODE_OR_SIZE_INVALID")
+        raw = path.read_bytes()
+        if raw != path.read_bytes():
+            raise ValueError("DASHBOARD_REPLAY_CLOSE_SOURCE_UNSTABLE")
+        if pinned_sha is not None and hashlib.sha256(raw).hexdigest() != pinned_sha:
+            raise ValueError("DASHBOARD_REPLAY_CLOSE_SOURCE_SHA_MISMATCH")
+        try:
+            closes = closes_from_table_partition(
+                raw,
+                symbols=[
+                    str(row.get("symbol") or row.get("ts_code")) for row in evidence["stocks"]
+                ],
+                trade_date=evidence.get("trade_date"),
+            )
+            verify_evidence_closes(evidence, closes)
+        except StrictCloseTableSourceError as exc:
+            raise ValueError("DASHBOARD_REPLAY_CLOSE_SOURCE_VALUE_MISMATCH:" + str(exc)) from exc
+        relative = path.relative_to(project_root).as_posix()
+        if relative in sources and sources[relative] != raw:
+            raise ValueError("DASHBOARD_REPLAY_CLOSE_SOURCE_CONFLICT")
+        sources[relative] = raw
     return sources
 
 
@@ -247,8 +260,8 @@ class RetainedDashboardMarket:
             raise ValueError("DASHBOARD_REPLAY_MARKET_REQUIRES_RETAINED_CONTEXT")
         return {**snapshot, "latest_pointer_path": str(path)}
 
-    def resolve_symbol_path(self, *args, **kwargs):
-        return self.reader.resolve_symbol_path(*args, **kwargs)
+    def table_partition_paths(self, *args, **kwargs):
+        return self.reader.table_partition_paths(*args, **kwargs)
 
     def read_symbol_frame(self, *args, **kwargs):
         return self.reader.read_symbol_frame(*args, **kwargs)

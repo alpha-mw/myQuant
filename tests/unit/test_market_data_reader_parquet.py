@@ -605,7 +605,42 @@ def test_v4_reader_requires_and_accepts_exact_immutable_snapshot_layout(
         tmp_path / "parquet" / "cn" / "_snapshots" / "snap-001.json"
     )
     assert Path(snapshot["table_root"]) == paths["canonical"]
-    assert Path(snapshot["serving_root"]) == paths["serving"]
+    # A declared legacy serving projection is identity-checked but never read.
+    assert snapshot["serving_root"] == ""
+    assert snapshot["canonical_only"] is True
+    assert snapshot["storage_layer"] == "canonical"
+
+
+def test_v4_reader_reads_canonical_table_without_serving_projection(
+    tmp_path: Path,
+) -> None:
+    paths = _write_v4_parquet_fixture(tmp_path)
+    shutil.rmtree(paths["serving"])
+    for pointer_path in (
+        paths["latest"],
+        tmp_path / "parquet" / "cn" / "_snapshots" / "snap-001.json",
+    ):
+        payload = json.loads(pointer_path.read_text(encoding="utf-8"))
+        payload.pop("derived_serving_root", None)
+        pointer_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    reader = MarketDataReader(market="CN", data_root=tmp_path)
+    snapshot = reader.snapshot()
+
+    assert snapshot["healthy"] is True, snapshot["blockers"]
+    assert snapshot["serving_root"] == ""
+    assert reader.list_symbols("full_a") == ["000001.SZ", "000002.SZ"]
+    assert reader.peek_symbol_latest_date("000001.SZ") == "20260103"
+    assert reader.resolve_symbol_path("000001.SZ") == paths["canonical"]
+    assert reader.resolve_symbol_path("999999.SZ") is None
+    result = reader.read_symbol_frame("000001.SZ", start_date="20260102")
+    assert result.issues == []
+    assert result.path == str(paths["canonical"])
+    assert list(result.frame["trade_date"]) == sorted(result.frame["trade_date"])
+    assert set(result.frame["symbol"]) == {"000001.SZ"}
+    assert not {"year", "month"} & set(result.frame.columns)
+    with pytest.raises(MarketDataUnavailableError):
+        reader.resolve_symbol_path("000001.SZ", for_write=True)
 
 
 @pytest.mark.parametrize(
@@ -683,7 +718,7 @@ def test_v4_reader_rejects_latest_pointer_replacement_during_read(
     assert any("replaced during read" in blocker for blocker in gate["blockers"])
 
 
-@pytest.mark.parametrize("root_key", ["canonical", "serving"])
+@pytest.mark.parametrize("root_key", ["canonical"])
 def test_v4_reader_rejects_nested_parquet_symlink(
     tmp_path: Path,
     root_key: str,
@@ -746,9 +781,17 @@ def test_reader_reuses_snapshot_and_symbol_inventory_for_repeated_runtime_reads(
             call_counts["component_read"] += 1
         return original_read_text(path, *args, **kwargs)
 
+    original_inventory = MarketDataReader._v4_parquet_inventory
+
+    def _counting_inventory(self, root: Path, *, label: str):
+        if label == "canonical table symbol inventory":
+            call_counts["symbol_index"] = call_counts.get("symbol_index", 0) + 1
+        return original_inventory(self, root, label=label)
+
     monkeypatch.setattr(Path, "glob", _counting_glob)
     monkeypatch.setattr(Path, "rglob", _counting_rglob)
     monkeypatch.setattr(Path, "read_text", _counting_read_text)
+    monkeypatch.setattr(MarketDataReader, "_v4_parquet_inventory", _counting_inventory)
 
     reader.read_symbol_frames(
         ["000001.SZ", "000002.SZ"],
@@ -759,8 +802,9 @@ def test_reader_reuses_snapshot_and_symbol_inventory_for_repeated_runtime_reads(
 
     assert call_counts == {
         "health_rglob": 0,
-        "serving_glob": 1,
+        "serving_glob": 0,
         "component_read": 1,
+        "symbol_index": 1,
     }
 
 

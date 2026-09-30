@@ -25,6 +25,7 @@ from .corporate_actions import CorporateActionEvidence, EVENT_ROOT
 from .corporate_adapter import SCHEMA, SCHEMA_V3, LEGACY_FIELDS, EXTRA_FIELDS
 from .daily_contract import ContractError, validate_ref
 from .daily_journal import _validate_day, request_identity
+from .held_market_extract import load_held_market_rows
 
 ROOT = "results/strategy_records/CN/aggressive_tech_manufacturing"
 PROFILES = {
@@ -362,13 +363,12 @@ class MorningRiskSources:
         ref = self.inputs["adjustment_market_refs"].get(symbol)
         if ref is None or self.market is None:
             return [], ["STRICT_CLOSE_UNAVAILABLE"]
-        path = self.market.resolve_symbol_path(symbol)
-        if path != self.workspace / ref["path"]:
-            raise ContractError("MORNING_THRESHOLD_MARKET_FRAME_PATH_MISMATCH")
-        self.bytes(ref)
-        rows = self.market._read_strict_catalog_parquet(
-            path, table_meta={"sha256": ref["sha256"]}, logical_table="Morning risk window"
-        ).to_dict("records")
+        try:
+            rows = load_held_market_rows(self.market, symbol, self.bytes(ref)).to_dict("records")
+        except ContractError as exc:
+            if str(exc).endswith("HELD_MARKET_EXTRACT_SYMBOL_MISMATCH"):
+                raise ContractError("MORNING_THRESHOLD_MARKET_SYMBOL_MISMATCH") from exc
+            raise ContractError("MORNING_THRESHOLD_MARKET_FRAME_PATH_MISMATCH") from exc
         for row in rows:
             if row.get("ts_code") != symbol:
                 raise ContractError("MORNING_THRESHOLD_MARKET_SYMBOL_MISMATCH")

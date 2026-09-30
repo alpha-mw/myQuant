@@ -263,17 +263,13 @@ def build_risk_monitor(project_root: Path, *, as_of: str) -> dict[str, Any]:
             start = anchor["tracking_start_date"] if anchor else target
             if stop:
                 start = min(start, stops["effective_from"][:10].replace("-", ""))
-            serving = reader.resolve_symbol_path(symbol)
-            if serving is not None:
-                relative_serving = serving.relative_to(project)
-                market_files.add(relative_serving.as_posix())
-                exact(relative_serving)
+            for partition in reader.table_partition_paths(start, target):
+                relative_partition = partition.relative_to(project)
+                market_files.add(relative_partition.as_posix())
+                exact(relative_partition, refs.get(relative_partition.as_posix()))
             read = reader.read_symbol_frame(symbol, start_date=start, end_date=target)
             if read.issues or read.frame.empty:
                 trailing_only.append("STRICT_CLOSE_UNAVAILABLE")
-            if read.path:
-                rel = Path(read.path).relative_to(project)
-                exact(rel, refs.get(rel.as_posix()))
             stop_value = stop["initial_stop_price_cny"] if stop else None
             stop_blockers = []
             if stop:

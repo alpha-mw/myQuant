@@ -6199,7 +6199,7 @@ def run_cn_fundamental_maintenance(
     provider_manifest: dict[str, Any] = {
         "symbols_requested": int(len(scope_symbols)),
         "symbol_scope_status": "resolved" if scope_symbols else "missing",
-        "symbol_scope_source": "strict_parquet_serving_intersect_canonical_components",
+        "symbol_scope_source": "strict_parquet_canonical_intersect_canonical_components",
         "symbol_scope_universes": list(universe_list),
         "source_priority": "manual_offline_snapshot",
         "source_provenance": "offline_input_unverified",
@@ -6267,7 +6267,9 @@ def run_cn_fundamental_maintenance(
                 {
                     "symbols_requested": int(len(scope_symbols)),
                     "symbol_scope_status": "resolved" if scope_symbols else "missing",
-                    "symbol_scope_source": "strict_parquet_serving_intersect_canonical_components",
+                    "symbol_scope_source": (
+                        "strict_parquet_canonical_intersect_canonical_components"
+                    ),
                     "symbol_scope_universes": list(universe_list),
                     "source_priority": "tushare_primary",
                     "source_provenance": "live_tushare_explicit",

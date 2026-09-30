@@ -12,7 +12,6 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
-import io
 import json
 import math
 import re
@@ -26,6 +25,13 @@ import pandas as pd
 
 from quant_investor.config import Config
 from quant_investor.credential_utils import create_tushare_pro
+from quant_investor.operations.strict_close_table_source import (
+    STRICT_CLOSE_EVIDENCE_SCHEMAS,
+    STRICT_CLOSE_EVIDENCE_V2,
+    StrictCloseTableSourceError,
+    closes_from_table_partition,
+    declared_table_partition,
+)
 from quant_investor.strategy_records.store import (
     content_sha256,
     load_registered_catalog,
@@ -48,7 +54,7 @@ LEGACY_CAPTURE_STOCK_CODES = (
 )
 INDEX_CODES = ("000300.SH", "000688.SH", "399006.SZ")
 CAPITAL_CNY = 1_000_000.0
-EVIDENCE_SCHEMA = "cn_dashboard_strict_market_close_evidence.v1"
+EVIDENCE_SCHEMA = STRICT_CLOSE_EVIDENCE_V2
 HISTORICAL_HOLDINGS_LANE = "REGISTERED_HISTORICAL_HOLDINGS_STORAGE_ONLY"
 PROJECT_SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 SYMBOL_RE = re.compile(r"^[0-9]{6}\.(?:SH|SZ|BJ)$")
@@ -479,11 +485,12 @@ def validate_strict_market_close_evidence(
     """Validate the local strict-Parquet close evidence contract.
 
     The contract is deliberately independent of provider APIs.  Every stock
-    close is checked against its exact serving Parquet bytes, while the three
-    benchmark closes are checked against the bound Dashboard benchmark input.
+    close is checked against the frozen snapshot's canonical table partition
+    (v2 pins its bytes by SHA), while the three benchmark closes are checked
+    against the bound Dashboard benchmark input.
     """
 
-    if evidence.get("schema_version") != EVIDENCE_SCHEMA:
+    if evidence.get("schema_version") not in STRICT_CLOSE_EVIDENCE_SCHEMAS:
         raise ValueError("strict market close evidence schema mismatch")
     if evidence.get("market") != "CN":
         raise ValueError("strict market close evidence market mismatch")
@@ -549,17 +556,31 @@ def validate_strict_market_close_evidence(
         or str(manifest.get("latest_complete_trade_date") or "").replace("-", "") != latest_complete
     ):
         raise ValueError("snapshot manifest identity mismatch")
-    serving_root_value = manifest.get("derived_serving_root")
-    if not isinstance(serving_root_value, str) or not serving_root_value:
-        raise ValueError("snapshot serving root is missing")
-    serving_root = Path(serving_root_value)
-    if not serving_root.is_absolute():
-        serving_root = project_root / serving_root
-    serving_root = serving_root.resolve(strict=True)
+    try:
+        candidates, pinned_sha = declared_table_partition(project_root, evidence, manifest_raw)
+    except StrictCloseTableSourceError as exc:
+        raise ValueError(f"strict evidence table binding invalid: {exc}") from exc
+    partition_path = next((path for path in candidates if path.is_file()), None)
+    if partition_path is None:
+        raise ValueError("snapshot table partition is missing")
+    partition_raw = _stable_raw(partition_path, label="snapshot table partition")
+    partition_sha = hashlib.sha256(partition_raw).hexdigest()
+    if pinned_sha is not None and partition_sha != pinned_sha:
+        raise ValueError("snapshot table partition SHA mismatch")
+    partition_ref = {
+        "path": partition_path.relative_to(project_root).as_posix(),
+        "sha256": partition_sha,
+    }
 
     stock_rows = evidence.get("stocks")
     if not isinstance(stock_rows, list) or len(stock_rows) != len(expected_symbols):
         raise ValueError("strict evidence stock row count is invalid")
+    try:
+        table_closes = closes_from_table_partition(
+            partition_raw, symbols=expected_symbols, trade_date=expected_trade_date
+        )
+    except StrictCloseTableSourceError as exc:
+        raise ValueError(f"snapshot table close is not exact: {exc}") from exc
     observed_stock_symbols: set[str] = set()
     stock_close_by_symbol: dict[str, float] = {}
     stock_refs: dict[str, dict[str, str]] = {}
@@ -576,50 +597,10 @@ def validate_strict_market_close_evidence(
         close = _finite_positive(
             _row_value(row, "close", "recorded_price"), label=f"stock close:{symbol}"
         )
-        path_value = _row_value(row, "serving_parquet_path", "serving_path", "path")
-        path = _project_path(project_root, path_value, label=f"stock serving:{symbol}")
-        declared_sha = _require_sha(
-            _row_value(row, "serving_parquet_sha256", "parquet_sha256", "sha256"),
-            f"stock serving SHA:{symbol}",
-        )
-        raw = _stable_raw(path, label=f"stock serving:{symbol}")
-        if hashlib.sha256(raw).hexdigest() != declared_sha:
-            raise ValueError(f"stock serving SHA mismatch: {symbol}")
-        try:
-            path_resolved = path.resolve(strict=True)
-            path_resolved.relative_to(serving_root)
-        except (OSError, ValueError) as exc:
-            raise ValueError(f"stock serving path is outside snapshot: {symbol}") from exc
-        if (
-            path.name != "bars.parquet"
-            or path.parent.name != f"symbol={symbol}"
-            or path.parent.parent.resolve(strict=True) != serving_root
-        ):
-            raise ValueError(f"stock serving path identity mismatch: {symbol}")
-        try:
-            frame = pd.read_parquet(io.BytesIO(raw))
-        except Exception as exc:
-            raise ValueError(f"stock serving Parquet is unreadable: {symbol}") from exc
-        if frame.empty:
-            raise ValueError(f"stock serving Parquet is empty: {symbol}")
-        date_column = next(
-            (column for column in ("trade_date", "date", "Date") if column in frame.columns),
-            None,
-        )
-        if date_column is None or "close" not in frame.columns:
-            raise ValueError(f"stock serving schema is incomplete: {symbol}")
-        dates = frame[date_column].map(_compact_date)
-        exact_rows = frame.loc[dates == expected_trade_date]
-        if len(exact_rows) != 1:
-            raise ValueError(f"stock serving exact-date row count is not one: {symbol}")
-        served_close = _finite_positive(exact_rows.iloc[0]["close"], label=f"served close:{symbol}")
-        if not math.isclose(served_close, close, rel_tol=1e-12, abs_tol=1e-9):
+        if not math.isclose(table_closes[symbol], close, rel_tol=1e-12, abs_tol=1e-9):
             raise ValueError(f"stock close mismatch: {symbol}")
         stock_close_by_symbol[symbol] = close
-        stock_refs[symbol] = {
-            "path": str(path_value),
-            "sha256": declared_sha,
-        }
+        stock_refs[symbol] = dict(partition_ref)
     if observed_stock_symbols != expected_symbols:
         raise ValueError("strict evidence stock symbols do not match predecessor holdings")
 

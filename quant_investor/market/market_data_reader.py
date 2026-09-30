@@ -358,18 +358,21 @@ class ParquetSnapshot:
     latest_complete_trade_date: str
     latest_trade_date: str
     table_root: Path
-    serving_root: Path
+    serving_root: Path | None
     manifest_path: Path
     latest_pointer_path: Path
+    # v4 snapshots are read from the canonical table only; a declared
+    # ``derived_serving_root`` is validated for identity but never read.
+    canonical_only: bool = False
 
 
 class MarketDataReader:
     """Unified local market data reader.
 
-    CN runtime paths use the strict Parquet canonical pointer plus symbol-serving
-    files.  CSV remains available elsewhere for exports and legacy maintenance,
-    but this reader never falls back to CSV when the Parquet snapshot is missing
-    or unhealthy.
+    CN runtime paths use the strict Parquet canonical pointer and read v4
+    snapshots from the canonical ``table/bars`` partitions only.  CSV remains
+    available elsewhere for exports and legacy maintenance, but this reader
+    never falls back to CSV when the Parquet snapshot is missing or unhealthy.
     """
 
     def __init__(
@@ -416,6 +419,7 @@ class MarketDataReader:
         self._latest_payload: dict[str, Any] | None = None
         self._snapshot_gate_cache: dict[str, Any] | None = None
         self._serving_symbols_cache: tuple[tuple[str, str], list[str]] | None = None
+        self._latest_date_cache: tuple[tuple[str, str], dict[str, str]] | None = None
         self._components_payload: dict[str, Any] | None = None
         self._catalog_payload: dict[str, Any] | None = None
 
@@ -920,12 +924,18 @@ class MarketDataReader:
                 expected=snapshot_root / snapshot_id / "table" / "bars",
                 label="v4 snapshot table_root invalid",
             )
-            serving_root = self._resolve_v4_snapshot_path(
-                payload.get("derived_serving_root"),
-                expected=snapshot_root / snapshot_id / "serving" / "bars",
-                label="v4 snapshot serving_root invalid",
+            serving_root = (
+                self._resolve_v4_snapshot_path(
+                    payload.get("derived_serving_root"),
+                    expected=snapshot_root / snapshot_id / "serving" / "bars",
+                    label="v4 snapshot serving_root invalid",
+                )
+                if payload.get("derived_serving_root")
+                else None
             )
+            canonical_only = True
         else:
+            canonical_only = False
             table_root = self._resolve_data_path(
                 payload.get("table_root"),
                 self.parquet_market_root / "bars",
@@ -950,6 +960,7 @@ class MarketDataReader:
             serving_root=serving_root,
             manifest_path=manifest_path,
             latest_pointer_path=self.latest_pointer_path,
+            canonical_only=canonical_only,
         )
 
     def clean_snapshot_gate(self, *, refresh: bool = False) -> dict[str, Any]:
@@ -1019,30 +1030,6 @@ class MarketDataReader:
                     f"{snapshot.table_root}"
                 )
 
-            try:
-                serving_files = self._v4_parquet_inventory(
-                    snapshot.serving_root,
-                    label="v4 snapshot serving_root invalid",
-                )
-            except MarketDataUnavailableError as exc:
-                blockers.append(str(exc))
-                serving_files = []
-            symbol_serving_files = [
-                path
-                for path in serving_files
-                if len(path.relative_to(snapshot.serving_root).parts) == 2
-                and path.name == "bars.parquet"
-                and path.parent.name.startswith("symbol=")
-            ]
-            if not snapshot.serving_root.exists():
-                blockers.append(
-                    f"serving bars root missing: {snapshot.serving_root}"
-                )
-            elif not symbol_serving_files:
-                blockers.append(
-                    "serving bars root has no symbol parquet files: "
-                    f"{snapshot.serving_root}"
-                )
         else:
             if not snapshot.table_root.exists():
                 blockers.append(f"canonical bars table_root missing: {snapshot.table_root}")
@@ -1351,7 +1338,11 @@ class MarketDataReader:
             "latest_complete_trade_date": snapshot.latest_complete_trade_date,
             "latest_trade_date": snapshot.latest_trade_date,
             "table_root": str(snapshot.table_root),
-            "serving_root": str(snapshot.serving_root),
+            "serving_root": (
+                "" if snapshot.canonical_only or snapshot.serving_root is None
+                else str(snapshot.serving_root)
+            ),
+            "canonical_only": snapshot.canonical_only,
             "manifest_path": str(snapshot.manifest_path),
             "latest_pointer_path": str(snapshot.latest_pointer_path),
             "mode_policy": self.mode_policy,
@@ -1370,11 +1361,14 @@ class MarketDataReader:
 
     def snapshot(self) -> dict[str, Any]:
         gate = self.clean_snapshot_gate()
+        canonical_only = gate.get("canonical_only") is True
         payload = {
             "backend": "parquet",
-            "storage_layer": "canonical+serving",
+            "storage_layer": "canonical" if canonical_only else "canonical+serving",
             "mode_policy": self.mode_policy,
-            "resolution_strategy": "strict_parquet_serving",
+            "resolution_strategy": (
+                "strict_parquet_canonical" if canonical_only else "strict_parquet_serving"
+            ),
             "fallback_used": False,
         }
         payload.update(gate)
@@ -1382,9 +1376,39 @@ class MarketDataReader:
 
     def physical_directories_for_full_a(self) -> list[Path]:
         snapshot = self._require_snapshot()
+        if snapshot.canonical_only or snapshot.serving_root is None:
+            return [snapshot.table_root]
         return [snapshot.serving_root]
 
+    def _latest_date_index(self, snapshot: ParquetSnapshot) -> dict[str, str]:
+        """Map each symbol in the canonical table to its latest trade date (cached)."""
+
+        cache_key = (snapshot.snapshot_id, str(snapshot.table_root))
+        if self._latest_date_cache is not None and self._latest_date_cache[0] == cache_key:
+            return dict(self._latest_date_cache[1])
+        files = self._v4_parquet_inventory(
+            snapshot.table_root, label="canonical table symbol inventory"
+        )
+        index: dict[str, str] = {}
+        if files:
+            import pyarrow.dataset as pa_dataset
+
+            table = pa_dataset.dataset(
+                [str(path) for path in files], format="parquet"
+            ).to_table(columns=["ts_code", "trade_date"])
+            grouped = table.group_by("ts_code").aggregate([("trade_date", "max")])
+            for symbol, latest in zip(
+                grouped["ts_code"].to_pylist(), grouped["trade_date_max"].to_pylist()
+            ):
+                normalized = _normalize_symbol(symbol)
+                if normalized:
+                    index[normalized] = _normalize_trade_date(latest)
+        self._latest_date_cache = (cache_key, dict(index))
+        return index
+
     def _serving_symbols(self, snapshot: ParquetSnapshot) -> list[str]:
+        if snapshot.canonical_only or snapshot.serving_root is None:
+            return sorted(self._latest_date_index(snapshot))
         cache_key = (snapshot.snapshot_id, str(snapshot.serving_root))
         if self._serving_symbols_cache is not None:
             cached_key, cached_symbols = self._serving_symbols_cache
@@ -1764,6 +1788,14 @@ class MarketDataReader:
         normalized = _normalize_symbol(symbol)
         if not normalized:
             return None
+        if snapshot.canonical_only or snapshot.serving_root is None:
+            if for_write and self._frozen_snapshot_sha is not None:
+                raise MarketDataUnavailableError("frozen snapshot reader cannot allocate writes")
+            if for_write:
+                raise MarketDataUnavailableError(
+                    "canonical-only snapshot has no per-symbol serving files to write"
+                )
+            return snapshot.table_root if normalized in self._latest_date_index(snapshot) else None
         path = snapshot.serving_root / f"symbol={normalized}" / "bars.parquet"
         if for_write:
             if self._frozen_snapshot_sha is not None:
@@ -1878,6 +1910,9 @@ class MarketDataReader:
         universe_key: str = "full_a",
         category: str | None = None,
     ) -> str:
+        snapshot = self._require_snapshot()
+        if snapshot.canonical_only or snapshot.serving_root is None:
+            return self._latest_date_index(snapshot).get(_normalize_symbol(symbol), "")
         path = self.resolve_symbol_path(symbol, universe_key=universe_key, category=category)
         if path is None:
             return ""
@@ -1906,6 +1941,69 @@ class MarketDataReader:
             return ""
         return max((_normalize_trade_date(value) for value in frame[date_column]), default="")
 
+    def _read_canonical_symbol_frame(
+        self,
+        snapshot: ParquetSnapshot,
+        symbol: str,
+        *,
+        universe_key: str,
+        category: str | None,
+        start_date: str,
+        end_date: str,
+        columns: Sequence[str] | None,
+    ) -> MarketDataReadResult:
+        """Single-symbol read from the canonical table with the legacy frame shape.
+
+        Matches the former per-symbol projection: normalized ``trade_date``
+        ascending, a ``symbol`` column, and no hive partition columns.
+        """
+
+        resolver_trace = self.snapshot()
+        if symbol not in self._latest_date_index(snapshot):
+            return self._missing_symbol_result(
+                snapshot=snapshot,
+                symbol=symbol,
+                universe_key=universe_key,
+                category=category,
+                resolver_trace=resolver_trace,
+            )
+        result = self.read_symbol_frames(
+            [symbol],
+            universe_key=universe_key,
+            category=category,
+            start_date=start_date,
+            end_date=end_date,
+        )[symbol]
+        if result.issues:
+            return result
+        frame = result.frame.drop(
+            columns=[column for column in ("year", "month") if column in result.frame.columns]
+        )
+        if not frame.empty and "trade_date" in frame.columns:
+            frame = frame.copy()
+            frame["trade_date"] = frame["trade_date"].map(_normalize_trade_date)
+            frame = frame.sort_values("trade_date", kind="stable").reset_index(drop=True)
+        if "symbol" not in frame.columns and "ts_code" in frame.columns:
+            frame = frame.copy()
+            frame["symbol"] = frame["ts_code"].map(_normalize_symbol)
+        frame = self._filter_frame(frame, columns=columns)
+        return MarketDataReadResult(
+            frame=frame,
+            path=str(snapshot.table_root),
+            symbol=symbol,
+            category=str(category or ""),
+            universe_key=str(universe_key or ""),
+            resolver_trace=resolver_trace,
+            issues=[],
+            metadata=self._metadata(
+                snapshot,
+                storage_layer="canonical",
+                resolution_strategy="strict_parquet_canonical",
+                resolved=True,
+                row_count=int(len(frame)),
+            ),
+        )
+
     def read_symbol_frame(
         self,
         symbol: str,
@@ -1918,6 +2016,16 @@ class MarketDataReader:
     ) -> MarketDataReadResult:
         snapshot = self._require_snapshot()
         normalized = _normalize_symbol(symbol)
+        if snapshot.canonical_only or snapshot.serving_root is None:
+            return self._read_canonical_symbol_frame(
+                snapshot,
+                normalized,
+                universe_key=universe_key,
+                category=category,
+                start_date=start_date,
+                end_date=end_date,
+                columns=columns,
+            )
         path = self.resolve_symbol_path(
             normalized,
             universe_key=universe_key,
@@ -1972,6 +2080,28 @@ class MarketDataReader:
             metadata=self._metadata(snapshot, resolved=True, row_count=int(len(frame))),
         )
 
+    def table_partition_paths(self, start_date: str = "", end_date: str = "") -> list[Path]:
+        """Return canonical table files whose ``year=/month=`` partition overlaps the range.
+
+        Unpartitioned table files are always included.
+        """
+
+        snapshot = self._require_snapshot()
+        root = snapshot.table_root
+        start = _normalize_trade_date(start_date)[:6]
+        end = _normalize_trade_date(end_date)[:6]
+        selected: list[Path] = []
+        for path in self._v4_parquet_inventory(root, label="canonical table partitions"):
+            keys = dict(
+                part.split("=", 1) for part in path.relative_to(root).parent.parts if "=" in part
+            )
+            if "year" in keys and "month" in keys:
+                period = f"{int(keys['year']):04d}{int(keys['month']):02d}"
+                if (start and period < start) or (end and period > end):
+                    continue
+            selected.append(path)
+        return selected
+
     def read_symbol_frames(
         self,
         symbols: Iterable[str],
@@ -2017,11 +2147,13 @@ class MarketDataReader:
             }
 
         results: dict[str, MarketDataReadResult] = {}
+        # Group on the canonical key the dataset filter used; a denormalized
+        # ``symbol`` column may be null on rows merged from older writers.
         symbol_column = (
-            "symbol"
-            if "symbol" in batch_frame.columns
-            else "ts_code"
+            "ts_code"
             if "ts_code" in batch_frame.columns
+            else "symbol"
+            if "symbol" in batch_frame.columns
             else ""
         )
         frames_by_symbol: dict[str, pd.DataFrame] = {}

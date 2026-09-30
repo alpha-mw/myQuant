@@ -257,48 +257,39 @@ def _market_evidence(
     trade_date: str,
     symbols: list[str],
 ) -> dict[str, Any]:
+    from quant_investor.operations.strict_close_table_source import (
+        STRICT_CLOSE_EVIDENCE_V2,
+        StrictCloseTableSourceError,
+        build_table_close_rows,
+    )
+
     compact = trade_date.replace("-", "")
-    serving_root = Path(str(market_manifest.get("derived_serving_root")))
-    if not serving_root.is_absolute():
-        serving_root = project / serving_root
-    stocks: list[dict[str, Any]] = []
-    for symbol in symbols:
-        path = serving_root / f"symbol={symbol}" / "bars.parquet"
-        raw = _read(path, label=f"Market serving {symbol}")
-        frame = pd.read_parquet(path)
-        if not {"trade_date", "close"}.issubset(frame.columns):
-            raise StrategyRecordStoreError(f"Market serving columns missing: {symbol}")
-        dates = frame["trade_date"].astype(str).str.replace("-", "", regex=False)
-        exact = frame.loc[dates == compact]
-        if (
-            len(exact) != 1
-            or not math.isfinite(float(exact.iloc[0]["close"]))
-            or not float(exact.iloc[0]["close"]) > 0
-        ):
-            raise StrategyRecordStoreError(
-                f"held-security exact close missing: {symbol}:{trade_date}"
-            )
-        stocks.append(
-            {
-                "symbol": symbol,
-                "trade_date": compact,
-                "close": float(exact.iloc[0]["close"]),
-                "serving_parquet_path": path.relative_to(project).as_posix(),
-                "serving_parquet_sha256": _sha(raw),
-            }
+    manifest_raw = _read(market_manifest_path, label="Market manifest")
+    try:
+        stocks, table_partition_ref = build_table_close_rows(
+            project,
+            snapshot_id=str(market_pointer["snapshot_id"]),
+            snapshot_manifest_path=market_manifest_path.relative_to(project).as_posix(),
+            manifest_raw=manifest_raw,
+            trade_date=compact,
+            symbols=symbols,
         )
+    except StrictCloseTableSourceError as exc:
+        raise StrategyRecordStoreError(
+            f"held-security exact close missing: {trade_date}: {exc}"
+        ) from exc
     benchmark_rows = [row for row in benchmark["rows"] if row["date"].isoformat() == trade_date]
     if len(benchmark_rows) != 3:
         raise StrategyRecordStoreError(f"benchmark exact close missing:{trade_date}")
     csv_raw = _read(compatibility_csv, label="benchmark compatibility projection")
     return {
-        "schema_version": "cn_dashboard_strict_market_close_evidence.v1",
+        "schema_version": STRICT_CLOSE_EVIDENCE_V2,
         "market": "CN",
         "trade_date": compact,
         "market_pointer_path": "data/parquet/cn/_latest.json",
         "market_pointer_sha256": market_pointer_sha,
         "snapshot_manifest_path": market_manifest_path.relative_to(project).as_posix(),
-        "snapshot_manifest_sha256": _sha(_read(market_manifest_path, label="Market manifest")),
+        "snapshot_manifest_sha256": _sha(manifest_raw),
         "snapshot_id": market_pointer["snapshot_id"],
         "latest_complete_trade_date": market_pointer["latest_complete_trade_date"],
         "benchmark_input_path": compatibility_csv.relative_to(project).as_posix(),
@@ -311,6 +302,7 @@ def _market_evidence(
         "benchmark_series_path": benchmark["pointer"]["series"]["path"],
         "benchmark_series_sha256": benchmark["series_sha256"],
         "stocks": stocks,
+        "table_partition_ref": table_partition_ref,
         "indices": [
             {
                 "ts_code": row["ts_code"],
@@ -1264,23 +1256,30 @@ def close_through_latest(
     symbols = sorted(active_ledger["symbol"].astype(str).tolist())
     if not symbols or len(symbols) != len(set(symbols)):
         raise StrategyRecordStoreError("active holdings symbol set is invalid")
-    serving = Path(str(market_manifest["derived_serving_root"]))
-    if not serving.is_absolute():
-        serving = project / serving
+    table_root = Path(str(market_manifest["table_root"]))
+    if not table_root.is_absolute():
+        table_root = project / table_root
+    partitions: list[Path] = []
+    for day in sorted(required_candidates):
+        month_part = table_root / f"year={day[:4]}" / f"month={day[5:7]}" / "part.parquet"
+        partition = month_part if month_part.is_file() else table_root / "part.parquet"
+        if partition not in partitions:
+            partitions.append(partition)
+    held_symbols = set(symbols)
     held_keys = []
-    for symbol in symbols:
-        path = serving / f"symbol={symbol}" / "bars.parquet"
+    for partition in partitions:
         try:
-            raw = _read(path, label="held close coverage")
-            frame = pd.read_parquet(io.BytesIO(raw))
+            raw = _read(partition, label="held close coverage")
+            frame = pd.read_parquet(io.BytesIO(raw), columns=["ts_code", "trade_date", "close"])
+            frame = frame.loc[frame["ts_code"].astype(str).isin(held_symbols)]
             for row in frame.to_dict("records"):
                 day = str(row.get("trade_date", "")).replace("-", "")
                 formatted = f"{day[:4]}-{day[4:6]}-{day[6:]}"
                 if formatted in required_candidates:
                     price = float(row.get("close", float("nan")))
                     if math.isfinite(price) and price > 0:
-                        held_keys.append((formatted, symbol))
-        except (OSError, ValueError, StrategyRecordStoreError):
+                        held_keys.append((formatted, str(row["ts_code"])))
+        except (OSError, ValueError, KeyError, StrategyRecordStoreError):
             continue
     coverage = analyze_close_coverage(
         required_dates=required_candidates,

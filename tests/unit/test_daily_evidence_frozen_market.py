@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 from _native_daily_store_fixture import NativeStoreFixture, DAYS, STOCKS
@@ -23,7 +24,7 @@ def test_frozen_snapshot_survives_current_pointer_change(tmp_path):
     reader = MarketDataReader(data_root=data, frozen_snapshot_ref=ref)
     assert reader.snapshot()["latest_complete_trade_date"] == payload["latest_complete_trade_date"]
     assert reader.snapshot()["healthy"]
-    assert reader.resolve_symbol_path(STOCKS[0]).is_file()
+    assert reader.resolve_symbol_path(STOCKS[0]) == Path(reader.snapshot()["table_root"])
     for action in (
         lambda: reader.resolve_symbol_path(STOCKS[0], for_write=True),
         reader._load_catalog,

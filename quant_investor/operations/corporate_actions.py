@@ -21,6 +21,7 @@ from quant_investor.strategy_records.event_contracts import SYMBOLIC_RECEIPT
 from quant_investor.system.storage import SecureSystemStorage
 from .daily_contract import ContractError, GRAPH_SHA256, NodeState, validate_ref
 from .daily_journal import DailyJournal, FALSE_AUTHORITY, _validate_day
+from .held_market_extract import load_held_market_rows
 from .daily_runner import NativeOutcome, Probe
 
 EVENT_ROOT = "results/strategy_records/CN/aggressive_tech_manufacturing/_event_store"
@@ -72,20 +73,10 @@ class CorporateActionEvidence:
             frame = pd.DataFrame()
             state = "NON_EXECUTABLE_MISSING_ADJUSTMENT_EVIDENCE"
             if reader is not None:
-                selected = reader.resolve_symbol_path(symbol)
-                if selected is None or selected != self.workspace / ref["path"]:
-                    raise ContractError("CORPORATE_MARKET_FRAME_PATH_MISMATCH")
-                reader._assert_path_has_no_symlink(
-                    selected,
-                    boundary=reader.data_root,
-                    label="corporate Market frame",
-                    require_exists=True,
-                )
-                frame = reader._read_strict_catalog_parquet(
-                    selected,
-                    table_meta={"sha256": ref["sha256"]},
-                    logical_table="corporate adjustment",
-                )
+                try:
+                    frame = load_held_market_rows(reader, symbol, self._bytes(ref))
+                except ContractError as exc:
+                    raise ContractError("CORPORATE_MARKET_FRAME_PATH_MISMATCH") from exc
             if valid_window and reader is not None and {"trade_date", "adj_factor"} <= set(frame):
                 dates = frame["trade_date"].astype(str).str.replace("-", "", regex=False)
                 before = frame.loc[dates == self.previous, "adj_factor"]

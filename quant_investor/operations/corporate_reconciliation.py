@@ -15,6 +15,7 @@ from quant_investor.intelligence.corporate_reconciliation import (
     build_reconciliation,
 )
 from .daily_contract import ContractError, validate_ref
+from .held_market_extract import load_held_market_rows
 from .decision_recipe import read_decision_recipe
 
 ROOT = "results/strategy_records/CN/aggressive_tech_manufacturing"
@@ -236,15 +237,12 @@ class ReconciliationSources:
             ref = self.evidence.market_refs.get(symbol)
             frame_rows = []
             if ref is not None and reader is not None:
-                path = reader.resolve_symbol_path(symbol)
-                if path != self.workspace / ref["path"]:
-                    raise ContractError("CORPORATE_MARKET_FRAME_PATH_MISMATCH")
-                self.read(ref, json_document=False)
-                frame_rows = reader._read_strict_catalog_parquet(
-                    path,
-                    table_meta={"sha256": ref["sha256"]},
-                    logical_table="corporate tracking window",
-                ).to_dict("records")
+                try:
+                    frame_rows = load_held_market_rows(
+                        reader, symbol, self.read(ref, json_document=False)
+                    ).to_dict("records")
+                except ContractError as exc:
+                    raise ContractError("CORPORATE_MARKET_FRAME_PATH_MISMATCH") from exc
             relevant = [
                 (r, e)
                 for r, e in self.events

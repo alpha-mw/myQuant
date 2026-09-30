@@ -181,7 +181,7 @@ def get_all_components(pro=None) -> Dict[str, List[str]]:
         'fetch_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         'resolver': {
             "resolution_strategy": (
-                "parquet_serving_inventory"
+                "parquet_canonical_inventory"
                 if used_local_parquet_inventory
                 else "upstream_fetch"
                 if full_a

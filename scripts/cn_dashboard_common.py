@@ -41,6 +41,10 @@ ARCHIVE_MANIFEST_SCHEMA_VERSION = "myquant.strategy_record_archive_manifest.v1"
 ARCHIVE_RESTORE_RECEIPT_SCHEMA_VERSION = "myquant.strategy_record_archive_restore_receipt.v1"
 TRANSACTION_BACKFILL_PROVENANCE_SCHEMA_VERSION = "cn_aggressive_transaction_backfill_provenance.v1"
 STRICT_MARKET_CLOSE_EVIDENCE_SCHEMA_VERSION = "cn_dashboard_strict_market_close_evidence.v1"
+STRICT_MARKET_CLOSE_EVIDENCE_SCHEMA_VERSIONS = (
+    STRICT_MARKET_CLOSE_EVIDENCE_SCHEMA_VERSION,
+    "cn_dashboard_strict_market_close_evidence.v2",
+)
 ORDINARY_PUBLICATION_CLASS = "ORDINARY_SAME_DAY_OFFICIAL_VALUATION"
 LATE_PUBLICATION_CLASS = "LATE_OFFICIAL_VALUATION_PUBLICATION"
 BATCH_PUBLICATION_CLASS = "BATCH_CATCH_UP_OFFICIAL_VALUATION"
@@ -825,6 +829,57 @@ def _verify_registered_benchmark_compatibility_alias(
         raise DashboardInputError("official_valuation_benchmark_alias_bytes_mismatch")
 
 
+def _verify_strict_close_table_source(
+    evidence: dict[str, Any], project_root: Path
+) -> list[StableArtifact]:
+    """Bind strict close evidence to its snapshot manifest and canonical table rows."""
+
+    from quant_investor.operations.strict_close_table_source import (
+        StrictCloseTableSourceError,
+        closes_from_table_partition,
+        declared_table_partition,
+        snapshot_manifest_relative,
+        verify_evidence_closes,
+    )
+
+    try:
+        manifest_relative = snapshot_manifest_relative(evidence)
+        manifest_sha = evidence.get("snapshot_manifest_sha256")
+        if not isinstance(manifest_sha, str) or not SHA256_RE.fullmatch(manifest_sha):
+            raise DashboardInputError("official_valuation_snapshot_manifest_ref_invalid")
+        manifest_artifact = stable_read(project_root / manifest_relative, project_root)
+        if manifest_artifact.sha256 != manifest_sha:
+            raise DashboardInputError("official_valuation_snapshot_manifest_sha_mismatch")
+        partition_artifact: StableArtifact | None = None
+        candidates, pinned_sha = declared_table_partition(
+            project_root, evidence, manifest_artifact.data
+        )
+        for candidate in candidates:
+            try:
+                partition_artifact = stable_read(candidate, project_root)
+                break
+            except DashboardInputError as exc:
+                if not str(exc).startswith("artifact_missing:"):
+                    raise
+            except ValueError as exc:
+                if "NOT_RETAINED" not in str(exc):
+                    raise
+        if partition_artifact is None:
+            raise DashboardInputError("official_valuation_table_partition_missing")
+        if pinned_sha is not None and partition_artifact.sha256 != pinned_sha:
+            raise DashboardInputError("official_valuation_table_partition_sha_mismatch")
+        symbols = [
+            str(row.get("symbol") or row.get("ts_code")) for row in evidence.get("stocks") or []
+        ]
+        closes = closes_from_table_partition(
+            partition_artifact.data, symbols=symbols, trade_date=evidence.get("trade_date")
+        )
+        verify_evidence_closes(evidence, closes)
+    except StrictCloseTableSourceError as exc:
+        raise DashboardInputError("official_valuation_" + str(exc).lower()) from exc
+    return [manifest_artifact, partition_artifact]
+
+
 def validate_record(
     record_dir: Path,
     record_root: Path,
@@ -1062,6 +1117,7 @@ def validate_record(
                 raise DashboardInputError("position_symbol_invalid")
             position["price_date"] = owner_trade_dates.get(position_symbol, fallback_price_date)
     valuation_evidence_artifact: StableArtifact | None = None
+    table_source_artifacts: list[StableArtifact] = []
     if manual.get("official_valuation") is True:
         if manual.get("valuation_completeness_passed") is not True:
             raise DashboardInputError("official_valuation_completeness_missing")
@@ -1082,7 +1138,7 @@ def validate_record(
         if not isinstance(evidence, dict):
             raise DashboardInputError("official_valuation_evidence_contract_invalid")
         evidence_schema = evidence.get("schema_version")
-        if evidence_schema == STRICT_MARKET_CLOSE_EVIDENCE_SCHEMA_VERSION:
+        if evidence_schema in STRICT_MARKET_CLOSE_EVIDENCE_SCHEMA_VERSIONS:
             # The current producer binds local strict-Parquet evidence.  The
             # older provider-shaped contract remains readable for historical
             # records, but may not be emitted by the new offline path.
@@ -1125,7 +1181,7 @@ def validate_record(
             raise DashboardInputError("official_valuation_evidence_rows_invalid")
         symbol_key = (
             "symbol"
-            if evidence_schema == STRICT_MARKET_CLOSE_EVIDENCE_SCHEMA_VERSION
+            if evidence_schema in STRICT_MARKET_CLOSE_EVIDENCE_SCHEMA_VERSIONS
             else "ts_code"
         )
         stocks = {str(row.get(symbol_key) or row.get("ts_code")): row for row in stock_rows}
@@ -1148,26 +1204,9 @@ def validate_record(
                 raise DashboardInputError(
                     "official_valuation_stock_close_mismatch:" + position_symbol
                 )
-            if evidence_schema == STRICT_MARKET_CLOSE_EVIDENCE_SCHEMA_VERSION:
-                path_value = row.get("serving_parquet_path") or row.get("serving_path")
-                sha_value = row.get("serving_parquet_sha256") or row.get("parquet_sha256")
-                if (
-                    not isinstance(path_value, str)
-                    or path_value.startswith("/")
-                    or ".." in Path(path_value).parts
-                    or not isinstance(sha_value, str)
-                    or not SHA256_RE.fullmatch(sha_value)
-                ):
-                    raise DashboardInputError(
-                        "official_valuation_stock_source_ref_invalid:" + position_symbol
-                    )
-                stock_path = project_root / path_value
-                stock_artifact = stable_read(stock_path, project_root)
-                if stock_artifact.sha256 != sha_value:
-                    raise DashboardInputError(
-                        "official_valuation_stock_source_sha_mismatch:" + position_symbol
-                    )
             position["price_date"] = data_date
+        if evidence_schema in STRICT_MARKET_CLOSE_EVIDENCE_SCHEMA_VERSIONS:
+            table_source_artifacts = _verify_strict_close_table_source(evidence, project_root)
         benchmark_source_verified = False
         for code, row in indices.items():
             if (
@@ -1179,7 +1218,7 @@ def validate_record(
                 or _number(row.get("close"), f"index_close:{code}") <= 0
             ):
                 raise DashboardInputError("official_valuation_index_close_invalid:" + code)
-            if evidence_schema == STRICT_MARKET_CLOSE_EVIDENCE_SCHEMA_VERSION:
+            if evidence_schema in STRICT_MARKET_CLOSE_EVIDENCE_SCHEMA_VERSIONS:
                 benchmark_path = evidence.get("benchmark_input_path") or row.get(
                     "benchmark_input_path"
                 )
@@ -1244,6 +1283,7 @@ def validate_record(
         artifacts.append(backfill_provenance_artifact)
     if valuation_evidence_artifact is not None:
         artifacts.append(valuation_evidence_artifact)
+    artifacts.extend(table_source_artifacts)
     artifacts.extend(funding_artifacts)
     source_refs = [
         {"path": artifact.relative_path, "sha256": artifact.sha256} for artifact in artifacts

@@ -31,6 +31,7 @@ STOCKS = (
 INDICES = valuation.INDEX_CODES
 TRADE_DATE = "20260821"
 SHA = "a" * 64
+LEGACY_EVIDENCE_SCHEMA = "cn_dashboard_strict_market_close_evidence.v1"
 
 
 def _sha(path: Path) -> str:
@@ -51,7 +52,11 @@ def _write_csv(path: Path, rows: list[dict[str, object]]) -> None:
 
 
 def _source_fixture(
-    tmp_path: Path, *, stock_symbols=STOCKS, market_subdir="data/parquet/cn"
+    tmp_path: Path,
+    *,
+    stock_symbols=STOCKS,
+    market_subdir="data/parquet/cn",
+    evidence_schema=valuation.EVIDENCE_SCHEMA,
 ) -> tuple[Path, Path, dict, Path, dict]:
     project = tmp_path
     record_root = project / "results" / "records"
@@ -162,27 +167,30 @@ def _source_fixture(
 
     snapshot_id = "20260821T000000Z"
     market_root = project / market_subdir
-    serving_root = market_root / "_snapshots" / snapshot_id / "serving" / "bars"
     snapshot_manifest_path = market_root / "_snapshots" / f"{snapshot_id}.json"
-    stock_evidence: list[dict[str, object]] = []
-    for index, symbol in enumerate(stock_symbols, start=1):
-        serving_path = serving_root / f"symbol={symbol}" / "bars.parquet"
-        serving_path.parent.mkdir(parents=True, exist_ok=True)
-        pd.DataFrame(
-            [
-                {"symbol": symbol, "trade_date": "20260820", "close": 19.0 + index},
-                {"symbol": symbol, "trade_date": TRADE_DATE, "close": 20.0 + index},
-            ]
-        ).to_parquet(serving_path, index=False)
-        stock_evidence.append(
-            {
-                "symbol": symbol,
-                "trade_date": TRADE_DATE,
-                "close": 20.0 + index,
-                "serving_parquet_path": serving_path.relative_to(project).as_posix(),
-                "serving_parquet_sha256": _sha(serving_path),
-            }
-        )
+    stock_evidence: list[dict[str, object]] = [
+        {"symbol": symbol, "trade_date": TRADE_DATE, "close": 20.0 + index}
+        for index, symbol in enumerate(stock_symbols, start=1)
+    ]
+    if evidence_schema == LEGACY_EVIDENCE_SCHEMA:
+        # Historical v1 rows cited per-symbol serving files that are no longer
+        # retained; only their path/SHA strings survive in sealed records.
+        for row in stock_evidence:
+            row["serving_parquet_path"] = (
+                f"{market_subdir}/_snapshots/{snapshot_id}/serving/bars/"
+                f"symbol={row['symbol']}/bars.parquet"
+            )
+            row["serving_parquet_sha256"] = "c" * 64
+    table_root = market_root / "_snapshots" / snapshot_id / "table" / "bars"
+    table_partition = table_root / f"year={TRADE_DATE[:4]}" / f"month={TRADE_DATE[4:6]}"
+    table_partition.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        [
+            {"ts_code": symbol, "trade_date": day, "close": close + index}
+            for index, symbol in enumerate(stock_symbols, start=1)
+            for day, close in (("20260820", 19.0), (TRADE_DATE, 20.0))
+        ]
+    ).to_parquet(table_partition / "part.parquet", index=False)
     benchmark_path = project / "portfolio_dashboard" / "inputs" / "cn_index_benchmark.csv"
     benchmark_rows = [
         {
@@ -209,12 +217,12 @@ def _source_fixture(
         "snapshot_id": snapshot_id,
         "latest_complete_trade_date": TRADE_DATE,
         "latest_trade_date": TRADE_DATE,
-        "derived_serving_root": serving_root.relative_to(project).as_posix(),
+        "table_root": table_root.relative_to(project).as_posix(),
     }
     _write_json(snapshot_manifest_path, snapshot_manifest)
 
     evidence = {
-        "schema_version": valuation.EVIDENCE_SCHEMA,
+        "schema_version": evidence_schema,
         "market": "CN",
         "trade_date": TRADE_DATE,
         "market_pointer_path": market_pointer_path.relative_to(project).as_posix(),
@@ -237,6 +245,12 @@ def _source_fixture(
             for index, code in enumerate(INDICES)
         ],
     }
+    if evidence_schema != LEGACY_EVIDENCE_SCHEMA:
+        partition = table_partition / "part.parquet"
+        evidence["table_partition_ref"] = {
+            "path": partition.relative_to(project).as_posix(),
+            "sha256": _sha(partition),
+        }
     return project, source_dir, closure, market_pointer_path, evidence
 
 
@@ -250,8 +264,11 @@ def _build(
     expected_valuation_date: str = "2026-08-21",
     expected_publication_date: str = "2026-08-21",
     publication_delay_reason: str = valuation.ORDINARY_PUBLICATION_REASON,
+    evidence_schema: str = valuation.EVIDENCE_SCHEMA,
 ) -> tuple[Path, Path, dict, dict]:
-    project, source_dir, closure, market_pointer_path, evidence = _source_fixture(tmp_path)
+    project, source_dir, closure, market_pointer_path, evidence = _source_fixture(
+        tmp_path, evidence_schema=evidence_schema
+    )
     staging_dir = project / "results" / "records" / record_id
     staging_dir.mkdir()
     summary = valuation.build_record(
@@ -335,6 +352,81 @@ def test_built_record_passes_dashboard_record_validation(tmp_path: Path) -> None
     assert closed["official_valuation"] is True
     assert closed["data_date"] == "2026-08-21"
     assert len(closed["positions"]) == 7
+
+
+def test_new_evidence_is_v2_table_bound_without_serving_refs(tmp_path: Path) -> None:
+    project, staging_dir, _summary, evidence = _build(tmp_path)
+    assert evidence["schema_version"] == "cn_dashboard_strict_market_close_evidence.v2"
+    assert all(set(row) == {"symbol", "trade_date", "close"} for row in evidence["stocks"])
+    partition = (
+        "data/parquet/cn/_snapshots/20260821T000000Z/table/bars/year=2026/month=08/part.parquet"
+    )
+    assert evidence["table_partition_ref"] == {
+        "path": partition,
+        "sha256": _sha(project / partition),
+    }
+    closed = validate_record(staging_dir, project / "results" / "records", project)
+    table_refs = [ref["path"] for ref in closed["source_refs"] if "/table/bars/" in ref["path"]]
+    assert table_refs == [partition]
+    assert not any("/serving/" in ref["path"] for ref in closed["source_refs"])
+
+
+def test_legacy_v1_evidence_validates_from_table_without_serving_files(tmp_path: Path) -> None:
+    project, staging_dir, _summary, evidence = _build(
+        tmp_path, evidence_schema=LEGACY_EVIDENCE_SCHEMA
+    )
+    assert evidence["schema_version"] == LEGACY_EVIDENCE_SCHEMA
+    assert not list((project / "data/parquet/cn/_snapshots").glob("*/serving"))
+    closed = validate_record(staging_dir, project / "results" / "records", project)
+    assert closed["official_valuation"] is True
+    assert len(closed["positions"]) == 7
+
+
+def test_v2_evidence_rejects_changed_table_partition_bytes(tmp_path: Path) -> None:
+    project, staging_dir, _summary, evidence = _build(tmp_path)
+    partition = project / evidence["table_partition_ref"]["path"]
+    frame = pd.read_parquet(partition)
+    frame.loc[frame["trade_date"] == "20260820", "close"] += 1.0
+    frame.to_parquet(partition, index=False)
+    with pytest.raises(DashboardInputError, match="table_partition_sha_mismatch"):
+        validate_record(staging_dir, project / "results" / "records", project)
+
+
+def test_v2_evidence_rejects_serving_fields_in_stock_rows(tmp_path: Path) -> None:
+    project, _source, _closure, market_pointer, evidence = _source_fixture(tmp_path)
+    evidence["stocks"][0]["serving_parquet_sha256"] = SHA
+    with pytest.raises(ValueError, match="V2_STOCK_ROW_INVALID"):
+        valuation.validate_strict_market_close_evidence(
+            evidence,
+            project_root=project,
+            expected_symbols=set(STOCKS),
+            expected_trade_date=TRADE_DATE,
+            expected_market_pointer_sha256=_sha(market_pointer),
+        )
+
+
+def test_dashboard_validation_rejects_table_close_drift(tmp_path: Path) -> None:
+    # v1 pins no table bytes, so drift is caught by the exact close comparison.
+    project, staging_dir, _summary, _evidence = _build(
+        tmp_path, evidence_schema=LEGACY_EVIDENCE_SCHEMA
+    )
+    partition = (
+        project
+        / "data/parquet/cn/_snapshots/20260821T000000Z/table/bars/year=2026/month=08/part.parquet"
+    )
+    frame = pd.read_parquet(partition)
+    frame.loc[frame["trade_date"] == TRADE_DATE, "close"] += 0.5
+    frame.to_parquet(partition, index=False)
+    with pytest.raises(DashboardInputError, match="strict_close_table_value_mismatch"):
+        validate_record(staging_dir, project / "results" / "records", project)
+
+
+def test_dashboard_validation_rejects_changed_snapshot_manifest(tmp_path: Path) -> None:
+    project, staging_dir, _summary, _evidence = _build(tmp_path)
+    manifest = project / "data/parquet/cn/_snapshots/20260821T000000Z.json"
+    manifest.write_bytes(manifest.read_bytes() + b"\n")
+    with pytest.raises(DashboardInputError, match="snapshot_manifest_sha_mismatch"):
+        validate_record(staging_dir, project / "results" / "records", project)
 
 
 def test_batch_validation_can_resolve_an_immutable_staged_source(tmp_path: Path) -> None:
@@ -589,14 +681,23 @@ def test_registered_source_rejects_pointer_and_identity_drift(
     assert observed_closure == closure
 
 
-def test_strict_evidence_schema_is_valid_json() -> None:
+@pytest.mark.parametrize("version", ["v1", "v2"])
+def test_strict_evidence_schema_is_valid_json(version: str) -> None:
+    import re
+
     schema_path = (
         ROOT
         / "portfolio_dashboard"
         / "schema"
-        / "cn_dashboard_strict_market_close_evidence.v1.schema.json"
+        / f"cn_dashboard_strict_market_close_evidence.{version}.schema.json"
     )
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
-    assert schema["$id"] == valuation.EVIDENCE_SCHEMA
+    assert schema["$id"] == f"cn_dashboard_strict_market_close_evidence.{version}"
     assert schema["properties"]["stocks"]["maxItems"] == 7
     assert schema["properties"]["indices"]["maxItems"] == 3
+    if version == "v2":
+        assert schema["$id"] == valuation.EVIDENCE_SCHEMA
+        assert "serving" not in schema_path.read_text(encoding="utf-8")
+        pattern = schema["$defs"]["tablePartitionRef"]["properties"]["path"]["pattern"]
+        partition = "data/parquet/cn/_snapshots/20260922T082416Z/table/bars/year=2026/month=09"
+        assert re.search(pattern, partition + "/part.parquet")

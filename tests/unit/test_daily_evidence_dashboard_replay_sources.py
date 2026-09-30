@@ -65,12 +65,36 @@ def test_native_inventory_detects_changed_transitive_price_file(tmp_path):
         "path": str(pointer.relative_to(tmp_path)),
         "sha256": hashlib.sha256(pointer.read_bytes()).hexdigest(),
     }
+    import pandas as pd
+
     sources = retained_store_inventory(project_root=tmp_path, record_root=f.root, pointer_ref=ref)
     price_paths = [
         p for p in sources if p.startswith("data/parquet/cn/_snapshots/") and p.endswith(".parquet")
     ]
     assert price_paths
-    path = tmp_path / price_paths[0]
-    path.write_bytes(path.read_bytes() + b"changed")
+    assert all("/table/bars/" in p and "/serving/" not in p for p in price_paths)
+    path = tmp_path / price_paths[-1]
+    frame = pd.read_parquet(path)
+    frame["close"] = frame["close"] + 1.0
+    frame.to_parquet(path, index=False)
+    # v2 evidence pins the table partition bytes, so any change fails on SHA.
     with pytest.raises(ValueError, match="CLOSE_SOURCE_SHA_MISMATCH"):
         retained_store_inventory(project_root=tmp_path, record_root=f.root, pointer_ref=ref)
+
+
+def test_native_inventory_does_not_require_serving_projection(tmp_path):
+    import hashlib
+    import shutil
+    from test_daily_evidence_native_dashboard import fixture
+    from quant_investor.operations.dashboard_replay_sources import retained_store_inventory
+
+    f, _, _, _, _ = fixture(tmp_path)
+    for serving in (tmp_path / "data/parquet/cn/_snapshots").glob("*/serving"):
+        shutil.rmtree(serving)
+    pointer = f.root / "_record_store/current.v1.json"
+    ref = {
+        "path": str(pointer.relative_to(tmp_path)),
+        "sha256": hashlib.sha256(pointer.read_bytes()).hexdigest(),
+    }
+    sources = retained_store_inventory(project_root=tmp_path, record_root=f.root, pointer_ref=ref)
+    assert not any("/serving/" in p for p in sources)

@@ -1474,16 +1474,13 @@ def build_private_market_candidate(
     table_sha, table_file_count, table_bytes = _tree_sha256(
         source_snapshot.table_root, label="production_market_table"
     )
-    serving_sha, serving_file_count, serving_bytes = _tree_sha256(
-        source_snapshot.serving_root, label="production_market_serving"
-    )
     root, private_pit = _prepare_market_candidate_root(
         candidate,
         private_pit_generation_binding=private_pit_generation_binding,
     )
     resource_receipt = _resource_preflight(
         candidate_root=root,
-        source_bytes=table_bytes + serving_bytes,
+        source_bytes=table_bytes,
     )
     resource_path = root / "resource-preflight.json"
     resource_raw = _canonical_json_bytes(resource_receipt)
@@ -1498,7 +1495,6 @@ def build_private_market_candidate(
     candidate_market_root = root / "parquet" / "cn"
     candidate_snapshot_dir = candidate_market_root / "_snapshots" / snapshot_id
     candidate_table = candidate_snapshot_dir / "table" / "bars"
-    candidate_serving = candidate_snapshot_dir / "serving" / "bars"
     candidate_manifest_path = candidate_market_root / "_snapshots" / f"{snapshot_id}.json"
     candidate_pointer_path = candidate_market_root / "_latest.json"
     _copy_snapshot_tree(
@@ -1506,16 +1502,11 @@ def build_private_market_candidate(
         candidate_table,
         label="production_market_table",
     )
-    _copy_snapshot_tree(
-        source_snapshot.serving_root,
-        candidate_serving,
-        label="production_market_serving",
-    )
 
     candidate_manifest = dict(manifest)
     candidate_manifest["manifest_path"] = str(candidate_manifest_path)
     candidate_manifest["table_root"] = str(candidate_table)
-    candidate_manifest["derived_serving_root"] = str(candidate_serving)
+    candidate_manifest.pop("derived_serving_root", None)
     candidate_coverage = dict(candidate_manifest.get("coverage") or {})
     if private_pit is not None:
         candidate_coverage.update(
@@ -1534,7 +1525,7 @@ def build_private_market_candidate(
     candidate_pointer = dict(pointer)
     candidate_pointer["manifest_path"] = str(candidate_manifest_path)
     candidate_pointer["table_root"] = str(candidate_table)
-    candidate_pointer["derived_serving_root"] = str(candidate_serving)
+    candidate_pointer.pop("derived_serving_root", None)
     candidate_pointer["coverage"] = candidate_coverage
     candidate_pointer_raw = _canonical_json_bytes(candidate_pointer)
     _write_new_file(candidate_pointer_path, candidate_pointer_raw)
@@ -1565,14 +1556,6 @@ def build_private_market_candidate(
             "size_bytes": table_bytes,
             "kind": "tree",
             "role": "production_market_table",
-        },
-        {
-            "path": str(source_snapshot.serving_root),
-            "sha256": serving_sha,
-            "file_count": serving_file_count,
-            "size_bytes": serving_bytes,
-            "kind": "tree",
-            "role": "production_market_serving",
         },
     ]
     health_path = production / "parquet" / "cn" / "_health_ledger.jsonl"
