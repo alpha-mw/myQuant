@@ -1,0 +1,17 @@
+{
+  "schema_id": "myquant.cn_daily_no_event_default_owner_policy.v1",
+  "policy_id": "cn-daily-no-event-default-v1",
+  "owner": "Maxwell",
+  "authorized_at": "2026-09-30T06:45:00Z",
+  "authorization_source": "Owner instruction in Claude Code session 2026-09-30: trades are reported to Hermes into operations/owner_trades/CN/<YYYYMMDD>.json; a trading day with no inbox file by the evening close is sealed as seven-domain CLOSED_EMPTY.",
+  "strategy_label": "aggressive_tech_manufacturing",
+  "trade_inbox_root": "operations/owner_trades/CN",
+  "inbox_deadline_local_time": "20:00",
+  "applies_via": "manage_cn_strategy_records.py publish-daily-event-closure under operations/policies/cn-daily-official-close-policy.v1.json",
+  "inbox_with_trades_behavior": "BLOCK_UNTIL_TRADE_WRITER_AVAILABLE",
+  "revocable": true,
+  "revoked_at": null,
+  "broker_order_trade_authority": false,
+  "actual_holdings_mutation_authority": false,
+  "cash_mutation_authority": false
+}
