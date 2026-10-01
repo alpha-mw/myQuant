@@ -67,6 +67,24 @@ def run_json(argv: list[str], *, cwd: Path, label: str, timeout: int = 1800) -> 
     return value
 
 
+def _usable_attempt(attempt: Path, attempt_sha: str, compact: str) -> dict | None:
+    """Return the attempt body when it is hash-exact, for ``compact`` and has no core blocker."""
+    if not attempt.is_file() or sha256(attempt) != attempt_sha:
+        return None
+    body = json.loads(attempt.read_text())
+    if body.get("target_date") != compact or body.get("core_blockers"):
+        return None
+    return body
+
+
+def _calendar(body: dict) -> tuple[Path, str]:
+    calendar = body["close_session_receipt_ref"]
+    calendar_path = Path(calendar["path"])
+    if sha256(calendar_path) != calendar["sha256"]:
+        raise Blocked("CALENDAR_RECEIPT_SHA_MISMATCH")
+    return calendar_path, calendar["sha256"]
+
+
 def maintenance_attempt(day: str) -> tuple[Path, str, Path, str]:
     """Return today's 2020-slot attempt receipt and its close-session receipt."""
     compact = day.replace("-", "")
@@ -82,21 +100,23 @@ def maintenance_attempt(day: str) -> tuple[Path, str, Path, str]:
         ref = value.get("attempt_receipt_ref") or {}
         if value.get("target_date") != compact or not ref.get("path"):
             continue
-        attempt = Path(ref["path"])
-        if not attempt.is_file() or sha256(attempt) != ref.get("sha256"):
-            continue
-        body = json.loads(attempt.read_text())
-        if body.get("core_blockers"):
-            continue
-        candidates.append((attempt, ref["sha256"], body))
+        body = _usable_attempt(Path(ref["path"]), ref.get("sha256", ""), compact)
+        if body is not None:
+            candidates.append((Path(ref["path"]), ref["sha256"], body))
     if not candidates:
         raise Blocked(f"MAINTENANCE_NOT_COMPLETE:{compact}")
     attempt, attempt_sha, body = candidates[-1]
-    calendar = body["close_session_receipt_ref"]
-    calendar_path = Path(calendar["path"])
-    if sha256(calendar_path) != calendar["sha256"]:
-        raise Blocked("CALENDAR_RECEIPT_SHA_MISMATCH")
-    return attempt, attempt_sha, calendar_path, calendar["sha256"]
+    return (attempt, attempt_sha, *_calendar(body))
+
+
+def explicit_maintenance_attempt(day: str, path: str, sha: str) -> tuple[Path, str, Path, str]:
+    """Use an owner-named attempt receipt, e.g. a catch-up run made on a later day."""
+    compact = day.replace("-", "")
+    attempt = Path(path)
+    body = _usable_attempt(attempt, sha, compact)
+    if body is None:
+        raise Blocked(f"MAINTENANCE_ATTEMPT_NOT_USABLE:{compact}")
+    return (attempt, sha, *_calendar(body))
 
 
 def owner_trades(day: str) -> list:
@@ -123,7 +143,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--trade-date", help="YYYY-MM-DD; default is today in Asia/Shanghai")
     parser.add_argument("--execute", action="store_true")
+    parser.add_argument(
+        "--maintenance-attempt",
+        help="exact attempt.json to use instead of the same-day 2020-slot lookup",
+    )
+    parser.add_argument("--maintenance-attempt-sha256")
     args = parser.parse_args()
+    if bool(args.maintenance_attempt) != bool(args.maintenance_attempt_sha256):
+        parser.error("--maintenance-attempt and --maintenance-attempt-sha256 go together")
     day = args.trade_date or datetime.now(SHANGHAI).date().isoformat()
     date.fromisoformat(day)
     compact = day.replace("-", "")
@@ -145,7 +172,13 @@ def main() -> int:
 
     manage = [str(RELEASE_PYTHON), str(RELEASE_CHECKOUT / "scripts/manage_cn_strategy_records.py")]
     try:
-        attempt, attempt_sha, calendar, calendar_sha = maintenance_attempt(day)
+        attempt, attempt_sha, calendar, calendar_sha = (
+            explicit_maintenance_attempt(
+                day, args.maintenance_attempt, args.maintenance_attempt_sha256
+            )
+            if args.maintenance_attempt
+            else maintenance_attempt(day)
+        )
         step(
             "maintenance",
             {
