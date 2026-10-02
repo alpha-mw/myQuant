@@ -119,6 +119,53 @@ def explicit_maintenance_attempt(day: str, path: str, sha: str) -> tuple[Path, s
     return (attempt, sha, *_calendar(body))
 
 
+def _bound_json(path: Path, expected_sha: str) -> dict:
+    if not path.is_file() or sha256(path) != expected_sha:
+        raise Blocked(f"CALENDAR_PROOF_SHA_MISMATCH:{path.name}")
+    return json.loads(path.read_text())
+
+
+def non_trading_day(day: str) -> dict | None:
+    """Return the sealed calendar evidence that ``day`` is not an exchange session.
+
+    The factor loop binds a next-session calendar proof to the last completed
+    session. A day strictly between that session and its next open session is a
+    weekend or holiday; anything else is not provable here and returns ``None`` so
+    the normal fail-closed maintenance lookup decides.
+    """
+    state_path = MAINTENANCE_ROOT / "factor-loop-state.json"
+    if not state_path.is_file():
+        return None
+    state = json.loads(state_path.read_text())
+    ref = state.get("next_session_calendar_proof_ref")
+    if not isinstance(ref, dict):
+        return None
+    publication = _bound_json(WORKSPACE / ref["path"], ref["sha256"])
+    proof_ref = publication["proof_ref"]
+    proof = _bound_json(WORKSPACE / proof_ref["path"], proof_ref["sha256"])
+    last_session, next_session = proof["eod_trade_date"], proof["next_open_session"]
+    if state.get("trade_date") != last_session:
+        return None
+    if not last_session < day.replace("-", "") < next_session:
+        return None
+    return {
+        "status": "NO_ACTION",
+        "reason": "NON_TRADING_DAY",
+        "last_session": last_session,
+        "next_open_session": next_session,
+        "calendar_proof_sha256": proof_ref["sha256"],
+    }
+
+
+def prior_session_closed(last_session: str) -> None:
+    """A holiday is only quiet when the session before it has been closed."""
+    iso = f"{last_session[:4]}-{last_session[4:6]}-{last_session[6:]}"
+    events = json.loads((RECORD_ROOT / "_event_store/current.v1.json").read_text())
+    benchmark = json.loads((WORKSPACE / "data/parquet/cn/benchmarks/_latest.json").read_text())
+    if iso not in events["trade_dates"] or benchmark["end_date"] < iso:
+        raise Blocked(f"PRIOR_SESSION_NOT_CLOSED:{last_session}")
+
+
 def owner_trades(day: str) -> list:
     path = TRADE_INBOX / f"{day.replace('-', '')}.json"
     if not path.exists():
@@ -377,7 +424,27 @@ def finish(receipt: dict, compact: str) -> int:
             ensure_ascii=False,
         )
     )
-    return 0 if receipt["status"] in {"COMPLETED", "PLANNED"} else 2
+    if receipt["status"] in {"COMPLETED", "PLANNED", "NO_ACTION"}:
+        return 0
+    if receipt["execute"]:
+        alert(receipt)
+    return 2
+
+
+def alert(receipt: dict) -> None:
+    """Best-effort owner alert for a blocked scheduled close; never raises."""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from notify_failure import notify
+
+        notify(
+            job=f"evening-close {receipt['trade_date']}",
+            exit_code=2,
+            detail=str(receipt.get("blocker") or receipt["status"]),
+            workspace=WORKSPACE,
+        )
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

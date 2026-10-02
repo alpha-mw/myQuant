@@ -3,18 +3,26 @@
 The public command line is an automation surface.  Every non-help response is
 therefore one compact, key-sorted JSON object on stdout.  Expected
 unavailability and validation failures use exit code 2; unexpected exceptions
-use exit code 3 without disclosing local paths or tracebacks.
+use exit code 3 without disclosing local paths or tracebacks.  An operator
+can keep the traceback of an unexpected exception by pointing
+``QUANT_INVESTOR_DIAGNOSTICS_DIR`` at a private directory; stdout and stderr
+stay the same either way.
 """
 
 from __future__ import annotations
 
 import argparse
 from collections.abc import Callable, Mapping
+from datetime import datetime, timezone
 import json
+import os
+from pathlib import Path
 import sys
-from typing import Any, NoReturn, TypeVar
+import traceback
+from typing import Any, Final, NoReturn, TypeVar
 
 _T = TypeVar("_T")
+DIAGNOSTICS_DIR_ENV: Final = "QUANT_INVESTOR_DIAGNOSTICS_DIR"
 
 
 class CommandError(RuntimeError):
@@ -83,6 +91,30 @@ def fail_internal(blocker_code: str = "INTERNAL_ERROR") -> NoReturn:
     raise SystemExit(3) from None
 
 
+def _record_internal_diagnostic(exc: BaseException) -> None:
+    """Keep an unexpected exception's traceback in an owner-only private file.
+
+    Best-effort and opt-in: nothing is written unless the diagnostics directory
+    is configured, and a failure to write never changes the exit-code contract.
+    """
+
+    directory = os.environ.get(DIAGNOSTICS_DIR_ENV)
+    if not directory:
+        return
+    try:
+        root = Path(directory)
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        path = root / f"internal-error-{stamp}-{os.getpid()}.txt"
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write("argv: " + json.dumps(sys.argv[1:], ensure_ascii=False) + "\n")
+            handle.write("".join(traceback.format_exception(exc)))
+    except Exception:
+        # Diagnostics must never mask the real failure or its exit code.
+        return
+
+
 def command_boundary(action: Callable[[], _T]) -> _T:
     """Run one command under the stable 0/2/3 exit-code contract."""
 
@@ -103,6 +135,7 @@ def command_boundary(action: Callable[[], _T]) -> _T:
                         fields=fields if isinstance(fields, Mapping) else None,
                     )
                 )
+        _record_internal_diagnostic(exc)
         fail_internal()
 
 
