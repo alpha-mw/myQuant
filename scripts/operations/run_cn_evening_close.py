@@ -24,14 +24,14 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 WORKSPACE = Path("/Users/maxwell/mySpace/myQuant")
-RELEASE_COMMIT = "7cdb1f265f5c4b6a2ae8e799012a963cf2904b6c"
+RELEASE_COMMIT = "660f066fb11e3bc100c89992a989f844c0c3a975"
 RELEASE_CHECKOUT = Path(
     f"/Users/maxwell/mySpace/myQuant-release-checkouts/{RELEASE_COMMIT}-unified-runtime"
 )
 RELEASE_PYTHON = Path(
     "/Users/maxwell/mySpace/myQuant-release-authority/"
     f"{RELEASE_COMMIT}-unified-runtime/installs/"
-    f"{RELEASE_COMMIT}-1ef1b686e5e4e3d09fed188ec9386267fe3d57b234d7b3a08148957bf142bc0b/bin/python"
+    f"{RELEASE_COMMIT}-f29e64e2eb6adcb364e9a54b9b8f2e72fd6408e68d88097f134c2b9eb03e4cc6/bin/python"
 )
 WORKSPACE_PYTHON = WORKSPACE / ".venv/bin/python"
 RECORD_ROOT = WORKSPACE / "results/strategy_records/CN/aggressive_tech_manufacturing"

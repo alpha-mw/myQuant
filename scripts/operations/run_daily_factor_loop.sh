@@ -9,7 +9,7 @@ set -euo pipefail
 umask 077
 
 # ---- 当前激活的 release（release 更新时改这里）----
-RELEASE_INSTALL_DIR="/Users/maxwell/mySpace/myQuant-release-authority/5dd585ba1d81bb4834cb30be18a75c4b5b36da6a-unified-runtime/installs/5dd585ba1d81bb4834cb30be18a75c4b5b36da6a-f7656834455f9eb9879987972d8463ea2026de11ab1ffeea59aa3a37c8c7cc4d"
+RELEASE_INSTALL_DIR="/Users/maxwell/mySpace/myQuant-release-authority/660f066fb11e3bc100c89992a989f844c0c3a975-unified-runtime/installs/660f066fb11e3bc100c89992a989f844c0c3a975-f29e64e2eb6adcb364e9a54b9b8f2e72fd6408e68d88097f134c2b9eb03e4cc6"
 INSTALLED_PYTHON="$RELEASE_INSTALL_DIR/bin/python"
 EXPECTED_IMPORT_ROOT="$RELEASE_INSTALL_DIR/lib/python3.13/site-packages"
 
@@ -17,8 +17,8 @@ WORKSPACE_ROOT="/Users/maxwell/mySpace/myQuant"
 RUN_ROOT="$WORKSPACE_ROOT/data/private/cn_daily_maintenance"
 
 # ---- 当前激活的 factor-loop context（context 更新时改这里）----
-FACTOR_LOOP_CONTEXT="$RUN_ROOT/factor_loop_contexts/5dd585ba1d81bb4834cb30be18a75c4b5b36da6a.json"
-FACTOR_LOOP_CONTEXT_SHA="15fab00b8ef865c49b64bf1df0c8cf11b5f39d962626cf94c8059bbcbddb7745"
+FACTOR_LOOP_CONTEXT="$RUN_ROOT/factor_loop_contexts/660f066fb11e3bc100c89992a989f844c0c3a975.json"
+FACTOR_LOOP_CONTEXT_SHA="864e4e7801549b74e499e563cc3f8d2b666027edcc3760609afb020ba4945053"
 
 # ---- 周末判断（Mon=1 ... Sun=7），周末跳过 ----
 DOW="$(date +%u)"
