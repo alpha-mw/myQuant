@@ -49,7 +49,7 @@ def test_trial_icir_uses_sample_standard_deviation_and_fails_closed() -> None:
     assert trial_std == 0.0
 
 
-def test_shrunk_ic_uses_all_purged_cpcv_paths() -> None:
+def test_shrunk_ic_uses_all_block_pairs() -> None:
     open_sessions = list(pd.bdate_range("2025-01-02", periods=390).strftime("%Y-%m-%d"))
     signal_sessions = open_sessions[:360]
     rank_ic = pd.Series(
@@ -73,26 +73,29 @@ def test_shrunk_ic_uses_all_purged_cpcv_paths() -> None:
         trial_icir_complete=False,
     )
     metrics = preliminary["configuration-a"]
-    path_means = admission_module._cpcv_path_means(rank_ic)
-    expected_mean = float(np.mean(path_means))
-    assert metrics["path_count"] == 45
-    assert np.isclose(metrics["mean_path_ic"], expected_mean)
+    pair_means = admission_module._block_pair_means(rank_ic)
+    expected_mean = float(np.mean(pair_means))
+    assert metrics["block_pair_count"] == 45
+    assert np.isclose(metrics["mean_block_pair_ic"], expected_mean)
+    # Nothing is fitted inside the window, so the pair means are a plain
+    # re-weighting of the same sessions and average to the full-sample mean.
+    assert np.isclose(expected_mean, float(rank_ic.mean()))
     assert np.isclose(
         metrics["shrunk_ic"],
         expected_mean * 45 / (45 + 10),
     )
 
 
-def test_redundancy_representative_uses_dsr_path_mean_then_ascii() -> None:
+def test_redundancy_representative_uses_dsr_block_pair_mean_then_ascii() -> None:
     cluster_id = "cluster-a"
     components = [("configuration-a", "configuration-b", "configuration-c")]
     cluster_ids = {configuration_id: cluster_id for configuration_id in components[0]}
     eligible = {configuration_id: True for configuration_id in components[0]}
 
     preliminary = {
-        "configuration-a": {"dsr": 0.96, "mean_path_ic": 0.03},
-        "configuration-b": {"dsr": 0.97, "mean_path_ic": 0.01},
-        "configuration-c": {"dsr": 0.97, "mean_path_ic": 0.02},
+        "configuration-a": {"dsr": 0.96, "mean_block_pair_ic": 0.03},
+        "configuration-b": {"dsr": 0.97, "mean_block_pair_ic": 0.01},
+        "configuration-c": {"dsr": 0.97, "mean_block_pair_ic": 0.02},
     }
     assert (
         admission_module._cluster_representatives(
@@ -104,7 +107,7 @@ def test_redundancy_representative_uses_dsr_path_mean_then_ascii() -> None:
         == "configuration-c"
     )
 
-    preliminary["configuration-b"]["mean_path_ic"] = 0.02
+    preliminary["configuration-b"]["mean_block_pair_ic"] = 0.02
     assert (
         admission_module._cluster_representatives(
             components,
@@ -134,7 +137,7 @@ def test_active_factor_limit_keeps_deterministic_top_ten() -> None:
     preliminary = {
         f"configuration-{index:02d}": {
             "dsr": 1.0 - index / 100,
-            "mean_path_ic": 0.02,
+            "mean_block_pair_ic": 0.02,
         }
         for index in range(11)
     }

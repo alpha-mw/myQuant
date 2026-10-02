@@ -185,23 +185,52 @@ Maturity is the conjunction of at least 300 valid daily RankIC sessions, 12
 closed calendar month-end observations, and 8 disjoint cohorts defined by the
 canonical 30-open-session ordinals. Admission then requires a t-statistic
 strictly greater than 3, DSR at least 0.95, complete 10-block PBO with all 252
-splits and PBO at most 0.50, within-family BH q-value at most 0.10, all 45 CPCV
-paths with positive-path ratio at least 0.55, and replayed turnover at most 12
-after annualization to 252 canonical open sessions. The execution evidence
+splits and PBO at most 0.50, within-family BH q-value at most 0.10, all 45
+block pairs with positive-pair ratio at least 0.55, and replayed turnover at
+most 12 after annualization to 252 canonical open sessions. The execution evidence
 binds a complete round-trip cost of 1bp as 0.5bp per unit of absolute weight
 change, including initial entry and terminal exit; sparse rows mean every
 unlisted universe weight is exactly zero.
 
-Trial ICIR dispersion is the sample standard deviation (`ddof=1`) across every
-executed configuration. A missing or non-finite ICIR, an incomplete 10-block
-column, or fewer than two selected configurations fails closed before
-admission. Redundancy clusters use transitive union-find components. Their
-representative ordering is DSR descending, mean purged-OOS CPCV RankIC
-descending, then ASCII configuration ID. The weight score is
-`max(0, mean_path_ic) * path_count / (path_count + 10)` over all 45 paths. At
+Daily RankICs against a 30-session label share 29 of every 30 label sessions
+with their neighbour, so they are not independent observations. The
+t-statistic, its p-value and the ICIR behind the DSR are therefore all taken
+over the disjoint cohort means, never over the daily series. Adjacent cohort
+means still share about half a label window (correlation 4495/18010 for a
+persistent signal), so the t-statistic is divided by the square root of
+`cohort_overlap_variance_inflation` (1.52 for twelve cohorts) and the DSR uses
+the effective sample size, the cohort count divided by the same factor. The
+DSR uses Gaussian moments because twelve cohort means cannot estimate skew or
+kurtosis. The correction assumes the worst case of a signal that does not
+change between sessions and is conservative for faster signals. Under that
+null a worthless factor clears t > 3 about 0.7% of the time and a single-trial
+DSR of 0.95 about 5% of the time; the earlier daily-series DSR cleared it 37%
+of the time.
+
+The 45 block pairs are every pair of the ten 36-session evaluation blocks. A
+candidate is sealed before its window opens and nothing is fitted inside the
+window, so every session is already out of sample: there is no training set
+to purge, and the pair means are a stability check on the sign of the effect,
+not a cross-validation. Their average equals the full-sample mean RankIC when
+no session is missing.
+
+Trial ICIR dispersion is the sample standard deviation (`ddof=1`) of the
+cohort-mean ICIR across every executed configuration. A missing or non-finite
+ICIR, an incomplete 10-block column, or fewer than two selected configurations
+fails closed before admission. Redundancy clusters use transitive union-find
+components. Their representative ordering is DSR descending, mean block-pair
+RankIC descending, then ASCII configuration ID. The weight score is
+`max(0, mean_block_pair_ic) * pair_count / (pair_count + 10)` over all 45
+pairs. At
 most ten eligible representatives survive the same deterministic ordering;
 largest-remainder allocation then emits 12-decimal weights summing exactly to
 one.
+
+The validation contract is sealed verbatim into every preregistration and
+checked for exact equality, so a preregistration sealed by a release that
+predates these definitions does not validate under a later one, and the
+reverse. No preregistration, evaluation or admitted set had been sealed when
+the definitions changed on 2026-10-02.
 
 Capacity, drawdown, runtime compatibility, crowding, and current production
 health are not Factor admission gates in this policy. They may be evaluated by

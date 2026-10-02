@@ -19,12 +19,8 @@ from .common import (
     ANNUAL_OPEN_SESSIONS,
     BH_Q_CEILING,
     COST_BPS,
-    CPCV_BLOCK_COUNT,
-    CPCV_EMBARGO_OPEN_SESSIONS,
-    CPCV_PATH_COUNT,
-    CPCV_PURGE_OPEN_SESSIONS,
-    CPCV_TEST_BLOCK_COUNT,
     DSR_FLOOR,
+    EVALUATION_BLOCK_COUNT,
     LABEL_HORIZON_OPEN_SESSIONS,
     MIN_CLOSED_MONTH_ENDS,
     MIN_DAILY_RANKIC_SESSIONS,
@@ -32,11 +28,13 @@ from .common import (
     PBO_CEILING,
     PBO_MIN_CONFIGURATIONS,
     PBO_SPLIT_COUNT,
-    POSITIVE_PATH_RATIO_FLOOR,
+    POSITIVE_BLOCK_PAIR_RATIO_FLOOR,
     REDUNDANCY_CORRELATION_FLOOR,
     REDUNDANCY_MIN_OVERLAP,
     SIGNAL_OPEN_SESSIONS,
     SHRINKAGE_PSEUDO_COUNT,
+    STABILITY_BLOCK_PAIR_COUNT,
+    STABILITY_BLOCKS_PER_PAIR,
     T_STAT_HURDLE,
     TURNOVER_CEILING,
     artifact_ref,
@@ -56,6 +54,7 @@ from .prospective import (
 from .statistics import (
     TRIAL_CORRECTION_KIND,
     benjamini_hochberg_by_family,
+    cohort_overlap_variance_inflation,
     deflated_sharpe_ratio,
     probability_of_backtest_overfitting,
     redundancy_clusters,
@@ -106,14 +105,14 @@ _CANDIDATE_ROW_FIELDS: Final = {
     "disjoint_30_open_session_cohort_means",
     "maturity_passed",
     "mean_rank_ic",
-    "mean_purged_oos_rank_ic",
+    "mean_block_pair_rank_ic",
     "shrunk_ic",
     "t_statistic",
     "t_p_value",
     "deflated_sharpe_ratio",
     "bh_q_value",
-    "cpcv_path_count",
-    "positive_path_ratio",
+    "block_pair_count",
+    "positive_block_pair_ratio",
     "turnover",
     "total_estimated_cost",
     "gross_labeled_return_sum",
@@ -236,19 +235,31 @@ def _cohort_means(series: pd.Series) -> list[float]:
     return means
 
 
+def _cohort_overlap_inflation(cohort_count: int) -> float:
+    return cohort_overlap_variance_inflation(
+        cohort_count,
+        cohort_size=LABEL_HORIZON_OPEN_SESSIONS,
+        horizon_sessions=LABEL_HORIZON_OPEN_SESSIONS,
+    )
+
+
 def _cohort_test(values: Sequence[float]) -> tuple[float, float]:
+    """One-sample t-test on cohort means, corrected for their shared label window."""
+
     if len(values) < 2:
         return 0.0, 1.0
-    statistic, p_value = scipy_stats.ttest_1samp(np.asarray(values, dtype=float), 0.0)
-    if not math.isfinite(float(statistic)) or not math.isfinite(float(p_value)):
+    raw, _ = scipy_stats.ttest_1samp(np.asarray(values, dtype=float), 0.0)
+    statistic = float(raw) / math.sqrt(_cohort_overlap_inflation(len(values)))
+    if not math.isfinite(statistic):
         return 0.0, 1.0
-    return float(statistic), float(p_value)
+    p_value = 2.0 * float(scipy_stats.t.sf(abs(statistic), len(values) - 1))
+    return statistic, p_value
 
 
 def _block_performance(series_by_configuration: Mapping[str, pd.Series]) -> pd.DataFrame:
-    block_size = SIGNAL_OPEN_SESSIONS // CPCV_BLOCK_COUNT
+    block_size = SIGNAL_OPEN_SESSIONS // EVALUATION_BLOCK_COUNT
     rows: list[dict[str, float]] = []
-    for block in range(CPCV_BLOCK_COUNT):
+    for block in range(EVALUATION_BLOCK_COUNT):
         start = block * block_size
         stop = start + block_size
         row = {}
@@ -259,41 +270,31 @@ def _block_performance(series_by_configuration: Mapping[str, pd.Series]) -> pd.D
     return pd.DataFrame(rows, columns=list(series_by_configuration))
 
 
-def _cpcv_path_means(series: pd.Series) -> list[float]:
-    block_size = SIGNAL_OPEN_SESSIONS // CPCV_BLOCK_COUNT
-    path_means: list[float] = []
-    for test_blocks in combinations(range(CPCV_BLOCK_COUNT), CPCV_TEST_BLOCK_COUNT):
-        test_positions: set[int] = set()
-        excluded: set[int] = set()
-        for block in test_blocks:
-            first = block * block_size
-            last = first + block_size - 1
-            test_positions.update(range(first, last + 1))
-            excluded.update(
-                range(
-                    max(0, first - CPCV_PURGE_OPEN_SESSIONS),
-                    min(SIGNAL_OPEN_SESSIONS, last + 1),
-                )
-            )
-            excluded.update(
-                range(
-                    last + 1,
-                    min(
-                        SIGNAL_OPEN_SESSIONS,
-                        last + 1 + CPCV_EMBARGO_OPEN_SESSIONS,
-                    ),
-                )
-            )
-        if not (set(range(SIGNAL_OPEN_SESSIONS)) - excluded):
-            return []
-        observed = series.iloc[sorted(test_positions)].dropna()
+def _block_pair_means(series: pd.Series) -> list[float]:
+    """Mean RankIC over every pair of the ten evaluation blocks.
+
+    The candidate is sealed before the window opens and nothing is fitted
+    inside it, so every session is already out of sample and there is no
+    training set to purge.  The pair means only ask whether the sign of the
+    effect is stable across the window rather than carried by a few blocks.
+    """
+
+    block_size = SIGNAL_OPEN_SESSIONS // EVALUATION_BLOCK_COUNT
+    pair_means: list[float] = []
+    for blocks in combinations(range(EVALUATION_BLOCK_COUNT), STABILITY_BLOCKS_PER_PAIR):
+        positions = [
+            position
+            for block in blocks
+            for position in range(block * block_size, (block + 1) * block_size)
+        ]
+        observed = series.iloc[positions].dropna()
         if observed.empty:
             return []
         value = float(observed.mean())
         if not math.isfinite(value):
             return []
-        path_means.append(value)
-    return path_means
+        pair_means.append(value)
+    return pair_means
 
 
 def _sharpe(series: pd.Series) -> float | None:
@@ -307,16 +308,15 @@ def _sharpe(series: pd.Series) -> float | None:
     return result if math.isfinite(result) else None
 
 
-def _distribution_moments(series: pd.Series) -> tuple[float, float]:
-    observed = series.dropna().to_numpy(dtype=float)
-    if len(observed) < 4:
-        return 0.0, 3.0
-    skew = float(scipy_stats.skew(observed, bias=False))
-    kurtosis = float(scipy_stats.kurtosis(observed, fisher=False, bias=False))
-    return (
-        skew if math.isfinite(skew) else 0.0,
-        kurtosis if math.isfinite(kurtosis) else 3.0,
-    )
+def _cohort_icir(series: pd.Series) -> float | None:
+    """ICIR over disjoint cohort means, the series the t-test is taken over.
+
+    Daily RankICs against a 30-session label share 29 of every 30 label
+    sessions with their neighbour, so an ICIR over them counts each
+    observation about thirty times.
+    """
+
+    return _sharpe(pd.Series(_cohort_means(series), dtype=float))
 
 
 def _maturity_passed(
@@ -363,17 +363,17 @@ def _pbo_blockers(*, pbo_complete: bool, pbo_split_count: int, pbo: float) -> li
 def _post_trial_blockers(
     *,
     bh_q_value: float,
-    cpcv_path_count: int,
-    positive_path_ratio: float,
+    block_pair_count: int,
+    positive_block_pair_ratio: float,
     turnover: Decimal,
 ) -> list[str]:
     blockers = []
     if bh_q_value > float(BH_Q_CEILING):
         blockers.append("FAMILY_BH_FAILED")
-    if cpcv_path_count != CPCV_PATH_COUNT:
-        blockers.append("CPCV_INCOMPLETE")
-    elif positive_path_ratio < float(POSITIVE_PATH_RATIO_FLOOR):
-        blockers.append("POSITIVE_PATH_RATIO_FAILED")
+    if block_pair_count != STABILITY_BLOCK_PAIR_COUNT:
+        blockers.append("BLOCK_PAIR_STABILITY_INCOMPLETE")
+    elif positive_block_pair_ratio < float(POSITIVE_BLOCK_PAIR_RATIO_FLOOR):
+        blockers.append("POSITIVE_BLOCK_PAIR_RATIO_FAILED")
     if turnover > TURNOVER_CEILING:
         blockers.append("TURNOVER_FAILED")
     return blockers
@@ -390,8 +390,8 @@ def _metric_blockers(
     pbo_split_count: int,
     pbo: float,
     bh_q_value: float,
-    cpcv_path_count: int,
-    positive_path_ratio: float,
+    block_pair_count: int,
+    positive_block_pair_ratio: float,
     turnover: Decimal,
 ) -> list[str]:
     return (
@@ -404,8 +404,8 @@ def _metric_blockers(
         )
         + _post_trial_blockers(
             bh_q_value=bh_q_value,
-            cpcv_path_count=cpcv_path_count,
-            positive_path_ratio=positive_path_ratio,
+            block_pair_count=block_pair_count,
+            positive_block_pair_ratio=positive_block_pair_ratio,
             turnover=turnover,
         )
     )
@@ -462,7 +462,7 @@ def _trial_metrics(
     block_frame = _block_performance(series_by_configuration)
     pbo = probability_of_backtest_overfitting(block_frame)
     sharpe_by_configuration = {
-        configuration_id: _sharpe(series)
+        configuration_id: _cohort_icir(series)
         for configuration_id, series in series_by_configuration.items()
     }
     finite_sharpes = [
@@ -512,27 +512,28 @@ def _preliminary_candidate_metrics(
         cohort_means = _cohort_means(series)
         t_statistic, t_p_value = _cohort_test(cohort_means)
         mean_ic = float(series.dropna().mean()) if valid_count else 0.0
-        path_means = _cpcv_path_means(series)
-        mean_path_ic = float(np.mean(path_means)) if path_means else 0.0
-        path_count = len(path_means)
+        pair_means = _block_pair_means(series)
+        mean_pair_ic = float(np.mean(pair_means)) if pair_means else 0.0
+        pair_count = len(pair_means)
         shrunk_ic = (
-            max(0.0, mean_path_ic) * path_count / (path_count + float(SHRINKAGE_PSEUDO_COUNT))
+            max(0.0, mean_pair_ic) * pair_count / (pair_count + float(SHRINKAGE_PSEUDO_COUNT))
         )
-        skew, kurtosis = _distribution_moments(series)
         observed_icir = sharpe_by_configuration[configuration_id]
+        # Twelve cohort means cannot estimate skew or kurtosis, and they are
+        # averages of thirty sessions, so the Gaussian moments are used.
         dsr = (
             deflated_sharpe_ratio(
                 observed_sharpe=observed_icir,
                 trial_sharpe_std=trial_sharpe_std,
                 trial_count=effective_trials,
-                sample_size=valid_count,
-                skew=skew,
-                kurtosis=kurtosis,
+                sample_size=len(cohort_means) / _cohort_overlap_inflation(len(cohort_means)),
+                skew=0.0,
+                kurtosis=3.0,
             )
             if trial_icir_complete and observed_icir is not None
             else 0.0
         )
-        path_ratio = float(np.mean(np.asarray(path_means) > 0.0)) if path_means else 0.0
+        pair_ratio = float(np.mean(np.asarray(pair_means) > 0.0)) if pair_means else 0.0
         maturity_passed = _maturity_passed(
             valid_daily_sessions=valid_count,
             closed_month_ends=month_end_count,
@@ -545,13 +546,13 @@ def _preliminary_candidate_metrics(
             "cohort_count": len(cohort_means),
             "maturity_passed": maturity_passed,
             "mean_ic": mean_ic,
-            "mean_path_ic": mean_path_ic,
+            "mean_block_pair_ic": mean_pair_ic,
             "shrunk_ic": shrunk_ic,
             "t_statistic": t_statistic,
             "t_p_value": t_p_value,
             "dsr": dsr,
-            "path_count": path_count,
-            "path_ratio": path_ratio,
+            "block_pair_count": pair_count,
+            "positive_block_pair_ratio": pair_ratio,
         }
         p_values[configuration_id] = t_p_value
         families[configuration_id] = candidate["family"]
@@ -605,8 +606,8 @@ def _candidate_eligibility(
                 pbo_split_count=pbo["split_count"],
                 pbo=pbo["pbo"],
                 bh_q_value=q_values[configuration_id],
-                cpcv_path_count=metrics["path_count"],
-                positive_path_ratio=metrics["path_ratio"],
+                block_pair_count=metrics["block_pair_count"],
+                positive_block_pair_ratio=metrics["positive_block_pair_ratio"],
                 turnover=turnover[configuration_id],
             )
         )
@@ -643,7 +644,7 @@ def _representative_rank(
     metrics = preliminary[configuration_id]
     return (
         -float(metrics["dsr"]),
-        -float(metrics["mean_path_ic"]),
+        -float(metrics["mean_block_pair_ic"]),
         configuration_id.encode("utf-8"),
     )
 
@@ -702,17 +703,17 @@ def _evaluation_candidate_rows(
                 "disjoint_30_open_session_cohort_means": metrics["cohort_count"],
                 "maturity_passed": metrics["maturity_passed"],
                 "mean_rank_ic": decimal_text(metrics["mean_ic"], label="mean_rank_ic"),
-                "mean_purged_oos_rank_ic": decimal_text(
-                    metrics["mean_path_ic"], label="mean_purged_oos_rank_ic"
+                "mean_block_pair_rank_ic": decimal_text(
+                    metrics["mean_block_pair_ic"], label="mean_block_pair_rank_ic"
                 ),
                 "shrunk_ic": decimal_text(metrics["shrunk_ic"], label="shrunk_ic"),
                 "t_statistic": decimal_text(metrics["t_statistic"], label="t_statistic"),
                 "t_p_value": decimal_text(metrics["t_p_value"], label="t_p_value"),
                 "deflated_sharpe_ratio": decimal_text(metrics["dsr"], label="dsr"),
                 "bh_q_value": decimal_text(q_values[configuration_id], label="bh_q_value"),
-                "cpcv_path_count": metrics["path_count"],
-                "positive_path_ratio": decimal_text(
-                    metrics["path_ratio"], label="positive_path_ratio"
+                "block_pair_count": metrics["block_pair_count"],
+                "positive_block_pair_ratio": decimal_text(
+                    metrics["positive_block_pair_ratio"], label="positive_block_pair_ratio"
                 ),
                 "turnover": decimal_text(
                     annualized_turnover[configuration_id], label="annualized_turnover"
@@ -925,17 +926,16 @@ def _evaluation_payload(
             "effective_trial_count": effective_trials,
             "trial_icir_complete": trial_icir_complete,
             "trial_icir_count": trial_icir_count,
+            "trial_icir_series": "DISJOINT_30_OPEN_SESSION_COHORT_MEANS",
             "trial_sharpe_std": decimal_text(trial_sharpe_std, label="trial_sharpe_std"),
             "trial_sharpe_std_ddof": 1,
             "pbo": decimal_text(pbo["pbo"], label="pbo"),
             "pbo_complete": pbo["complete"],
             "pbo_block_count": pbo["block_count"],
             "pbo_split_count": pbo["split_count"],
-            "cpcv_block_count": CPCV_BLOCK_COUNT,
-            "cpcv_test_block_count": CPCV_TEST_BLOCK_COUNT,
-            "cpcv_path_count": CPCV_PATH_COUNT,
-            "cpcv_purge_open_sessions": CPCV_PURGE_OPEN_SESSIONS,
-            "cpcv_embargo_open_sessions": CPCV_EMBARGO_OPEN_SESSIONS,
+            "stability_block_count": EVALUATION_BLOCK_COUNT,
+            "stability_blocks_per_pair": STABILITY_BLOCKS_PER_PAIR,
+            "stability_block_pair_count": STABILITY_BLOCK_PAIR_COUNT,
             "annual_open_sessions": ANNUAL_OPEN_SESSIONS,
             "turnover_observation_sessions": SIGNAL_OPEN_SESSIONS,
         },
@@ -1045,7 +1045,7 @@ def _admitted_payload(
             "evaluation_ref": evaluation_reference,
             "valid_daily_rankic_sessions": row["valid_daily_rankic_sessions"],
             "mean_rank_ic": row["mean_rank_ic"],
-            "mean_purged_oos_rank_ic": row["mean_purged_oos_rank_ic"],
+            "mean_block_pair_rank_ic": row["mean_block_pair_rank_ic"],
             "shrunk_ic": row["shrunk_ic"],
             "weight": weights[row["factor_id"]],
             "admission_route": PROSPECTIVE_ADMISSION_ROUTE,
