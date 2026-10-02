@@ -7,8 +7,8 @@ System, broker, real orders, and actual holdings.
 ## Authority
 
 - Writer: `cn-paper-risk-exit-writer.v1`
-- Policy: `owner-paper-risk-execution-policy-20260901-v1`
-- Policy SHA: `d3f86f3ba26556d084eebc48136864a5ba858efe75c9c9d139fb99627d746961`
+- Policy: `owner-paper-risk-execution-policy-20261002-v2` (supersedes `owner-paper-risk-execution-policy-20260901-v1` from 2026-10-02)
+- Policy SHA: `662cff34df7c64f0fe0ac9c63489056402ada7c3b868f649f77ea5746351c4ad`
 - Actions: `REDUCE_25`, `REDUCE_50`, `EXIT_100`
 - Broker/real order/live execution/actual holdings: always false
 
@@ -46,7 +46,8 @@ owner-registered Paper account exists. Expected status is
 
 - First valid Calendar OPEN session on/after `eligible_from_trade_date`
 - Raw, unadjusted next open
-- Sell price `floor_to_CNY_0.01(open × 0.95)`
+- Sell price `max(floor_to_CNY_0.01(open × 0.995), limit_down)`; an open at or
+  below limit-down stays pending
 - Limit/suspension/corporate-action evidence missing: pending, never guessed
 - `REDUCE_25/50` floor to 100-share lots; `EXIT_100` may clear an odd lot
 - Settled acquisition lots enforce T+1

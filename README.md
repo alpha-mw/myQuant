@@ -107,9 +107,10 @@ redundant exposure.
 
 The validation layer measures more than one backtest path:
 
-- combinatorial purged cross-validation separates overlapping labels;
-- non-overlapping cohorts and Newey-West-style corrections address inflated
-  significance from forward-return windows;
+- block-pair stability asks whether the sign of an effect holds across the
+  evaluation window rather than resting on a few blocks;
+- disjoint cohort means, corrected for the label window adjacent cohorts
+  still share, address inflated significance from forward-return windows;
 - deflated performance statistics and probability-of-overfitting diagnostics
   charge the result for the number of candidates searched;
 - correlation-based effective trial counts identify parameter variants that

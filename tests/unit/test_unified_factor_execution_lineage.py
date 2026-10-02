@@ -101,13 +101,13 @@ def _configuration_rows(selection: dict, *, gross_count: int = 360) -> list[dict
                 "terminal_exit_turnover": decimal_text(Decimal("0.5")),
                 "total_turnover": decimal_text(Decimal("2")),
                 "annualized_turnover": decimal_text(Decimal("1.4")),
-                "total_estimated_cost": decimal_text(Decimal("0.0001")),
+                "total_estimated_cost": decimal_text(Decimal("0.00072")),
                 "gross_labeled_return_count": gross_count,
                 "gross_labeled_return_sum": (
                     decimal_text(Decimal("0.36")) if gross_count else None
                 ),
                 "net_labeled_return_sum": (
-                    decimal_text(Decimal("0.3599")) if gross_count else None
+                    decimal_text(Decimal("0.35928")) if gross_count else None
                 ),
             }
         )
@@ -143,8 +143,8 @@ def test_execution_evidence_replays_daily_turnover_cost_and_annualization() -> N
     for row in evidence["payload"]["configuration_rows"]:
         assert row["total_turnover"] == "2.000000000000"
         assert row["annualized_turnover"] == "1.400000000000"
-        assert row["total_estimated_cost"] == "0.000100000000"
-        assert row["net_labeled_return_sum"] == "0.359900000000"
+        assert row["total_estimated_cost"] == "0.000720000000"
+        assert row["net_labeled_return_sum"] == "0.359280000000"
 
 
 @pytest.mark.parametrize(

@@ -12,7 +12,7 @@ from .contracts import PaperError, seal_document
 
 CENT = Decimal("0.01")
 SCALE4 = Decimal("0.0001")
-SLIPPAGE = Decimal("0.05")
+SLIPPAGE = Decimal("0.005")
 COMMISSION_RATE = Decimal("0.0001")
 COMMISSION_MINIMUM = Decimal("5.00")
 TRANSFER_RATE = Decimal("0.00001")
@@ -154,9 +154,10 @@ def execute_sell(
     limit_up = Decimal(eligibility["limit_up"])
     if open_price <= 0 or limit_down <= 0 or limit_up < limit_down:
         raise PaperError("PAPER_PRICE_LIMIT_EVIDENCE_INVALID", "price range invalid")
-    simulated = _price_tick_down(open_price * (Decimal("1") - SLIPPAGE))
-    if open_price <= limit_down or simulated < limit_down:
+    if open_price <= limit_down:
         return pending("PENDING_LIMIT_BLOCKED", ["PAPER_SELL_PRICE_BELOW_LIMIT"])
+    # A gap-down open above the limit still trades, floored at the limit-down price.
+    simulated = max(_price_tick_down(open_price * (Decimal("1") - SLIPPAGE)), limit_down)
     if simulated > limit_up:
         raise PaperError("PAPER_PRICE_LIMIT_EVIDENCE_INVALID", "sell price above limit")
 
@@ -185,7 +186,7 @@ def execute_sell(
             "trade_date": eligibility["evaluated_trade_date"],
             "price_type": "NEXT_VALID_TRADING_DAY_OPEN",
             "reference_open": _money4(open_price),
-            "adverse_slippage_fraction": "0.0500",
+            "adverse_slippage_fraction": format(SLIPPAGE, ".4f"),
             "simulated_price": _money4(simulated),
             "status": "FILLED",
             "broker": False,

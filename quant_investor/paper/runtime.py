@@ -89,7 +89,7 @@ def _policy(workspace: Path) -> tuple[dict[str, Any], dict[str, str]]:
     )
     if (
         value.get("schema_version") != "owner-paper-risk-execution-policy.v1"
-        or value.get("policy_id") != "owner-paper-risk-execution-policy-20260901-v1"
+        or value.get("policy_id") != "owner-paper-risk-execution-policy-20261002-v2"
         or value.get("account_scope") != "ALL_REGISTERED_PAPER_ACCOUNTS"
         or value.get("automatic_paper_execution") is not True
         or value.get("action_scope") != "RISK_REDUCING_SELLS_ONLY"

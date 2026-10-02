@@ -45,6 +45,7 @@ from .admission import (
     validate_preregistration_evaluation,
 )
 from .common import (
+    ABSOLUTE_WEIGHT_CHANGE_COST_RATE,
     artifact_ref,
     business_identity,
     canonical_timestamp,
@@ -114,7 +115,7 @@ _REFERENCE_SORT_FIELDS: Final = (
     "byte_sha256",
 )
 _COVERAGE_MINIMUM: Final = Decimal("0.8")
-_EXECUTION_COST_RATE: Final = Decimal("0.00005")
+_EXECUTION_COST_RATE: Final = ABSOLUTE_WEIGHT_CHANGE_COST_RATE
 
 
 @dataclass(frozen=True)

@@ -17,8 +17,11 @@ Three corrections live here:
   hurdle that Harvey, Liu and Zhu argue a newly discovered factor must clear
   once the size of the search is taken seriously.
 
-In this codebase the "returns" series a Sharpe is taken over is the candidate's
-per-rebalance RankIC series, so its Sharpe is exactly the ICIR already reported.
+In this codebase the "returns" series a Sharpe is taken over is a candidate's
+RankIC series.  Daily RankICs against a 30-session label are not independent
+observations, so prospective admission takes both the t-statistic and the
+Sharpe over disjoint cohort means and corrects them for the label window that
+adjacent cohorts still share (:func:`cohort_overlap_variance_inflation`).
 """
 
 from __future__ import annotations
@@ -126,19 +129,21 @@ def deflated_sharpe_ratio(
     observed_sharpe: float,
     trial_sharpe_std: float,
     trial_count: int,
-    sample_size: int,
+    sample_size: float,
     skew: float,
     kurtosis: float,
 ) -> float:
     """Probability the observed Sharpe beats what the search alone would produce.
 
-    ``kurtosis`` is the raw fourth moment, not the excess: a normal series is
-    3.0.
+    ``sample_size`` is the number of independent observations behind the
+    Sharpe, so an autocorrelated series must pass its effective size, which
+    need not be whole.  ``kurtosis`` is the raw fourth moment, not the excess:
+    a normal series is 3.0.
     """
 
     sharpe = float(observed_sharpe)
-    size = int(sample_size)
-    if not math.isfinite(sharpe) or size < 2:
+    size = float(sample_size)
+    if not math.isfinite(sharpe) or not math.isfinite(size) or size < 2:
         return 0.0
     benchmark = expected_max_sharpe_under_null(
         trial_sharpe_std=trial_sharpe_std, trial_count=trial_count
@@ -152,6 +157,49 @@ def deflated_sharpe_ratio(
     if not math.isfinite(statistic):
         return 0.0
     return float(scipy_stats.norm.cdf(statistic))
+
+
+def cohort_overlap_variance_inflation(
+    cohort_count: int,
+    *,
+    cohort_size: int = DEFAULT_COHORT_SIZE,
+    horizon_sessions: int = DEFAULT_COHORT_SIZE,
+) -> float:
+    """How far an iid test on consecutive cohort means understates their noise.
+
+    A cohort mean averages ``cohort_size`` daily RankICs whose labels each span
+    ``horizon_sessions``, so it draws on ``cohort_size + horizon_sessions - 1``
+    sessions of returns and shares the later ones with the next cohort.  With a
+    30-session cohort and a 30-session label, adjacent cohort means of a
+    persistent signal correlate at about 0.25 under the null, and a plain
+    one-sample t-test on twelve of them rejects roughly three times too often.
+
+    The result is the true variance of the mean of ``cohort_count`` such cohort
+    means divided by the iid estimate ``s^2 / n``, including the downward bias
+    the same correlation puts in ``s^2``.  Divide a t-statistic by its square
+    root; divide a sample size by it to get the effective size.  A signal that
+    is redrawn every session is less correlated than this, so the correction is
+    conservative for it.
+    """
+
+    count = int(cohort_count)
+    size = int(cohort_size)
+    horizon = int(horizon_sessions)
+    if count < 2 or size < 1 or horizon < 1:
+        return 1.0
+    weights = np.convolve(np.ones(size), np.ones(horizon))
+    total = float(np.dot(weights, weights))
+    mean_inflation = 1.0
+    for lag in range(1, count):
+        shift = lag * size
+        if shift >= len(weights):
+            break
+        correlation = float(np.dot(weights[:-shift], weights[shift:])) / total
+        mean_inflation += 2.0 * (1.0 - lag / count) * correlation
+    variance_bias = 1.0 - (mean_inflation - 1.0) / (count - 1)
+    if variance_bias <= 0.0:
+        return math.inf
+    return mean_inflation / variance_bias
 
 
 def probability_of_backtest_overfitting(
@@ -441,6 +489,7 @@ __all__ = [
     "MIN_TRIAL_CLUSTER_OVERLAP",
     "TRIAL_CORRECTION_KIND",
     "benjamini_hochberg_by_family",
+    "cohort_overlap_variance_inflation",
     "deflated_sharpe_ratio",
     "effective_trial_count",
     "expected_max_sharpe_under_null",

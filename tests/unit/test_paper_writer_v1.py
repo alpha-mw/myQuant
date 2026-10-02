@@ -101,7 +101,7 @@ def _registration(workspace: Path) -> dict:
 
 
 def _intent(workspace: Path, pointer_sha: str) -> tuple[Path, dict, dict[str, str]]:
-    policy_id = "owner-paper-risk-execution-policy-20260901-v1"
+    policy_id = "owner-paper-risk-execution-policy-20261002-v2"
     economic = economic_action_key(
         account_id="paper-alpha",
         policy_id=policy_id,
@@ -274,7 +274,7 @@ def test_temp_account_pending_fill_and_idempotent_replay(tmp_path: Path) -> None
     assert filled["command_status"] == "FILLED"
     final = store.load_account("paper-alpha")
     assert final["ledger"][0]["shares"] == 100
-    assert final["state"]["cash"] == "101134.4200"
+    assert final["state"]["cash"] == "101188.3900"
     replay_preview = risk_exit_preview(
         workspace_root=str(workspace),
         account_id="paper-alpha",
@@ -385,6 +385,34 @@ def test_limit_suspension_and_third_session_expiry(tmp_path: Path) -> None:
     )
     assert blocked["outcome"] == "PENDING"
     assert blocked["pending"]["status"] == "PENDING_LIMIT_BLOCKED"
+
+    # A gap-down open one tick band above the limit is exactly when a risk exit
+    # matters: it fills, floored at the limit-down price, instead of carrying.
+    eligibility["open_price"] = "9.0300"
+    floored = execute_sell(
+        intent=intent,
+        intent_ref=intent_ref,
+        eligibility=eligibility,
+        eligibility_ref=eligibility_ref,
+        position=position,
+        cash_before=Decimal("100000.0000"),
+        evaluated_open_session_count=1,
+    )
+    assert floored["outcome"] == "FILLED"
+    assert floored["order"]["adverse_slippage_fraction"] == "0.0050"
+    assert floored["fill"]["simulated_price"] == eligibility["limit_down"] == "9.0000"
+
+    eligibility["open_price"] = "12.0000"
+    ordinary = execute_sell(
+        intent=intent,
+        intent_ref=intent_ref,
+        eligibility=eligibility,
+        eligibility_ref=eligibility_ref,
+        position=position,
+        cash_before=Decimal("100000.0000"),
+        evaluated_open_session_count=1,
+    )
+    assert ordinary["fill"]["simulated_price"] == "11.9400"
 
 
 def test_symlinked_live_paper_root_is_rejected(tmp_path: Path) -> None:

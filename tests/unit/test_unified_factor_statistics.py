@@ -6,12 +6,20 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from scipy import stats as scipy_stats
+
 from quant_investor.factors.governance.admission import (
+    _cohort_icir,
     _cohort_means,
+    _cohort_test,
     _maturity_passed,
     _metric_blockers,
+    _preliminary_candidate_metrics,
+    _sharpe,
 )
 from quant_investor.factors.governance.statistics import (
+    cohort_overlap_variance_inflation,
+    deflated_sharpe_ratio,
     probability_of_backtest_overfitting,
     redundancy_clusters,
 )
@@ -117,7 +125,7 @@ def test_cohorts_are_fixed_canonical_session_ordinals_and_never_stitched() -> No
     assert len(_cohort_means(eight)) == 8
 
 
-def test_admission_threshold_equalities_and_cpcv_44_45_boundaries() -> None:
+def test_admission_threshold_equalities_and_block_pair_44_45_boundaries() -> None:
     exact = _metric_blockers(
         valid_daily_sessions=300,
         closed_month_ends=12,
@@ -128,8 +136,8 @@ def test_admission_threshold_equalities_and_cpcv_44_45_boundaries() -> None:
         pbo_split_count=252,
         pbo=0.50,
         bh_q_value=0.10,
-        cpcv_path_count=45,
-        positive_path_ratio=0.55,
+        block_pair_count=45,
+        positive_block_pair_ratio=0.55,
         turnover=Decimal("12"),
     )
     assert exact == []
@@ -144,8 +152,8 @@ def test_admission_threshold_equalities_and_cpcv_44_45_boundaries() -> None:
         pbo_split_count=252,
         pbo=0.50,
         bh_q_value=0.10,
-        cpcv_path_count=45,
-        positive_path_ratio=0.55,
+        block_pair_count=45,
+        positive_block_pair_ratio=0.55,
         turnover=Decimal("12"),
     )
     assert t_equal == ["T_STATISTIC_FAILED"]
@@ -160,11 +168,11 @@ def test_admission_threshold_equalities_and_cpcv_44_45_boundaries() -> None:
         pbo_split_count=252,
         pbo=0.50,
         bh_q_value=0.10,
-        cpcv_path_count=44,
-        positive_path_ratio=1.0,
+        block_pair_count=44,
+        positive_block_pair_ratio=1.0,
         turnover=Decimal("12"),
     )
-    assert forty_four == ["CPCV_INCOMPLETE"]
+    assert forty_four == ["BLOCK_PAIR_STABILITY_INCOMPLETE"]
 
 
 def test_largest_remainder_is_exact_and_all_zero_fails_closed() -> None:
@@ -175,3 +183,108 @@ def test_largest_remainder_is_exact_and_all_zero_fails_closed() -> None:
     }
     with pytest.raises(Exception, match="all shrunk IC values are zero"):
         largest_remainder_weights({"factor-a": Decimal("0"), "factor-b": Decimal("0")})
+
+
+def _worthless_persistent_rank_ic(rng: np.random.Generator) -> pd.Series:
+    """Daily RankIC of a persistent signal with no skill against a 30-session label.
+
+    Each session's IC is the sum of the next 30 sessions' independent return
+    shocks, so neighbouring sessions share 29 of them.
+    """
+    shocks = rng.standard_normal(390)
+    cumulative = np.concatenate([[0.0], np.cumsum(shocks)])
+    return pd.Series(cumulative[31:391] - cumulative[1:361], dtype=float)
+
+
+def test_cohort_overlap_inflation_matches_the_shared_label_window() -> None:
+    # Adjacent 30-session cohort means of a 30-session label share a triangular
+    # window whose correlation is 4495/18010; nothing is shared two cohorts apart.
+    correlation = 4495 / 18010
+    mean_inflation = 1 + 2 * (11 / 12) * correlation
+    expected = mean_inflation / (1 - (mean_inflation - 1) / 11)
+    assert cohort_overlap_variance_inflation(12) == pytest.approx(expected)
+    assert expected == pytest.approx(1.5209, abs=1e-4)
+
+    assert cohort_overlap_variance_inflation(1) == 1.0
+    # A one-session label leaves disjoint cohorts with nothing in common.
+    assert cohort_overlap_variance_inflation(12, cohort_size=30, horizon_sessions=1) == 1.0
+
+
+def test_cohort_t_statistic_is_deflated_by_the_overlap_and_keeps_n_minus_one_freedom() -> None:
+    values = [0.03, 0.01, 0.04, 0.02, 0.05, 0.00, 0.03, 0.02, 0.04, 0.01, 0.03, 0.02]
+    raw, _ = scipy_stats.ttest_1samp(values, 0.0)
+
+    statistic, p_value = _cohort_test(values)
+
+    assert statistic == pytest.approx(float(raw) / np.sqrt(cohort_overlap_variance_inflation(12)))
+    assert p_value == pytest.approx(2 * scipy_stats.t.sf(statistic, 11))
+    assert _cohort_test([0.03]) == (0.0, 1.0)
+
+
+def test_deflated_sharpe_is_taken_over_cohort_means_with_the_effective_sample() -> None:
+    series = _worthless_persistent_rank_ic(np.random.default_rng(11)) + 2.0
+    open_sessions = list(pd.bdate_range("2025-01-02", periods=390).strftime("%Y-%m-%d"))
+    series.index = open_sessions[:360]
+    cohort_icir = _cohort_icir(series)
+
+    preliminary, _, _ = _preliminary_candidate_metrics(
+        [{"configuration_id": "configuration-a", "factor_id": "factor-a", "family": "liquidity"}],
+        {"configuration-a": series},
+        open_sessions,
+        {"configuration-a": cohort_icir},
+        trial_sharpe_std=0.0,
+        effective_trials=1,
+        trial_icir_complete=True,
+    )
+
+    assert cohort_icir == pytest.approx(_sharpe(pd.Series(_cohort_means(series))))
+    assert preliminary["configuration-a"]["dsr"] == pytest.approx(
+        deflated_sharpe_ratio(
+            observed_sharpe=cohort_icir,
+            trial_sharpe_std=0.0,
+            trial_count=1,
+            sample_size=12 / cohort_overlap_variance_inflation(12),
+            skew=0.0,
+            kurtosis=3.0,
+        )
+    )
+
+
+def test_worthless_persistent_signal_passes_the_gates_at_about_the_nominal_rate() -> None:
+    rng = np.random.default_rng(20261002)
+    trials = 2000
+    t_passes = dsr_passes = daily_dsr_passes = 0
+    for _ in range(trials):
+        series = _worthless_persistent_rank_ic(rng)
+        cohorts = _cohort_means(series)
+        statistic, _ = _cohort_test(cohorts)
+        t_passes += statistic > 3.0
+        dsr_passes += (
+            deflated_sharpe_ratio(
+                observed_sharpe=_cohort_icir(series),
+                trial_sharpe_std=0.0,
+                trial_count=1,
+                sample_size=len(cohorts) / cohort_overlap_variance_inflation(len(cohorts)),
+                skew=0.0,
+                kurtosis=3.0,
+            )
+            >= 0.95
+        )
+        # The retired computation: ICIR and sample size of the overlapping daily series.
+        daily_dsr_passes += (
+            deflated_sharpe_ratio(
+                observed_sharpe=_sharpe(series),
+                trial_sharpe_std=0.0,
+                trial_count=1,
+                sample_size=360,
+                skew=0.0,
+                kurtosis=3.0,
+            )
+            >= 0.95
+        )
+
+    # One-sided t > 3 with 11 degrees of freedom is 0.6%; a single-trial DSR of
+    # 0.95 is 5%.  The daily-series DSR passed a worthless factor far more often.
+    assert t_passes / trials < 0.015
+    assert dsr_passes / trials < 0.07
+    assert daily_dsr_passes / trials > 0.25
