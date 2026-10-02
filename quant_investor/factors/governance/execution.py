@@ -17,6 +17,7 @@ from quant_investor.contracts import canonical_json_bytes, seal_artifact
 
 from .bootstrap import PROSPECTIVE_LANE
 from .common import (
+    ABSOLUTE_WEIGHT_CHANGE_COST_RATE,
     ANNUAL_OPEN_SESSIONS,
     COST_BPS,
     SIGNAL_OPEN_SESSIONS,
@@ -39,7 +40,7 @@ from .prospective import (
 EXECUTION_EVIDENCE_KIND: Final = "factor.execution_turnover_evidence"
 
 _MAX_EXECUTION_BYTES: Final = 2 * 1024 * 1024
-_COST_RATE: Final = Decimal("0.00005")
+_COST_RATE: Final = ABSOLUTE_WEIGHT_CHANGE_COST_RATE
 _EVIDENCE_FIELDS: Final = {
     "execution_evidence_id",
     "preregistration_id",

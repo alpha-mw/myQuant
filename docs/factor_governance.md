@@ -188,9 +188,12 @@ strictly greater than 3, DSR at least 0.95, complete 10-block PBO with all 252
 splits and PBO at most 0.50, within-family BH q-value at most 0.10, all 45
 block pairs with positive-pair ratio at least 0.55, and replayed turnover at
 most 12 after annualization to 252 canonical open sessions. The execution evidence
-binds a complete round-trip cost of 1bp as 0.5bp per unit of absolute weight
+binds a complete round-trip cost of 7.2bp as 0.36bp per unit of absolute weight
 change, including initial entry and terminal exit; sparse rows mean every
-unlisted universe weight is exactly zero.
+unlisted universe weight is exactly zero. The 7.2bp is explicit fees only (1bp
+commission and 0.1bp transfer fee per side, 5bp stamp duty on the sale); it
+excludes spread and market impact, so net labeled returns remain an upper
+bound, most of all for low-liquidity names. No admission gate reads the cost.
 
 Daily RankICs against a 30-session label share 29 of every 30 label sessions
 with their neighbour, so they are not independent observations. The

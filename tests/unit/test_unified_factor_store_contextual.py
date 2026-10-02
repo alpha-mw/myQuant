@@ -1619,7 +1619,7 @@ def test_compact_execution_projection_replays_entry_rebalance_exit_costs(
         assert row["terminal_exit_turnover"] == "0.500000000000"
         assert row["total_turnover"] == "1.000000000000"
         assert row["annualized_turnover"] == "0.700000000000"
-        assert row["total_estimated_cost"] == "0.000050000000"
+        assert row["total_estimated_cost"] == "0.000360000000"
         assert row["gross_labeled_return_count"] == 360
         assert row["gross_labeled_return_sum"] == "0.360000000000"
-        assert row["net_labeled_return_sum"] == "0.359950000000"
+        assert row["net_labeled_return_sum"] == "0.359640000000"

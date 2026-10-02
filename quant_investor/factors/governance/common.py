@@ -47,7 +47,12 @@ PBO_CEILING: Final = Decimal("0.50")
 BH_Q_CEILING: Final = Decimal("0.10")
 POSITIVE_BLOCK_PAIR_RATIO_FLOOR: Final = Decimal("0.55")
 TURNOVER_CEILING: Final = Decimal("12")
-COST_BPS: Final = Decimal("1")
+# Explicit round-trip fees only, from the owner's paper fee schedule: 1bp
+# commission and 0.1bp transfer fee on each side plus 5bp stamp duty on the
+# sale.  Spread and market impact are not included, so net returns computed
+# with it are still an upper bound.
+COST_BPS: Final = Decimal("7.2")
+ABSOLUTE_WEIGHT_CHANGE_COST_RATE: Final = COST_BPS / Decimal("20000")
 REDUNDANCY_CORRELATION_FLOOR: Final = Decimal("0.70")
 REDUNDANCY_MIN_OVERLAP: Final = 12
 SHRINKAGE_PSEUDO_COUNT: Final = Decimal("10")
@@ -299,6 +304,7 @@ def exact_payload(
 
 
 __all__ = [
+    "ABSOLUTE_WEIGHT_CHANGE_COST_RATE",
     "ANNUAL_OPEN_SESSIONS",
     "BH_Q_CEILING",
     "BOOTSTRAP_VALIDATION_PROFILE_ID",
