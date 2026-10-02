@@ -76,10 +76,10 @@ Risk-reduction sell actions may be filled when all of the following pass:
   `metadata.authorized=true`, `approved_by=maxwell`, and the same integer
   share count. Free text and the CLI flag alone never authorize a fill.
 
-Owner-approved `owner-paper-risk-execution-policy-20260901-v1` 是一个窄的 successor：
+Owner-approved `owner-paper-risk-execution-policy-20261002-v2`（自 2026-10-02 起取代 `…-20260901-v1`）是一个窄的 successor：
 它允许所有 registered Paper accounts 自动执行 risk-reducing sells，而无需逐笔
 `human_action`，但必须有 registered Paper writer 并闭合 policy/account/calendar/T+1/lot/
-price-limit/suspension/next-open/5% adverse slippage/fees/tax/corporate-action/expiry/
+price-limit/suspension/next-open/0.5% adverse slippage（跌停价兜底）/fees/tax/corporate-action/expiry/
 idempotency。它不允许新风险买入、Store/actual holdings mutation、broker 或真实订单。
 
 For `reduce_risk` and `clear_risk`, incomplete same-day bars, missing buy-side

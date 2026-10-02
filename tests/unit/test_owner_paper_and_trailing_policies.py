@@ -13,7 +13,7 @@ TRAILING = (
 PAPER = (
     ROOT
     / "results/policies/paper/aggressive_tech_manufacturing"
-    / "owner-paper-risk-execution-policy-20260901-v1.json"
+    / "owner-paper-risk-execution-policy-20261002-v2.json"
 )
 
 
@@ -72,7 +72,14 @@ def test_owner_paper_policy_never_grants_real_trading_authority() -> None:
     assert authority["actual_holdings_mutation"] is False
     assert authority["funds_transfer"] is False
     assert policy["real_trading_authority"] is False
-    assert policy["execution_policy"]["adverse_slippage_fraction"] == "0.05"
+    assert policy["policy_id"] == "owner-paper-risk-execution-policy-20261002-v2"
+    assert policy["supersedes"]["policy_id"] == "owner-paper-risk-execution-policy-20260901-v1"
+    assert policy["execution_policy"]["adverse_slippage_fraction"] == "0.005"
+    assert policy["execution_policy"]["open_at_or_below_limit_down"] == "NO_FILL_CARRY_PENDING"
+    assert (
+        policy["execution_policy"]["calculated_price_outside_legal_price_limit"]
+        == "FILL_AT_LIMIT_DOWN"
+    )
     assert policy["execution_policy"]["price_type"] == "NEXT_VALID_TRADING_DAY_OPEN"
     assert policy["execution_policy"]["partial_fill"] == "DISABLED_FULL_VALID_LOT_OR_NO_FILL"
     assert policy["fees"] == {
