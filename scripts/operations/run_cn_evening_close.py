@@ -219,6 +219,12 @@ def main() -> int:
 
     manage = [str(RELEASE_PYTHON), str(RELEASE_CHECKOUT / "scripts/manage_cn_strategy_records.py")]
     try:
+        closed_day = None if args.maintenance_attempt else non_trading_day(day)
+        if closed_day is not None:
+            prior_session_closed(closed_day["last_session"])
+            step("calendar", closed_day)
+            receipt["status"] = "NO_ACTION"
+            return finish(receipt, compact)
         attempt, attempt_sha, calendar, calendar_sha = (
             explicit_maintenance_attempt(
                 day, args.maintenance_attempt, args.maintenance_attempt_sha256

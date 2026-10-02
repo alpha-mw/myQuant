@@ -178,3 +178,52 @@ def test_only_a_blocked_scheduled_close_alerts_the_owner(
     assert evening.finish(receipt, "20260930") == expected_exit
     assert json.loads(capsys.readouterr().out)["status"] == status
     assert (alerts == [receipt]) is alerted
+
+
+def _closed_stores(tmp_path: Path, monkeypatch, *, benchmark_end: str) -> None:
+    records = tmp_path / "records"
+    (records / "_event_store").mkdir(parents=True)
+    (evening.WORKSPACE / "data/parquet/cn/benchmarks").mkdir(parents=True)
+    monkeypatch.setattr(evening, "RECORD_ROOT", records)
+    monkeypatch.setattr(evening, "RECEIPT_ROOT", tmp_path / "receipts")
+    _write(records / "_event_store/current.v1.json", {"trade_dates": ["2026-09-30"]})
+    _write(
+        evening.WORKSPACE / "data/parquet/cn/benchmarks/_latest.json",
+        {"end_date": benchmark_end},
+    )
+
+
+def test_scheduled_close_on_a_proven_holiday_is_no_action_without_alert(
+    tmp_path, monkeypatch, capsys
+):
+    _calendar_proof(tmp_path, monkeypatch)
+    _closed_stores(tmp_path, monkeypatch, benchmark_end="2026-09-30")
+    alerts = []
+    monkeypatch.setattr(evening, "alert", alerts.append)
+    monkeypatch.setattr("sys.argv", ["evening", "--trade-date", "2026-10-02", "--execute"])
+
+    assert evening.main() == 0
+
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["status"] == "NO_ACTION" and printed["blocker"] is None
+    receipt = json.loads(Path(printed["receipt"]).read_text())
+    assert [item["step"] for item in receipt["steps"]] == ["calendar"]
+    assert receipt["steps"][0]["result"]["next_open_session"] == "20261008"
+    assert alerts == []
+
+
+def test_holiday_with_an_unclosed_prior_session_still_blocks_and_alerts(
+    tmp_path, monkeypatch, capsys
+):
+    _calendar_proof(tmp_path, monkeypatch)
+    _closed_stores(tmp_path, monkeypatch, benchmark_end="2026-09-29")
+    alerts = []
+    monkeypatch.setattr(evening, "alert", alerts.append)
+    monkeypatch.setattr("sys.argv", ["evening", "--trade-date", "2026-10-02", "--execute"])
+
+    assert evening.main() == 2
+
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["status"] == "BLOCKED"
+    assert printed["blocker"] == "PRIOR_SESSION_NOT_CLOSED:20260930"
+    assert len(alerts) == 1
