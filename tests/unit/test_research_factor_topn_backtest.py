@@ -240,3 +240,10 @@ def test_universe_benchmarks_use_only_listed_names_and_zero_a_suspended_day() ->
     assert table.loc[days[1], "cap_weight"] == pytest.approx(0.10 * 100 / 400)
     # Day 3: only A traded the day before, and it was flat.
     assert table.loc[days[2], "equal_weight"] == pytest.approx(0.0)
+
+
+def test_size_control_takes_the_smallest_caps_of_the_defined_cohort() -> None:
+    total_mv = pd.Series({"A": 5.0, "B": 1.0, "C": 1.0, "D": 0.5, "E": 9.0})
+    defined = pd.Series({"A": True, "B": True, "C": True, "D": False, "E": True})
+
+    assert backtest.rank_smallest_cap(total_mv, defined, top_n=3) == ["B", "C", "A"]
