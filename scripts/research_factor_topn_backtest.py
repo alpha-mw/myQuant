@@ -191,6 +191,15 @@ def rank_pool(low: pd.Series, w80: pd.Series, *, top_n: int) -> list[str]:
     return list(symbols[order[:top_n]])
 
 
+def rank_smallest_cap(total_mv: pd.Series, eligible: pd.Series, *, top_n: int) -> list[str]:
+    """The size control: the same cohort, ranked by market cap ascending instead."""
+
+    total_mv = total_mv[eligible]
+    symbols = total_mv.index.to_numpy(dtype=str)
+    order = np.lexsort((symbols, total_mv.to_numpy()))
+    return list(symbols[order[:top_n]])
+
+
 # --------------------------------------------------------------------------- execution
 
 
@@ -561,8 +570,14 @@ def build_targets(
     rebalance_sessions: int,
     min_cohort: int,
     signal_start: str,
+    selection: str = "pool",
 ) -> tuple[dict[int, list[int]], dict[str, float]]:
-    """Pools ranked at the close of every k-th session, keyed by the next session's index."""
+    """Pools ranked at the close of every k-th session, keyed by the next session's index.
+
+    ``selection`` is ``pool`` for the production ranking or ``smallest_cap`` for
+    the size control, which takes the smallest market caps from the same cohort
+    (names with both signals defined) so that only the ranking differs.
+    """
 
     symbol_index = {symbol: i for i, symbol in enumerate(market.symbols)}
     all_dates = sorted(bars["trade_date"].unique())
@@ -578,12 +593,16 @@ def build_targets(
             continue
         frame = by_day[day].set_index("ts_code")
         w80 = blend_w80(frame)
-        cohort = int((np.isfinite(frame["low_dollar"]) & np.isfinite(w80)).sum())
+        defined = np.isfinite(frame["low_dollar"]) & np.isfinite(w80)
+        cohort = int(defined.sum())
         cohorts.append(cohort)
         if cohort < min_cohort:
             skipped += 1
             continue
-        pool = rank_pool(frame["low_dollar"], w80, top_n=top_n)
+        if selection == "smallest_cap":
+            pool = rank_smallest_cap(frame["total_mv"], defined, top_n=top_n)
+        else:
+            pool = rank_pool(frame["low_dollar"], w80, top_n=top_n)
         targets[market.dates.index(all_dates[execution])] = [
             symbol_index[symbol] for symbol in pool if symbol in symbol_index
         ]
@@ -657,6 +676,12 @@ def main() -> int:
     parser.add_argument("--start", default="20180102", help="first signal session, YYYYMMDD")
     parser.add_argument("--end", default="99991231")
     parser.add_argument("--top-n", type=int, default=100)
+    parser.add_argument(
+        "--selection",
+        choices=("pool", "smallest_cap"),
+        default="pool",
+        help="production ranking, or the smallest market caps of the same cohort as a control",
+    )
     parser.add_argument("--rebalance-sessions", type=int, default=5)
     parser.add_argument("--min-cohort", type=int, default=3000)
     parser.add_argument("--base-capital", type=float, default=1_000_000.0)
@@ -692,6 +717,7 @@ def main() -> int:
         rebalance_sessions=args.rebalance_sessions,
         min_cohort=args.min_cohort,
         signal_start=args.start,
+        selection=args.selection,
     )
 
     verification = []
@@ -743,6 +769,7 @@ def main() -> int:
             "first_trade_session": dates[0],
             "last_session": dates[-1],
             "sessions": len(dates),
+            "selection": args.selection,
             "top_n": args.top_n,
             "rebalance_sessions": args.rebalance_sessions,
             "min_cohort": args.min_cohort,
@@ -770,7 +797,14 @@ def main() -> int:
     output = args.output_dir or (
         args.workspace_root
         / "reports/research/factor_topn_backtest"
-        / f"{snapshot['snapshot_id']}-top{args.top_n}-every{args.rebalance_sessions}"
+        / "-".join(
+            (
+                snapshot["snapshot_id"],
+                args.selection,
+                f"top{args.top_n}",
+                f"every{args.rebalance_sessions}",
+            )
+        )
     )
     output.mkdir(parents=True, exist_ok=True)
     (output / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n")
