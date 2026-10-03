@@ -7,9 +7,9 @@ each one needs, and stops at the first failure (fail-closed). Default is a plan
 with no writes; ``--execute`` performs them. A receipt of every step is written
 to ``data/private/cn_evening_close/<YYYYMMDD>/``.
 
-Official-close commands run from the frozen release checkout/install that the
-daily maintenance uses; the Dashboard exporter runs from the workspace, like the
-Hermes Dashboard job.
+Official-close commands run from the frozen release named by
+``operations/releases/active.env``, the same one the daily maintenance uses; the
+Dashboard exporter runs from the workspace, like the Hermes Dashboard job.
 """
 
 from __future__ import annotations
@@ -23,16 +23,17 @@ from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from quant_investor.operations.release_pointer import (  # noqa: E402
+    ReleasePointerError,
+    read_release_pointer,
+)
+
 WORKSPACE = Path("/Users/maxwell/mySpace/myQuant")
-RELEASE_COMMIT = "660f066fb11e3bc100c89992a989f844c0c3a975"
-RELEASE_CHECKOUT = Path(
-    f"/Users/maxwell/mySpace/myQuant-release-checkouts/{RELEASE_COMMIT}-unified-runtime"
-)
-RELEASE_PYTHON = Path(
-    "/Users/maxwell/mySpace/myQuant-release-authority/"
-    f"{RELEASE_COMMIT}-unified-runtime/installs/"
-    f"{RELEASE_COMMIT}-f29e64e2eb6adcb364e9a54b9b8f2e72fd6408e68d88097f134c2b9eb03e4cc6/bin/python"
-)
+RELEASE_POINTER = WORKSPACE / "operations/releases/active.env"
 WORKSPACE_PYTHON = WORKSPACE / ".venv/bin/python"
 RECORD_ROOT = WORKSPACE / "results/strategy_records/CN/aggressive_tech_manufacturing"
 MAINTENANCE_ROOT = WORKSPACE / "data/private/cn_daily_maintenance"
@@ -217,8 +218,19 @@ def main() -> int:
         steps.append({"step": name, "result": value})
         return value
 
-    manage = [str(RELEASE_PYTHON), str(RELEASE_CHECKOUT / "scripts/manage_cn_strategy_records.py")]
     try:
+        try:
+            release = read_release_pointer(RELEASE_POINTER, workspace_root=WORKSPACE)
+        except ReleasePointerError as exc:
+            raise Blocked(exc.code) from exc
+        release_python = str(release.python)
+        release_checkout = release.checkout_dir
+        receipt["release"] = {
+            "commit": release.commit,
+            "pointer": str(RELEASE_POINTER),
+            "pointer_sha256": release.pointer_sha256,
+        }
+        manage = [release_python, str(release_checkout / "scripts/manage_cn_strategy_records.py")]
         closed_day = None if args.maintenance_attempt else non_trading_day(day)
         if closed_day is not None:
             prior_session_closed(closed_day["last_session"])
@@ -253,8 +265,8 @@ def main() -> int:
         if current_end < day:
             start = date.fromordinal(date.fromisoformat(current_end).toordinal() + 1).isoformat()
             argv = [
-                str(RELEASE_PYTHON),
-                str(RELEASE_CHECKOUT / "scripts/operations/run_cn_benchmark_close.py"),
+                release_python,
+                str(release_checkout / "scripts/operations/run_cn_benchmark_close.py"),
                 "--workspace-root",
                 str(WORKSPACE),
                 "--start-date",
@@ -376,8 +388,8 @@ def main() -> int:
             "accounting_verify",
             run_json(
                 [
-                    str(RELEASE_PYTHON),
-                    str(RELEASE_CHECKOUT / "scripts/prepare_cn_strategy_accounting.py"),
+                    release_python,
+                    str(release_checkout / "scripts/prepare_cn_strategy_accounting.py"),
                     "--record-root",
                     str(RECORD_ROOT),
                     "--verify",

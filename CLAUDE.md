@@ -105,8 +105,10 @@ governance/production lives in `quant_investor/factors/` (see
   under `~/mySpace/myQuant-release-authority/<commit>-*/installs/…`, built by
   `quant-investor system release-prepare` from a clean detached checkout. Editing
   this repo does not change those jobs until a new release is built and the
-  automation contracts are repointed. Exception: the dashboard job runs repo
-  scripts directly.
+  automation contracts are repointed. The active release is named only in
+  `operations/releases/active.env` (see `docs/runbooks/release_repoint.md`);
+  scheduled scripts must read it, never carry a release path of their own.
+  Exception: the dashboard job runs repo scripts directly.
 - Different jobs are pinned to different commits; a change to a shared on-disk
   format must stay readable by every pinned release still in use.
 - The working tree is routinely dirty with uncommitted work from other agents
