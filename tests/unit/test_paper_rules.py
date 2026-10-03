@@ -49,9 +49,7 @@ def test_owner_stop_breach_clears_the_position() -> None:
 
 
 def test_owner_stop_equality_is_a_breach() -> None:
-    signal = evaluate_position(
-        _position(close="31.60", hard_stop="31.60", hard_stop_source="test")
-    )
+    signal = evaluate_position(_position(close="31.60", hard_stop="31.60", hard_stop_source="test"))
     assert signal["action"] == EXIT_100
 
 
@@ -167,9 +165,7 @@ def test_portfolio_matches_the_20260930_ledger_rows() -> None:
     ]
     portfolio = evaluate_portfolio(rows)
     assert [signal["symbol"] for signal in portfolio["signals"]] == [row["symbol"] for row in rows]
-    assert [
-        (signal["symbol"], signal["action"]) for signal in portfolio["signals"]
-    ] == [
+    assert [(signal["symbol"], signal["action"]) for signal in portfolio["signals"]] == [
         ("002008.SZ", REDUCE_50),
         ("002384.SZ", REDUCE_50),
         ("002463.SZ", HOLD),

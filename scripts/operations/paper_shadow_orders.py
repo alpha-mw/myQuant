@@ -21,7 +21,10 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 WORKSPACE = Path("/Users/maxwell/mySpace/myQuant")
-RECORD_POINTER = WORKSPACE / "results/strategy_records/CN/aggressive_tech_manufacturing/_record_store/current.v1.json"
+RECORD_POINTER = (
+    WORKSPACE
+    / "results/strategy_records/CN/aggressive_tech_manufacturing/_record_store/current.v1.json"
+)
 OWNER_STOP = (
     WORKSPACE
     / "results/policies/risk/aggressive_tech_manufacturing/initial-risk-stop.v1"
@@ -127,19 +130,24 @@ def build_orders(rule_inputs: list[dict], stop_policy: dict) -> list[dict]:
     actions = {"REDUCE_25": "REDUCE_25", "REDUCE_50": "REDUCE_50", "EXIT_100": "EXIT_100"}
     orders = []
     for view in rule_inputs:
-        signal = evaluate_position({k: view[k] for k in (
-            "symbol",
-            "shares",
-            "settled_shares",
-            "avg_cost",
-            "close",
-            "hard_stop",
-            "hard_stop_source",
-            "giveback_ratio",
-            "review_price",
-            "reduce_price",
-            "deterioration_evidence",
-        )})
+        signal = evaluate_position(
+            {
+                k: view[k]
+                for k in (
+                    "symbol",
+                    "shares",
+                    "settled_shares",
+                    "avg_cost",
+                    "close",
+                    "hard_stop",
+                    "hard_stop_source",
+                    "giveback_ratio",
+                    "review_price",
+                    "reduce_price",
+                    "deterioration_evidence",
+                )
+            }
+        )
         if signal["action"] in (HOLD, REVIEW_ONLY):
             continue
         if signal["action"] not in actions:
