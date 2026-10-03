@@ -3,12 +3,17 @@
 # newest 3 published snapshots (plus the active one). Runtimes still pinned to
 # older releases publish ~1.7 GB of serving per snapshot and never prune it.
 #
-# Runs the pruner from the frozen 15b3736 install (manifest-time ordering fix)
-# under the same writer lock as snapshot publication. table/ is never touched.
+# Runs the pruner from the frozen install named by operations/releases/active.env
+# (PRUNE_RELEASE_INSTALL_DIR while the active release lacks the command, else the
+# active install) under the same writer lock as snapshot publication. table/ is
+# never touched.
 set -euo pipefail
 
-INSTALL=/Users/maxwell/mySpace/myQuant-release-authority/15b37361c0a180282a18731c252c90dc23e38d3c-unified-runtime/installs/15b37361c0a180282a18731c252c90dc23e38d3c-12d351e32d2841a365df5c307ec9b01c0f543386463d75930c12a676042d94e8
-cd /Users/maxwell/mySpace/myQuant
+WORKSPACE_ROOT=/Users/maxwell/mySpace/myQuant
+source "$WORKSPACE_ROOT/scripts/operations/release_pointer.sh"
+read_release_pointer "$WORKSPACE_ROOT/operations/releases/active.env" "$WORKSPACE_ROOT"
+INSTALL="${PRUNE_RELEASE_INSTALL_DIR:-$RELEASE_INSTALL_DIR}"
+cd "$WORKSPACE_ROOT"
 
 "$INSTALL/bin/python" -P - <<'PY'
 import json

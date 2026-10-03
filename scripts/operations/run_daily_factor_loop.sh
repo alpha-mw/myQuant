@@ -3,22 +3,23 @@
 # 由 launchd（com.myquant.daily-factor-loop）在每天 20:25 (北京时间) 触发。
 # 周末直接跳过；法定节假日由 daily-maintain 内部日历判断返回 NO_ACTION（幂等无害）。
 #
-# release 更新时，只需修改下面的 RELEASE_INSTALL_DIR / FACTOR_LOOP_CONTEXT* 变量。
+# 当前 release 和 factor-loop context 只在 operations/releases/active.env 里定义；
+# 换 release 按 docs/runbooks/release_repoint.md 操作，不要改本文件。
 
 set -euo pipefail
 umask 077
 
-# ---- 当前激活的 release（release 更新时改这里）----
-RELEASE_INSTALL_DIR="/Users/maxwell/mySpace/myQuant-release-authority/660f066fb11e3bc100c89992a989f844c0c3a975-unified-runtime/installs/660f066fb11e3bc100c89992a989f844c0c3a975-f29e64e2eb6adcb364e9a54b9b8f2e72fd6408e68d88097f134c2b9eb03e4cc6"
-INSTALLED_PYTHON="$RELEASE_INSTALL_DIR/bin/python"
-EXPECTED_IMPORT_ROOT="$RELEASE_INSTALL_DIR/lib/python3.13/site-packages"
-
 WORKSPACE_ROOT="/Users/maxwell/mySpace/myQuant"
 RUN_ROOT="$WORKSPACE_ROOT/data/private/cn_daily_maintenance"
+RELEASE_POINTER="$WORKSPACE_ROOT/operations/releases/active.env"
 
-# ---- 当前激活的 factor-loop context（context 更新时改这里）----
-FACTOR_LOOP_CONTEXT="$RUN_ROOT/factor_loop_contexts/660f066fb11e3bc100c89992a989f844c0c3a975.json"
-FACTOR_LOOP_CONTEXT_SHA="864e4e7801549b74e499e563cc3f8d2b666027edcc3760609afb020ba4945053"
+# ---- 读取并校验 release 指针；失败即告警退出，不猜任何 release ----
+source "$WORKSPACE_ROOT/scripts/operations/release_pointer.sh"
+if ! read_release_pointer "$RELEASE_POINTER" "$WORKSPACE_ROOT"; then
+  /usr/bin/python3 "$WORKSPACE_ROOT/scripts/operations/notify_failure.py" \
+    --job daily-factor-loop --exit-code 2 --detail "release pointer invalid: $RELEASE_POINTER" || true
+  exit 2
+fi
 
 # ---- 周末判断（Mon=1 ... Sun=7），周末跳过 ----
 DOW="$(date +%u)"
@@ -38,7 +39,7 @@ if "$WORKSPACE_ROOT/scripts/operations/run_cn_daily_slot.sh" \
   --attempt-slot 2020 \
   --expected-import-root "$EXPECTED_IMPORT_ROOT" \
   --factor-loop-context "$FACTOR_LOOP_CONTEXT" \
-  --expected-factor-loop-context-sha256 "$FACTOR_LOOP_CONTEXT_SHA"; then
+  --expected-factor-loop-context-sha256 "$FACTOR_LOOP_CONTEXT_SHA256"; then
   exit_code=0
 else
   exit_code=$?

@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from _release_pointer_fixture import COMMIT, write_release_fixture
+
 _SPEC = importlib.util.spec_from_file_location(
     "run_cn_evening_close",
     Path(__file__).resolve().parents[2] / "scripts/operations/run_cn_evening_close.py",
@@ -89,6 +91,8 @@ def _calendar_proof(tmp_path: Path, monkeypatch, *, state_trade_date: str = "202
     )
     monkeypatch.setattr(evening, "WORKSPACE", workspace)
     monkeypatch.setattr(evening, "MAINTENANCE_ROOT", maintenance)
+    pointer, _ = write_release_fixture(tmp_path, workspace=workspace)
+    monkeypatch.setattr(evening, "RELEASE_POINTER", pointer)
     return proof_sha
 
 
@@ -207,6 +211,7 @@ def test_scheduled_close_on_a_proven_holiday_is_no_action_without_alert(
     printed = json.loads(capsys.readouterr().out)
     assert printed["status"] == "NO_ACTION" and printed["blocker"] is None
     receipt = json.loads(Path(printed["receipt"]).read_text())
+    assert receipt["release"]["commit"] == COMMIT
     assert [item["step"] for item in receipt["steps"]] == ["calendar"]
     assert receipt["steps"][0]["result"]["next_open_session"] == "20261008"
     assert alerts == []
@@ -226,4 +231,21 @@ def test_holiday_with_an_unclosed_prior_session_still_blocks_and_alerts(
     printed = json.loads(capsys.readouterr().out)
     assert printed["status"] == "BLOCKED"
     assert printed["blocker"] == "PRIOR_SESSION_NOT_CLOSED:20260930"
+    assert len(alerts) == 1
+
+
+def test_a_broken_release_pointer_blocks_the_scheduled_close_and_alerts(
+    tmp_path, monkeypatch, capsys
+):
+    _calendar_proof(tmp_path, monkeypatch)
+    _closed_stores(tmp_path, monkeypatch, benchmark_end="2026-09-30")
+    evening.RELEASE_POINTER.write_text("RELEASE_COMMIT=not-a-commit\n")
+    alerts = []
+    monkeypatch.setattr(evening, "alert", alerts.append)
+    monkeypatch.setattr("sys.argv", ["evening", "--trade-date", "2026-10-02", "--execute"])
+
+    assert evening.main() == 2
+
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["blocker"] == "RELEASE_POINTER_KEY_MISSING:RELEASE_INSTALL_DIR"
     assert len(alerts) == 1
