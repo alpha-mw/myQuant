@@ -23,11 +23,6 @@ from pathlib import Path
 WORKSPACE = Path("/Users/maxwell/mySpace/myQuant")
 RECORD_ROOT = WORKSPACE / "results/strategy_records/CN/aggressive_tech_manufacturing"
 POINTER = RECORD_ROOT / "_record_store/current.v1.json"
-POLICY_RELATIVE_PATH = (
-    "results/policies/paper/aggressive_tech_manufacturing/"
-    "owner-paper-risk-execution-policy-20261002-v2.json"
-)
-POLICY_SHA256 = "662cff34df7c64f0fe0ac9c63489056402ada7c3b868f649f77ea5746351c4ad"
 WRITER_ID = "cn-paper-risk-exit-writer.v1"
 SEED_ROOT = WORKSPACE / "data/private/paper_account_seed"
 
@@ -51,7 +46,11 @@ def compact(value: str) -> str:
 def build(account_id: str) -> dict:
     import pandas as pd
 
-    from quant_investor.paper.contracts import seal_document
+    from quant_investor.paper.contracts import (
+        POLICY_RELATIVE_PATH,
+        POLICY_SHA256,
+        seal_document,
+    )
 
     pointer = json.loads(POINTER.read_text())
     record_dir = RECORD_ROOT / pointer["active_record_id"]
@@ -129,6 +128,8 @@ def main() -> int:
 
     from quant_investor.paper.contracts import validate_registration
 
+    from quant_investor.contracts import canonical_json_bytes
+
     payload = build(args.account_id)
     registration = payload["registration"]
     normalized = validate_registration(registration)
@@ -136,8 +137,8 @@ def main() -> int:
         k: v for k, v in registration.items() if k != "semantic_sha256"
     }:
         raise SystemExit("registration does not survive validation unchanged")
-    raw = json.dumps(registration, ensure_ascii=False, indent=1, sort_keys=True) + "\n"
-    encoded = raw.encode()
+    encoded = canonical_json_bytes(registration)
+    raw = encoded.decode()
     print(f"registration_sha256 {hashlib.sha256(encoded).hexdigest()}")
     print(f"semantic_sha256     {registration['semantic_sha256']}")
     print(json.dumps(payload["seed_context"], ensure_ascii=False, indent=1))
