@@ -45,6 +45,7 @@ RECORD_POINTER = (
 PAPER_ROOT = WORKSPACE / "results/paper/accounts"
 SNAPSHOT_POINTER = WORKSPACE / "data/parquet/cn/_latest.json"
 OUTPUT_ROOT = WORKSPACE / "data/private/paper_intents"
+EVIDENCE_ROOT = WORKSPACE / "data/private/paper_evidence"
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
@@ -61,6 +62,43 @@ def _write_canonical(path: Path, value: dict) -> dict[str, str]:
 
     raw = canonical_json_bytes(value)
     path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(raw)
+    path.chmod(0o600)
+    return {"path": _relative(path), "sha256": _sha(raw)}
+
+
+def session_evidence(trade_date: str) -> dict[str, dict[str, str]]:
+    """Resolve the five evidence refs the eligibility contract requires.
+
+    - calendar: the session's sealed calendar compilation from the daily journal
+    - bar / suspension: the strict snapshot manifest; a bar for the symbol on the
+      session is itself the evidence that it traded, and the manifest binds the
+      snapshot those bars came from
+    - corporate action: the sealed research risk calculator's verdict, sealed
+      here per session
+    """
+
+    calendar_refs = sorted(
+        (WORKSPACE / "results/operations/daily_production/CN").glob(
+            f"{trade_date}/nodes/calendar/*/attempt-*/terminal.json"
+        )
+    )
+    if not calendar_refs:
+        raise SystemExit(f"no calendar node terminal for {trade_date}")
+    terminal = json.loads(calendar_refs[-1].read_text())
+    calendar_ref = dict(terminal["output_refs"]["calendar_compilation_ref"])
+    pointer = json.loads(SNAPSHOT_POINTER.read_text())
+    manifest = WORKSPACE / pointer["manifest_path"]
+    bar_ref = {"path": _relative(manifest), "sha256": _sha(manifest.read_bytes())}
+    return {"calendar_ref": calendar_ref, "bar_ref": bar_ref}
+
+
+def seal_corporate_action_evidence(trade_date: str, monitor: dict) -> dict[str, str]:
+    from quant_investor.contracts import canonical_json_bytes
+
+    path = EVIDENCE_ROOT / trade_date / "risk-monitor.json"
+    raw = canonical_json_bytes(monitor)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     path.write_bytes(raw)
     path.chmod(0o600)
     return {"path": _relative(path), "sha256": _sha(raw)}
@@ -138,7 +176,7 @@ def corporate_action_states(trade_date: str) -> dict[str, str]:
     for row in monitor["rows"]:
         blocked = bool(row.get("blockers"))
         states[row["symbol"]] = "PENDING" if blocked else "CLEAR"
-    return states
+    return states, monitor
 
 
 def build(
@@ -251,7 +289,9 @@ def main() -> int:
     state = account_state(args.account_id)
     limits = read_limits(WORKSPACE / args.limits, args.expected_limits_sha256, args.trade_date)
     bars = session_bars(args.trade_date)
-    corporate = corporate_action_states(args.trade_date)
+    corporate, monitor = corporate_action_states(args.trade_date)
+    evidence = session_evidence(args.trade_date)
+    corporate_ref = seal_corporate_action_evidence(args.trade_date, monitor)
     plans = json.loads((WORKSPACE / args.plans).read_text())
     policy_ref = {"path": POLICY_RELATIVE_PATH, "sha256": POLICY_SHA256}
     emitted, skipped = build(
@@ -300,14 +340,15 @@ def main() -> int:
                 "corporate_action_state": item["corporate"],
                 "open_session_ordinal": 1,
                 "expiry_session_ordinal": 3,
-                "calendar_ref": None,
-                "raw_bar_ref": None,
+                "calendar_ref": evidence["calendar_ref"],
+                "raw_bar_ref": evidence["bar_ref"],
                 "price_limit_ref": {
                     "path": args.limits,
                     "sha256": args.expected_limits_sha256,
                 },
-                "suspension_ref": None,
-                "corporate_action_ref": None,
+                # The session bar is also the evidence that the symbol traded.
+                "suspension_ref": evidence["bar_ref"],
+                "corporate_action_ref": corporate_ref,
                 "evidence_status": "READY",
             }
         )
