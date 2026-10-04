@@ -33,6 +33,9 @@ EXIT_100: Final = "EXIT_100"
 
 GIVEBACK_REDUCE_THRESHOLD: Final = Decimal("0.35")
 GIVEBACK_REVIEW_THRESHOLD: Final = Decimal("0.20")
+# Owner materiality floor: a giveback band only acts on a position whose peak
+# profit was real. Below the floor the lane reports for review instead.
+PEAK_PROFIT_TO_COST_FLOOR: Final = Decimal("0.10")
 
 _POSITION_FIELDS: Final = {
     "symbol",
@@ -43,6 +46,7 @@ _POSITION_FIELDS: Final = {
     "hard_stop",
     "hard_stop_source",
     "giveback_ratio",
+    "peak_price",
     "review_price",
     "reduce_price",
     "deterioration_evidence",
@@ -84,6 +88,9 @@ def evaluate_position(position: Mapping[str, Any]) -> dict[str, Any]:
     close = _decimal(position["close"], label="close")
     if close <= 0:
         raise PaperError("PAPER_RULES_INVALID", "close is not positive")
+    avg_cost = _decimal(position["avg_cost"], label="avg_cost")
+    if avg_cost <= 0:
+        raise PaperError("PAPER_RULES_INVALID", "avg cost is not positive")
     hard_stop = _decimal(position["hard_stop"], label="hard_stop", allow_none=True)
     giveback = _decimal(position["giveback_ratio"], label="giveback_ratio", allow_none=True)
     if giveback is not None and giveback < 0:
@@ -102,6 +109,17 @@ def evaluate_position(position: Mapping[str, Any]) -> dict[str, Any]:
             evidence_refs=[str(position["hard_stop_source"])],
         )
     if giveback is not None:
+        if not _peak_profit_is_material(position, cost=avg_cost):
+            return _signal(
+                symbol=symbol,
+                action=REVIEW_ONLY,
+                policy_row="trailing_peak_profit_below_materiality_floor",
+                reasons=[
+                    f"GIVEBACK:{giveback}",
+                    "TRAILING_PEAK_PROFIT_BELOW_MATERIALITY_FLOOR",
+                ],
+                blocked=True,
+            )
         if giveback >= GIVEBACK_REDUCE_THRESHOLD:
             return _signal(
                 symbol=symbol,
@@ -133,6 +151,20 @@ def evaluate_position(position: Mapping[str, Any]) -> dict[str, Any]:
         reasons=sorted(blocked) or ["NO_TRIGGER"],
         blocked=bool(blocked),
     )
+
+
+def _peak_profit_is_material(position: Mapping[str, Any], *, cost: Decimal) -> bool:
+    """Whether the trailing lane may act, per the owner materiality floor.
+
+    A giveback ratio is only meaningful when there was a real peak profit: with a
+    peak barely above cost the ratio saturates near 1.0 on noise. Missing peak
+    evidence keeps the lane non-actionable (review), never actionable.
+    """
+
+    peak = _decimal(position["peak_price"], label="peak_price", allow_none=True)
+    if peak is None or cost <= 0:
+        return False
+    return (peak - cost) / cost >= PEAK_PROFIT_TO_COST_FLOOR
 
 
 def _signal(
@@ -179,6 +211,7 @@ __all__ = [
     "GIVEBACK_REVIEW_THRESHOLD",
     "HOLD",
     "REDUCE_25",
+    "PEAK_PROFIT_TO_COST_FLOOR",
     "REDUCE_50",
     "REVIEW_ONLY",
     "evaluate_portfolio",

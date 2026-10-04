@@ -139,6 +139,7 @@ def position_views(ledger_path: Path, stops: dict, monitor: dict) -> list[dict]:
                     else "risk-monitor:owner_stop_price"
                 ),
                 "giveback_ratio": _number(row.get("profit_giveback_ratio")),
+                "peak_price": _number(row.get("peak_price")),
                 "review_price": _number(row.get("moving_take_profit_review_price")),
                 "reduce_price": _number(row.get("moving_take_profit_reduce_price")),
                 "deterioration_evidence": [],
@@ -177,7 +178,6 @@ def _assert_trigger_agrees(view: dict, signal: dict) -> None:
     """
 
     expected = {
-        "profile": view["symbol"],
         "REDUCTION_REVIEW": {"REDUCE_50"},
         "REVIEW": {"REVIEW_ONLY", "REDUCE_25", "HOLD"},
         "NOT_CONFIGURED": {"HOLD", "EXIT_100"},
@@ -186,9 +186,18 @@ def _assert_trigger_agrees(view: dict, signal: dict) -> None:
     if trailing not in expected:
         raise SystemExit(f"{view['symbol']} unknown trailing trigger {trailing}")
     if signal["action"] not in expected[trailing]:
-        raise SystemExit(
-            f"{view['symbol']} trigger {trailing} disagrees with action {signal['action']}"
+        # The owner materiality floor (policy v3) deliberately holds back a lane
+        # the calculator classified on the raw giveback ratio; only that reason may
+        # override a REDUCTION_REVIEW.
+        floor_override = (
+            trailing == "REDUCTION_REVIEW"
+            and signal["action"] == "REVIEW_ONLY"
+            and signal["policy_row"] == "trailing_peak_profit_below_materiality_floor"
         )
+        if not floor_override:
+            raise SystemExit(
+                f"{view['symbol']} trigger {trailing} disagrees with action {signal['action']}"
+            )
     owner_trigger = view["owner_stop_trigger"]
     if owner_trigger == "BREACH" and signal["action"] != "EXIT_100":
         raise SystemExit(f"{view['symbol']} owner stop breached but no exit was produced")
@@ -217,6 +226,7 @@ def build_orders(rule_inputs: list[dict], stop_policy: dict) -> list[dict]:
                     "hard_stop",
                     "hard_stop_source",
                     "giveback_ratio",
+                    "peak_price",
                     "review_price",
                     "reduce_price",
                     "deterioration_evidence",

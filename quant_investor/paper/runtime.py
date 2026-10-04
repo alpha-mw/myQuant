@@ -13,6 +13,9 @@ from typing import Any, Mapping
 from quant_investor.contracts import canonical_json_bytes
 
 from .contracts import (
+    PEAK_PROFIT_MATERIALITY_FLOOR,
+    POLICY_ACTION_SCOPE,
+    POLICY_ID,
     POLICY_RELATIVE_PATH,
     POLICY_SHA256,
     PaperError,
@@ -89,13 +92,40 @@ def _policy(workspace: Path) -> tuple[dict[str, Any], dict[str, str]]:
     )
     if (
         value.get("schema_version") != "owner-paper-risk-execution-policy.v1"
-        or value.get("policy_id") != "owner-paper-risk-execution-policy-20261002-v2"
+        or value.get("policy_id") != POLICY_ID
         or value.get("account_scope") != "ALL_REGISTERED_PAPER_ACCOUNTS"
         or value.get("automatic_paper_execution") is not True
-        or value.get("action_scope") != "RISK_REDUCING_SELLS_ONLY"
+        or value.get("action_scope") != POLICY_ACTION_SCOPE
         or value.get("real_trading_authority") is not False
     ):
         raise PaperError("PAPER_POLICY_INVALID", "owner policy fields differ")
+    entry = value.get("entry_policy")
+    if (
+        type(entry) is not dict
+        or entry.get("candidate_minimum_combined_percentile") != "0.900000000000"
+        or entry.get("maximum_holdings") != 7
+        or entry.get("target_weight_per_holding") != "0.14"
+        or entry.get("weight_is") != "CAP_NOT_TARGET"
+        or entry.get("minimum_cash_fraction") != "0.05"
+        or entry.get("maximum_new_positions_per_week") != 2
+        or entry.get("buy_lot_size") != 100
+    ):
+        raise PaperError("PAPER_POLICY_INVALID", "entry policy fields differ")
+    for lane, fields in (
+        ("profit_giveback_at_least_35_percent", {"action": "REDUCE_RISK", "sell_fraction": "0.50"}),
+        (
+            "profit_giveback_20_to_35_percent_with_deterioration",
+            {"action": "REDUCE_RISK", "sell_fraction": "0.25"},
+        ),
+    ):
+        row = (value.get("signal_policy") or {}).get(lane) or {}
+        materiality = row.get("materiality") or {}
+        if (
+            any(row.get(key) != expected for key, expected in fields.items())
+            or materiality.get("peak_profit_to_cost_minimum") != PEAK_PROFIT_MATERIALITY_FLOOR
+            or materiality.get("below_minimum_action") != "NO_FILL_REVIEW_ONLY"
+        ):
+            raise PaperError("PAPER_POLICY_INVALID", f"signal policy lane {lane} differs")
     return value, {"path": POLICY_RELATIVE_PATH, "sha256": observed}
 
 
