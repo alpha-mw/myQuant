@@ -169,6 +169,15 @@ def account_snapshot(record_dir: Path) -> dict:
     }
 
 
+POLICY_REASON_CODES = {
+    "owner_stop_strict_close_breach": "OWNER_STOP_BREACH",
+    "profit_giveback_at_least_35_percent": "PROFIT_GIVEBACK_GE_35",
+    "profit_giveback_20_to_35_percent_with_deterioration": (
+        "PROFIT_GIVEBACK_20_TO_35_WITH_DETERIORATION"
+    ),
+}
+
+
 def _assert_trigger_agrees(view: dict, signal: dict) -> None:
     """Fail closed if the sealed calculator and the rule engine disagree.
 
@@ -255,6 +264,10 @@ def build_orders(rule_inputs: list[dict], stop_policy: dict) -> list[dict]:
                 "reasons": signal["reasons"],
                 "nav_weight": view["nav_weight"],
                 "estimated_value_cny": round(shares * float(view["close"]), 2),
+                "requested_ratio": {"REDUCE_25": "0.25", "REDUCE_50": "0.50", "EXIT_100": "1.00"}[
+                    signal["action"]
+                ],
+                "reason_codes": [POLICY_REASON_CODES[signal["policy_row"]]],
             }
         )
     return orders
@@ -317,7 +330,36 @@ def main() -> int:
         target.mkdir(parents=True, exist_ok=True)
         path = target / "paper-shadow-orders.v1.json"
         path.write_bytes(canonical(receipt) + b"\n")
+        plans = {
+            "schema_version": "paper-session-plans.v1",
+            "signal_date": as_of,
+            "eligible_from_trade_date": session,
+            "account_id": "aggressive-tech-manufacturing-paper-v1",
+            "orders": [
+                {
+                    "symbol": order["symbol"],
+                    "action": order["action"],
+                    "shares": order["shares"],
+                    "requested_ratio": order["requested_ratio"],
+                    "reason_codes": order["reason_codes"],
+                    "signal_date": as_of,
+                    "eligible_from_trade_date": session,
+                    "source_intent_id": (
+                        "paper-"
+                        + order["symbol"].lower().replace(".", "-")
+                        + "-"
+                        + as_of
+                        + "-"
+                        + order["action"].lower().replace("_", "-")
+                    ),
+                }
+                for order in orders
+            ],
+        }
+        plans_path = target / "plans.json"
+        plans_path.write_bytes(canonical(plans) + b"\n")
         print(f"wrote {path}")
+        print(f"wrote {plans_path}")
 
     print(json.dumps(receipt, ensure_ascii=False, indent=1))
     return 0
