@@ -78,32 +78,77 @@ def _number(value):
     return text
 
 
-def position_views(ledger_path: Path, stops: dict) -> list[dict]:
+def risk_monitor(as_of: str) -> dict:
+    """Run the sealed research risk calculator; it owns the live risk thresholds.
+
+    The ledger's trailing columns are audit values (`audit_ledger_thresholds`,
+    `executable: false`, `trailing_take_profit_status: unconfirmed`) and must never
+    drive a decision, so the calculator is the only threshold source here.
+    """
+
+    import subprocess
+
+    out_dir = Path("/private/tmp/myquant-cn") / f"paper-shadow-{as_of}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    output = out_dir / "risk-monitor.json"
+    subprocess.run(
+        [
+            str(WORKSPACE / ".venv/bin/python"),
+            "scripts/export_cn_research_risk.py",
+            "--as-of",
+            f"{as_of[:4]}-{as_of[4:6]}-{as_of[6:]}",
+            "--output",
+            str(output),
+        ],
+        cwd=WORKSPACE,
+        check=True,
+        capture_output=True,
+    )
+    return json.loads(output.read_text())
+
+
+def position_views(ledger_path: Path, stops: dict, monitor: dict) -> list[dict]:
     import pandas as pd
 
     frame = pd.read_parquet(ledger_path)
+    holdings = {row["symbol"]: row for row in frame.to_dict("records")}
     views = []
-    for row in frame.to_dict("records"):
+    for row in monitor["rows"]:
         symbol = row["symbol"]
+        holding = holdings.get(symbol)
+        if holding is None:
+            raise SystemExit(f"risk monitor row {symbol} is not a ledger holding")
         owner = stops.get(symbol)
-        hard_stop = owner["stop"] if owner else _number(row.get("stage_stop_price"))
+        blocked = [
+            *row.get("blockers", []),
+            *row.get("owner_stop_blockers", []),
+            *row.get("trailing_blockers", []),
+        ]
         views.append(
             {
                 "symbol": symbol,
                 "name": row.get("name"),
-                "shares": int(row["shares"]),
-                "settled_shares": int(row["shares"]),
-                "avg_cost": f"{float(row['avg_cost']):.6f}",
-                "close": f"{float(row['current_price']):.2f}",
-                "hard_stop": hard_stop,
-                "hard_stop_source": owner["source"] if owner else "ledger:stage_stop_price",
+                "shares": int(holding["shares"]),
+                "settled_shares": int(holding["shares"]),
+                "avg_cost": f"{float(holding['avg_cost']):.6f}",
+                "close": str(row["strict_close"]) if row.get("strict_close") else None,
+                "hard_stop": row.get("owner_stop_price") or (owner["stop"] if owner else None),
+                "hard_stop_source": (
+                    "owner-stop-policy-20260828-v1"
+                    if row.get("owner_stop_price") or owner
+                    else "risk-monitor:owner_stop_price"
+                ),
                 "giveback_ratio": _number(row.get("profit_giveback_ratio")),
-                "review_price": _number(row.get("trailing_profit_review_price")),
-                "reduce_price": _number(row.get("trailing_profit_reduce_price")),
+                "review_price": _number(row.get("moving_take_profit_review_price")),
+                "reduce_price": _number(row.get("moving_take_profit_reduce_price")),
                 "deterioration_evidence": [],
-                "nav_weight": float(row.get("nav_weight") or 0.0),
-                "current_value": float(row.get("current_value") or 0.0),
-                "thesis_status": row.get("thesis_status"),
+                "nav_weight": float(holding.get("nav_weight") or 0.0),
+                "current_value": float(holding.get("current_value") or 0.0),
+                "thesis_status": holding.get("thesis_status"),
+                "calculation_state": row.get("calculation_state"),
+                "trailing_trigger": row.get("trailing_trigger"),
+                "owner_stop_trigger": row.get("owner_stop_trigger"),
+                "blockers": sorted(set(blocked)),
             }
         )
     return views
@@ -123,6 +168,34 @@ def account_snapshot(record_dir: Path) -> dict:
     }
 
 
+def _assert_trigger_agrees(view: dict, signal: dict) -> None:
+    """Fail closed if the sealed calculator and the rule engine disagree.
+
+    The calculator classifies each lane; the rule engine applies the owner policy
+    fractions. They must reach the same place, otherwise one of the two inputs has
+    drifted and no order may be produced.
+    """
+
+    expected = {
+        "profile": view["symbol"],
+        "REDUCTION_REVIEW": {"REDUCE_50"},
+        "REVIEW": {"REVIEW_ONLY", "REDUCE_25", "HOLD"},
+        "NOT_CONFIGURED": {"HOLD", "EXIT_100"},
+    }
+    trailing = view["trailing_trigger"]
+    if trailing not in expected:
+        raise SystemExit(f"{view['symbol']} unknown trailing trigger {trailing}")
+    if signal["action"] not in expected[trailing]:
+        raise SystemExit(
+            f"{view['symbol']} trigger {trailing} disagrees with action {signal['action']}"
+        )
+    owner_trigger = view["owner_stop_trigger"]
+    if owner_trigger == "BREACH" and signal["action"] != "EXIT_100":
+        raise SystemExit(f"{view['symbol']} owner stop breached but no exit was produced")
+    if owner_trigger not in {"BREACH", "CLEAR", "NOT_CONFIGURED", "WARNING_NOT_BREACH"}:
+        raise SystemExit(f"{view['symbol']} unknown owner trigger {owner_trigger}")
+
+
 def build_orders(rule_inputs: list[dict], stop_policy: dict) -> list[dict]:
     from quant_investor.paper.execution import calculate_sell_shares
     from quant_investor.paper.rules import HOLD, REVIEW_ONLY, evaluate_position
@@ -130,6 +203,8 @@ def build_orders(rule_inputs: list[dict], stop_policy: dict) -> list[dict]:
     actions = {"REDUCE_25": "REDUCE_25", "REDUCE_50": "REDUCE_50", "EXIT_100": "EXIT_100"}
     orders = []
     for view in rule_inputs:
+        if not view["close"] or view["blockers"]:
+            continue
         signal = evaluate_position(
             {
                 k: view[k]
@@ -148,6 +223,7 @@ def build_orders(rule_inputs: list[dict], stop_policy: dict) -> list[dict]:
                 )
             }
         )
+        _assert_trigger_agrees(view, signal)
         if signal["action"] in (HOLD, REVIEW_ONLY):
             continue
         if signal["action"] not in actions:
@@ -181,9 +257,11 @@ def main() -> int:
 
     record_dir, pointer = active_ledger()
     stops = owner_stops()
-    views = position_views(record_dir / "ledger_after_manual_switch.parquet", stops)
-    orders = build_orders(views, stops)
     snapshot = account_snapshot(record_dir)
+    as_of = snapshot["valuation_trade_date"].split("_")[0]
+    monitor = risk_monitor(as_of)
+    views = position_views(record_dir / "ledger_after_manual_switch.parquet", stops, monitor)
+    orders = build_orders(views, stops)
     session = next_session()
     created_at = datetime.now(SHANGHAI).isoformat(timespec="seconds")
 
@@ -205,6 +283,10 @@ def main() -> int:
                 "hard_stop": view["hard_stop"],
                 "hard_stop_source": view["hard_stop_source"],
                 "giveback_ratio": view["giveback_ratio"],
+                "calc_state": view["calculation_state"],
+                "trailing_trigger": view["trailing_trigger"],
+                "owner_stop_trigger": view["owner_stop_trigger"],
+                "blockers": view["blockers"],
                 "nav_weight": round(view["nav_weight"], 6),
                 "thesis_status": view["thesis_status"],
             }
