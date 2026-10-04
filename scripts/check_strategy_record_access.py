@@ -4,8 +4,8 @@
 The scan covers Git-tracked production Python, shell, and JavaScript plus the
 exact reviewed runtime paths in ``ALLOW_RULES``.  The latter keeps a dirty
 migration checkout fail-closed when a required backend is still untracked.
-Tests, documentation, fixtures, generated samples, vendored code, and live
-results are not production callers and are excluded.
+Tests, documentation, fixtures, generated samples, vendored code, agent
+scaffolding, and live results are not production callers and are excluded.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from typing import Iterable, Sequence
 
 SOURCE_SUFFIXES = frozenset({".py", ".sh", ".bash", ".zsh", ".js", ".mjs", ".cjs"})
 EXCLUDED_PREFIXES = (
+    ".agent/",
     "docs/",
     "results/",
     "tests/",
