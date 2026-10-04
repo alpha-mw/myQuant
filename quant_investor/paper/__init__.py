@@ -5,6 +5,8 @@ from .execution import calculate_fees, calculate_sell_shares, execute_sell
 from .runtime import (
     account_register,
     account_status,
+    entry_preview,
+    entry_run,
     risk_exit_preview,
     risk_exit_run,
     verify_account,
@@ -18,6 +20,8 @@ __all__ = [
     "account_status",
     "calculate_fees",
     "calculate_sell_shares",
+    "entry_preview",
+    "entry_run",
     "execute_sell",
     "risk_exit_preview",
     "risk_exit_run",

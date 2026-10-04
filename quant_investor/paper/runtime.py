@@ -20,11 +20,12 @@ from .contracts import (
     POLICY_SHA256,
     PaperError,
     validate_eligibility,
+    validate_entry_intent,
     validate_intent,
     validate_registration,
     writer_registration,
 )
-from .execution import execute_sell
+from .execution import execute_buy, execute_sell
 from .store import PaperStore
 
 
@@ -379,6 +380,121 @@ def risk_exit_run(
         account_id=account_id,
         expected_pointer_sha256=expected_current_pointer_sha256,
         intent=validate_intent(intent_value),
+        intent_ref={"path": intent_path, "sha256": intent_sha},
+        eligibility=validate_eligibility(eligibility_value),
+        eligibility_ref={"path": eligibility_path, "sha256": eligibility_sha},
+        outcome=preview["outcome"],
+    )
+
+
+def entry_preview(
+    *,
+    workspace_root: str,
+    account_id: str,
+    intent_path: str,
+    expected_intent_sha256: str,
+    eligibility_path: str,
+    expected_eligibility_sha256: str,
+) -> dict[str, Any]:
+    """Read-only entry preview; the writer stays the only mutation surface."""
+
+    workspace = Path(workspace_root).resolve(strict=True)
+    _policy_value, policy_ref = _policy(workspace)
+    store = PaperStore(workspace)
+    if account_id not in store.account_ids():
+        return {"command_status": "PAPER_ACCOUNT_NOT_REGISTERED", "account_id": account_id}
+    _raw, intent_value, intent_sha = _read_exact(
+        workspace, intent_path, expected_intent_sha256, code="PAPER_ENTRY_INTENT_INVALID"
+    )
+    _raw, eligibility_value, eligibility_sha = _read_exact(
+        workspace, eligibility_path, expected_eligibility_sha256, code="PAPER_ELIGIBILITY_INVALID"
+    )
+    intent = validate_entry_intent(intent_value)
+    if intent["policy_ref"] != policy_ref:
+        raise PaperError("PAPER_POLICY_SHA_MISMATCH", "entry intent policy differs")
+    if intent["account_id"] != account_id:
+        raise PaperError("PAPER_ENTRY_INTENT_INVALID", "account differs")
+    eligibility = validate_eligibility(eligibility_value)
+    loaded = store.load_account(account_id)
+    if intent["expected_account_pointer_sha256"] not in {"EMPTY", loaded["pointer_sha256"]}:
+        raise PaperError("PAPER_COMPARE_AND_SWAP_CONFLICT", "expected pointer differs")
+    existing_pending = (loaded["state"].get("pending_intents") or {}).get(
+        intent["source_intent_id"]
+    )
+    position = next((row for row in loaded["ledger"] if row["symbol"] == intent["symbol"]), None)
+    intent_ref = {"path": intent_path, "sha256": intent_sha}
+    eligibility_ref = {"path": eligibility_path, "sha256": eligibility_sha}
+    count = int((existing_pending or {}).get("evaluated_open_session_count", 0))
+    if eligibility["evidence_status"] == "READY":
+        count = max(count + 1, int(eligibility["open_session_ordinal"]))
+    outcome = execute_buy(
+        intent=intent,
+        intent_ref=intent_ref,
+        eligibility=eligibility,
+        eligibility_ref=eligibility_ref,
+        position=position,
+        cash_before=Decimal(loaded["state"]["cash"]),
+        account_nav=Decimal(intent["account_nav_cny"]),
+        evaluated_open_session_count=count,
+    )
+    return {
+        "command_status": "PREVIEW_COMPLETE",
+        "account_id": account_id,
+        "expected_current_pointer_sha256": loaded["pointer_sha256"],
+        "outcome": outcome,
+        "write_set": [],
+        "broker": False,
+        "real_order": False,
+        "actual_holdings_mutation": False,
+        "blockers": [],
+    }
+
+
+def entry_run(
+    *,
+    workspace_root: str,
+    account_id: str,
+    intent_path: str,
+    expected_intent_sha256: str,
+    eligibility_path: str,
+    expected_eligibility_sha256: str,
+    expected_current_pointer_sha256: str,
+    allow_write: bool,
+    release_install_input_path: str,
+    expected_release_install_input_sha256: str,
+    release_repository_root: str,
+) -> dict[str, Any]:
+    if allow_write is not True:
+        raise PaperError("PAPER_WRITE_NOT_AUTHORIZED", "--allow-write required")
+    workspace = Path(workspace_root).resolve(strict=True)
+    _release_ready(
+        workspace=workspace,
+        release_install_input_path=release_install_input_path,
+        expected_release_install_input_sha256=expected_release_install_input_sha256,
+        release_repository_root=release_repository_root,
+    )
+    preview = entry_preview(
+        workspace_root=workspace_root,
+        account_id=account_id,
+        intent_path=intent_path,
+        expected_intent_sha256=expected_intent_sha256,
+        eligibility_path=eligibility_path,
+        expected_eligibility_sha256=expected_eligibility_sha256,
+    )
+    if preview["command_status"] in {"PAPER_ACCOUNT_NOT_REGISTERED", "NO_ACTION_ALREADY_APPLIED"}:
+        return preview
+    if preview["expected_current_pointer_sha256"] != expected_current_pointer_sha256:
+        raise PaperError("PAPER_COMPARE_AND_SWAP_CONFLICT", "caller pointer differs")
+    _raw, intent_value, intent_sha = _read_exact(
+        workspace, intent_path, expected_intent_sha256, code="PAPER_ENTRY_INTENT_INVALID"
+    )
+    _raw, eligibility_value, eligibility_sha = _read_exact(
+        workspace, eligibility_path, expected_eligibility_sha256, code="PAPER_ELIGIBILITY_INVALID"
+    )
+    return PaperStore(workspace).commit(
+        account_id=account_id,
+        expected_pointer_sha256=expected_current_pointer_sha256,
+        intent=validate_entry_intent(intent_value),
         intent_ref={"path": intent_path, "sha256": intent_sha},
         eligibility=validate_eligibility(eligibility_value),
         eligibility_ref={"path": eligibility_path, "sha256": eligibility_sha},

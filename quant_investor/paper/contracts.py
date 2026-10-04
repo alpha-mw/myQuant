@@ -381,6 +381,89 @@ def validate_intent(value: Any) -> dict[str, Any]:
     return row
 
 
+_ENTRY_INTENT_FIELDS = {
+    "schema_version",
+    "semantic_sha256",
+    "source_intent_id",
+    "idempotency_key_sha256",
+    "economic_action_key_sha256",
+    "account_id",
+    "strategy_id",
+    "signal_date",
+    "eligible_from_trade_date",
+    "symbol",
+    "name",
+    "side",
+    "action",
+    "target_weight",
+    "minimum_cash_fraction",
+    "account_nav_cny",
+    "nav_evidence_ref",
+    "reason_codes",
+    "policy_ref",
+    "expected_account_pointer_sha256",
+    "expected_position",
+    "evidence_refs",
+    "broker",
+    "real_order",
+    "actual_holdings_mutation",
+}
+
+
+def validate_entry_intent(value: Any) -> dict[str, Any]:
+    """Validate one owner-policy entry intent (`entry_policy` of policy v3)."""
+
+    code = "PAPER_ENTRY_INTENT_INVALID"
+    row = require_exact(value, _ENTRY_INTENT_FIELDS, code=code, label="entry intent")
+    if row["schema_version"] != "paper-entry-intent.v1":
+        raise PaperError(code, "schema differs")
+    require_identifier(row["source_intent_id"], code=code, label="source_intent_id")
+    require_sha(row["idempotency_key_sha256"], code=code, label="idempotency_key_sha256")
+    require_sha(row["economic_action_key_sha256"], code=code, label="economic_action_key_sha256")
+    require_identifier(row["account_id"], code=code, label="account_id")
+    if row["strategy_id"] != "aggressive_tech_manufacturing":
+        raise PaperError(code, "strategy differs")
+    require_date(row["signal_date"], code=code, label="signal_date")
+    require_date(row["eligible_from_trade_date"], code=code, label="eligible_from_trade_date")
+    require_symbol(row["symbol"], code=code)
+    if type(row["name"]) is not str or not row["name"].strip():
+        raise PaperError(code, "name invalid")
+    if row["side"] != "BUY" or row["action"] != "ENTRY":
+        raise PaperError(code, "entry side differs")
+    require_ratio(row["target_weight"], code=code, label="target_weight")
+    require_ratio(row["minimum_cash_fraction"], code=code, label="minimum_cash_fraction")
+    require_money(row["account_nav_cny"], code=code, label="account_nav_cny")
+    validate_ref(row["nav_evidence_ref"], code=code, label="nav_evidence_ref")
+    reasons = row["reason_codes"]
+    if type(reasons) is not list or not reasons or reasons != sorted(set(reasons)):
+        raise PaperError(code, "reason_codes invalid")
+    validate_ref(row["policy_ref"], code=code, label="policy_ref")
+    expected_pointer = row["expected_account_pointer_sha256"]
+    if expected_pointer != "EMPTY":
+        require_sha(expected_pointer, code=code, label="expected pointer")
+    expected = row["expected_position"]
+    if expected is not None:
+        expected = require_exact(
+            expected,
+            {"shares", "settled_shares", "avg_cost"},
+            code=code,
+            label="expected_position",
+        )
+        if type(expected["shares"]) is not int or type(expected["settled_shares"]) is not int:
+            raise PaperError(code, "expected shares invalid")
+        require_money(expected["avg_cost"], code=code, label="expected avg_cost", nonnegative=True)
+    refs = row["evidence_refs"]
+    if type(refs) is not list:
+        raise PaperError(code, "evidence_refs invalid")
+    for index, ref in enumerate(refs):
+        validate_ref(ref, code=code, label=f"evidence_refs[{index}]")
+    if any(
+        row[field] is not False for field in ("broker", "real_order", "actual_holdings_mutation")
+    ):
+        raise PaperError(code, "real authority forbidden")
+    return {**row, "expected_position": expected}
+
+
 _ELIGIBILITY_FIELDS = {
     "schema_version",
     "semantic_sha256",
@@ -466,6 +549,7 @@ def utc_now_text() -> str:
 
 __all__ = [
     "PAPER_ROOT",
+    "validate_entry_intent",
     "POLICY_RELATIVE_PATH",
     "POLICY_SHA256",
     "WRITER_ID",

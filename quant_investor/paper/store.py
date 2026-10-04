@@ -44,6 +44,95 @@ def _sha(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def _next_day(trade_date: str) -> str:
+    """T+1 settlement day; session granularity makes a calendar day correct."""
+
+    from datetime import date, timedelta
+
+    parsed = date(int(trade_date[:4]), int(trade_date[4:6]), int(trade_date[6:]))
+    return (parsed + timedelta(days=1)).strftime("%Y%m%d")
+
+
+def _lots_of(row: Mapping[str, Any]) -> list[dict[str, Any]]:
+    if "acquisition_lots_json" in row:
+        raw = row["acquisition_lots_json"]
+        lots = json.loads(raw) if type(raw) is str else raw
+    else:
+        lots = row.get("acquisition_lots") or []
+    return [dict(lot) for lot in lots]
+
+
+def _set_lots(row: dict[str, Any], lots: Sequence[Mapping[str, Any]]) -> None:
+    normalized = [
+        {
+            "shares": int(lot["shares"]),
+            "acquisition_date": str(lot["acquisition_date"]),
+            "settlement_date": str(lot["settlement_date"]),
+        }
+        for lot in lots
+    ]
+    if any(lot["shares"] <= 0 for lot in normalized):
+        raise PaperError("PAPER_POSITION_MISMATCH", "lot shares invalid")
+    row["acquisition_lots_json"] = json.dumps(
+        normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+
+
+def _settled_shares(row: Mapping[str, Any], *, trade_date: str) -> int:
+    """Only lots settled by the evaluated session are sellable (T+1)."""
+
+    return sum(
+        int(lot["shares"]) for lot in _lots_of(row) if str(lot["settlement_date"]) <= trade_date
+    )
+
+
+def _append_lot(row: Mapping[str, Any], *, shares: int, trade_date: str) -> list[dict[str, Any]]:
+    lots = _lots_of(row)
+    lots.append(
+        {
+            "shares": int(shares),
+            "acquisition_date": trade_date,
+            "settlement_date": _next_day(trade_date),
+        }
+    )
+    return lots
+
+
+def _consume_lots(row: Mapping[str, Any], *, shares: int) -> list[dict[str, Any]]:
+    """Consume the oldest lots first; only settled shares are ever sold."""
+
+    remaining = int(shares)
+    kept: list[dict[str, Any]] = []
+    for lot in _lots_of(row):
+        held = int(lot["shares"])
+        take = min(held, remaining)
+        remaining -= take
+        if held > take:
+            kept.append({**lot, "shares": held - take})
+    if remaining != 0:
+        raise PaperError("PAPER_POSITION_MISMATCH", "lots cover fewer shares than sold")
+    return kept
+
+
+def _new_ledger_row(
+    *, account_id: str, intent: Mapping[str, Any], fill: Mapping[str, Any]
+) -> dict[str, Any]:
+    return {
+        "account_id": account_id,
+        "symbol": intent["symbol"],
+        "name": str(intent.get("name") or intent["symbol"]),
+        "shares": 0,
+        "settled_shares": 0,
+        "avg_cost": Decimal("0.0000"),
+        "cost_basis": Decimal("0.0000"),
+        "realized_pnl": Decimal("0.0000"),
+        "cumulative_fees": Decimal("0.0000"),
+        "last_trade_date": fill["trade_date"],
+        "last_fill_id": fill["fill_id"],
+        "acquisition_lots_json": "[]",
+    }
+
+
 def _safe_file(path: Path, *, required: bool = True) -> tuple[bytes, os.stat_result] | None:
     try:
         before = path.lstat()
@@ -499,11 +588,31 @@ class PaperStore:
                 }
                 symbol = intent["symbol"]
                 target = next((row for row in ledger if row["symbol"] == symbol), None)
-                if target is None:
-                    raise PaperError("PAPER_POSITION_MISMATCH", symbol)
                 accounting = outcome["accounting"]
-                target["shares"] = accounting["shares_after"]
-                target["settled_shares"] = min(target["settled_shares"], target["shares"])
+                if target is None:
+                    if outcome["fill"]["side"] != "BUY":
+                        raise PaperError("PAPER_POSITION_MISMATCH", symbol)
+                    target = _new_ledger_row(account_id=account_id, intent=intent, fill=fill_value)
+                    ledger.append(target)
+                    ledger.sort(key=lambda row: row["symbol"].encode("ascii"))
+                if outcome["fill"]["side"] == "BUY":
+                    target["shares"] = accounting["shares_after"]
+                    target["cost_basis"] = accounting["cost_basis_after"]
+                    target["avg_cost"] = accounting["avg_cost_after"]
+                    _set_lots(
+                        target,
+                        _append_lot(
+                            target,
+                            shares=accounting["shares_bought"],
+                            trade_date=eligibility["evaluated_trade_date"],
+                        ),
+                    )
+                else:
+                    target["shares"] = accounting["shares_after"]
+                    _set_lots(target, _consume_lots(target, shares=accounting["shares_sold"]))
+                target["settled_shares"] = _settled_shares(
+                    target, trade_date=eligibility["evaluated_trade_date"]
+                )
                 target["cost_basis"] = accounting["cost_basis_after"]
                 target["realized_pnl"] = format(
                     Decimal(str(target["realized_pnl"]))
@@ -536,11 +645,15 @@ class PaperStore:
                     "path": f"{final_relative}/pending.v1.json",
                     "sha256": _sha(canonical_json_bytes(outcome["pending"])),
                 }
-                if outcome["outcome"] == "EXPIRED":
-                    applied_source[source_id] = {"intent_sha256": intent_sha, "outcome": "EXPIRED"}
+                if outcome["outcome"] in {"EXPIRED", "SKIPPED"}:
+                    terminal_outcome = outcome["outcome"]
+                    applied_source[source_id] = {
+                        "intent_sha256": intent_sha,
+                        "outcome": terminal_outcome,
+                    }
                     applied_economic[economic_key] = {
                         "intent_sha256": intent_sha,
-                        "outcome": "EXPIRED",
+                        "outcome": terminal_outcome,
                     }
                     pending_map.pop(source_id, None)
                 else:

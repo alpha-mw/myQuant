@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime
+import json
 from pathlib import Path, PurePosixPath
 import re
 
@@ -279,6 +280,22 @@ def run_cn_daily_maintenance(**kwargs):
     return _run_cn_daily_maintenance(**kwargs)
 
 
+def native_seal_retained_state(**kwargs):
+    from quant_investor.market.factor_native_continuation import (
+        seal_retained_state as _seal,
+    )
+
+    return _seal(**kwargs)
+
+
+def native_continue_session(**kwargs):
+    from quant_investor.market.factor_native_continuation import (
+        continue_native_session as _continue,
+    )
+
+    return _continue(**kwargs)
+
+
 def clear_cn_daily_write_veto(**kwargs):
     from quant_investor.market.daily_maintenance import (
         clear_cn_daily_write_veto as _clear_cn_daily_write_veto,
@@ -403,6 +420,31 @@ def _sha256_argument(value: str) -> str:
     if re.fullmatch(r"[0-9a-f]{64}", text) is None:
         raise argparse.ArgumentTypeError("expected a lowercase 64-character SHA-256")
     return text
+
+
+def _day_argument(value: str) -> str:
+    text = str(value)
+    if re.fullmatch(r"[0-9]{8}", text) is None:
+        raise argparse.ArgumentTypeError("expected a canonical YYYYMMDD trade date")
+    return text
+
+
+def _json_ref_argument(value: str) -> dict:
+    """Accept a canonical JSON ref {path, sha256} without ever resolving it."""
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise argparse.ArgumentTypeError("expected a JSON ref object") from exc
+    if (
+        type(parsed) is not dict
+        or set(parsed) != {"path", "sha256"}
+        or type(parsed["path"]) is not str
+        or type(parsed["sha256"]) is not str
+    ):
+        raise argparse.ArgumentTypeError(
+            'expected a JSON ref of shape {"path": ..., "sha256": ...}'
+        )
+    return parsed
 
 
 def _git_oid_argument(value: str) -> str:
@@ -927,6 +969,50 @@ def _build_parser() -> argparse.ArgumentParser:
         "--retire-coverage-declaration-sha256", default=None, type=_sha256_argument
     )
 
+    market_native_seal = market_subparsers.add_parser(
+        "native-seal",
+        help=(
+            "owner-only 封存保留的 factor-loop state"
+            "（精确绑定 source SHA + 旧 install/context/proof/capture）"
+        ),
+    )
+    _add_workspace_argument(market_native_seal)
+    market_native_seal.add_argument("--run-root", required=True, type=_canonical_absolute_path)
+    market_native_seal.add_argument("--from-state-sha256", required=True, type=_sha256_argument)
+    market_native_seal.add_argument("--from-context-sha256", required=True, type=_sha256_argument)
+    market_native_seal.add_argument(
+        "--from-release-install-input-ref", required=True, type=_json_ref_argument
+    )
+    market_native_seal.add_argument("--from-trade-date", required=True, type=_day_argument)
+    market_native_seal.add_argument(
+        "--from-mode",
+        required=True,
+        choices=["DISABLED", "SYNTHETIC_FIXTURE_ONLY", "PRODUCTION_INSTALLED_CAPTURE"],
+    )
+
+    market_native_continue = market_subparsers.add_parser(
+        "native-continue",
+        help=(
+            "owner-only 接续封存源：重绑定或解绑旧身份授权新 session"
+            "（锁+幂等+崩溃恢复+读回校验）"
+        ),
+    )
+    _add_workspace_argument(market_native_continue)
+    market_native_continue.add_argument("--run-root", required=True, type=_canonical_absolute_path)
+    market_native_continue.add_argument(
+        "--seal-receipt-ref", required=True, type=_json_ref_argument
+    )
+    market_native_continue.add_argument(
+        "--to-release-commit", required=True, type=_git_oid_argument
+    )
+    market_native_continue.add_argument(
+        "--to-release-install-input-ref", required=True, type=_json_ref_argument
+    )
+    market_native_continue.add_argument("--to-context-ref", required=True, type=_json_ref_argument)
+    market_native_continue.add_argument(
+        "--to-repository-root", required=True, type=_canonical_absolute_path
+    )
+
     market_clear_veto = market_subparsers.add_parser(
         "clear-write-veto",
         help="按 exact SHA 封存并清除 CN 日度维护 write veto",
@@ -1273,6 +1359,17 @@ def _build_parser() -> argparse.ArgumentParser:
     preview.add_argument("--expected-intent-sha256", required=True, type=_sha256_argument)
     preview.add_argument("--eligibility", required=True, type=_workspace_relative_canonical_path)
     preview.add_argument("--expected-eligibility-sha256", required=True, type=_sha256_argument)
+    entry_preview = paper_subparsers.add_parser("entry-preview")
+    _add_workspace_argument(entry_preview)
+    entry_preview.add_argument("--account-id", required=True)
+    entry_preview.add_argument("--intent", required=True, type=_workspace_relative_canonical_path)
+    entry_preview.add_argument("--expected-intent-sha256", required=True, type=_sha256_argument)
+    entry_preview.add_argument(
+        "--eligibility", required=True, type=_workspace_relative_canonical_path
+    )
+    entry_preview.add_argument(
+        "--expected-eligibility-sha256", required=True, type=_sha256_argument
+    )
     register = paper_subparsers.add_parser("account-register")
     _add_workspace_argument(register)
     register.add_argument("--registration", required=True, type=_workspace_relative_canonical_path)
@@ -1287,7 +1384,22 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--expected-eligibility-sha256", required=True, type=_sha256_argument)
     run.add_argument("--expected-current-pointer-sha256", required=True, type=_sha256_argument)
     run.add_argument("--allow-write", action="store_true", required=True)
-    for child in (register, run):
+    entry_run = paper_subparsers.add_parser("entry-run")
+    _add_workspace_argument(entry_run)
+    entry_run.add_argument("--account-id", required=True)
+    entry_run.add_argument("--intent", required=True, type=_workspace_relative_canonical_path)
+    entry_run.add_argument("--expected-intent-sha256", required=True, type=_sha256_argument)
+    entry_run.add_argument(
+        "--eligibility", required=True, type=_workspace_relative_canonical_path
+    )
+    entry_run.add_argument(
+        "--expected-eligibility-sha256", required=True, type=_sha256_argument
+    )
+    entry_run.add_argument(
+        "--expected-current-pointer-sha256", required=True, type=_sha256_argument
+    )
+    entry_run.add_argument("--allow-write", action="store_true", required=True)
+    for child in (register, run, entry_run):
         child.add_argument(
             "--release-install-input",
             required=True,
@@ -1437,6 +1549,8 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
             verify_account,
             writer_status,
         )
+        from quant_investor.paper.runtime import entry_preview as entry_preview_command
+        from quant_investor.paper.runtime import entry_run as entry_run_command
 
         if args.paper_command == "writer-status":
             _print_json(writer_status(workspace_root=args.workspace_root))
@@ -1457,6 +1571,35 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
                     expected_intent_sha256=args.expected_intent_sha256,
                     eligibility_path=args.eligibility,
                     expected_eligibility_sha256=args.expected_eligibility_sha256,
+                )
+            )
+        elif args.paper_command == "entry-preview":
+            _print_json(
+                entry_preview_command(
+                    workspace_root=args.workspace_root,
+                    account_id=args.account_id,
+                    intent_path=args.intent,
+                    expected_intent_sha256=args.expected_intent_sha256,
+                    eligibility_path=args.eligibility,
+                    expected_eligibility_sha256=args.expected_eligibility_sha256,
+                )
+            )
+        elif args.paper_command == "entry-run":
+            _print_json(
+                entry_run_command(
+                    workspace_root=args.workspace_root,
+                    account_id=args.account_id,
+                    intent_path=args.intent,
+                    expected_intent_sha256=args.expected_intent_sha256,
+                    eligibility_path=args.eligibility,
+                    expected_eligibility_sha256=args.expected_eligibility_sha256,
+                    expected_current_pointer_sha256=args.expected_current_pointer_sha256,
+                    allow_write=args.allow_write,
+                    release_install_input_path=args.release_install_input,
+                    expected_release_install_input_sha256=(
+                        args.expected_release_install_input_sha256
+                    ),
+                    release_repository_root=args.release_repository_root,
                 )
             )
         elif args.paper_command == "account-register":
@@ -1846,12 +1989,41 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
                 else {}
             ),
             core_completed=loop.core_completed if loop is not None else None,
+            _core_replay_completed=(loop._replay_core_completed if loop is not None else None),
         )
         if loop is not None:
             result["daily_factor_report"] = loop.report(maintenance=result)
         _print_json(result)
         if cli_exit_required(result):
             raise SystemExit(2)
+        return
+
+    if args.command == "market" and args.market_command == "native-seal":
+        _print_json(
+            native_seal_retained_state(
+                workspace_root=args.workspace_root,
+                run_root=args.run_root,
+                from_state_sha256=args.from_state_sha256,
+                from_context_sha256=args.from_context_sha256,
+                from_release_install_input_ref=args.from_release_install_input_ref,
+                from_trade_date=args.from_trade_date,
+                from_mode=args.from_mode,
+            )
+        )
+        return
+
+    if args.command == "market" and args.market_command == "native-continue":
+        _print_json(
+            native_continue_session(
+                workspace_root=args.workspace_root,
+                run_root=args.run_root,
+                seal_receipt_ref=args.seal_receipt_ref,
+                to_release_commit=args.to_release_commit,
+                to_release_install_input_ref=args.to_release_install_input_ref,
+                to_context_ref=args.to_context_ref,
+                to_repository_root=args.to_repository_root,
+            )
+        )
         return
 
     if args.command == "market" and args.market_command == "clear-write-veto":
