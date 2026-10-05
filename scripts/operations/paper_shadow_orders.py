@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import hashlib
 import json
 from datetime import datetime
 from decimal import Decimal
@@ -57,6 +58,81 @@ def owner_stops() -> dict:
     from quant_investor.paper.planning import owner_stops as _stops
 
     return _stops(WORKSPACE)["stops"]
+
+
+POOL_ROOT = WORKSPACE / "results/intelligence/research_pool/aggressive_tech_manufacturing"
+ENTRY_MINIMUM_COMBINED_PERCENTILE = Decimal("0.90")
+ENTRY_MAXIMUM_HOLDINGS = 7
+ENTRY_MAXIMUM_NEW_PER_WEEK = 2
+ENTRY_TARGET_WEIGHT = "0.14"
+ENTRY_MINIMUM_CASH_FRACTION = "0.05"
+
+
+def _week(session: str) -> tuple[int, int]:
+    from datetime import date
+
+    parsed = date(int(session[:4]), int(session[4:6]), int(session[6:]))
+    iso = parsed.isocalendar()
+    return iso[0], iso[1]
+
+
+def latest_pool() -> tuple[dict, dict]:
+    """The newest sealed research pool at or before the current session."""
+
+    days = sorted(path for path in POOL_ROOT.glob("*") if path.is_dir())
+    if not days:
+        raise SystemExit("no sealed research pool is published")
+    rank_path = days[-1] / "factor_research_rank.json"
+    rank = json.loads(rank_path.read_text())
+    return rank["payload"], {
+        "path": str(rank_path.relative_to(WORKSPACE)),
+        "sha256": hashlib.sha256(rank_path.read_bytes()).hexdigest(),
+    }
+
+
+def entry_orders(
+    *, account_views, account, session, previous_session, pool_rows=None
+) -> list[dict]:
+    """Buys for `session`: first session of a week, policy-capped, pool-sourced."""
+
+    if previous_session is None or _week(session) == _week(previous_session):
+        return []
+    held = {view["symbol"] for view in account_views}
+    if len(held) >= ENTRY_MAXIMUM_HOLDINGS:
+        return []
+    payload, _ref = latest_pool()
+    if payload.get("as_of") and payload["as_of"] > previous_session:
+        raise SystemExit("research pool is newer than the signal session")
+    rows = payload["pool_rows"] if pool_rows is None else pool_rows
+    candidates = [
+        row
+        for row in rows
+        if row["symbol"] not in held
+        and Decimal(row["combined_percentile"]) >= ENTRY_MINIMUM_COMBINED_PERCENTILE
+    ]
+    candidates.sort(key=lambda row: (-Decimal(row["combined_percentile"]), row["symbol"]))
+    orders = []
+    for row in candidates[:ENTRY_MAXIMUM_NEW_PER_WEEK]:
+        orders.append(
+            {
+                "symbol": row["symbol"],
+                "name": None,
+                "side": "BUY",
+                "action": "ENTRY",
+                "shares": None,
+                "of_shares": 0,
+                "policy_row": "entry_policy_pool_candidate",
+                "reasons": [f"COMBINED_PERCENTILE:{row['combined_percentile']}"],
+                "nav_weight": 0.0,
+                "estimated_value_cny": 0.0,
+                "target_weight": ENTRY_TARGET_WEIGHT,
+                "minimum_cash_fraction": ENTRY_MINIMUM_CASH_FRACTION,
+                "requested_ratio": "0.00",
+                "reason_codes": ["POOL_COMBINED_PERCENTILE_GE_0_90"],
+                "combined_percentile": row["combined_percentile"],
+            }
+        )
+    return orders
 
 
 def next_session() -> str:
@@ -196,6 +272,14 @@ def main() -> int:
         dates=session_dates(WORKSPACE, as_of=as_of),
     )
     orders = build_orders(views, stops)
+    sessions = session_dates(WORKSPACE, as_of=as_of)
+    entries = entry_orders(
+        account_views=views,
+        account=account,
+        session=next_session(),
+        previous_session=sessions[-1] if sessions else None,
+    )
+    orders = orders + entries
     cash = Decimal(str(account["state"]["cash"]))
     market_value = sum(Decimal(str(view["current_value"])) for view in views)
     snapshot = {
@@ -259,8 +343,17 @@ def main() -> int:
                     "symbol": order["symbol"],
                     "action": order["action"],
                     "shares": order["shares"],
-                    "requested_ratio": order["requested_ratio"],
+                    "side": order["side"],
+                    "requested_ratio": order.get("requested_ratio", "0.00"),
                     "reason_codes": order["reason_codes"],
+                    **(
+                        {
+                            "target_weight": order["target_weight"],
+                            "minimum_cash_fraction": order["minimum_cash_fraction"],
+                        }
+                        if order["side"] == "BUY"
+                        else {}
+                    ),
                     "signal_date": as_of,
                     "eligible_from_trade_date": session,
                     "source_intent_id": (
