@@ -154,20 +154,53 @@ def active_record_trade_date() -> str | None:
     return rows[-1]["quote_snapshot"].split("_")[0]
 
 
-def plans_for(session: str) -> Path | None:
-    """Newest plans.json whose eligible date is this session."""
+def applied_intents() -> set[str]:
+    """Source intents the account has already applied (filled or terminal)."""
 
-    candidates: list[tuple[str, Path]] = []
+    from quant_investor.paper.store import PaperStore
+
+    store = PaperStore(WORKSPACE)
+    if ACCOUNT_ID not in store.account_ids():
+        return set()
+    loaded = store.load_account(ACCOUNT_ID)
+    return set((loaded["state"].get("applied_source_intents") or {}).keys())
+
+
+def plans_for(session: str, *, applied: set[str] | None = None) -> list[dict]:
+    """Plans that are due and not yet applied, oldest first.
+
+    An order planned for an earlier session stays in scope until the account has
+    applied it: the writer pends what the evidence does not support, and the
+    agent must not leave a planned order silently unfilled because one evening's
+    data was late.
+    """
+
+    applied = applied_intents() if applied is None else applied
+    by_parent: dict[str, dict] = {}
     for path in SHADOW_ROOT.glob("*/*/plans.json"):
         try:
             value = json.loads(path.read_text())
         except (OSError, ValueError):
             continue
-        if value.get("eligible_from_trade_date") == session and value.get("orders"):
-            candidates.append((path.parent.as_posix(), path))
-    if not candidates:
-        return None
-    return sorted(candidates)[-1][1]
+        due = value.get("eligible_from_trade_date")
+        if not due or due > session or not value.get("orders"):
+            continue
+        key = path.parent.as_posix()
+        if key not in by_parent or due > by_parent[key]["due"]:
+            by_parent[key] = {"due": due, "path": path, "value": value}
+    pending: dict[str, dict] = {}
+    for entry in sorted(
+        by_parent.values(), key=lambda item: (item["due"], item["path"].as_posix())
+    ):
+        for order in entry["value"]["orders"]:
+            if order["source_intent_id"] in applied:
+                continue
+            # One order identity, whichever plans file announced it first.
+            pending.setdefault(
+                order["source_intent_id"],
+                {"plans": entry["path"], "order": order, "due": entry["due"]},
+            )
+    return [pending[key] for key in sorted(pending, key=lambda key: (pending[key]["due"], key))]
 
 
 def main() -> int:
@@ -197,21 +230,26 @@ def main() -> int:
                 "evidence_sha256": captured["evidence_sha256"],
             }
 
-        plans = plans_for(session)
-        if plans is None:
-            report["blockers"].append("NO_PLANS_FOR_SESSION")
+        due = plans_for(session)
+        if not due:
             report["steps"]["orders"] = {"status": "NO_PLANS"}
         elif report["steps"].get("capture_limits", {}).get("status") != "CAPTURED":
             report["steps"]["orders"] = {"status": "NO_EVIDENCE"}
         else:
             evidence = report["steps"]["capture_limits"]
             release = paper_release()
-            plan_value = json.loads(plans.read_text())
             filled: list[dict] = []
             failed: list[dict] = []
-            work_root = plans.parent / f"orders-{session}"
-            for index, order in enumerate(plan_value["orders"], start=1):
-                single = {**plan_value, "orders": [order]}
+            work_root = WORKSPACE / "data/private/paper_intents" / session / "orders"
+            for index, item in enumerate(due, start=1):
+                order = item["order"]
+                single = {
+                    "schema_version": "paper-session-plans.v1",
+                    "signal_date": order["signal_date"],
+                    "eligible_from_trade_date": order["eligible_from_trade_date"],
+                    "account_id": ACCOUNT_ID,
+                    "orders": [order],
+                }
                 single_path = work_root / f"{index:02d}-{order['symbol']}.json"
                 single_path.parent.mkdir(parents=True, exist_ok=True)
                 single_path.write_bytes(
@@ -252,30 +290,31 @@ def main() -> int:
                             "reason": skipped["reason"],
                         }
                     )
-                for item in prepared["prepared"]:
+                for entry in prepared["prepared"]:
                     if args.no_fill:
                         filled.append(
                             {
-                                "symbol": item["symbol"],
+                                "symbol": entry["symbol"],
                                 "status": "PREPARED",
-                                "intent_ref": item["intent_ref"]["path"],
-                                "eligibility_ref": item["eligibility_ref"]["path"],
+                                "intent_ref": entry["intent_ref"]["path"],
+                                "eligibility_ref": entry["eligibility_ref"]["path"],
                             }
                         )
                         continue
-                    result = _fill(release, item, order, prepared["pointer_sha256"])
+                    result = _fill(release, entry, order, prepared["pointer_sha256"])
                     if result["status"] in {"FILLED", "NO_ACTION_ALREADY_APPLIED"}:
                         filled.append(result)
                     else:
                         failed.append(result)
             report["steps"]["orders"] = {
                 "status": "DONE",
-                "plans": plans.relative_to(WORKSPACE).as_posix(),
+                "due": len(due),
                 "filled": filled,
                 "failed": failed,
             }
             if failed:
                 report["blockers"].append("SOME_ORDERS_NOT_FILLED")
+
     record_day = active_record_trade_date()
     if record_day != session:
         report["blockers"].append(f"RECORD_NOT_CLOSED_FOR_SESSION:{record_day}")
