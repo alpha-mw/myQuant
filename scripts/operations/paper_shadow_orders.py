@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Shadow order generation for the automatic Paper account (read-only).
+"""Order planning for the automatic Paper account (read-only).
 
-Reads the active sealed strategy record, the sealed owner risk policies and the
-Paper sell-signal rules, and prints the orders that would be submitted for the
-next CN open session. Writes only a private receipt under
+Reads the registered Paper account (its own positions, cash and lots), the sealed
+owner risk policies and the Paper sell-signal rules, and prints the orders that
+would be submitted for the next CN open session. Positions come from the account,
+not the manual strategy ledger: after the first fill the two diverge. Writes only a private receipt under
 ``data/private/paper_shadow/``; it never touches the strategy record, the Paper
 account, the owner-trades inbox or any production pointer.
 
@@ -17,6 +18,7 @@ import argparse
 import hashlib
 import json
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -31,6 +33,7 @@ OWNER_STOP = (
     / "owner-stop-policy-20260828-v1.json"
 )
 CALENDAR_PROOF = WORKSPACE / "results/operations/daily_production/CN"
+ACCOUNT_ID = "aggressive-tech-manufacturing-paper-v1"
 SHADOW_ROOT = WORKSPACE / "data/private/paper_shadow"
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
@@ -39,34 +42,28 @@ def canonical(value) -> bytes:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
 
 
-def active_ledger() -> tuple[Path, dict]:
-    pointer = json.loads(RECORD_POINTER.read_text())
-    record_id = pointer["active_record_id"]
-    record_dir = RECORD_POINTER.parent.parent / record_id
-    ledger = record_dir / "ledger_after_manual_switch.parquet"
-    if not ledger.exists():
-        raise SystemExit(f"ledger missing for active record {record_id}")
-    return record_dir, pointer
+def paper_account(account_id: str) -> dict:
+    from quant_investor.paper.store import PaperStore
+
+    return PaperStore(WORKSPACE).load_account(account_id)
+
+
+def latest_closed_session() -> str:
+    pointer = json.loads((WORKSPACE / "data/parquet/cn/_latest.json").read_text())
+    return str(pointer["latest_available_trade_date"]).replace("-", "")
 
 
 def owner_stops() -> dict:
-    policy = json.loads(OWNER_STOP.read_text())
-    return {
-        row["symbol"]: {
-            "stop": row["initial_stop_price_cny"],
-            "source": row["stop_policy_ref"],
-        }
-        for row in policy["stops"]
-        if row.get("initial_stop_state") == "CONFIRMED"
-    }
+    from quant_investor.paper.planning import owner_stops as _stops
+
+    return _stops(WORKSPACE)["stops"]
 
 
 def next_session() -> str:
     proofs = sorted(CALENDAR_PROOF.glob("*/calendar-future/proofs/*.json"))
     if not proofs:
         raise SystemExit("no future-calendar proof found")
-    latest = json.loads(proofs[-1].read_text())
-    return latest["next_open_session"]
+    return json.loads(proofs[-1].read_text())["next_open_session"]
 
 
 def _number(value):
@@ -76,97 +73,6 @@ def _number(value):
     if text in {"", "nan", "None", "NaN"}:
         return None
     return text
-
-
-def risk_monitor(as_of: str) -> dict:
-    """Run the sealed research risk calculator; it owns the live risk thresholds.
-
-    The ledger's trailing columns are audit values (`audit_ledger_thresholds`,
-    `executable: false`, `trailing_take_profit_status: unconfirmed`) and must never
-    drive a decision, so the calculator is the only threshold source here.
-    """
-
-    import subprocess
-
-    out_dir = Path("/private/tmp/myquant-cn") / f"paper-shadow-{as_of}"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    output = out_dir / "risk-monitor.json"
-    subprocess.run(
-        [
-            str(WORKSPACE / ".venv/bin/python"),
-            "scripts/export_cn_research_risk.py",
-            "--as-of",
-            f"{as_of[:4]}-{as_of[4:6]}-{as_of[6:]}",
-            "--output",
-            str(output),
-        ],
-        cwd=WORKSPACE,
-        check=True,
-        capture_output=True,
-    )
-    return json.loads(output.read_text())
-
-
-def position_views(ledger_path: Path, stops: dict, monitor: dict) -> list[dict]:
-    import pandas as pd
-
-    frame = pd.read_parquet(ledger_path)
-    holdings = {row["symbol"]: row for row in frame.to_dict("records")}
-    views = []
-    for row in monitor["rows"]:
-        symbol = row["symbol"]
-        holding = holdings.get(symbol)
-        if holding is None:
-            raise SystemExit(f"risk monitor row {symbol} is not a ledger holding")
-        owner = stops.get(symbol)
-        blocked = [
-            *row.get("blockers", []),
-            *row.get("owner_stop_blockers", []),
-            *row.get("trailing_blockers", []),
-        ]
-        views.append(
-            {
-                "symbol": symbol,
-                "name": row.get("name"),
-                "shares": int(holding["shares"]),
-                "settled_shares": int(holding["shares"]),
-                "avg_cost": f"{float(holding['avg_cost']):.6f}",
-                "close": str(row["strict_close"]) if row.get("strict_close") else None,
-                "hard_stop": row.get("owner_stop_price") or (owner["stop"] if owner else None),
-                "hard_stop_source": (
-                    "owner-stop-policy-20260828-v1"
-                    if row.get("owner_stop_price") or owner
-                    else "risk-monitor:owner_stop_price"
-                ),
-                "giveback_ratio": _number(row.get("profit_giveback_ratio")),
-                "peak_price": _number(row.get("peak_price")),
-                "review_price": _number(row.get("moving_take_profit_review_price")),
-                "reduce_price": _number(row.get("moving_take_profit_reduce_price")),
-                "deterioration_evidence": [],
-                "nav_weight": float(holding.get("nav_weight") or 0.0),
-                "current_value": float(holding.get("current_value") or 0.0),
-                "thesis_status": holding.get("thesis_status"),
-                "calculation_state": row.get("calculation_state"),
-                "trailing_trigger": row.get("trailing_trigger"),
-                "owner_stop_trigger": row.get("owner_stop_trigger"),
-                "blockers": sorted(set(blocked)),
-            }
-        )
-    return views
-
-
-def account_snapshot(record_dir: Path) -> dict:
-    import csv
-
-    summary = record_dir / "pnl_summary.csv"
-    with summary.open() as handle:
-        row = list(csv.DictReader(handle))[-1]
-    return {
-        "cash_cny": row["cash_after"],
-        "market_value_cny": row["market_value_after"],
-        "total_value_cny": row["total_value_after"],
-        "valuation_trade_date": row["quote_snapshot"],
-    }
 
 
 POLICY_REASON_CODES = {
@@ -278,13 +184,26 @@ def main() -> int:
     parser.add_argument("--write", action="store_true", help="write the private shadow receipt")
     args = parser.parse_args()
 
-    record_dir, pointer = active_ledger()
+    as_of = latest_closed_session()
+    account = paper_account(ACCOUNT_ID)
     stops = owner_stops()
-    snapshot = account_snapshot(record_dir)
-    as_of = snapshot["valuation_trade_date"].split("_")[0]
-    monitor = risk_monitor(as_of)
-    views = position_views(record_dir / "ledger_after_manual_switch.parquet", stops, monitor)
+    from quant_investor.paper.planning import position_views, session_dates
+
+    views = position_views(
+        workspace=WORKSPACE,
+        account=account,
+        as_of=as_of,
+        dates=session_dates(WORKSPACE, as_of=as_of),
+    )
     orders = build_orders(views, stops)
+    cash = Decimal(str(account["state"]["cash"]))
+    market_value = sum(Decimal(str(view["current_value"])) for view in views)
+    snapshot = {
+        "cash_cny": f"{cash:.4f}",
+        "market_value_cny": f"{market_value:.4f}",
+        "total_value_cny": f"{cash + market_value:.4f}",
+        "valuation_trade_date": as_of,
+    }
     session = next_session()
     created_at = datetime.now(SHANGHAI).isoformat(timespec="seconds")
 
@@ -292,7 +211,7 @@ def main() -> int:
         "schema_version": "paper-shadow-orders.v1",
         "created_at": created_at,
         "mode": "SHADOW_READ_ONLY",
-        "active_record_id": pointer["active_record_id"],
+        "account_id": ACCOUNT_ID,
         "valuation_trade_date": snapshot["valuation_trade_date"],
         "target_session": session,
         "account": snapshot,
@@ -334,7 +253,7 @@ def main() -> int:
             "schema_version": "paper-session-plans.v1",
             "signal_date": as_of,
             "eligible_from_trade_date": session,
-            "account_id": "aggressive-tech-manufacturing-paper-v1",
+            "account_id": ACCOUNT_ID,
             "orders": [
                 {
                     "symbol": order["symbol"],
