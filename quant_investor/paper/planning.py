@@ -73,6 +73,101 @@ def session_dates(workspace: Path, *, as_of: str) -> list[str]:
     ]
 
 
+def technology_candidates(
+    *, workspace: Path, trade_date: str, universe_sha256: str | None = None
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Rank the strategy's technology universe by the sealed factor formula.
+
+    The sealed research pool ranks the whole market, so its members are not a
+    strategy universe. This ranks only the symbols captured in
+    `paper-technology-universe.v1.json` (the policy's DC technology themes) using
+    the same cross-sectional percentile algorithm and the same policy weights the
+    sealed pool uses, then returns them best-first.
+    """
+
+    import glob
+    import hashlib
+
+    from quant_investor.intelligence._common import decimal_text
+    from quant_investor.intelligence.daily import _signal_percentiles
+
+    evidence_path = (
+        workspace / "data/private/paper_evidence" / trade_date / "paper-technology-universe.v1.json"
+    )
+    evidence_raw = evidence_path.read_bytes()
+    if universe_sha256 is not None:
+        if hashlib.sha256(evidence_raw).hexdigest() != universe_sha256:
+            raise SystemExit("technology universe evidence SHA differs")
+    universe = json.loads(evidence_raw)
+    if universe.get("trade_date") != trade_date:
+        raise SystemExit("technology universe trade date differs")
+
+    generations = sorted(
+        path
+        for path in glob.glob(
+            str(workspace / "results/factors/objects/factor.production_generation/*.json")
+        )
+    )
+    signal_values = None
+    generation_ref = None
+    for path in reversed(generations):
+        raw = Path(path).read_bytes()
+        value = json.loads(raw)
+        payload = value.get("payload", {})
+        if payload.get("as_of") == trade_date and "signal_values" in payload:
+            signal_values = payload["signal_values"]
+            generation_ref = {
+                "path": str(Path(path).relative_to(workspace)),
+                "sha256": hashlib.sha256(raw).hexdigest(),
+            }
+            break
+    if signal_values is None or generation_ref is None:
+        raise SystemExit(f"no factor generation for {trade_date}")
+
+    policy = json.loads(
+        (workspace / "results/policies/research/aggressive_tech_manufacturing/v2.json").read_text()
+    )["payload"]
+    aliases = {"LOW": "pv_low_dollar_volume_5d", "W80": "pv_blend_volstab19x2_mom90_amihud5_w80"}
+    weights = {row["factor_alias"]: Decimal(row["weight"]) for row in policy["factor_rows"]}
+    # The sealed rank rounds every per-factor percentile through decimal_text
+    # before the weighted sum; skipping that step changes the 12th decimal.
+    percentiles = {
+        alias: {
+            symbol: Decimal(decimal_text(value))
+            for symbol, value in _signal_percentiles(
+                {
+                    symbol: Decimal.from_float(float.fromhex(raw))
+                    for symbol, raw in signal_values[factor_id].items()
+                }
+            ).items()
+        }
+        for alias, factor_id in aliases.items()
+    }
+    members = universe["symbols"]
+    rows = []
+    for symbol in members:
+        if symbol not in percentiles["LOW"] or symbol not in percentiles["W80"]:
+            continue
+        combined = sum(
+            (percentiles[alias][symbol] * weights[alias] for alias in weights), Decimal("0")
+        )
+        rows.append(
+            {
+                "symbol": symbol,
+                "combined_percentile": decimal_text(combined),
+                "technology_theme_ids": [f"TUSHARE_DC:{code}" for code in members[symbol]],
+            }
+        )
+    rows.sort(key=lambda row: (-Decimal(row["combined_percentile"]), row["symbol"]))
+    return rows, {
+        "universe_ref": {
+            "path": str(evidence_path.relative_to(workspace)),
+            "sha256": hashlib.sha256(evidence_raw).hexdigest(),
+        },
+        "generation_ref": generation_ref,
+    }
+
+
 def position_views(
     *,
     workspace: Path,
@@ -195,6 +290,7 @@ def position_views(
 
 __all__ = [
     "CALENDAR_ROOT",
+    "technology_candidates",
     "STOP_POLICY_RELATIVE",
     "TRAILING_POLICY_RELATIVE",
     "owner_stops",

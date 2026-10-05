@@ -68,6 +68,23 @@ ENTRY_MINIMUM_COMBINED_PERCENTILE = Decimal("0.90")
 # per-symbol technology-theme membership evidence, which the pipeline does not
 # publish yet, so the entry lane is closed rather than buying off-strategy names.
 ENTRY_REQUIRES_THEME_EVIDENCE = True
+SEALED_POOL_SOURCE = "SEALED_RESEARCH_POOL_COMBINED_PERCENTILE"
+SEALED_TECHNOLOGY_UNIVERSE = "SEALED_TECHNOLOGY_THEME_UNIVERSE"
+
+
+def sealed_entry_source() -> str:
+    """The candidate source the sealed entry policy authorizes."""
+
+    policy = json.loads(
+        (
+            WORKSPACE
+            / "results/policies/paper/aggressive_tech_manufacturing"
+            / "owner-paper-risk-execution-policy-20261004-v3.json"
+        ).read_text()
+    )
+    return str((policy.get("entry_policy") or {}).get("candidate_source"))
+
+
 ENTRY_MAXIMUM_HOLDINGS = 7
 ENTRY_MAXIMUM_NEW_PER_WEEK = 2
 ENTRY_TARGET_WEIGHT = "0.14"
@@ -169,17 +186,31 @@ def entry_orders(
         return []
     # The weekly cap and the holding cap both bind: never exceed seven names.
     limit = min(ENTRY_MAXIMUM_NEW_PER_WEEK, room)
-    if themes is None:
-        themes = theme_membership(trade_date=signal_date)
-    if ENTRY_REQUIRES_THEME_EVIDENCE and themes is None:
-        raise EntryBlocked(
-            "ENTRY_THEME_EVIDENCE_MISSING: 候选无法对策略技术主题核验（池为全市场因子排序，"
-            "非科技主题池），买入通道保持关闭"
+    source = sealed_entry_source()
+    if source == SEALED_TECHNOLOGY_UNIVERSE:
+        from quant_investor.paper.planning import technology_candidates
+
+        ranked, _refs = technology_candidates(workspace=WORKSPACE, trade_date=signal_date)
+        rows = (
+            ranked
+            if pool_rows is None
+            else [row for row in ranked if row["symbol"] in {r["symbol"] for r in pool_rows}]
         )
-    payload, _ref = latest_pool()
-    if payload.get("as_of") and payload["as_of"] > previous_session:
-        raise SystemExit("research pool is newer than the signal session")
-    rows = payload["pool_rows"] if pool_rows is None else pool_rows
+        themes = {row["symbol"]: row["technology_theme_ids"] for row in rows}
+    elif source == SEALED_POOL_SOURCE:
+        if themes is None:
+            themes = theme_membership(trade_date=signal_date)
+        if ENTRY_REQUIRES_THEME_EVIDENCE and themes is None:
+            raise EntryBlocked(
+                "ENTRY_THEME_EVIDENCE_MISSING: 候选无法对策略技术主题核验（池为全市场因子排序，"
+                "非科技主题池），买入通道保持关闭"
+            )
+        payload, _ref = latest_pool()
+        if payload.get("as_of") and payload["as_of"] > previous_session:
+            raise SystemExit("research pool is newer than the signal session")
+        rows = payload["pool_rows"] if pool_rows is None else pool_rows
+    else:
+        raise EntryBlocked(f"ENTRY_CANDIDATE_SOURCE_UNSUPPORTED: {source}")
     candidates = [
         row
         for row in rows
