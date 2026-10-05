@@ -1370,6 +1370,17 @@ def _build_parser() -> argparse.ArgumentParser:
     entry_preview.add_argument(
         "--expected-eligibility-sha256", required=True, type=_sha256_argument
     )
+    owner_preview = paper_subparsers.add_parser("owner-preview")
+    _add_workspace_argument(owner_preview)
+    owner_preview.add_argument("--account-id", required=True)
+    owner_preview.add_argument("--intent", required=True, type=_workspace_relative_canonical_path)
+    owner_preview.add_argument("--expected-intent-sha256", required=True, type=_sha256_argument)
+    owner_preview.add_argument(
+        "--eligibility", required=True, type=_workspace_relative_canonical_path
+    )
+    owner_preview.add_argument(
+        "--expected-eligibility-sha256", required=True, type=_sha256_argument
+    )
     register = paper_subparsers.add_parser("account-register")
     _add_workspace_argument(register)
     register.add_argument("--registration", required=True, type=_workspace_relative_canonical_path)
@@ -1399,7 +1410,22 @@ def _build_parser() -> argparse.ArgumentParser:
         "--expected-current-pointer-sha256", required=True, type=_sha256_argument
     )
     entry_run.add_argument("--allow-write", action="store_true", required=True)
-    for child in (register, run, entry_run):
+    owner_run = paper_subparsers.add_parser("owner-run")
+    _add_workspace_argument(owner_run)
+    owner_run.add_argument("--account-id", required=True)
+    owner_run.add_argument("--intent", required=True, type=_workspace_relative_canonical_path)
+    owner_run.add_argument("--expected-intent-sha256", required=True, type=_sha256_argument)
+    owner_run.add_argument(
+        "--eligibility", required=True, type=_workspace_relative_canonical_path
+    )
+    owner_run.add_argument(
+        "--expected-eligibility-sha256", required=True, type=_sha256_argument
+    )
+    owner_run.add_argument(
+        "--expected-current-pointer-sha256", required=True, type=_sha256_argument
+    )
+    owner_run.add_argument("--allow-write", action="store_true", required=True)
+    for child in (register, run, entry_run, owner_run):
         child.add_argument(
             "--release-install-input",
             required=True,
@@ -1551,6 +1577,8 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
         )
         from quant_investor.paper.runtime import entry_preview as entry_preview_command
         from quant_investor.paper.runtime import entry_run as entry_run_command
+        from quant_investor.paper.runtime import owner_preview as owner_preview_command
+        from quant_investor.paper.runtime import owner_run as owner_run_command
 
         if args.paper_command == "writer-status":
             _print_json(writer_status(workspace_root=args.workspace_root))
@@ -1587,6 +1615,35 @@ def _dispatch(argv: list[str] | None = None) -> None:  # noqa: C901
         elif args.paper_command == "entry-run":
             _print_json(
                 entry_run_command(
+                    workspace_root=args.workspace_root,
+                    account_id=args.account_id,
+                    intent_path=args.intent,
+                    expected_intent_sha256=args.expected_intent_sha256,
+                    eligibility_path=args.eligibility,
+                    expected_eligibility_sha256=args.expected_eligibility_sha256,
+                    expected_current_pointer_sha256=args.expected_current_pointer_sha256,
+                    allow_write=args.allow_write,
+                    release_install_input_path=args.release_install_input,
+                    expected_release_install_input_sha256=(
+                        args.expected_release_install_input_sha256
+                    ),
+                    release_repository_root=args.release_repository_root,
+                )
+            )
+        elif args.paper_command == "owner-preview":
+            _print_json(
+                owner_preview_command(
+                    workspace_root=args.workspace_root,
+                    account_id=args.account_id,
+                    intent_path=args.intent,
+                    expected_intent_sha256=args.expected_intent_sha256,
+                    eligibility_path=args.eligibility,
+                    expected_eligibility_sha256=args.expected_eligibility_sha256,
+                )
+            )
+        elif args.paper_command == "owner-run":
+            _print_json(
+                owner_run_command(
                     workspace_root=args.workspace_root,
                     account_id=args.account_id,
                     intent_path=args.intent,

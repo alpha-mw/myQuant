@@ -464,6 +464,101 @@ def validate_entry_intent(value: Any) -> dict[str, Any]:
     return {**row, "expected_position": expected}
 
 
+_OWNER_INTENT_FIELDS = {
+    "schema_version",
+    "semantic_sha256",
+    "source_intent_id",
+    "idempotency_key_sha256",
+    "economic_action_key_sha256",
+    "account_id",
+    "strategy_id",
+    "signal_date",
+    "eligible_from_trade_date",
+    "symbol",
+    "action",
+    "requested_ratio",
+    "requested_shares",
+    "price_cny",
+    "price_basis",
+    "owner_instruction_ref",
+    "reason_codes",
+    "policy_ref",
+    "expected_account_pointer_sha256",
+    "expected_position",
+    "evidence_refs",
+    "broker",
+    "real_order",
+    "actual_holdings_mutation",
+}
+OWNER_PRICE_BASIS: Final = frozenset({"OWNER_DECLARED_STRICT_CLOSE", "OWNER_DECLARED_LIMIT"})
+
+
+def validate_owner_intent(value: Any) -> dict[str, Any]:
+    """Validate one owner-declared execution (a directed trade outside the rules).
+
+    The owner fixes the price, so this path carries `price_cny` and the basis for
+    it instead of relying on the next open. Everything else — evidence binding,
+    position expectation, pointer CAS and the authority flags — matches
+    `paper-risk-intent.v1`.
+    """
+
+    code = "PAPER_OWNER_INTENT_INVALID"
+    row = require_exact(value, _OWNER_INTENT_FIELDS, code=code, label="owner intent")
+    if row["schema_version"] != "paper-owner-intent.v1":
+        raise PaperError(code, "schema differs")
+    require_identifier(row["source_intent_id"], code=code, label="source_intent_id")
+    require_sha(row["idempotency_key_sha256"], code=code, label="idempotency_key_sha256")
+    require_sha(row["economic_action_key_sha256"], code=code, label="economic_action_key_sha256")
+    require_identifier(row["account_id"], code=code, label="account_id")
+    if row["strategy_id"] != "aggressive_tech_manufacturing":
+        raise PaperError(code, "strategy differs")
+    require_date(row["signal_date"], code=code, label="signal_date")
+    require_date(row["eligible_from_trade_date"], code=code, label="eligible_from_trade_date")
+    require_symbol(row["symbol"], code=code)
+    if row["action"] not in {"EXIT_100", "REDUCE_25", "REDUCE_50"}:
+        raise PaperError(code, "action differs")
+    ratio = require_ratio(row["requested_ratio"], code=code, label="requested_ratio")
+    expected_ratio = {
+        "EXIT_100": Decimal("1.00"),
+        "REDUCE_25": Decimal("0.25"),
+        "REDUCE_50": Decimal("0.50"),
+    }
+    if ratio != expected_ratio[row["action"]]:
+        raise PaperError(code, "ratio differs from action")
+    if type(row["requested_shares"]) is not int or row["requested_shares"] < 0:
+        raise PaperError(code, "requested_shares invalid")
+    require_money(row["price_cny"], code=code, label="price_cny", nonnegative=True)
+    if row["price_basis"] not in OWNER_PRICE_BASIS:
+        raise PaperError(code, "price basis differs")
+    validate_ref(row["owner_instruction_ref"], code=code, label="owner_instruction_ref")
+    reasons = row["reason_codes"]
+    if type(reasons) is not list or not reasons or reasons != sorted(set(reasons)):
+        raise PaperError(code, "reason_codes invalid")
+    validate_ref(row["policy_ref"], code=code, label="policy_ref")
+    expected_pointer = row["expected_account_pointer_sha256"]
+    if expected_pointer != "EMPTY":
+        require_sha(expected_pointer, code=code, label="expected pointer")
+    expected = require_exact(
+        row["expected_position"],
+        {"shares", "settled_shares", "avg_cost"},
+        code=code,
+        label="expected_position",
+    )
+    if type(expected["shares"]) is not int or type(expected["settled_shares"]) is not int:
+        raise PaperError(code, "expected shares invalid")
+    require_money(expected["avg_cost"], code=code, label="expected avg_cost", nonnegative=True)
+    refs = row["evidence_refs"]
+    if type(refs) is not list:
+        raise PaperError(code, "evidence_refs invalid")
+    for index, ref in enumerate(refs):
+        validate_ref(ref, code=code, label=f"evidence_refs[{index}]")
+    if any(
+        row[field] is not False for field in ("broker", "real_order", "actual_holdings_mutation")
+    ):
+        raise PaperError(code, "real authority forbidden")
+    return row
+
+
 _ELIGIBILITY_FIELDS = {
     "schema_version",
     "semantic_sha256",
@@ -548,8 +643,10 @@ def utc_now_text() -> str:
 
 
 __all__ = [
+    "OWNER_PRICE_BASIS",
     "PAPER_ROOT",
     "validate_entry_intent",
+    "validate_owner_intent",
     "POLICY_RELATIVE_PATH",
     "POLICY_SHA256",
     "WRITER_ID",

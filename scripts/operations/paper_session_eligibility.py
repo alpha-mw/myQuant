@@ -190,6 +190,7 @@ def session_bars(trade_date: str) -> tuple[dict[str, dict], dict[str, str]]:
             "previous_close": f"{float(row.pre_close):.4f}",
             "high": f"{float(row.high):.4f}",
             "low": f"{float(row.low):.4f}",
+            "close": f"{float(row.close):.4f}",
         }
         for row in rows.itertuples(index=False)
     }
@@ -299,6 +300,13 @@ def build(
         if limit.get("previous_close") not in (None, bar["previous_close"]):
             skipped.append({"symbol": symbol, "reason": "PREVIOUS_CLOSE_DRIFT"})
             continue
+        if order.get("price_basis") == "OWNER_DECLARED_STRICT_CLOSE":
+            if "close" not in bar:
+                skipped.append({"symbol": symbol, "reason": "NO_SESSION_CLOSE"})
+                continue
+            if Decimal(str(order["price_cny"])) != Decimal(bar["close"]):
+                skipped.append({"symbol": symbol, "reason": "OWNER_PRICE_NOT_SESSION_CLOSE"})
+                continue
         economic = economic_action_key(
             account_id=account_id,
             policy_id=policy_id or _POLICY_ID,
@@ -307,6 +315,47 @@ def build(
             action=order["action"],
             shares=int(order["shares"]) if order.get("shares") else 0,
         )
+        if order.get("price_basis"):
+            emitted.append(
+                {
+                    "symbol": symbol,
+                    "side": "SELL",
+                    "owner": True,
+                    "intent": {
+                        "schema_version": "paper-owner-intent.v1",
+                        "source_intent_id": order["source_intent_id"],
+                        "idempotency_key_sha256": economic,
+                        "economic_action_key_sha256": economic,
+                        "account_id": account_id,
+                        "strategy_id": "aggressive_tech_manufacturing",
+                        "signal_date": order["signal_date"],
+                        "eligible_from_trade_date": order["eligible_from_trade_date"],
+                        "symbol": symbol,
+                        "action": order["action"],
+                        "requested_ratio": order["requested_ratio"],
+                        "requested_shares": int(order["shares"]),
+                        "price_cny": f"{Decimal(str(order['price_cny'])):.4f}",
+                        "price_basis": order["price_basis"],
+                        "owner_instruction_ref": dict(order["owner_instruction_ref"]),
+                        "reason_codes": sorted(order["reason_codes"]),
+                        "policy_ref": dict(policy_ref),
+                        "expected_account_pointer_sha256": pointer_sha,
+                        "expected_position": {
+                            "shares": int(position["shares"]),
+                            "settled_shares": int(position["settled_shares"]),
+                            "avg_cost": f"{float(position['avg_cost']):.4f}",
+                        },
+                        "evidence_refs": [],
+                        "broker": False,
+                        "real_order": False,
+                        "actual_holdings_mutation": False,
+                    },
+                    "bar": bar,
+                    "limit": limit,
+                    "corporate": corporate.get(symbol, "PENDING"),
+                }
+            )
+            continue
         if side == "BUY":
             emitted.append(
                 {
@@ -408,6 +457,7 @@ def main() -> int:
         validate_eligibility,
         validate_entry_intent,
         validate_intent,
+        validate_owner_intent,
     )
 
     state = account_state(args.account_id)
@@ -446,7 +496,9 @@ def main() -> int:
         from quant_investor.contracts import canonical_json_bytes
 
         intent = seal_document(item["intent"])
-        if item.get("side") == "BUY":
+        if item.get("owner"):
+            validate_owner_intent(intent)
+        elif item.get("side") == "BUY":
             validate_entry_intent(intent)
         else:
             validate_intent(intent)
