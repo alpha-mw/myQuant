@@ -2,7 +2,13 @@
 
 The Paper account (`aggressive-tech-manufacturing-paper-v1`) acts on orders the
 owner policy produced after one session's close and fills them at the next
-session's open. This is the exact sequence for a session `D`.
+session's open.
+
+**Normally nobody runs this by hand.** The evening orchestrator
+(`scripts/operations/paper_evening_prepare.py`, scheduled as a Hermes job) does
+steps 1-3 for every session, and the owner delegated Paper execution, so it fills
+without a confirmation step. Use this runbook to run or audit a session by hand,
+or when the scheduled job reports a named blocker.
 
 Everything runs from the **installed release** (the account's writer verifies the
 release input), not from the repository:
@@ -50,7 +56,7 @@ Output names `evidence_path` and `evidence_sha256` — keep both.
 two refs. A skipped symbol means evidence is missing — fix the evidence, do not
 hand-edit a file.
 
-## 3. Preview, then fill
+## 3. Preview, then fill (the orchestrator does this automatically)
 
 ```bash
 PYTHONPATH= $INSTALL/bin/python -I -m quant_investor paper risk-exit-preview \

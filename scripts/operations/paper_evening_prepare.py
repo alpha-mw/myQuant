@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
-"""Evening preparation for the Paper account: evidence, intents, next plans.
+"""Evening run for the Paper account: evidence, orders, fills, next plans.
 
-Runs after the CN evening close for session `D` and does three mechanical things,
-never a fill:
+Runs after the CN evening close for session `D`:
 
 1. capture `D`'s exchange price limits (one provider request, sealed under
    `data/private/paper_evidence/`);
-2. turn the plans that were written for `D` into `intent` + `eligibility` files,
-   so the owner can review and run `paper risk-exit-run` per symbol;
+2. for each plan written for `D`, emit the intent + eligibility files and **fill
+   it** through the writer (the owner delegated paper execution, so there is no
+   confirmation step);
 3. write the plans for the next session from `D`'s sealed record.
 
-Every step reports its own status; a step that cannot run (a record not yet
-closed, no plans for `D`, missing evidence) is named in `blockers` and the others
-still proceed. Nothing here writes to the Paper account.
+Orders are produced and filled one at a time because every fill advances the
+account pointer, and each intent binds the pointer it was built against. A fill
+that pends (a limit-up open, a suspension, a pending corporate action) is
+reported with its named blocker and the run continues; an expired intent is
+reported as such, never retried silently.
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ RECORD_POINTER = (
     WORKSPACE
     / "results/strategy_records/CN/aggressive_tech_manufacturing/_record_store/current.v1.json"
 )
+PAPER_RELEASE = WORKSPACE / "operations/releases/paper.env"
 ACCOUNT_ID = "aggressive-tech-manufacturing-paper-v1"
 PYTHON = WORKSPACE / ".venv/bin/python"
 
@@ -41,6 +44,96 @@ def _run(script: str, *args: str) -> tuple[int, str]:
         text=True,
     )
     return completed.returncode, (completed.stdout + completed.stderr).strip()
+
+
+def paper_release() -> dict[str, str]:
+    """The frozen release the Paper writer runs from (writer verifies it)."""
+
+    values: dict[str, str] = {}
+    for line in PAPER_RELEASE.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            key, value = line.split("=", 1)
+            values[key.strip()] = value.strip()
+    required = {
+        "RELEASE_INSTALL_DIR",
+        "RELEASE_CHECKOUT_DIR",
+        "RELEASE_INSTALL_INPUT",
+        "RELEASE_INSTALL_INPUT_SHA256",
+    }
+    if not required.issubset(values):
+        raise SystemExit("operations/releases/paper.env is incomplete")
+    return values
+
+
+def _writer(release: dict[str, str], command: str, *args: str) -> tuple[int, str]:
+    environment = {"PYTHONPATH": "", "HOME": str(Path.home())}
+    import os
+
+    completed = subprocess.run(
+        [
+            str(Path(release["RELEASE_INSTALL_DIR"]) / "bin/python"),
+            "-I",
+            "-m",
+            "quant_investor",
+            "paper",
+            command,
+            "--workspace-root",
+            str(WORKSPACE),
+            "--account-id",
+            ACCOUNT_ID,
+            *args,
+            "--release-install-input",
+            release["RELEASE_INSTALL_INPUT"],
+            "--expected-release-install-input-sha256",
+            release["RELEASE_INSTALL_INPUT_SHA256"],
+            "--release-repository-root",
+            release["RELEASE_CHECKOUT_DIR"],
+        ],
+        cwd=WORKSPACE,
+        capture_output=True,
+        text=True,
+        env={**os.environ, **environment},
+    )
+    return completed.returncode, (completed.stdout + completed.stderr).strip()
+
+
+def _fill(release: dict[str, str], item: dict, order: dict, pointer: str) -> dict:
+    """Fill one prepared order; the writer is the only mutation surface."""
+
+    command = (
+        "owner-run"
+        if order.get("price_basis")
+        else "entry-run" if order.get("side") == "BUY" else "risk-exit-run"
+    )
+    code, output = _writer(
+        release,
+        command,
+        "--intent",
+        item["intent_ref"]["path"],
+        "--expected-intent-sha256",
+        item["intent_ref"]["sha256"],
+        "--eligibility",
+        item["eligibility_ref"]["path"],
+        "--expected-eligibility-sha256",
+        item["eligibility_ref"]["sha256"],
+        "--expected-current-pointer-sha256",
+        pointer,
+        "--allow-write",
+    )
+    if code != 0:
+        return {"symbol": item["symbol"], "status": "BLOCKED", "output": output[-400:]}
+    try:
+        result = json.loads(output)
+    except ValueError:
+        return {"symbol": item["symbol"], "status": "UNPARSABLE", "output": output[-400:]}
+    return {
+        "symbol": item["symbol"],
+        "command": command,
+        "status": result.get("command_status"),
+        "sequence": result.get("sequence"),
+        "record_path": result.get("record_path"),
+    }
 
 
 def active_record_trade_date() -> str | None:
@@ -80,7 +173,12 @@ def plans_for(session: str) -> Path | None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--trade-date", required=True, help="YYYYMMDD session")
-    parser.add_argument("--plan-only", action="store_true", help="skip capture and intent emission")
+    parser.add_argument("--plan-only", action="store_true", help="skip capture and order handling")
+    parser.add_argument(
+        "--no-fill",
+        action="store_true",
+        help="prepare the intent and eligibility files but do not fill",
+    )
     args = parser.parse_args()
     session = args.trade_date
     report: dict = {"trade_date": session, "account_id": ACCOUNT_ID, "steps": {}, "blockers": []}
@@ -102,43 +200,82 @@ def main() -> int:
         plans = plans_for(session)
         if plans is None:
             report["blockers"].append("NO_PLANS_FOR_SESSION")
-            report["steps"]["emit_intents"] = {"status": "NO_PLANS"}
-        elif "capture_limits" not in report["steps"] or (
-            report["steps"]["capture_limits"]["status"] != "CAPTURED"
-        ):
-            report["steps"]["emit_intents"] = {"status": "NO_EVIDENCE"}
+            report["steps"]["orders"] = {"status": "NO_PLANS"}
+        elif report["steps"].get("capture_limits", {}).get("status") != "CAPTURED":
+            report["steps"]["orders"] = {"status": "NO_EVIDENCE"}
         else:
             evidence = report["steps"]["capture_limits"]
-            code, output = _run(
-                "paper_session_eligibility.py",
-                "--account-id",
-                ACCOUNT_ID,
-                "--trade-date",
-                session,
-                "--limits",
-                evidence["evidence_path"],
-                "--expected-limits-sha256",
-                evidence["evidence_sha256"],
-                "--plans",
-                plans.relative_to(WORKSPACE).as_posix(),
-                "--write",
-            )
-            if code != 0:
-                report["blockers"].append("ELIGIBILITY_FAILED")
-                report["steps"]["emit_intents"] = {
-                    "status": "BLOCKED",
-                    "output": output[-800:],
-                }
-            else:
+            release = paper_release()
+            plan_value = json.loads(plans.read_text())
+            filled: list[dict] = []
+            failed: list[dict] = []
+            work_root = plans.parent / f"orders-{session}"
+            for index, order in enumerate(plan_value["orders"], start=1):
+                single = {**plan_value, "orders": [order]}
+                single_path = work_root / f"{index:02d}-{order['symbol']}.json"
+                single_path.parent.mkdir(parents=True, exist_ok=True)
+                single_path.write_bytes(
+                    json.dumps(
+                        single, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                    ).encode()
+                )
+                single_path.chmod(0o600)
+                code, output = _run(
+                    "paper_session_eligibility.py",
+                    "--account-id",
+                    ACCOUNT_ID,
+                    "--trade-date",
+                    session,
+                    "--limits",
+                    evidence["evidence_path"],
+                    "--expected-limits-sha256",
+                    evidence["evidence_sha256"],
+                    "--plans",
+                    single_path.relative_to(WORKSPACE).as_posix(),
+                    "--write",
+                )
+                if code != 0:
+                    failed.append(
+                        {
+                            "symbol": order["symbol"],
+                            "status": "PREPARE_FAILED",
+                            "output": output[-400:],
+                        }
+                    )
+                    continue
                 prepared = json.loads(output)
-                report["steps"]["emit_intents"] = {
-                    "status": "PREPARED",
-                    "plans": plans.relative_to(WORKSPACE).as_posix(),
-                    "prepared": prepared["prepared"],
-                    "skipped": prepared["skipped"],
-                    "pointer_sha256": prepared["pointer_sha256"],
-                }
-
+                for skipped in prepared["skipped"]:
+                    failed.append(
+                        {
+                            "symbol": skipped["symbol"],
+                            "status": "SKIPPED",
+                            "reason": skipped["reason"],
+                        }
+                    )
+                for item in prepared["prepared"]:
+                    if args.no_fill:
+                        filled.append(
+                            {
+                                "symbol": item["symbol"],
+                                "status": "PREPARED",
+                                "intent_ref": item["intent_ref"]["path"],
+                                "eligibility_ref": item["eligibility_ref"]["path"],
+                            }
+                        )
+                        continue
+                    result = _fill(release, item, order, prepared["pointer_sha256"])
+                    if result["status"] in {"FILLED", "NO_ACTION_ALREADY_APPLIED"}:
+                        filled.append(result)
+                    else:
+                        failed.append(result)
+            report["steps"]["orders"] = {
+                "status": "DONE",
+                "plans": plans.relative_to(WORKSPACE).as_posix(),
+                "filled": filled,
+                "failed": failed,
+            }
+            if failed:
+                report["blockers"].append("SOME_ORDERS_NOT_FILLED")
     record_day = active_record_trade_date()
     if record_day != session:
         report["blockers"].append(f"RECORD_NOT_CLOSED_FOR_SESSION:{record_day}")

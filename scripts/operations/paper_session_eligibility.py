@@ -114,6 +114,8 @@ def seal_nav_evidence(trade_date: str, state: dict, bars: dict[str, dict]) -> di
     positions = []
     market_value = Decimal("0")
     for row in state["ledger"]:
+        if int(row["shares"]) <= 0:
+            continue
         bar = bars.get(row["symbol"])
         value = None if bar is None else Decimal(bar["open"]) * Decimal(int(row["shares"]))
         if value is not None:
@@ -270,11 +272,15 @@ def build(
 
     emitted: list[dict] = []
     skipped: list[dict] = []
-    positions = {row["symbol"]: row for row in account_state["ledger"]}
+    positions = {
+        row["symbol"]: row
+        for row in account_state["ledger"]
+        if int(row["shares"]) > 0
+    }
     nav = Decimal(str(account_state["state"]["cash"]))
     for row in account_state["ledger"]:
         bar = bars.get(row["symbol"])
-        if bar is not None:
+        if bar is not None and int(row["shares"]) > 0:
             nav += Decimal(bar["open"]) * Decimal(int(row["shares"]))
     for order in sorted(orders, key=lambda item: (item.get("side", "SELL"), item["symbol"])):
         symbol = order["symbol"]

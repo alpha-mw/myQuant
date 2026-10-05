@@ -99,6 +99,9 @@ def position_views(
     rows: list[tuple[Mapping[str, Any], Mapping[str, Any]]] = []
 
     for position in account["ledger"]:
+        if int(position["shares"]) <= 0:
+            # A fully exited position stays in the ledger as history.
+            continue
         symbol = position["symbol"]
         anchor = anchors.get(symbol)
         stop_row = stops.get(symbol)
