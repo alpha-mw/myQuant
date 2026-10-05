@@ -64,27 +64,94 @@ def build_digest(session: str) -> tuple[Path, str, dict]:
     digest = module.build(session)
     path = DIGEST_ROOT / session / "cn-decision-digest.v1.json"
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    path.write_bytes(json.dumps(digest, ensure_ascii=False, indent=1, sort_keys=True).encode())
+    written = json.dumps(digest, ensure_ascii=False, indent=1, sort_keys=True).encode()
+    path.write_bytes(written)
     path.chmod(0o600)
-    return path, digest["content_sha256"], digest
+    # The ref must hash the bytes the lanes actually read, not the canonical form.
+    return path, _sha(written), digest
 
 
-def redacted_digest(digest: dict) -> dict:
-    """The risk lane may not receive absolute money; weights and flags survive."""
+def risk_summary(digest: dict, digest_ref: dict[str, str]) -> dict:
+    """Minimal-disclosure risk input: derived metrics only.
 
-    account = dict(digest["account"])
-    for field in ("cash", "realized_pnl", "cumulative_fees"):
-        account.pop(field, None)
-    account["positions"] = [
-        {
-            "symbol": row["symbol"],
-            "shares_bucket": "LOT" if row["shares"] >= 100 else "ODD",
-            "settled": row["settled_shares"] == row["shares"],
-            "avg_cost": row["avg_cost"],
-        }
-        for row in account.get("positions", [])
-    ]
-    return {**digest, "account": account, "redaction": "RISK_LANE_NO_ABSOLUTE_MONEY"}
+    The risk role forbids account identifiers, real holdings and financial
+    detail in its context, so it receives no symbols, no share counts, no cost
+    and no money — only ratios, counts and evidence status, which is what its
+    check list actually needs.
+    """
+
+    from decimal import Decimal
+
+    positions = digest["account"].get("positions", [])
+    weights = sorted(
+        (Decimal(str(row["nav_weight"])) for row in digest.get("risk", [])), reverse=True
+    )
+    total = sum(weights, Decimal("0")) if weights else Decimal("0")
+    flags: dict[str, int] = {}
+    for row in digest.get("risk", []):
+        if row.get("owner_stop_trigger") == "BREACH":
+            flags["owner_stop_breach"] = flags.get("owner_stop_breach", 0) + 1
+        if row.get("trailing_trigger") == "REDUCTION_REVIEW":
+            flags["trailing_reduction_review"] = flags.get("trailing_reduction_review", 0) + 1
+        if row.get("trailing_trigger") == "REVIEW":
+            flags["trailing_review"] = flags.get("trailing_review", 0) + 1
+        for blocker in row.get("blockers", []):
+            key = "corporate_action_review" if "CORPORATE_ACTION" in blocker else "other_blocker"
+            flags[key] = flags.get(key, 0) + 1
+        if row.get("hard_stop") is None and row.get("giveback_ratio") is None:
+            flags["unmanaged_position"] = flags.get("unmanaged_position", 0) + 1
+    orders = digest.get("orders", {}).get("plans", [])
+    actions: dict[str, int] = {}
+    for plan in orders:
+        for order in plan.get("orders", []):
+            actions[order["action"]] = actions.get(order["action"], 0) + 1
+    return {
+        "schema_version": "cn-risk-input.v1",
+        "trade_date": digest["trade_date"],
+        "digest_ref": dict(digest_ref),
+        "scope": "derived metrics only; no symbols, shares, cost or money",
+        "concentration": {
+            "position_count": len(positions),
+            "top1_weight": str(weights[0]) if weights else None,
+            "top3_weight": str(sum(weights[:3], Decimal("0"))),
+            "hhi": str(sum((weight * weight for weight in weights), Decimal("0"))),
+            "invested_weight": str(total),
+        },
+        "risk_flags": flags,
+        "proposed_actions": actions,
+        "evidence": {
+            "missing_lanes": digest["evidence"]["missing"],
+            "present_lane_count": len(digest["evidence"]["present"]),
+            "digest_integrity": "MATCHES_SUPPLIED_SHA",
+        },
+        "policies": {
+            "paper_execution_policy_ref": _policy_ref(
+                WORKSPACE
+                / "results/policies/paper/aggressive_tech_manufacturing"
+                / "owner-paper-risk-execution-policy-20261005-v4.json"
+            ),
+            "owner_stop_policy_ref": _policy_ref(
+                WORKSPACE
+                / "results/policies/risk/aggressive_tech_manufacturing/initial-risk-stop.v1"
+                / "owner-stop-policy-20260828-v1.json"
+            ),
+            "trailing_anchor_policy_ref": _policy_ref(
+                WORKSPACE
+                / "results/policies/risk/aggressive_tech_manufacturing/trailing-anchor.v1"
+                / "owner-trailing-anchor-policy-20260901-v1.json"
+            ),
+        },
+        "seal_veto": {
+            "state": "NOT_CONFIGURED",
+            "reason": "paper 账户没有独立的 seal/veto 存储；封存执行政策与 writer 的 fail-closed 校验即规则来源",
+        },
+        "drawdown": {"status": "UNAVAILABLE", "reason": "需要历史净值序列，本输入不含"},
+        "boundary": "本输入为派生指标，供风控出具 PASS / BLOCKED / INSUFFICIENT_EVIDENCE",
+    }
+
+
+def _policy_ref(path: Path) -> dict[str, str]:
+    return {"path": str(path), "sha256": _sha(path.read_bytes())}
 
 
 def _call(profile: str, prompt: str, timeout: int) -> tuple[bool, dict | None, str]:
@@ -113,9 +180,9 @@ def _call(profile: str, prompt: str, timeout: int) -> tuple[bool, dict | None, s
 def _lane_prompt(role: str, instruction: str, ref_path: Path, sha: str, *, redacted: bool) -> str:
     target = ref_path
     if redacted:
-        target = ref_path.with_name("cn-decision-digest.risk-redacted.v1.json")
+        target = ref_path.with_name("cn-risk-input.v1.json")
     return (
-        f"你是 {role} lane。只读这一份 digest（path={target.relative_to(WORKSPACE).as_posix()}，"
+        f"你是 {role} lane。只读这一份输入（**绝对路径** path={target}，"
         f"sha256={sha}），不要访问其他项目数据。按你的角色文件输出**一个 JSON 对象**，不要输出其他文字。"
         f"任务：{instruction}。digest 里 evidence.missing 的 lane 必须报 INSUFFICIENT_EVIDENCE。"
     )
@@ -129,12 +196,14 @@ def main() -> int:
     session = args.trade_date
 
     ref_path, sha, digest = build_digest(session)
-    redacted_path = ref_path.with_name("cn-decision-digest.risk-redacted.v1.json")
-    redacted_payload = redacted_digest(digest)
-    redacted_path.write_bytes(
-        json.dumps(redacted_payload, ensure_ascii=False, indent=1, sort_keys=True).encode()
-    )
+    redacted_path = ref_path.with_name("cn-risk-input.v1.json")
+    redacted_payload = risk_summary(digest, {"path": str(ref_path), "sha256": sha})
+    redacted_written = json.dumps(
+        redacted_payload, ensure_ascii=False, indent=1, sort_keys=True
+    ).encode()
+    redacted_path.write_bytes(redacted_written)
     redacted_path.chmod(0o600)
+    redacted_sha = _sha(redacted_written)
 
     report: dict = {
         "schema_version": "cn-decision-panel.v1",
@@ -150,7 +219,7 @@ def main() -> int:
             role,
             instruction,
             ref_path,
-            sha,
+            redacted_sha if redacted else sha,
             redacted=redacted,
         )
         ok, value, error = _call(profile, prompt, LANE_TIMEOUT_SECONDS)
