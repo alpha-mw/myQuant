@@ -14,10 +14,10 @@ from quant_investor.contracts import canonical_json_bytes
 WRITER_ID: Final = "cn-paper-risk-exit-writer.v1"
 POLICY_RELATIVE_PATH: Final = (
     "results/policies/paper/aggressive_tech_manufacturing/"
-    "owner-paper-risk-execution-policy-20261004-v3.json"
+    "owner-paper-risk-execution-policy-20261005-v4.json"
 )
-POLICY_SHA256: Final = "6fd57344f73f4208a5abd9d3d0d2292c05765751ec91dd90d20bcdb9f3e350e3"
-POLICY_ID: Final = "owner-paper-risk-execution-policy-20261004-v3"
+POLICY_SHA256: Final = "d83907b1f75635a12892854c5bca1489a349ca85098e1a02b26a07d5f22a9c6f"
+POLICY_ID: Final = "owner-paper-risk-execution-policy-20261005-v4"
 POLICY_ACTION_SCOPE: Final = "RISK_REDUCING_SELLS_AND_ENTRY_BUYS"
 PEAK_PROFIT_MATERIALITY_FLOOR: Final = "0.10"
 PAPER_ROOT: Final = "results/paper/accounts"

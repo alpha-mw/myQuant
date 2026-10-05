@@ -102,8 +102,16 @@ def _policy(workspace: Path) -> tuple[dict[str, Any], dict[str, str]]:
     ):
         raise PaperError("PAPER_POLICY_INVALID", "owner policy fields differ")
     entry = value.get("entry_policy")
+    gates = (entry or {}).get("quality_gates") or {}
     if (
         type(entry) is not dict
+        or entry.get("candidate_source") != "SEALED_TECHNOLOGY_THEME_UNIVERSE"
+        or entry.get("ranking") != "SEALED_CROSS_SECTIONAL_COMBINED_PERCENTILE"
+        or type(entry.get("universe_themes")) is not list
+        or not entry.get("universe_themes")
+        or gates.get("exclude_risk_warning_names") is not True
+        or gates.get("minimum_listed_days") != 180
+        or gates.get("minimum_daily_turnover_cny") != "20000000.00"
         or entry.get("candidate_minimum_combined_percentile") != "0.900000000000"
         or entry.get("maximum_holdings") != 7
         or entry.get("target_weight_per_holding") != "0.14"

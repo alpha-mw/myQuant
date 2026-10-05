@@ -21,6 +21,7 @@ import json
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo
 
 WORKSPACE = Path("/Users/maxwell/mySpace/myQuant")
@@ -79,7 +80,7 @@ def sealed_entry_source() -> str:
         (
             WORKSPACE
             / "results/policies/paper/aggressive_tech_manufacturing"
-            / "owner-paper-risk-execution-policy-20261004-v3.json"
+            / "owner-paper-risk-execution-policy-20261005-v4.json"
         ).read_text()
     )
     return str((policy.get("entry_policy") or {}).get("candidate_source"))
@@ -87,6 +88,9 @@ def sealed_entry_source() -> str:
 
 ENTRY_MAXIMUM_HOLDINGS = 7
 ENTRY_MAXIMUM_NEW_PER_WEEK = 2
+# Owner quality gates (policy v4 `entry_policy.quality_gates`).
+ENTRY_MINIMUM_TURNOVER_WAN = 2000.0
+ENTRY_MINIMUM_LISTED_DAYS = 180
 ENTRY_TARGET_WEIGHT = "0.14"
 ENTRY_MINIMUM_CASH_FRACTION = "0.05"
 
@@ -97,6 +101,61 @@ def _week(session: str) -> tuple[int, int]:
     parsed = date(int(session[:4]), int(session[4:6]), int(session[6:]))
     iso = parsed.isocalendar()
     return iso[0], iso[1]
+
+
+def quality_gates(workspace: Path, trade_date: str, symbols: set[str]) -> dict[str, set[str]]:
+    """Owner quality gates: no ST, no recent listing, minimum daily turnover.
+
+    Measured on 2026-09-30: the factor pair rewards low dollar volume, so the
+    universe's top names are thin. A 20,000,000 CNY daily floor keeps 39 of the
+    52 candidates at or above the 0.90 percentile and drops only the untradeable
+    tail; a 50,000,000 floor leaves none.
+    """
+
+    import pandas as pd
+
+    pointer = json.loads((workspace / "data/parquet/cn/_latest.json").read_text())
+    table = workspace / "data/parquet/cn/_snapshots" / pointer["snapshot_id"] / "table"
+    files = sorted((table / "bars").glob("year=*/month=*/*.parquet"))
+    if not files:
+        raise SystemExit("no strict bars for the quality gates")
+    frame = pd.concat([pd.read_parquet(path) for path in files])
+    sessions = sorted(day for day in frame.trade_date.unique() if day <= trade_date)
+    if not sessions or sessions[-1] != trade_date:
+        raise SystemExit(f"no session {trade_date} in the strict bars")
+    window = sessions[-20:]
+    recent = frame[frame.trade_date.isin(window)]
+    turnover = recent.groupby("ts_code").amount.mean() / 10  # 千元 → 万元
+    universe = {
+        row["symbol"]: row
+        for row in json.loads(
+            (workspace / "data/cn_universe/stock_basic_membership_latest.json").read_text()
+        )["records"]
+    }
+    from datetime import date
+
+    as_of = date(int(trade_date[:4]), int(trade_date[4:6]), int(trade_date[6:]))
+    keep: set[str] = set()
+    dropped: dict[str, set[str]] = {"ST": set(), "RECENT_LISTING": set(), "ILLIQUID": set()}
+    for symbol in symbols:
+        row = universe.get(symbol)
+        if row is None:
+            dropped["RECENT_LISTING"].add(symbol)
+            continue
+        if "ST" in (row.get("name") or "").upper():
+            dropped["ST"].add(symbol)
+            continue
+        listed = row.get("list_date") or ""
+        if len(listed) == 8:
+            listed_date = date(int(listed[:4]), int(listed[4:6]), int(listed[6:]))
+            if (as_of - listed_date).days < ENTRY_MINIMUM_LISTED_DAYS:
+                dropped["RECENT_LISTING"].add(symbol)
+                continue
+        if float(turnover.get(symbol, 0.0)) < ENTRY_MINIMUM_TURNOVER_WAN:
+            dropped["ILLIQUID"].add(symbol)
+            continue
+        keep.add(symbol)
+    return {"keep": keep, "dropped": dropped}
 
 
 def latest_pool() -> tuple[dict, dict]:
@@ -191,11 +250,18 @@ def entry_orders(
         from quant_investor.paper.planning import technology_candidates
 
         ranked, _refs = technology_candidates(workspace=WORKSPACE, trade_date=signal_date)
-        rows = (
-            ranked
-            if pool_rows is None
-            else [row for row in ranked if row["symbol"] in {r["symbol"] for r in pool_rows}]
+        gates = quality_gates(WORKSPACE, signal_date, {row["symbol"] for row in ranked})
+        EntryFunnel.update(
+            {
+                "ranked": len(ranked),
+                "after_gates": len(gates["keep"]),
+                "gated_out": {name: len(symbols) for name, symbols in gates["dropped"].items()},
+            }
         )
+        rows = [row for row in ranked if row["symbol"] in gates["keep"]]
+        if pool_rows is not None:
+            wanted = {r["symbol"] for r in pool_rows}
+            rows = [row for row in rows if row["symbol"] in wanted]
         themes = {row["symbol"]: row["technology_theme_ids"] for row in rows}
     elif source == SEALED_POOL_SOURCE:
         if themes is None:
@@ -270,6 +336,7 @@ class EntryBlocked(RuntimeError):
 
 # Non-blocking facts about an empty entry lane, reported alongside the plan.
 EntryNotes: list[str] = []
+EntryFunnel: dict[str, Any] = {}
 
 
 POLICY_REASON_CODES = {
@@ -396,6 +463,7 @@ def main() -> int:
     sessions = session_dates(WORKSPACE, as_of=as_of)
     blocked: str | None = None
     EntryNotes.clear()
+    EntryFunnel.clear()
     try:
         entries = entry_orders(
             account_views=views,
@@ -430,6 +498,7 @@ def main() -> int:
         "entry_lane": {
             "blocked": blocked,
             "notes": list(EntryNotes),
+            "funnel": dict(EntryFunnel),
         },
         "holdings": [
             {

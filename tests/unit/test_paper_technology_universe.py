@@ -85,3 +85,29 @@ def test_technology_universe_members_carry_a_theme_and_a_score() -> None:
     policy_technology = set(_policy()["technology_theme_ids"])
     for themes in evidence["symbols"].values():
         assert {f"TUSHARE_DC:{code}" for code in themes} <= policy_technology
+
+
+def test_quality_gates_drop_st_recent_and_illiquid_names() -> None:
+    """Owner gates: no ST, no listing younger than 180 days, ≥20,000,000 CNY/day."""
+
+    import importlib.util
+
+    from quant_investor.paper.planning import technology_candidates
+
+    spec = importlib.util.spec_from_file_location(
+        "paper_shadow_orders", ROOT / "scripts/operations/paper_shadow_orders.py"
+    )
+    planner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(planner)
+
+    ranked, _refs = technology_candidates(workspace=ROOT, trade_date=SESSION)
+    gates = planner.quality_gates(ROOT, SESSION, {row["symbol"] for row in ranked})
+    dropped = gates["dropped"]
+    assert gates["keep"], "the gates must not empty the universe"
+    assert dropped["ST"], "the session contains risk-warning names"
+    assert dropped["ILLIQUID"], "the session contains thin names below the floor"
+    # ST思科瑞 ranked highly but must not survive; 维海德 is below the turnover floor.
+    assert "688053.SH" in dropped["ST"]
+    assert "301318.SZ" in dropped["ILLIQUID"]
+    assert "688053.SH" not in gates["keep"]
+    assert "301318.SZ" not in gates["keep"]
