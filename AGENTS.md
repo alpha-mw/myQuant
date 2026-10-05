@@ -48,3 +48,26 @@ BASH
 For a broad change, run the full CI equivalent: `uv run pytest tests/unit -q`,
 then the stable contracts/system/factor/intelligence/mainline/CLI flake8, Black,
 and mypy checks in `.github/workflows/ci-cd.yml`.
+
+## Cursor Cloud specific instructions
+
+Install the locked runtime and dev tools with `uv sync --locked --extra dev`.
+Python 3.13 comes from uv. Keep `uv` on the default `PATH` via `/usr/local/bin/uv`.
+The offline checks also need the system packages `zsh` (daily slot launcher) and
+`zstd` (strategy-record archive rehearsal). There is no boot-time service.
+
+A fresh workspace has no `results/system/_active.json`. `quant-investor system
+verify` exits 0 and reports `UNINITIALIZED` with blocker
+`SYSTEM_ACTIVE_POINTER_ABSENT`. `quant-investor system status` exits 0 with
+`status` `OK` and system capability `UNINITIALIZED`.
+
+Daily launcher tests (`tests/unit/test_configured_source_launcher.py` and
+`tests/unit/test_daily_launcher_dag_profile.py`) use the zsh test
+`=~ '^[ -~]+$'`. Run those tests with `LC_ALL=C.UTF-8`. Under
+`LC_ALL=en_US.UTF-8` that character range does not match printable ASCII, and
+the launcher rejects valid relative paths as
+`CN_DAILY_PRODUCTION_ARGUMENTS_INVALID`.
+
+Environment checks stay offline. `system verify`, unit tests, the dashboard
+`node --check` contract tests, and `uv build` do not need `TUSHARE_TOKEN` or
+other API keys.
