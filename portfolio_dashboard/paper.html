@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light" />
+    <title>Paper 账户镜像｜myQuant</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="styles.css?v=dashboard-v6" />
+  </head>
+  <body>
+    <a class="skip-link" href="#paper-summary">跳至 Paper 账户汇总</a>
+
+    <header class="site-nav public-section public-section-brand">
+      <a class="nav-brand" href="paper.html" aria-label="返回 Paper 镜像顶部">
+        <span>
+          <strong>Paper 账户镜像</strong>
+          <small>myQuant · aggressive_tech_manufacturing · 内部视图</small>
+        </span>
+      </a>
+      <nav class="nav-links" aria-label="页面导航">
+        <a href="#paper-summary">净值</a>
+        <a href="#paper-positions">持仓</a>
+        <a href="#paper-trades">交易记录</a>
+        <a class="nav-cta blueprint" href="index.html">
+          真实账本 Dashboard
+          <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+        </a>
+      </nav>
+    </header>
+
+    <main id="top" class="app-shell">
+      <section class="hero" aria-labelledby="paperTitle">
+        <p class="eyebrow">Paper account · 内部版本（公开站点不发布本页）</p>
+        <h1 id="paperTitle">Paper 账户净值与交易记录</h1>
+        <p id="paperBoundary" class="lede">
+          独立 paper 账户，与真实账本分开记账；broker=false、real_order=false、不触碰实际持仓。
+        </p>
+      </section>
+
+      <section id="paper-summary" class="panel section-anchor" aria-labelledby="paperSummaryTitle">
+        <div class="panel-heading">
+          <div>
+            <h2 id="paperSummaryTitle">净值</h2>
+            <p id="paperValuation">估值日 —</p>
+          </div>
+          <p id="paperStatus" class="status-pill">加载中</p>
+        </div>
+        <dl class="metric-list" id="paperMetrics"></dl>
+        <div id="paperCurve" class="chart-host" aria-label="净值与已实现盈亏曲线"></div>
+      </section>
+
+      <section id="paper-positions" class="panel section-anchor" aria-labelledby="paperPositionsTitle">
+        <div class="panel-heading">
+          <div>
+            <h2 id="paperPositionsTitle">持仓</h2>
+            <p>按最新严格收盘价估值；已清仓的标的保留在交易记录中。</p>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <caption class="visually-hidden">Paper 账户持仓</caption>
+            <thead>
+              <tr>
+                <th scope="col">标的</th>
+                <th scope="col" class="numeric">股数</th>
+                <th scope="col" class="numeric">可卖</th>
+                <th scope="col" class="numeric">成本</th>
+                <th scope="col" class="numeric">收盘</th>
+                <th scope="col" class="numeric">市值</th>
+                <th scope="col" class="numeric">未实现</th>
+              </tr>
+            </thead>
+            <tbody id="paperPositionsBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="paper-trades" class="panel section-anchor" aria-labelledby="paperTradesTitle">
+        <div class="panel-heading">
+          <div>
+            <h2 id="paperTradesTitle">交易记录</h2>
+            <p id="paperTradesNote">来自账户不可变记录，按时间正序。</p>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <caption class="visually-hidden">Paper 账户成交历史</caption>
+            <thead>
+              <tr>
+                <th scope="col">交易日期</th>
+                <th scope="col">标的</th>
+                <th scope="col">方向</th>
+                <th scope="col">类型</th>
+                <th scope="col" class="numeric">股数</th>
+                <th scope="col" class="numeric">成交价</th>
+                <th scope="col" class="numeric">费用</th>
+                <th scope="col" class="numeric">已实现</th>
+                <th scope="col" class="numeric">成交后现金</th>
+              </tr>
+            </thead>
+            <tbody id="paperTradesBody"></tbody>
+          </table>
+        </div>
+        <p id="paperEvidence" class="mono"></p>
+      </section>
+    </main>
+
+    <script src="private/generated/cn_paper_dashboard.v1.js"></script>
+    <script src="paper.js"></script>
+  </body>
+</html>
