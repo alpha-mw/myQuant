@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime
+from decimal import Decimal
 import hashlib
 import json
 from pathlib import Path
@@ -104,26 +105,86 @@ def seal_corporate_action_evidence(trade_date: str, monitor: dict) -> dict[str, 
     return {"path": _relative(path), "sha256": _sha(raw)}
 
 
+def seal_nav_evidence(trade_date: str, state: dict, bars: dict[str, dict]) -> dict[str, str]:
+    """Seal the account valuation the entry sizing binds to."""
+
+    from quant_investor.contracts import canonical_json_bytes
+
+    cash = Decimal(str(state["state"]["cash"]))
+    positions = []
+    market_value = Decimal("0")
+    for row in state["ledger"]:
+        bar = bars.get(row["symbol"])
+        value = None if bar is None else Decimal(bar["open"]) * Decimal(int(row["shares"]))
+        if value is not None:
+            market_value += value
+        positions.append(
+            {
+                "symbol": row["symbol"],
+                "shares": int(row["shares"]),
+                "session_open": None if bar is None else bar["open"],
+                "session_value_cny": None if value is None else f"{value:.4f}",
+            }
+        )
+    payload = canonical_json_bytes(
+        {
+            "schema_version": "paper-account-valuation.v1",
+            "trade_date": trade_date,
+            "cash_cny": f"{cash:.4f}",
+            "market_value_cny": f"{market_value:.4f}",
+            "nav_cny": f"{cash + market_value:.4f}",
+            "positions": positions,
+            "basis": "SESSION_OPEN",
+        }
+    )
+    path = EVIDENCE_ROOT / trade_date / "account-valuation.v1.json"
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path.write_bytes(payload)
+    path.chmod(0o600)
+    return {"path": _relative(path), "sha256": _sha(payload)}
+
+
 def account_state(account_id: str) -> dict:
     from quant_investor.paper.store import PaperStore
 
     return PaperStore(WORKSPACE).load_account(account_id)
 
 
-def session_bars(trade_date: str) -> dict[str, dict]:
-    """Strict bars for one session, read from the published snapshot only."""
-
+def _snapshot_bars(months: set[str]):
     import pandas as pd
 
     pointer = json.loads(SNAPSHOT_POINTER.read_text())
     table = WORKSPACE / "data/parquet/cn/_snapshots" / pointer["snapshot_id"] / "table"
-    year, month = trade_date[:4], trade_date[4:6]
-    files = sorted((table / "bars" / f"year={year}" / f"month={month}").glob("*.parquet"))
-    if not files:
-        return {}
-    frame = pd.concat([pd.read_parquet(path) for path in files])
+    frames = []
+    for month in sorted(months):
+        year, month_number = month[:4], month[4:6]
+        files = sorted(
+            (table / "bars" / f"year={year}" / f"month={month_number}").glob("*.parquet")
+        )
+        frames.extend(pd.read_parquet(path) for path in files)
+    return pd.concat(frames) if frames else None
+
+
+def session_bars(trade_date: str) -> tuple[dict[str, dict], dict[str, str]]:
+    """Strict bars for one session plus the adjustment verdict per symbol.
+
+    The adjustment check mirrors the sealed risk calculator: a session whose
+    `adj_factor` differs from the previous session's is a corporate action that
+    must be reviewed before any fill, so `paper-input-eligibility.v1` never sees
+    an assumed CLEAR.
+    """
+
+    import pandas as pd
+
+    frame = _snapshot_bars({trade_date[:6]})
+    if frame is None:
+        return {}, {}
+    sessions = sorted(day for day in frame.trade_date.unique() if day <= trade_date)
+    if not sessions or sessions[-1] != trade_date:
+        return {}, {}
+    previous = sessions[-2] if len(sessions) > 1 else None
     rows = frame[frame.trade_date == trade_date]
-    return {
+    bars = {
         row.ts_code: {
             "open": f"{float(row.open):.4f}",
             "previous_close": f"{float(row.pre_close):.4f}",
@@ -132,6 +193,16 @@ def session_bars(trade_date: str) -> dict[str, dict]:
         }
         for row in rows.itertuples(index=False)
     }
+    states: dict[str, str] = {}
+    if previous is not None:
+        prior = {
+            row.ts_code: row.adj_factor
+            for row in frame[frame.trade_date == previous].itertuples(index=False)
+        }
+        factors = {row.ts_code: row.adj_factor for row in rows.itertuples(index=False)}
+        for symbol, factor in factors.items():
+            states[symbol] = "CLEAR" if symbol in prior and prior[symbol] == factor else "PENDING"
+    return bars, states
 
 
 def read_limits(path: Path, expected_sha: str, trade_date: str) -> dict[str, dict]:
@@ -191,6 +262,7 @@ def build(
     policy_ref: dict[str, str],
     policy_id: str,
     account_state: dict,
+    nav_ref: dict[str, str],
 ) -> tuple[list[dict], list[dict]]:
     from quant_investor.paper.contracts import POLICY_ID as _POLICY_ID
     from quant_investor.paper.execution import economic_action_key
@@ -198,10 +270,16 @@ def build(
     emitted: list[dict] = []
     skipped: list[dict] = []
     positions = {row["symbol"]: row for row in account_state["ledger"]}
-    for order in sorted(orders, key=lambda item: item["symbol"]):
+    nav = Decimal(str(account_state["state"]["cash"]))
+    for row in account_state["ledger"]:
+        bar = bars.get(row["symbol"])
+        if bar is not None:
+            nav += Decimal(bar["open"]) * Decimal(int(row["shares"]))
+    for order in sorted(orders, key=lambda item: (item.get("side", "SELL"), item["symbol"])):
         symbol = order["symbol"]
         position = positions.get(symbol)
-        if position is None:
+        side = order.get("side", "SELL")
+        if side == "SELL" and position is None:
             skipped.append({"symbol": symbol, "reason": "NOT_HELD"})
             continue
         bar = bars.get(symbol)
@@ -227,8 +305,53 @@ def build(
             signal_date=order["signal_date"],
             symbol=symbol,
             action=order["action"],
-            shares=int(order["shares"]),
+            shares=int(order["shares"]) if order.get("shares") else 0,
         )
+        if side == "BUY":
+            emitted.append(
+                {
+                    "symbol": symbol,
+                    "side": "BUY",
+                    "intent": {
+                        "schema_version": "paper-entry-intent.v1",
+                        "source_intent_id": order["source_intent_id"],
+                        "idempotency_key_sha256": economic,
+                        "economic_action_key_sha256": economic,
+                        "account_id": account_id,
+                        "strategy_id": "aggressive_tech_manufacturing",
+                        "signal_date": order["signal_date"],
+                        "eligible_from_trade_date": order["eligible_from_trade_date"],
+                        "symbol": symbol,
+                        "name": order.get("name") or symbol,
+                        "side": "BUY",
+                        "action": "ENTRY",
+                        "target_weight": order["target_weight"],
+                        "minimum_cash_fraction": order["minimum_cash_fraction"],
+                        "account_nav_cny": f"{nav:.4f}",
+                        "nav_evidence_ref": dict(nav_ref),
+                        "reason_codes": sorted(order["reason_codes"]),
+                        "policy_ref": dict(policy_ref),
+                        "expected_account_pointer_sha256": pointer_sha,
+                        "expected_position": (
+                            {
+                                "shares": int(position["shares"]),
+                                "settled_shares": int(position["settled_shares"]),
+                                "avg_cost": f"{float(position['avg_cost']):.4f}",
+                            }
+                            if position is not None
+                            else None
+                        ),
+                        "evidence_refs": [],
+                        "broker": False,
+                        "real_order": False,
+                        "actual_holdings_mutation": False,
+                    },
+                    "bar": bar,
+                    "limit": limit,
+                    "corporate": corporate.get(symbol, "PENDING"),
+                }
+            )
+            continue
         intent = {
             "schema_version": "paper-risk-intent.v1",
             "source_intent_id": order["source_intent_id"],
@@ -283,15 +406,22 @@ def main() -> int:
         POLICY_SHA256,
         seal_document,
         validate_eligibility,
+        validate_entry_intent,
         validate_intent,
     )
 
     state = account_state(args.account_id)
     limits = read_limits(WORKSPACE / args.limits, args.expected_limits_sha256, args.trade_date)
-    bars = session_bars(args.trade_date)
+    bars, adjustment_states = session_bars(args.trade_date)
     corporate, monitor = corporate_action_states(args.trade_date)
+    for symbol, adjustment in adjustment_states.items():
+        if symbol not in corporate:
+            corporate[symbol] = adjustment
+        elif corporate[symbol] == "CLEAR" and adjustment == "PENDING":
+            corporate[symbol] = "PENDING"
     evidence = session_evidence(args.trade_date)
     corporate_ref = seal_corporate_action_evidence(args.trade_date, monitor)
+    nav_ref = seal_nav_evidence(args.trade_date, state, bars)
     plans = json.loads((WORKSPACE / args.plans).read_text())
     policy_ref = {"path": POLICY_RELATIVE_PATH, "sha256": POLICY_SHA256}
     emitted, skipped = build(
@@ -305,6 +435,7 @@ def main() -> int:
         policy_ref=policy_ref,
         policy_id=POLICY_ID,
         account_state=state,
+        nav_ref=nav_ref,
     )
     stamp = datetime.now(SHANGHAI).strftime("%Y%m%dT%H%M%S")
     day_root = OUTPUT_ROOT / args.trade_date / stamp
@@ -315,7 +446,10 @@ def main() -> int:
         from quant_investor.contracts import canonical_json_bytes
 
         intent = seal_document(item["intent"])
-        validate_intent(intent)
+        if item.get("side") == "BUY":
+            validate_entry_intent(intent)
+        else:
+            validate_intent(intent)
         intent_path = day_root / symbol / "intent.v1.json"
         intent_ref = {
             "path": _relative(intent_path),
@@ -366,8 +500,9 @@ def main() -> int:
         results.append(
             {
                 "symbol": symbol,
+                "side": item.get("side", "SELL"),
                 "action": intent["action"],
-                "shares": intent["requested_shares"],
+                "shares": intent.get("requested_shares"),
                 "intent_ref": intent_ref,
                 "eligibility_ref": eligibility_ref,
             }

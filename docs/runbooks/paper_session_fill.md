@@ -8,11 +8,11 @@ Everything runs from the **installed release** (the account's writer verifies th
 release input), not from the repository:
 
 ```bash
-INSTALL=/Users/maxwell/mySpace/myQuant-release-authority/2259530d7d5dfd11215f9f804306c06a32444e7e-unified-runtime/installs/2259530d7d5dfd11215f9f804306c06a32444e7e-d8748d0bf32228e78cd9070568a3bd20ac84e226c68e3c62936232686a6ea2ef
-INPUT=results/releases/7b88feb4beb0f7c389e4da9359bc2aed29f724a17c0f7d612090a849493d62ce/release-install-input.json
-INPUT_SHA=7b88feb4beb0f7c389e4da9359bc2aed29f724a17c0f7d612090a849493d62ce
+INSTALL=/Users/maxwell/mySpace/myQuant-release-authority/d8b06e1f27ef0ae2d2cd5201375d6949a6d6f089-unified-runtime/installs/d8b06e1f27ef0ae2d2cd5201375d6949a6d6f089-4927cb26c7028636fbbc1d9210805b75cd45e068bed431799f2a95201d4c82d2/bin/python
+INPUT=results/releases/c89c0c6e5825ca867a30cb8000d9a30a600abd85d3d88475385d890e61c6cac3/release-install-input.json
+INPUT_SHA=c89c0c6e5825ca867a30cb8000d9a30a600abd85d3d88475385d890e61c6cac3
 ACCOUNT=aggressive-tech-manufacturing-paper-v1
-CHECKOUT=/Users/maxwell/mySpace/myQuant-release-checkouts/2259530d7d5dfd11215f9f804306c06a32444e7e-unified-runtime
+CHECKOUT=/Users/maxwell/mySpace/myQuant-release-checkouts/d8b06e1f27ef0ae2d2cd5201375d6949a6d6f089-unified-runtime
 ```
 
 ## 0. Preconditions
@@ -76,6 +76,15 @@ PYTHONPATH= $INSTALL/bin/python -I -m quant_investor paper risk-exit-run \
 Repeat per symbol; each fill advances the account pointer, so re-read it from the
 previous command's output. Exact replay of the same intent returns
 `NO_ACTION_ALREADY_APPLIED`; a conflict fails closed.
+
+Entries use the same shape with `paper entry-preview` / `paper entry-run` and the
+`paper-entry-intent.v1` file. A buy whose budget cannot afford one lot is
+terminally `SKIPPED`; a limit-up open, suspension or pending corporate action
+pends it. `sells` and `buys` may both be prepared for one session.
+
+The install above is the newest Paper release; it is **not** what
+`operations/releases/active.env` names (the scheduled jobs stay on 660f066 until
+the post-2026-10-08 migration in `release_repoint_20261008.md`).
 
 ## 4. Confirm
 
