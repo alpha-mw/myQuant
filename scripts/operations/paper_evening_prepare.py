@@ -249,6 +249,27 @@ def main() -> int:
                 **captured,
             }
 
+        # The entry lane and the decision digest both rank the session's
+        # technology universe, and nothing else captures it for a session.
+        code, output = _run(
+            "paper_capture_technology_universe.py", "--trade-date", session, "--write"
+        )
+        if code != 0:
+            report["blockers"].append("TECHNOLOGY_UNIVERSE_CAPTURE_FAILED")
+            report["steps"]["capture_technology_universe"] = {
+                "status": "BLOCKED",
+                "output": output[-800:],
+            }
+        else:
+            try:
+                captured = json.loads(output[output.index("{") :])
+            except ValueError:
+                captured = {"status": "UNPARSABLE", "output": output[-400:]}
+            report["steps"]["capture_technology_universe"] = {
+                "status": captured.pop("status", "CAPTURED"),
+                **captured,
+            }
+
         due = plans_for(session)
         if not due:
             report["steps"]["orders"] = {"status": "NO_PLANS"}
