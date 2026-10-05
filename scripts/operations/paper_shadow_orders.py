@@ -96,32 +96,68 @@ def latest_pool() -> tuple[dict, dict]:
     }
 
 
-def theme_membership(workspace: Path = WORKSPACE) -> dict[str, list[str]] | None:
-    """Per-symbol technology theme ids from a sealed projection, or None.
+THEME_REPLAY_ROOT = WORKSPACE / "data/private/intelligence_sources/theme/replays"
 
-    None means the evidence is absent, which keeps the entry lane closed: a name
-    whose theme membership cannot be checked is not a strategy candidate.
+
+def _verified_json(path: Path, expected_sha: str, label: str) -> dict:
+    raw = path.read_bytes()
+    observed = hashlib.sha256(raw).hexdigest()
+    if observed != expected_sha:
+        raise SystemExit(f"{label} SHA differs: {observed}")
+    return json.loads(raw)
+
+
+def theme_membership(*, trade_date: str) -> dict[str, list[str]] | None:
+    """Per-symbol technology-theme hits from the sealed theme replay, or None.
+
+    Reads the newest replay receipt for the session, verifies its DC capture ref
+    and then the capture's own partition refs, and intersects each captured
+    company with the research policy's `technology_theme_ids`. None means no
+    replay exists for that session, which keeps the entry lane closed.
     """
 
-    root = workspace / "results/intelligence/theme_membership"
-    if not root.exists():
+    receipts = sorted(THEME_REPLAY_ROOT.glob(f"theme-replay-{trade_date}-*.json"))
+    if not receipts:
         return None
-    files = sorted(root.glob("*/theme_membership_projection.json"))
-    if not files:
+    receipt = json.loads(receipts[-1].read_text())
+    if receipt.get("trade_date") != trade_date or receipt.get("status") != "COMPLETE":
         return None
-    value = json.loads(files[-1].read_text())
-    rows = value.get("payload", {}).get("company_rows")
-    if type(rows) is not list:
-        return None
-    return {
-        row["company_code"]: list(row.get("technology_theme_ids") or [])
-        for row in rows
-        if type(row) is dict and type(row.get("company_code")) is str
-    }
+    capture = _verified_json(
+        WORKSPACE / receipt["dc_capture_ref"]["path"],
+        receipt["dc_capture_ref"]["sha256"],
+        "theme dc capture",
+    )
+    policy = json.loads(
+        (WORKSPACE / "results/policies/research/aggressive_tech_manufacturing/v2.json").read_text()
+    )["payload"]
+    technology = set(policy["technology_theme_ids"])
+    membership: dict[str, set[str]] = {}
+    capture_root = (WORKSPACE / receipt["dc_capture_ref"]["path"]).parent
+    for row in capture["partition_rows"]:
+        ref = row["partition_capture_ref"]
+        part = _verified_json(
+            capture_root / "partitions" / f"{row['partition_ordinal']:05d}.json",
+            ref["byte_sha256"],
+            "theme partition",
+        )
+        if part.get("api_name") != "dc_member":
+            continue
+        for member in part.get("rows") or []:
+            symbol = member.get("con_code")
+            if type(symbol) is str:
+                membership.setdefault(symbol, set()).add(member["ts_code"])
+    return {symbol: sorted(themes & technology) for symbol, themes in membership.items()}
 
 
 def entry_orders(
-    *, account_views, account, session, previous_session, pool_rows=None, themes=None
+    *,
+    account_views,
+    account,
+    session,
+    previous_session,
+    pool_rows=None,
+    themes=None,
+    signal_date=None,
 ) -> list[dict]:
     """Buys for `session`: first session of a week, policy-capped, pool-sourced."""
 
@@ -134,7 +170,7 @@ def entry_orders(
     # The weekly cap and the holding cap both bind: never exceed seven names.
     limit = min(ENTRY_MAXIMUM_NEW_PER_WEEK, room)
     if themes is None:
-        themes = theme_membership()
+        themes = theme_membership(trade_date=signal_date)
     if ENTRY_REQUIRES_THEME_EVIDENCE and themes is None:
         raise EntryBlocked(
             "ENTRY_THEME_EVIDENCE_MISSING: 候选无法对策略技术主题核验（池为全市场因子排序，"
@@ -152,6 +188,11 @@ def entry_orders(
         and themes.get(row["symbol"])
     ]
     candidates.sort(key=lambda row: (-Decimal(row["combined_percentile"]), row["symbol"]))
+    if not candidates:
+        EntryNotes.append(
+            "ENTRY_NO_THEME_QUALIFIED_CANDIDATE: 池内 "
+            f"{len(rows)} 只候选中没有命中策略技术主题的标的"
+        )
     orders = []
     for row in candidates[:limit]:
         orders.append(
@@ -194,6 +235,10 @@ def _number(value):
 
 class EntryBlocked(RuntimeError):
     """The entry lane cannot run on verifiable evidence."""
+
+
+# Non-blocking facts about an empty entry lane, reported alongside the plan.
+EntryNotes: list[str] = []
 
 
 POLICY_REASON_CODES = {
@@ -319,12 +364,14 @@ def main() -> int:
     orders = build_orders(views, stops)
     sessions = session_dates(WORKSPACE, as_of=as_of)
     blocked: str | None = None
+    EntryNotes.clear()
     try:
         entries = entry_orders(
             account_views=views,
             account=account,
             session=next_session(),
             previous_session=sessions[-1] if sessions else None,
+            signal_date=as_of,
         )
     except EntryBlocked as exc:
         entries, blocked = [], str(exc)
@@ -349,7 +396,10 @@ def main() -> int:
         "target_session": session,
         "account": snapshot,
         "orders": orders,
-        "entry_lane": {"blocked": blocked} if blocked else {"blocked": None},
+        "entry_lane": {
+            "blocked": blocked,
+            "notes": list(EntryNotes),
+        },
         "holdings": [
             {
                 "symbol": view["symbol"],
