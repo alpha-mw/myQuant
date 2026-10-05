@@ -62,6 +62,12 @@ def owner_stops() -> dict:
 
 POOL_ROOT = WORKSPACE / "results/intelligence/research_pool/aggressive_tech_manufacturing"
 ENTRY_MINIMUM_COMBINED_PERCENTILE = Decimal("0.90")
+# The sealed research pool ranks the whole market on two price/volume factors and
+# is NOT restricted to the strategy's technology themes: on 2026-09-30 its top
+# names were 商贸代理/服饰/家居用品/公路物流/医药商业. Entries therefore require
+# per-symbol technology-theme membership evidence, which the pipeline does not
+# publish yet, so the entry lane is closed rather than buying off-strategy names.
+ENTRY_REQUIRES_THEME_EVIDENCE = True
 ENTRY_MAXIMUM_HOLDINGS = 7
 ENTRY_MAXIMUM_NEW_PER_WEEK = 2
 ENTRY_TARGET_WEIGHT = "0.14"
@@ -90,16 +96,50 @@ def latest_pool() -> tuple[dict, dict]:
     }
 
 
+def theme_membership(workspace: Path = WORKSPACE) -> dict[str, list[str]] | None:
+    """Per-symbol technology theme ids from a sealed projection, or None.
+
+    None means the evidence is absent, which keeps the entry lane closed: a name
+    whose theme membership cannot be checked is not a strategy candidate.
+    """
+
+    root = workspace / "results/intelligence/theme_membership"
+    if not root.exists():
+        return None
+    files = sorted(root.glob("*/theme_membership_projection.json"))
+    if not files:
+        return None
+    value = json.loads(files[-1].read_text())
+    rows = value.get("payload", {}).get("company_rows")
+    if type(rows) is not list:
+        return None
+    return {
+        row["company_code"]: list(row.get("technology_theme_ids") or [])
+        for row in rows
+        if type(row) is dict and type(row.get("company_code")) is str
+    }
+
+
 def entry_orders(
-    *, account_views, account, session, previous_session, pool_rows=None
+    *, account_views, account, session, previous_session, pool_rows=None, themes=None
 ) -> list[dict]:
     """Buys for `session`: first session of a week, policy-capped, pool-sourced."""
 
     if previous_session is None or _week(session) == _week(previous_session):
         return []
     held = {view["symbol"] for view in account_views}
-    if len(held) >= ENTRY_MAXIMUM_HOLDINGS:
+    room = ENTRY_MAXIMUM_HOLDINGS - len(held)
+    if room <= 0:
         return []
+    # The weekly cap and the holding cap both bind: never exceed seven names.
+    limit = min(ENTRY_MAXIMUM_NEW_PER_WEEK, room)
+    if themes is None:
+        themes = theme_membership()
+    if ENTRY_REQUIRES_THEME_EVIDENCE and themes is None:
+        raise EntryBlocked(
+            "ENTRY_THEME_EVIDENCE_MISSING: 候选无法对策略技术主题核验（池为全市场因子排序，"
+            "非科技主题池），买入通道保持关闭"
+        )
     payload, _ref = latest_pool()
     if payload.get("as_of") and payload["as_of"] > previous_session:
         raise SystemExit("research pool is newer than the signal session")
@@ -109,10 +149,11 @@ def entry_orders(
         for row in rows
         if row["symbol"] not in held
         and Decimal(row["combined_percentile"]) >= ENTRY_MINIMUM_COMBINED_PERCENTILE
+        and themes.get(row["symbol"])
     ]
     candidates.sort(key=lambda row: (-Decimal(row["combined_percentile"]), row["symbol"]))
     orders = []
-    for row in candidates[:ENTRY_MAXIMUM_NEW_PER_WEEK]:
+    for row in candidates[:limit]:
         orders.append(
             {
                 "symbol": row["symbol"],
@@ -149,6 +190,10 @@ def _number(value):
     if text in {"", "nan", "None", "NaN"}:
         return None
     return text
+
+
+class EntryBlocked(RuntimeError):
+    """The entry lane cannot run on verifiable evidence."""
 
 
 POLICY_REASON_CODES = {
@@ -273,12 +318,16 @@ def main() -> int:
     )
     orders = build_orders(views, stops)
     sessions = session_dates(WORKSPACE, as_of=as_of)
-    entries = entry_orders(
-        account_views=views,
-        account=account,
-        session=next_session(),
-        previous_session=sessions[-1] if sessions else None,
-    )
+    blocked: str | None = None
+    try:
+        entries = entry_orders(
+            account_views=views,
+            account=account,
+            session=next_session(),
+            previous_session=sessions[-1] if sessions else None,
+        )
+    except EntryBlocked as exc:
+        entries, blocked = [], str(exc)
     orders = orders + entries
     cash = Decimal(str(account["state"]["cash"]))
     market_value = sum(Decimal(str(view["current_value"])) for view in views)
@@ -300,6 +349,7 @@ def main() -> int:
         "target_session": session,
         "account": snapshot,
         "orders": orders,
+        "entry_lane": {"blocked": blocked} if blocked else {"blocked": None},
         "holdings": [
             {
                 "symbol": view["symbol"],

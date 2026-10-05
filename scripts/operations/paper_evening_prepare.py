@@ -329,6 +329,7 @@ def main() -> int:
             report["steps"]["plan_next_session"] = {
                 "status": "PLANNED",
                 "target_session": receipt["target_session"],
+                "entry_lane": receipt.get("entry_lane"),
                 "orders": [
                     {
                         "symbol": order["symbol"],
