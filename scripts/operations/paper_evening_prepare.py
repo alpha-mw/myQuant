@@ -230,6 +230,25 @@ def main() -> int:
                 "evidence_sha256": captured["evidence_sha256"],
             }
 
+        code, output = _run(
+            "paper_capture_corporate_actions.py", "--trade-date", session, "--write"
+        )
+        if code != 0:
+            report["blockers"].append("CORPORATE_ACTION_CAPTURE_FAILED")
+            report["steps"]["capture_corporate_actions"] = {
+                "status": "BLOCKED",
+                "output": output[-800:],
+            }
+        else:
+            try:
+                captured = json.loads(output[output.index("{") :])
+            except ValueError:
+                captured = {"status": "UNPARSABLE", "output": output[-400:]}
+            report["steps"]["capture_corporate_actions"] = {
+                "status": captured.pop("status", "CAPTURED"),
+                **captured,
+            }
+
         due = plans_for(session)
         if not due:
             report["steps"]["orders"] = {"status": "NO_PLANS"}

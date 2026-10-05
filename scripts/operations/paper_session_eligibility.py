@@ -223,6 +223,20 @@ def read_limits(path: Path, expected_sha: str, trade_date: str) -> dict[str, dic
     return value["symbols"]
 
 
+def corporate_action_reconciliation(
+    trade_date: str,
+) -> tuple[dict[str, str], dict[str, str] | None]:
+    """Symbols whose corporate action the provider record has explained."""
+
+    path = EVIDENCE_ROOT / trade_date / "paper-corporate-action-reconciliation.v1.json"
+    if not path.exists():
+        return {}, None
+    raw = path.read_bytes()
+    value = json.loads(raw)
+    ref = {"path": _relative(path), "sha256": _sha(raw)}
+    return {symbol: ref["path"] for symbol in (value.get("symbols") or {})}, ref
+
+
 def corporate_action_states(trade_date: str) -> dict[str, str]:
     """Reuse the sealed research risk calculator's own corporate-action verdicts."""
 
@@ -266,17 +280,15 @@ def build(
     policy_id: str,
     account_state: dict,
     nav_ref: dict[str, str],
+    reconciled: dict[str, str] | None = None,
+    reconciliation_ref: dict[str, str] | None = None,
 ) -> tuple[list[dict], list[dict]]:
     from quant_investor.paper.contracts import POLICY_ID as _POLICY_ID
     from quant_investor.paper.execution import economic_action_key
 
     emitted: list[dict] = []
     skipped: list[dict] = []
-    positions = {
-        row["symbol"]: row
-        for row in account_state["ledger"]
-        if int(row["shares"]) > 0
-    }
+    positions = {row["symbol"]: row for row in account_state["ledger"] if int(row["shares"]) > 0}
     nav = Decimal(str(account_state["state"]["cash"]))
     for row in account_state["ledger"]:
         bar = bars.get(row["symbol"])
@@ -358,7 +370,14 @@ def build(
                     },
                     "bar": bar,
                     "limit": limit,
-                    "corporate": corporate.get(symbol, "PENDING"),
+                    "corporate": (
+                        "CLEAR"
+                        if reconciled and symbol in reconciled
+                        else corporate.get(symbol, "PENDING")
+                    ),
+                    "corporate_ref": (
+                        reconciliation_ref if reconciled and symbol in reconciled else None
+                    ),
                 }
             )
             continue
@@ -433,13 +452,15 @@ def build(
             "real_order": False,
             "actual_holdings_mutation": False,
         }
+        covered = bool(reconciled and symbol in reconciled)
         emitted.append(
             {
                 "symbol": symbol,
                 "intent": intent,
                 "bar": bar,
                 "limit": limit,
-                "corporate": corporate.get(symbol, "PENDING"),
+                "corporate": "CLEAR" if covered else corporate.get(symbol, "PENDING"),
+                "corporate_ref": reconciliation_ref if covered else None,
             }
         )
     return emitted, skipped
@@ -470,6 +491,7 @@ def main() -> int:
     limits = read_limits(WORKSPACE / args.limits, args.expected_limits_sha256, args.trade_date)
     bars, adjustment_states = session_bars(args.trade_date)
     corporate, monitor = corporate_action_states(args.trade_date)
+    reconciled, reconciliation_ref = corporate_action_reconciliation(args.trade_date)
     for symbol, adjustment in adjustment_states.items():
         if symbol not in corporate:
             corporate[symbol] = adjustment
@@ -492,6 +514,8 @@ def main() -> int:
         policy_id=POLICY_ID,
         account_state=state,
         nav_ref=nav_ref,
+        reconciled=reconciled,
+        reconciliation_ref=reconciliation_ref,
     )
     stamp = datetime.now(SHANGHAI).strftime("%Y%m%dT%H%M%S")
     day_root = OUTPUT_ROOT / args.trade_date / stamp
@@ -540,7 +564,7 @@ def main() -> int:
                 },
                 # The session bar is also the evidence that the symbol traded.
                 "suspension_ref": evidence["bar_ref"],
-                "corporate_action_ref": corporate_ref,
+                "corporate_action_ref": item.get("corporate_ref") or corporate_ref,
                 "evidence_status": "READY",
             }
         )

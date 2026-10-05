@@ -231,6 +231,7 @@ def entry_orders(
     account,
     session,
     previous_session,
+    ranked_rows=None,
     pool_rows=None,
     themes=None,
     signal_date=None,
@@ -247,22 +248,23 @@ def entry_orders(
     limit = min(ENTRY_MAXIMUM_NEW_PER_WEEK, room)
     source = sealed_entry_source()
     if source == SEALED_TECHNOLOGY_UNIVERSE:
-        from quant_investor.paper.planning import technology_candidates
+        if ranked_rows is not None:
+            rows = list(ranked_rows)
+            EntryFunnel["injected"] = len(rows)
+        else:
+            from quant_investor.paper.planning import technology_candidates
 
-        ranked, _refs = technology_candidates(workspace=WORKSPACE, trade_date=signal_date)
-        gates = quality_gates(WORKSPACE, signal_date, {row["symbol"] for row in ranked})
-        EntryFunnel.update(
-            {
-                "ranked": len(ranked),
-                "after_gates": len(gates["keep"]),
-                "gated_out": {name: len(symbols) for name, symbols in gates["dropped"].items()},
-            }
-        )
-        rows = [row for row in ranked if row["symbol"] in gates["keep"]]
-        if pool_rows is not None:
-            wanted = {r["symbol"] for r in pool_rows}
-            rows = [row for row in rows if row["symbol"] in wanted]
-        themes = {row["symbol"]: row["technology_theme_ids"] for row in rows}
+            ranked, _refs = technology_candidates(workspace=WORKSPACE, trade_date=signal_date)
+            gates = quality_gates(WORKSPACE, signal_date, {row["symbol"] for row in ranked})
+            EntryFunnel.update(
+                {
+                    "ranked": len(ranked),
+                    "after_gates": len(gates["keep"]),
+                    "gated_out": {name: len(symbols) for name, symbols in gates["dropped"].items()},
+                }
+            )
+            rows = [row for row in ranked if row["symbol"] in gates["keep"]]
+        themes = {row["symbol"]: row.get("technology_theme_ids", []) for row in rows}
     elif source == SEALED_POOL_SOURCE:
         if themes is None:
             themes = theme_membership(trade_date=signal_date)
@@ -352,9 +354,22 @@ def _assert_trigger_agrees(view: dict, signal: dict) -> None:
     """Fail closed if the sealed calculator and the rule engine disagree.
 
     The calculator classifies each lane; the rule engine applies the owner policy
-    fractions. They must reach the same place, otherwise one of the two inputs has
-    drifted and no order may be produced.
+    fractions. The owner-stop lane outranks the trailing ladder, so a breached
+    stop is an exit even when a giveback band also fired. Everything else must
+    reach the same place, otherwise one of the two inputs has drifted and no
+    order may be produced.
     """
+
+    owner_trigger = view["owner_stop_trigger"]
+    if owner_trigger not in {"BREACH", "CLEAR", "NOT_CONFIGURED", "WARNING_NOT_BREACH"}:
+        raise SystemExit(f"{view['symbol']} unknown owner trigger {owner_trigger}")
+    if owner_trigger == "BREACH":
+        if (
+            signal["action"] != "EXIT_100"
+            or signal["policy_row"] != "owner_stop_strict_close_breach"
+        ):
+            raise SystemExit(f"{view['symbol']} owner stop breached but no exit was produced")
+        return
 
     expected = {
         "REDUCTION_REVIEW": {"REDUCE_50"},
@@ -377,11 +392,6 @@ def _assert_trigger_agrees(view: dict, signal: dict) -> None:
             raise SystemExit(
                 f"{view['symbol']} trigger {trailing} disagrees with action {signal['action']}"
             )
-    owner_trigger = view["owner_stop_trigger"]
-    if owner_trigger == "BREACH" and signal["action"] != "EXIT_100":
-        raise SystemExit(f"{view['symbol']} owner stop breached but no exit was produced")
-    if owner_trigger not in {"BREACH", "CLEAR", "NOT_CONFIGURED", "WARNING_NOT_BREACH"}:
-        raise SystemExit(f"{view['symbol']} unknown owner trigger {owner_trigger}")
 
 
 def build_orders(rule_inputs: list[dict], stop_policy: dict) -> list[dict]:

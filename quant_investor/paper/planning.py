@@ -168,6 +168,34 @@ def technology_candidates(
     }
 
 
+def corporate_action_reanchors(workspace: Path, trade_date: str) -> dict[str, str]:
+    """Per-symbol re-anchor dates from a sealed corporate-action reconciliation.
+
+    A cash dividend or a share change inside a position's window makes the sealed
+    calculator refuse the whole lane. Once the provider's record explains the
+    change, the window restarts at the last ex-date so the current stop is
+    evaluated against post-action prices — the reconciliation records whether the
+    share count itself changed.
+    """
+
+    path = (
+        workspace
+        / "data/private/paper_evidence"
+        / trade_date
+        / "paper-corporate-action-reconciliation.v1.json"
+    )
+    if not path.exists():
+        return {}
+    value = json.loads(path.read_text())
+    if value.get("trade_date") != trade_date:
+        return {}
+    return {
+        symbol: entry["re_anchor_trade_date"]
+        for symbol, entry in (value.get("symbols") or {}).items()
+        if entry.get("re_anchor_trade_date")
+    }
+
+
 def position_views(
     *,
     workspace: Path,
@@ -186,6 +214,7 @@ def position_views(
     anchors = trailing_anchors(workspace)
     stop_policy = owner_stops(workspace)
     stops = stop_policy["stops"]
+    reanchors = corporate_action_reanchors(workspace, as_of)
     expected_dates = dates if dates is not None else session_dates(workspace, as_of=as_of)
     reader = MarketDataReader(data_root=workspace / "data", mode_policy="strict")
     cash = Decimal(str(account["state"]["cash"]))
@@ -200,9 +229,16 @@ def position_views(
         symbol = position["symbol"]
         anchor = anchors.get(symbol)
         stop_row = stops.get(symbol)
+        # A corporate-action reconciliation restarts the window at the last
+        # ex-date: the sealed calculator takes its window from the anchor, so the
+        # re-anchor must be carried there, not only applied to the price frame.
+        if anchor is not None and symbol in reanchors:
+            anchor = {**anchor, "tracking_start_date": reanchors[symbol]}
         start = str(anchor["tracking_start_date"]) if anchor else as_of
         if stop_row:
             start = min(start, stop_policy["effective_from"])
+        if symbol in reanchors:
+            start = max(start, reanchors[symbol])
         read = reader.read_symbol_frame(symbol, start_date=start, end_date=as_of)
         if read.issues or read.frame.empty:
             raise SystemExit(f"{symbol} strict closes are unavailable: {read.issues}")
@@ -290,6 +326,7 @@ def position_views(
 
 __all__ = [
     "CALENDAR_ROOT",
+    "corporate_action_reanchors",
     "technology_candidates",
     "STOP_POLICY_RELATIVE",
     "TRAILING_POLICY_RELATIVE",
