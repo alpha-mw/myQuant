@@ -76,17 +76,10 @@ def risk_summary(digest: dict, digest_ref: dict[str, str]) -> dict:
 
     The risk role forbids account identifiers, real holdings and financial
     detail in its context, so it receives no symbols, no share counts, no cost
-    and no money — only ratios, counts and evidence status, which is what its
-    check list actually needs.
+    and no money — only per-rule results, derived ratios, evidence refs and
+    status, which is what its check list actually needs.
     """
 
-    from decimal import Decimal
-
-    positions = digest["account"].get("positions", [])
-    weights = sorted(
-        (Decimal(str(row["nav_weight"])) for row in digest.get("risk", [])), reverse=True
-    )
-    total = sum(weights, Decimal("0")) if weights else Decimal("0")
     flags: dict[str, int] = {}
     for row in digest.get("risk", []):
         if row.get("owner_stop_trigger") == "BREACH":
@@ -105,17 +98,31 @@ def risk_summary(digest: dict, digest_ref: dict[str, str]) -> dict:
     for plan in orders:
         for order in plan.get("orders", []):
             actions[order["action"]] = actions.get(order["action"], 0) + 1
+    drawdown = digest.get("drawdown") or {}
     return {
         "schema_version": "cn-risk-input.v1",
         "trade_date": digest["trade_date"],
+        "sampled_at": digest.get("generated_at"),
+        "timezone": "Asia/Shanghai",
         "digest_ref": dict(digest_ref),
         "scope": "derived metrics only; no symbols, shares, cost or money",
-        "concentration": {
-            "position_count": len(positions),
-            "top1_weight": str(weights[0]) if weights else None,
-            "top3_weight": str(sum(weights[:3], Decimal("0"))),
-            "hhi": str(sum((weight * weight for weight in weights), Decimal("0"))),
-            "invested_weight": str(total),
+        "disclosure": "observed 为派生比率，仅供规则判定；不得写入对外简报或告警",
+        "concentration": digest.get("concentration", {}),
+        "drawdown": {
+            "status": drawdown.get("status"),
+            "reason": drawdown.get("reason"),
+            "observations": drawdown.get("observations"),
+            "max_drawdown_fraction": drawdown.get("max_drawdown_fraction"),
+            "current_drawdown_fraction": drawdown.get("current_drawdown_fraction"),
+            "partial_sessions": drawdown.get("partial_sessions"),
+            "stopped_at": drawdown.get("stopped_at"),
+            "basis": drawdown.get("basis"),
+            "rule": {
+                "threshold": None,
+                "status": "NO_APPROVED_THRESHOLD",
+                "note": "未获批准的账户回撤阈值；缺少获批阈值时该项不得 PASS",
+            },
+            "evidence_ref": dict(digest_ref),
         },
         "risk_flags": flags,
         "proposed_actions": actions,
@@ -141,17 +148,39 @@ def risk_summary(digest: dict, digest_ref: dict[str, str]) -> dict:
                 / "owner-trailing-anchor-policy-20260901-v1.json"
             ),
         },
-        "seal_veto": {
-            "state": "NOT_CONFIGURED",
-            "reason": "paper 账户没有独立的 seal/veto 存储；封存执行政策与 writer 的 fail-closed 校验即规则来源",
+        "validity": {
+            "ttl_rule": None,
+            "clock_skew_rule": None,
+            "status": "NO_APPROVED_TTL",
+            "note": "政策只提供 effective_from；未提供时效上限与允许时钟偏差，缺失即 fail closed",
         },
-        "drawdown": {"status": "UNAVAILABLE", "reason": "需要历史净值序列，本输入不含"},
+        "seal_veto": digest.get("seal_veto", {"state": "UNKNOWN"}),
+        "clock": _clock_evidence(),
         "boundary": "本输入为派生指标，供风控出具 PASS / BLOCKED / INSUFFICIENT_EVIDENCE",
     }
 
 
 def _policy_ref(path: Path) -> dict[str, str]:
-    return {"path": str(path), "sha256": _sha(path.read_bytes())}
+    raw = path.read_bytes()
+    ref = {"path": str(path), "sha256": _sha(raw)}
+    value = json.loads(raw)
+    if isinstance(value, dict) and value.get("effective_from"):
+        ref["effective_from"] = str(value["effective_from"])
+    return ref
+
+
+def _clock_evidence() -> dict:
+    """The session's own time evidence: the strict snapshot pointer it reads."""
+
+    path = WORKSPACE / "data/parquet/cn/_latest.json"
+    raw = path.read_bytes()
+    value = json.loads(raw)
+    return {
+        "snapshot_pointer_ref": {"path": "data/parquet/cn/_latest.json", "sha256": _sha(raw)},
+        "snapshot_updated_at": value.get("updated_at"),
+        "latest_complete_trade_date": value.get("latest_complete_trade_date"),
+        "timezone": "Asia/Shanghai",
+    }
 
 
 def _call(profile: str, prompt: str, timeout: int) -> tuple[bool, dict | None, str]:

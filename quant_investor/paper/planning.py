@@ -196,6 +196,252 @@ def corporate_action_reanchors(workspace: Path, trade_date: str) -> dict[str, st
     }
 
 
+def outstanding_orders(*, workspace: Path, applied: set[str]) -> list[dict[str, Any]]:
+    """Planned orders the account has not applied, newest plan per eligible date.
+
+    A plan file is a snapshot: when planning re-runs for the same eligible
+    session, the newest snapshot supersedes the older ones, so a proposal a later
+    evaluation dropped can never still fill. Plans for different sessions
+    coexist, so an order that pended on an earlier session still carries.
+    """
+
+    root = workspace / "data/private/paper_shadow"
+    newest: dict[str, tuple[Path, dict[str, Any]]] = {}
+    for path in sorted(root.glob("*/*/plans.json")):
+        try:
+            value = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        due = str(value.get("eligible_from_trade_date") or "")
+        if not due or not value.get("orders"):
+            continue
+        newest[due] = (path, value)
+    pending: dict[str, dict[str, Any]] = {}
+    for due in sorted(newest):
+        path, value = newest[due]
+        for order in value["orders"]:
+            identity = str(order["source_intent_id"])
+            if identity in applied or identity in pending:
+                continue
+            pending[identity] = {"plans": path, "order": order, "due": due}
+    return [
+        pending[identity]
+        for identity in sorted(pending, key=lambda key: (pending[key]["due"], key))
+    ]
+
+
+def _record_chain(
+    workspace: Path, pointer: Mapping[str, Any]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """The account's sealed record chain, oldest first, every file re-hashed."""
+
+    import hashlib
+
+    records: list[dict[str, Any]] = []
+    chain: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    ref: Any = pointer.get("active_closure_ref")
+    while isinstance(ref, Mapping):
+        path = str(ref.get("path", ""))
+        if not path or path in seen:
+            raise SystemExit("paper closure chain is invalid")
+        seen.add(path)
+        raw = (workspace / path).read_bytes()
+        if hashlib.sha256(raw).hexdigest() != ref.get("sha256"):
+            raise SystemExit(f"paper closure sha differs: {path}")
+        closure = json.loads(raw)
+        state_ref = closure["account_state_ref"]
+        state_raw = (workspace / str(state_ref["path"])).read_bytes()
+        if hashlib.sha256(state_raw).hexdigest() != state_ref.get("sha256"):
+            raise SystemExit(f"paper account state sha differs: {state_ref['path']}")
+        state = json.loads(state_raw)
+        record = {
+            "trade_date": str(state.get("as_of_trade_date") or "00000000"),
+            "cash": Decimal(str(state["cash"])),
+            "positions": {
+                str(row["symbol"]): int(row["shares"])
+                for row in state.get("positions") or []
+                if int(row["shares"]) > 0
+            },
+            "closure_ref": {"path": path, "sha256": str(ref["sha256"])},
+        }
+        records.append(record)
+        chain.append(
+            {"trade_date": record["trade_date"], "closure_ref": dict(record["closure_ref"])}
+        )
+        ref = closure.get("predecessor_closure_ref")
+    records.reverse()
+    chain.reverse()
+    return records, chain
+
+
+def value_nav_series(
+    *,
+    records: list[Mapping[str, Any]],
+    sessions: list[str],
+    closes: Mapping[str, Mapping[str, Decimal]],
+) -> dict[str, Any]:
+    """NAV per session from sealed record states and strict closes (pure).
+
+    The record states change only when the account transacts, so a session's
+    holdings are those of the last record at or before it and only the closes
+    move. A session whose held symbol has no close at or before it cannot be
+    valued and stops the series, because a gap could hide a peak. A symbol
+    without a bar on a session (suspension) is carried forward from its last
+    close and the session is flagged `partial`.
+    """
+
+    dated = [record for record in records if record["trade_date"] != "00000000"]
+    series: list[dict[str, Any]] = []
+    partial: list[str] = []
+    stopped: dict[str, str] | None = None
+    for day in sessions:
+        state = None
+        for record in dated:
+            if record["trade_date"] <= day:
+                state = record
+        if state is None:
+            continue
+        market_value = Decimal("0")
+        carried: list[str] = []
+        unvaluable: str | None = None
+        for symbol, shares in state["positions"].items():
+            table = closes.get(symbol) or {}
+            close = table.get(day)
+            if close is None:
+                earlier = sorted(value for value in table if value < day)
+                if not earlier:
+                    unvaluable = symbol
+                    break
+                close = table[earlier[-1]]
+                carried.append(symbol)
+            market_value += close * Decimal(int(shares))
+        if unvaluable is not None:
+            stopped = {"trade_date": day, "symbol_without_close": unvaluable}
+            break
+        nav = state["cash"] + market_value
+        if carried:
+            partial.append(day)
+        series.append(
+            {
+                "trade_date": day,
+                "cash_cny": f"{state['cash']:.4f}",
+                "market_value_cny": f"{market_value:.4f}",
+                "nav_cny": f"{nav:.4f}",
+                "partial": bool(carried),
+            }
+        )
+    # A drawdown needs at least two valuations: one point cannot show a change,
+    # so it is reported as insufficient history rather than as a zero drawdown.
+    peak = Decimal("0")
+    peak_day: str | None = None
+    trough_day: str | None = None
+    max_drawdown: Decimal | None = None
+    current_drawdown: Decimal | None = None
+    if len(series) >= 2:
+        max_drawdown = Decimal("0")
+        for row in series:
+            nav = Decimal(row["nav_cny"])
+            if nav > peak:
+                peak, peak_day = nav, row["trade_date"]
+            if peak > 0:
+                drawdown = (peak - nav) / peak
+                if drawdown > max_drawdown:
+                    max_drawdown, trough_day = drawdown, row["trade_date"]
+        current_drawdown = (
+            (peak - Decimal(series[-1]["nav_cny"])) / peak if peak > 0 else Decimal("0")
+        )
+    six = Decimal("0.000001")
+
+    def ratio(value: Decimal | None) -> str | None:
+        return None if value is None else f"{value.quantize(six, rounding=ROUND_HALF_UP):.6f}"
+
+    if not series:
+        status, reason = "INSUFFICIENT_HISTORY", "NO_VALUED_SESSION"
+    elif stopped is not None or partial:
+        status, reason = "PARTIAL", None
+    elif len(series) < 2:
+        # One valuation cannot show a change: no drawdown may be claimed yet.
+        status, reason = "INSUFFICIENT_HISTORY", "SINGLE_VALUED_SESSION"
+    else:
+        status, reason = "OK", None
+    return {
+        "status": status,
+        "reason": reason,
+        "observations": len(series),
+        "sessions": series,
+        "max_drawdown_fraction": ratio(max_drawdown),
+        "current_drawdown_fraction": ratio(current_drawdown),
+        "peak_trade_date": peak_day,
+        "trough_trade_date": trough_day,
+        "partial_sessions": partial,
+        "stopped_at": stopped,
+        "valuation": (
+            "严格收盘价逐 session 估值；停牌以最后收盘价沿用并标记 partial；"
+            "任一持仓在当日及之前无收盘价即停止序列，不用插值补齐"
+        ),
+    }
+
+
+def account_nav_history(
+    *, workspace: Path, account_id: str, as_of: str, dates: list[str] | None = None
+) -> dict[str, Any]:
+    """The account's own net asset history from its sealed records (read-only)."""
+
+    from quant_investor.market.market_data_reader import MarketDataReader
+    from quant_investor.paper.store import PaperStore
+
+    store = PaperStore(workspace)
+    if account_id not in store.account_ids():
+        return {"status": "NOT_REGISTERED", "account_id": account_id}
+    loaded = store.load_account(account_id)
+    records, chain = _record_chain(workspace, loaded["pointer"])
+    dated = [record for record in records if record["trade_date"] != "00000000"]
+    if not dated:
+        return {
+            "status": "INSUFFICIENT_HISTORY",
+            "reason": "NO_VALUED_RECORD",
+            "account_id": account_id,
+            "record_chain": chain,
+        }
+    start = min(record["trade_date"] for record in dated)
+    sessions = [
+        day
+        for day in (dates if dates is not None else session_dates(workspace, as_of=as_of))
+        if start <= day <= as_of
+    ]
+    symbols = sorted({symbol for record in dated for symbol in record["positions"]})
+    reader = MarketDataReader(data_root=workspace / "data", mode_policy="strict")
+    closes: dict[str, dict[str, Decimal]] = {}
+    failures: list[dict[str, str]] = []
+    for symbol in symbols:
+        try:
+            read = reader.read_symbol_frame(symbol, start_date=start, end_date=as_of)
+        except Exception as exc:  # noqa: BLE001 - any reader failure is evidence loss
+            failures.append({"symbol": symbol, "error": type(exc).__name__})
+            continue
+        if read.issues:
+            failures.append({"symbol": symbol, "error": f"ISSUES:{len(read.issues)}"})
+        closes[symbol] = {
+            str(row.trade_date): Decimal(str(row.close))
+            for row in read.frame.itertuples(index=False)
+        }
+    result = value_nav_series(records=records, sessions=sessions, closes=closes)
+    result.update(
+        {
+            "account_id": account_id,
+            "as_of": as_of,
+            "record_chain": chain,
+            "close_failures": failures,
+            "basis": (
+                "account record chain (re-hashed) valued at strict session closes; "
+                "money values stay in the owner-only digest"
+            ),
+        }
+    )
+    return result
+
+
 def position_views(
     *,
     workspace: Path,
@@ -326,12 +572,15 @@ def position_views(
 
 __all__ = [
     "CALENDAR_ROOT",
+    "account_nav_history",
     "corporate_action_reanchors",
     "technology_candidates",
     "STOP_POLICY_RELATIVE",
     "TRAILING_POLICY_RELATIVE",
+    "outstanding_orders",
     "owner_stops",
     "position_views",
     "session_dates",
     "trailing_anchors",
+    "value_nav_series",
 ]

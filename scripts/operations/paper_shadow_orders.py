@@ -482,8 +482,10 @@ def main() -> int:
             previous_session=sessions[-1] if sessions else None,
             signal_date=as_of,
         )
-    except EntryBlocked as exc:
-        entries, blocked = [], str(exc)
+    except (EntryBlocked, SystemExit) as exc:
+        # A missing entry-lane input (sealed universe, factor generation) closes
+        # the buy lane only: the session's sell plan must still be produced.
+        entries, blocked = [], str(exc) or type(exc).__name__
     orders = orders + entries
     cash = Decimal(str(account["state"]["cash"]))
     market_value = sum(Decimal(str(view["current_value"])) for view in views)

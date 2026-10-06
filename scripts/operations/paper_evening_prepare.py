@@ -167,40 +167,23 @@ def applied_intents() -> set[str]:
 
 
 def plans_for(session: str, *, applied: set[str] | None = None) -> list[dict]:
-    """Plans that are due and not yet applied, oldest first.
+    """Orders due by `session` and not yet applied, oldest first.
 
     An order planned for an earlier session stays in scope until the account has
     applied it: the writer pends what the evidence does not support, and the
     agent must not leave a planned order silently unfilled because one evening's
-    data was late.
+    data was late. Re-planning the same session supersedes older snapshots, so a
+    proposal a later evaluation dropped can never still fill.
     """
 
+    from quant_investor.paper.planning import outstanding_orders
+
     applied = applied_intents() if applied is None else applied
-    by_parent: dict[str, dict] = {}
-    for path in SHADOW_ROOT.glob("*/*/plans.json"):
-        try:
-            value = json.loads(path.read_text())
-        except (OSError, ValueError):
-            continue
-        due = value.get("eligible_from_trade_date")
-        if not due or due > session or not value.get("orders"):
-            continue
-        key = path.parent.as_posix()
-        if key not in by_parent or due > by_parent[key]["due"]:
-            by_parent[key] = {"due": due, "path": path, "value": value}
-    pending: dict[str, dict] = {}
-    for entry in sorted(
-        by_parent.values(), key=lambda item: (item["due"], item["path"].as_posix())
-    ):
-        for order in entry["value"]["orders"]:
-            if order["source_intent_id"] in applied:
-                continue
-            # One order identity, whichever plans file announced it first.
-            pending.setdefault(
-                order["source_intent_id"],
-                {"plans": entry["path"], "order": order, "due": entry["due"]},
-            )
-    return [pending[key] for key in sorted(pending, key=lambda key: (pending[key]["due"], key))]
+    return [
+        item
+        for item in outstanding_orders(workspace=WORKSPACE, applied=applied)
+        if item["due"] <= session
+    ]
 
 
 def main() -> int:

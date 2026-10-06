@@ -29,7 +29,7 @@ from pathlib import Path
 WORKSPACE = Path("/Users/maxwell/mySpace/myQuant")
 GENERATED = WORKSPACE / "data/private/decision_digests"
 ACCOUNT_ID = "aggressive-tech-manufacturing-paper-v1"
-SHADOW_ROOT = WORKSPACE / "data/private/paper_shadow"
+VETO_ROOT = WORKSPACE / "data/private/cn_daily_maintenance"
 RECORD_POINTER = (
     WORKSPACE
     / "results/strategy_records/CN/aggressive_tech_manufacturing/_record_store/current.v1.json"
@@ -63,6 +63,7 @@ def _account() -> dict:
         "cash": str(loaded["state"]["cash"]),
         "realized_pnl": str(loaded["state"]["realized_pnl"]),
         "cumulative_fees": str(loaded["state"]["cumulative_fees"]),
+        "applied_source_intents": sorted(loaded["state"].get("applied_source_intents") or {}),
         "positions": [
             {
                 "symbol": row["symbol"],
@@ -89,21 +90,32 @@ def _candidates(session: str) -> dict:
     planner = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(planner)
 
-    ranked, refs = technology_candidates(workspace=WORKSPACE, trade_date=session)
-    gates = planner.quality_gates(WORKSPACE, session, {row["symbol"] for row in ranked})
-    held = {row["symbol"] for row in _account().get("positions", [])}
-    shortlist = [
-        {
-            "symbol": row["symbol"],
-            "combined_percentile": row["combined_percentile"],
-            "technology_theme_ids": row["technology_theme_ids"],
+    try:
+        ranked, refs = technology_candidates(workspace=WORKSPACE, trade_date=session)
+        gates = planner.quality_gates(WORKSPACE, session, {row["symbol"] for row in ranked})
+        held = {row["symbol"] for row in _account().get("positions", [])}
+        shortlist = [
+            {
+                "symbol": row["symbol"],
+                "combined_percentile": row["combined_percentile"],
+                "technology_theme_ids": row["technology_theme_ids"],
+            }
+            for row in ranked
+            if row["symbol"] in gates["keep"]
+            and row["symbol"] not in held
+            and row["combined_percentile"] >= "0.900000000000"
+        ]
+    except (SystemExit, Exception) as exc:  # noqa: BLE001 - report, never invent
+        # The candidate lane is one input, not the digest: report the gap so the
+        # panel can say INSUFFICIENT_EVIDENCE for candidates and still run.
+        return {
+            "status": "UNAVAILABLE",
+            "error": str(exc) or type(exc).__name__,
+            "shortlist": [],
+            "shortlist_size": 0,
         }
-        for row in ranked
-        if row["symbol"] in gates["keep"]
-        and row["symbol"] not in held
-        and row["combined_percentile"] >= "0.900000000000"
-    ]
     return {
+        "status": "READY",
         "universe_refs": refs,
         "ranked": len(ranked),
         "after_gates": len(gates["keep"]),
@@ -148,13 +160,162 @@ def _risk(session: str) -> list[dict]:
     ]
 
 
+def _concentration(risk_rows: list[dict]) -> dict:
+    """The paper policy's own concentration rules, checked against the account.
+
+    Every limit is read from the approved policy file — nothing here invents a
+    threshold. `observed` values are derived ratios: no symbols, no money.
+    """
+
+    from decimal import Decimal
+
+    from quant_investor.paper import contracts
+
+    raw = (WORKSPACE / contracts.POLICY_RELATIVE_PATH).read_bytes()
+    entry = json.loads(raw)["entry_policy"]
+    weights = [Decimal(str(row["nav_weight"])) for row in risk_rows]
+    top1 = max(weights) if weights else Decimal("0")
+    cash_fraction = Decimal("1") - sum(weights, Decimal("0"))
+    headroom = Decimal("0.000001")
+    checks = [
+        {
+            "rule_id": "maximum_holdings",
+            "limit": entry["maximum_holdings"],
+            "observed": len(weights),
+            "result": "PASS" if len(weights) <= int(entry["maximum_holdings"]) else "FAIL",
+            "applies_to": "PORTFOLIO_INVARIANT",
+        },
+        {
+            "rule_id": "target_weight_per_holding",
+            "limit": entry["target_weight_per_holding"],
+            "observed": f"{top1:.6f}",
+            # Not PASS/FAIL: the cap binds entries, and a position above it from
+            # appreciation is not a breach — but it is surfaced, not hidden.
+            "result": (
+                "PASS"
+                if top1 <= Decimal(entry["target_weight_per_holding"]) + headroom
+                else "ABOVE_ENTRY_CAP"
+            ),
+            "applies_to": "ENTRY_SIZING_CAP",
+            "note": "仅约束买入规模；持仓因上涨超过该比例本身不是减仓指令，也不是组合级上限",
+        },
+        {
+            "rule_id": "minimum_cash_fraction",
+            "limit": entry["minimum_cash_fraction"],
+            "observed": f"{cash_fraction:.6f}",
+            "result": (
+                "PASS" if cash_fraction >= Decimal(entry["minimum_cash_fraction"]) else "FAIL"
+            ),
+            "applies_to": "PORTFOLIO_INVARIANT",
+        },
+    ]
+    return {
+        "policy_ref": {
+            "path": contracts.POLICY_RELATIVE_PATH,
+            "sha256": hashlib.sha256(raw).hexdigest(),
+        },
+        "position_count": len(weights),
+        "checks": checks,
+        "note": (
+            "阈值取自获批政策本体；组合层集中度上限（单票/行业）尚无获批阈值，"
+            "仅 entry sizing 上限可用"
+        ),
+    }
+
+
+def _drawdown(session: str) -> dict:
+    from quant_investor.paper.planning import account_nav_history
+
+    return account_nav_history(workspace=WORKSPACE, account_id=ACCOUNT_ID, as_of=session)
+
+
+def _seal_veto() -> dict:
+    """The production chain's write-veto state, as evidence refs only."""
+
+    sources: list[dict] = []
+    state = "CLEAR"
+    for scope, name in (
+        ("market_maintenance", "WRITE_VETO.json"),
+        ("macro_release", "MACRO_WRITE_VETO.json"),
+    ):
+        path = VETO_ROOT / name
+        if not path.exists():
+            sources.append({"scope": scope, "present": False, "state": "CLEAR", "ref": None})
+            continue
+        raw = path.read_bytes()
+        value = json.loads(raw)
+        state = "ACTIVE"
+        sources.append(
+            {
+                "scope": scope,
+                "present": True,
+                "state": "ACTIVE",
+                "ref": {
+                    "path": path.relative_to(WORKSPACE).as_posix(),
+                    "sha256": hashlib.sha256(raw).hexdigest(),
+                },
+                "blockers": value.get("blockers", []),
+                "target_date": value.get("target_date"),
+                "created_at": value.get("created_at"),
+            }
+        )
+    attempts = sorted(VETO_ROOT.glob("attempts/*/attempt.json"))
+    if attempts:
+        newest = attempts[-1]
+        raw = newest.read_bytes()
+        value = json.loads(raw)
+        sources.append(
+            {
+                "scope": "latest_maintenance_attempt",
+                "present": True,
+                "state": "BLOCKED" if value.get("blockers") else "READY",
+                "ref": {
+                    "path": newest.relative_to(WORKSPACE).as_posix(),
+                    "sha256": hashlib.sha256(raw).hexdigest(),
+                },
+                "status": value.get("status"),
+                "maintenance_status": value.get("maintenance_status"),
+                "workflow_status": value.get("workflow_status"),
+                "blockers": value.get("blockers", []),
+                "macro_status": value.get("macro_status"),
+                "factor_loop": value.get("factor_loop"),
+            }
+        )
+    return {
+        "state": state,
+        "sources": sources,
+        "checked_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "note": (
+            "ACTIVE 表示生产链存在未解除的写入否决；panel 只读引用，"
+            "不解锁、不绕过，也不拿它代替交易判断"
+        ),
+    }
+
+
 def _orders(session: str) -> dict:
-    plans: list[dict] = []
-    for path in sorted(SHADOW_ROOT.glob("*/*/plans.json")):
-        value = json.loads(path.read_text())
-        if value.get("eligible_from_trade_date") == session:
-            plans.append({"plans_ref": _ref(path), "orders": value["orders"]})
-    return {"due_for": session, "plans": plans}
+    """Outstanding orders: everything planned that the account has not applied.
+
+    On the evening of `session` the plan for the next session has just been
+    written, while an order that pended on an earlier session still carries;
+    both are what the panel reviews. Applied intents are history, not proposals.
+    """
+
+    from quant_investor.paper.planning import outstanding_orders
+
+    applied = set(_account().get("applied_source_intents") or [])
+    grouped: dict[str, dict] = {}
+    for item in outstanding_orders(workspace=WORKSPACE, applied=applied):
+        key = item["plans"].as_posix()
+        row = grouped.setdefault(
+            key,
+            {
+                "plans_ref": _ref(item["plans"]),
+                "eligible_from_trade_date": item["due"],
+                "orders": [],
+            },
+        )
+        row["orders"].append(item["order"])
+    return {"evaluated_session": session, "plans": list(grouped.values())}
 
 
 def _evidence(session: str) -> dict:
@@ -207,13 +368,17 @@ def _evidence(session: str) -> dict:
 
 
 def build(session: str) -> dict:
+    risk_rows = _risk(session)
     digest = {
         "schema_version": "cn-decision-digest.v1",
         "trade_date": session,
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "account": _account(),
         "candidates": _candidates(session),
-        "risk": _risk(session),
+        "risk": risk_rows,
+        "concentration": _concentration(risk_rows),
+        "drawdown": _drawdown(session),
+        "seal_veto": _seal_veto(),
         "orders": _orders(session),
         "evidence": _evidence(session),
         "authority": {
