@@ -511,10 +511,46 @@ def _research_macro() -> dict:
     }
 
 
+def _research_market_multiples() -> dict:
+    """The PE/PB/市值 side table, reported by its true currency.
+
+    It is not part of the sealed snapshot (no pointer), so this reads the
+    Parquet row-group statistics instead of claiming a sealed ref: the point is
+    only to tell the lanes whether today's multiples exist at all.
+    """
+
+    import pyarrow.parquet as pq
+
+    path = WORKSPACE / "data/parquet/cn/daily_basic/part.parquet"
+    if not path.exists():
+        return {"status": "MISSING", "reason": "DAILY_BASIC_TABLE_ABSENT"}
+    parquet = pq.ParquetFile(path)
+    index = parquet.schema_arrow.get_field_index("trade_date")
+    maxima = []
+    for group in range(parquet.metadata.num_row_groups):
+        statistics = parquet.metadata.row_group(group).column(index).statistics
+        if statistics is not None and statistics.max is not None:
+            maxima.append(str(statistics.max).replace("-", "")[:8])
+    latest = max(maxima) if maxima else None
+    return {
+        "status": "STALE" if latest else "UNKNOWN",
+        "latest_trade_date": latest,
+        "columns": ["total_mv", "circ_mv", "pe", "pb", "turnover_rate"],
+        "row_count": parquet.metadata.num_rows,
+        "path": path.relative_to(WORKSPACE).as_posix(),
+        "sealed": False,
+        "note": (
+            "非封存旁表（无 pointer/sha 绑定），仅以 row-group 统计报告其截止日期；"
+            "晚于该日期的 PE/PB/市值在本工作区没有证据，不得从别处补"
+        ),
+    }
+
+
 def _research(session: str, symbols: list[str]) -> dict:
     return {
         "industry": _research_industry(session, symbols),
         "fundamental": _research_fundamental(session, symbols),
+        "market_multiples": _research_market_multiples(),
         "macro": _research_macro(),
     }
 
