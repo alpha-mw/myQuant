@@ -99,6 +99,50 @@ def risk_summary(digest: dict, digest_ref: dict[str, str]) -> dict:
         for order in plan.get("orders", []):
             actions[order["action"]] = actions.get(order["action"], 0) + 1
     drawdown = digest.get("drawdown") or {}
+    clock = _clock_evidence()
+    policies = {
+        "paper_execution_policy_ref": _policy_ref(
+            WORKSPACE
+            / "results/policies/paper/aggressive_tech_manufacturing"
+            / "owner-paper-risk-execution-policy-20261005-v4.json"
+        ),
+        "owner_stop_policy_ref": _policy_ref(
+            WORKSPACE
+            / "results/policies/risk/aggressive_tech_manufacturing/initial-risk-stop.v1"
+            / "owner-stop-policy-20260828-v1.json"
+        ),
+        "trailing_anchor_policy_ref": _policy_ref(
+            WORKSPACE
+            / "results/policies/risk/aggressive_tech_manufacturing/trailing-anchor.v1"
+            / "owner-trailing-anchor-policy-20260901-v1.json"
+        ),
+    }
+    # The evidence envelope the risk role's ROLE.md/RISK_WORKFLOW.md require.
+    # Everything factual is filled in; the governance pieces no policy provides
+    # are named as gaps instead of being invented.
+    gaps = [
+        "SOURCE_ALLOWLIST_NOT_PROVIDED",
+        "VALIDITY_RULE_NOT_PROVIDED",
+        "DRAWDOWN_THRESHOLD_NOT_PROVIDED",
+    ]
+    envelope = {
+        "mode": "monitor+pretrade",
+        "issuer_ref": {"issuer": "cn-paper-panel-runner.v1", **digest_ref},
+        "source_ref": dict(digest_ref),
+        "snapshot_ref": dict(clock["snapshot_pointer_ref"]),
+        "clock_evidence_ref": dict(clock["snapshot_pointer_ref"]),
+        "observed_at": digest.get("generated_at"),
+        "received_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "timezone": "Asia/Shanghai",
+        "policy_refs": [dict(ref) for ref in policies.values()],
+        "valid_from": sorted(
+            ref["effective_from"] for ref in policies.values() if ref.get("effective_from")
+        ),
+        "valid_until": None,
+        "source_allowlist_ref": None,
+        "freshness_rule_ref": None,
+        "gaps": gaps,
+    }
     return {
         "schema_version": "cn-risk-input.v1",
         "trade_date": digest["trade_date"],
@@ -107,6 +151,7 @@ def risk_summary(digest: dict, digest_ref: dict[str, str]) -> dict:
         "digest_ref": dict(digest_ref),
         "scope": "derived metrics only; no symbols, shares, cost or money",
         "disclosure": "observed 为派生比率，仅供规则判定；不得写入对外简报或告警",
+        "envelope": envelope,
         "concentration": digest.get("concentration", {}),
         "drawdown": {
             "status": drawdown.get("status"),
@@ -131,23 +176,7 @@ def risk_summary(digest: dict, digest_ref: dict[str, str]) -> dict:
             "present_lane_count": len(digest["evidence"]["present"]),
             "digest_integrity": "MATCHES_SUPPLIED_SHA",
         },
-        "policies": {
-            "paper_execution_policy_ref": _policy_ref(
-                WORKSPACE
-                / "results/policies/paper/aggressive_tech_manufacturing"
-                / "owner-paper-risk-execution-policy-20261005-v4.json"
-            ),
-            "owner_stop_policy_ref": _policy_ref(
-                WORKSPACE
-                / "results/policies/risk/aggressive_tech_manufacturing/initial-risk-stop.v1"
-                / "owner-stop-policy-20260828-v1.json"
-            ),
-            "trailing_anchor_policy_ref": _policy_ref(
-                WORKSPACE
-                / "results/policies/risk/aggressive_tech_manufacturing/trailing-anchor.v1"
-                / "owner-trailing-anchor-policy-20260901-v1.json"
-            ),
-        },
+        "policies": policies,
         "validity": {
             "ttl_rule": None,
             "clock_skew_rule": None,
@@ -155,7 +184,7 @@ def risk_summary(digest: dict, digest_ref: dict[str, str]) -> dict:
             "note": "政策只提供 effective_from；未提供时效上限与允许时钟偏差，缺失即 fail closed",
         },
         "seal_veto": digest.get("seal_veto", {"state": "UNKNOWN"}),
-        "clock": _clock_evidence(),
+        "clock": clock,
         "boundary": "本输入为派生指标，供风控出具 PASS / BLOCKED / INSUFFICIENT_EVIDENCE",
     }
 
