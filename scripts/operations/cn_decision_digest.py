@@ -292,6 +292,233 @@ def _seal_veto() -> dict:
     }
 
 
+def _number(value) -> str | None:
+    import math
+
+    if value is None:
+        return None
+    text = float(value)
+    if math.isnan(text) or math.isinf(text):
+        return None
+    return f"{text:.6f}"
+
+
+def _research_industry(session: str, symbols: list[str]) -> dict:
+    """Per-symbol industry from the sealed PIT membership generation."""
+
+    import pandas as pd
+
+    pointer_path = WORKSPACE / "data/parquet/cn/reference/stock_basic_membership_latest.json"
+    pointer_raw = pointer_path.read_bytes()
+    pointer = json.loads(pointer_raw)
+    membership = Path(pointer["canonical_path"])
+    if hashlib.sha256(membership.read_bytes()).hexdigest() != pointer["canonical_sha256"]:
+        raise SystemExit("PIT membership bytes differ from the pointer's sha")
+    frame = pd.read_parquet(
+        membership,
+        columns=[
+            "symbol",
+            "name",
+            "industry",
+            "board_market",
+            "effective_from",
+            "effective_to",
+            "membership_quality",
+        ],
+    )
+    picked: dict[str, dict] = {}
+    for row in frame.itertuples(index=False):
+        start = str(row.effective_from or "").replace("-", "")
+        end = str(row.effective_to or "").replace("-", "")
+        if start and start > session:
+            continue
+        if end and end < session:
+            continue
+        current = picked.get(row.symbol)
+        if current is None or start > str(current["effective_from"]):
+            picked[row.symbol] = {
+                "name": row.name,
+                "industry": row.industry or None,
+                "board_market": row.board_market or None,
+                "effective_from": start or None,
+                "membership_quality": row.membership_quality,
+            }
+    return {
+        "status": "READY",
+        "source": pointer.get("source"),
+        "generation_id": pointer.get("generation_id"),
+        "observed_at": pointer.get("observed_at"),
+        "pointer_ref": {
+            "path": pointer_path.relative_to(WORKSPACE).as_posix(),
+            "sha256": hashlib.sha256(pointer_raw).hexdigest(),
+        },
+        "membership_ref": {
+            "path": str(membership.relative_to(WORKSPACE)),
+            "sha256": pointer["canonical_sha256"],
+        },
+        "symbols": {symbol: picked.get(symbol) for symbol in symbols},
+        "note": "行业字段来自 tushare.stock_basic 的 PIT 快照（当次 observed_at），非申万分类",
+    }
+
+
+def _research_fundamental(session: str, symbols: list[str]) -> dict:
+    """Latest PIT fundamental row per symbol, with its own cutoff and lag."""
+
+    import pandas as pd
+
+    from quant_investor.market.fundamental_generation import (
+        load_fundamental_pointer,
+        resolve_fundamental_table_path,
+    )
+
+    root = WORKSPACE / "data/parquet/cn"
+    pointer = load_fundamental_pointer(root)
+    if pointer is None:
+        return {"status": "MISSING", "reason": "FUNDAMENTAL_POINTER_MISSING"}
+    table = resolve_fundamental_table_path(root, "fundamental_daily")
+    columns = [
+        "ts_code",
+        "trade_date",
+        "end_date",
+        "availability_date",
+        "total_mv_rmb",
+        "fin_roe",
+        "fin_roa",
+        "fin_debt_to_assets",
+        "fin_net_profit_yoy",
+        "fin_ocf_to_profit",
+        "fin_fcf_to_profit",
+        "fcf_to_price",
+        "forecast_revision",
+        "forecast_type",
+        "sector",
+        "size_bucket",
+    ]
+    frame = pd.read_parquet(table, columns=columns, filters=[("ts_code", "in", symbols)])
+    if frame.empty:
+        return {
+            "status": "MISSING",
+            "reason": "NO_ROWS_FOR_SYMBOLS",
+            "generation_id": pointer.get("generation_id"),
+        }
+    frame["trade_date"] = frame["trade_date"].astype(str).str.replace("-", "")
+    cutoff = str(frame["trade_date"].max())
+    frame = frame[frame["trade_date"] <= session]
+    rows: dict[str, dict] = {}
+    for row in frame.sort_values("trade_date").groupby("ts_code").tail(1).itertuples(index=False):
+        rows[row.ts_code] = {
+            "trade_date": row.trade_date,
+            "end_date": str(row.end_date).replace("-", "").split(" ")[0],
+            "availability_date": str(row.availability_date).replace("-", "").split(" ")[0],
+            "total_mv_yi_cny": (
+                None if row.total_mv_rmb is None else f"{float(row.total_mv_rmb) / 1e8:.2f}"
+            ),
+            "roe": _number(row.fin_roe),
+            "roa": _number(row.fin_roa),
+            "debt_to_assets": _number(row.fin_debt_to_assets),
+            "net_profit_yoy": _number(row.fin_net_profit_yoy),
+            "ocf_to_profit": _number(row.fin_ocf_to_profit),
+            "fcf_to_profit": _number(row.fin_fcf_to_profit),
+            "fcf_to_price": _number(row.fcf_to_price),
+            "forecast_revision": _number(row.forecast_revision),
+            "forecast_type": None if row.forecast_type is None else str(row.forecast_type),
+            "sector": None if row.sector is None else str(row.sector),
+            "size_bucket": None if row.size_bucket is None else str(row.size_bucket),
+        }
+    manifest_path = table.parent / "manifest.json"
+    manifest_raw = manifest_path.read_bytes()
+    manifest = json.loads(manifest_raw)
+    declared = ((manifest.get("tables") or {}).get("fundamental_daily") or {}).get("sha256")
+    lag_days = (
+        datetime.strptime(session, "%Y%m%d").date() - datetime.strptime(cutoff, "%Y%m%d").date()
+    ).days
+    statement_periods = sorted({row["end_date"] for row in rows.values() if row["end_date"]})
+    announcement_dates = sorted(
+        {row["availability_date"] for row in rows.values() if row["availability_date"]}
+    )
+    return {
+        "status": "READY" if lag_days <= 0 else "STALE",
+        "cutoff_trade_date": cutoff,
+        "lag_days": lag_days,
+        "statement_period_end": statement_periods[-1] if statement_periods else None,
+        "announcement_available_from": (announcement_dates[0] if announcement_dates else None),
+        "generation_id": pointer.get("generation_id"),
+        "pointer_ref": {
+            "path": "data/parquet/cn/_fundamental_latest.json",
+            "sha256": hashlib.sha256((root / "_fundamental_latest.json").read_bytes()).hexdigest(),
+        },
+        "manifest_ref": {
+            "path": str(manifest_path.relative_to(WORKSPACE)),
+            "sha256": hashlib.sha256(manifest_raw).hexdigest(),
+        },
+        "table_ref": {
+            "path": str(table.relative_to(WORKSPACE)),
+            "sha256": declared,
+        },
+        "symbols": rows,
+        "note": (
+            "报表口径为最近已公告报告期（statement_period_end / announcement_available_from，"
+            "PIT 自公告日生效）；日频行（市值、fcf_to_price 等）截止 cutoff_trade_date，"
+            "滞后 lag_days 个自然日。估值类结论要么用 digest 的当日收盘自行重算，"
+            "要么明确标注该滞后；不得把日频行当作当日证据"
+        ),
+    }
+
+
+def _research_macro() -> dict:
+    """The macro observation store as it stands: observer-only, not applied."""
+
+    from quant_investor.macro.store import load_observations
+
+    root = WORKSPACE / "data/parquet/cn/macro_observations"
+    pointer_path = root / "_latest.json"
+    pointer_raw = pointer_path.read_bytes()
+    pointer = json.loads(pointer_raw)
+    rows, _meta = load_observations(root)
+    observations = [
+        {
+            "indicator_id": row.get("indicator_id"),
+            "period_end": row.get("period_end"),
+            "release_at": row.get("release_at"),
+            "available_at": row.get("available_at"),
+            "value": None if row.get("value") is None else str(row["value"]),
+            "unit": row.get("unit"),
+            "quality_status": row.get("quality_status"),
+        }
+        for row in rows
+    ]
+    calendar_path = WORKSPACE / "data/parquet/cn/macro_release_calendar/_latest.json"
+    calendar_raw = calendar_path.read_bytes()
+    return {
+        "status": "OBSERVER_ONLY" if not pointer.get("production_eligible") else "READY",
+        "generation_id": pointer.get("generation_id"),
+        "production_eligible": pointer.get("production_eligible"),
+        "applied": pointer.get("applied"),
+        "observer_only": pointer.get("observer_only"),
+        "pointer_ref": {
+            "path": pointer_path.relative_to(WORKSPACE).as_posix(),
+            "sha256": hashlib.sha256(pointer_raw).hexdigest(),
+        },
+        "release_calendar_ref": {
+            "path": calendar_path.relative_to(WORKSPACE).as_posix(),
+            "sha256": hashlib.sha256(calendar_raw).hexdigest(),
+        },
+        "observations": observations,
+        "note": (
+            "observer-only 且未 applied：只能作为背景，不构成可执行证据；"
+            "宏观写入端另有未解除 veto（见 seal_veto）"
+        ),
+    }
+
+
+def _research(session: str, symbols: list[str]) -> dict:
+    return {
+        "industry": _research_industry(session, symbols),
+        "fundamental": _research_fundamental(session, symbols),
+        "macro": _research_macro(),
+    }
+
+
 def _orders(session: str) -> dict:
     """Outstanding orders: everything planned that the account has not applied.
 
@@ -338,10 +565,13 @@ def _evidence(session: str) -> dict:
         / f"{session[:4]}-{session[4:6]}-{session[6:]}"
         / "factor_research_rank.json",
         "theme_replay": None,
-        "industry": None,
+        "industry": WORKSPACE / "data/parquet/cn/reference/stock_basic_membership_latest.json",
         "fundamental": None,
         "macro": None,
-        "corporate_action_recon": None,
+        "corporate_action_recon": WORKSPACE
+        / "data/private/paper_evidence"
+        / session
+        / "paper-corporate-action-reconciliation.v1.json",
     }
     replays = sorted(
         (WORKSPACE / "data/private/intelligence_sources/theme/replays").glob(
@@ -350,35 +580,53 @@ def _evidence(session: str) -> dict:
     )
     if replays:
         lanes["theme_replay"] = replays[-1]
+    stale = {
+        "fundamental": (
+            "存在但日频行 cutoff 早于本次 session（见 research.fundamental.cutoff_trade_date/"
+            "lag_days）：已公告报表口径可用，当日估值/市值论断不可用"
+        ),
+        "macro": (
+            "observer-only 且未 applied（见 research.macro）；只能作背景，"
+            "不构成可执行证据，且宏观写入端仍有未解除 veto"
+        ),
+    }
     present = {}
     missing = []
     for lane, path in lanes.items():
         if path is not None and Path(path).exists():
             present[lane] = _ref(Path(path))
-        else:
+        elif lane not in stale:
             missing.append(lane)
     return {
         "present": present,
+        "stale": stale,
         "missing": sorted(missing),
         "note": (
-            "缺少的 lane 必须报告 INSUFFICIENT_EVIDENCE，不得用历史值、推测或常识补齐。"
-            "industry/fundamental/macro/corporate_action_recon 属于尚未接通的研究半链。"
+            "present 可引用；stale 的 lane 必须标注滞后并按角色判断可用范围；"
+            "missing 的 lane 必须报告 INSUFFICIENT_EVIDENCE，不得用历史值、推测或常识补齐。"
         ),
     }
 
 
 def build(session: str) -> dict:
     risk_rows = _risk(session)
+    account = _account()
+    candidates = _candidates(session)
+    research_symbols = sorted(
+        {row["symbol"] for row in account.get("positions", [])}
+        | {row["symbol"] for row in candidates.get("shortlist", [])}
+    )
     digest = {
         "schema_version": "cn-decision-digest.v1",
         "trade_date": session,
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "account": _account(),
-        "candidates": _candidates(session),
+        "account": account,
+        "candidates": candidates,
         "risk": risk_rows,
         "concentration": _concentration(risk_rows),
         "drawdown": _drawdown(session),
         "seal_veto": _seal_veto(),
+        "research": _research(session, research_symbols),
         "orders": _orders(session),
         "evidence": _evidence(session),
         "authority": {

@@ -39,7 +39,12 @@ DIGEST_ROOT = WORKSPACE / "data/private/decision_digests"
 MEMO_ROOT = WORKSPACE / "data/private/decision_memos"
 LANES = (
     ("quant", "myquant", "解释候选：分位、主题归属、闸门漏斗；不要重排因子、不要新增候选"),
-    ("value", "myquant_value", "对 shortlist 前 5 个候选给出论点、估值、催化、风险、失效条件"),
+    (
+        "value",
+        "myquant_value",
+        "对 shortlist 前 5 个候选给出论点、估值、催化、风险、失效条件；"
+        "行业与基本面证据在 digest.research，引用时必须标注报表期与日频 cutoff 滞后",
+    ),
     ("skeptic", "myquant_skeptic", "反驳上述候选与论点，给出严重度与什么能推翻你"),
     ("risk", "myquant_risk", "对本轮候选与持仓出具 PASS / BLOCKED / INSUFFICIENT_EVIDENCE"),
 )
@@ -173,6 +178,7 @@ def risk_summary(digest: dict, digest_ref: dict[str, str]) -> dict:
         "proposed_actions": actions,
         "evidence": {
             "missing_lanes": digest["evidence"]["missing"],
+            "stale_lanes": sorted(digest["evidence"].get("stale") or {}),
             "present_lane_count": len(digest["evidence"]["present"]),
             "digest_integrity": "MATCHES_SUPPLIED_SHA",
         },
@@ -242,7 +248,8 @@ def _lane_prompt(role: str, instruction: str, ref_path: Path, sha: str, *, redac
     return (
         f"你是 {role} lane。只读这一份输入（**绝对路径** path={target}，"
         f"sha256={sha}），不要访问其他项目数据。按你的角色文件输出**一个 JSON 对象**，不要输出其他文字。"
-        f"任务：{instruction}。digest 里 evidence.missing 的 lane 必须报 INSUFFICIENT_EVIDENCE。"
+        f"任务：{instruction}。evidence.missing 的 lane 必须报 INSUFFICIENT_EVIDENCE；"
+        "evidence.stale 的 lane 必须标注滞后并按你的角色判断可用范围。"
     )
 
 
