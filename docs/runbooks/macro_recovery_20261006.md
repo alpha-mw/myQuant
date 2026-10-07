@@ -149,11 +149,21 @@ the daily stage short-circuits on that file before it ever calls the macro
 component, so a bridge roll alone does not restore the lane: the full 10-08
 evening is four steps, each separately authorized.
 
-1. **Landing check** (no writes). Wait for the launcher's `ended.json`, then
-   confirm: the newest execute attempt for `20261008` has
-   `core_blockers == []`; the market snapshot's
-   `latest_complete_trade_date` is `20261008`; and a fresh
-   `MACRO_WRITE_VETO.json` exists (record its sha256).
+1. **Landing check** — no network, no prepare, only the private receipt:
+
+   ```bash
+   PYTHONPATH=~/mySpace/myQuant-worktrees/macro-bridge \
+     /Users/maxwell/mySpace/myQuant/.venv/bin/python \
+     ~/mySpace/myQuant-worktrees/macro-bridge/scripts/operations/cn_macro_forward_roll.py \
+     --workspace /Users/maxwell/mySpace/myQuant --target 20261008 --check
+   ```
+
+   `CHECK_OK` means the lock is free, the newest execute attempt for the
+   target has `ended.json` with empty `core_blockers`, and the market
+   frontier is on the target; the receipt also reports the fresh
+   `MACRO_WRITE_VETO.json`'s sha256 for step 3. (Verified 2026-10-07 against
+   the live workspace: today the same check passes for `20260930` and
+   refuses `20261008` with "no execute attempt yet".)
 2. **Bridge roll** — the daily component's own call (`daily_components.macro`)
    on the live clock, no reconstruction. Run it from the pinned clean worktree
    (the script refuses to run from uncommitted code, refuses while the daily
@@ -215,9 +225,22 @@ from a new commit that carries the anchor fix (and, as reviewed, the
 `daily_maintenance.py` `str(exc)` retention and the same-target checkpoint
 idempotence fixes), regenerate the factor-loop context, and then follow the
 same `release_repoint_20261008.md` seal/continue flow. `69d1aee` cherry-picks
-cleanly onto `2259530` (verified 2026-10-07). Deadline: before the next
-official refresh, hard stop when PMI 202609 ages out of the 50-day window
-(~2026-11-19). Until then the bridge stays in service.
+cleanly onto `2259530` (verified 2026-10-07).
+
+Cutover-commit checklist (verified 2026-10-07): that new clean commit needs,
+in addition to the release-side work of record —
+
+- `69d1aee` (anchor fix) and `53822bc`/`1cf8acd`/`55de41c` (replay provenance
+  and the bridge) from this workstream;
+- the two reviewed `daily_maintenance.py` fixes, which are currently
+  **uncommitted** in the working tree (`daily_maintenance.py` carries
+  `"blocker": str(exc) or type(exc).__name__`; `daily_factor_loop.py` carries
+  the checkpoint-state changes) — their author must commit them first, since
+  `release-prepare` builds from a clean checkout;
+
+Deadline: before the next official refresh, hard stop when PMI 202609 ages
+out of the 50-day window (~2026-11-19). Until then the bridge stays in
+service.
 
 ## Provenance of replayed projections (`built_at_wall_clock`)
 
