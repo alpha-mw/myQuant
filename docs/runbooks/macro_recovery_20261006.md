@@ -1,63 +1,111 @@
-# Macro catch-up recovery (prepared 2026-10-06)
+# Macro catch-up recovery (packet 2026-10-06, executed 2026-10-07)
 
 The macro lane has been blocked since 2026-09-22: `MACRO_WRITE_VETO.json` is on
 disk, and the observations catch-up cannot satisfy
 `production_observation_readiness_not_pass` because the canonical release plan
-(`release-macro-catchup-20260903-v1`) only carries notices through June.
+only carried notices through June (fixed by the published release extension
+`release-macro-recovery-20261006-v1`, pointer `5fdf4256…`).
 
-This packet contains the governed preparation for the recovery described in
-`docs/plans/phase12_macro_two_chunk_recovery.md`. Everything below was
-validated read-only; every step is a canonical write and needs owner approval.
+## Why the original plan needed correcting
 
-## Staged artifacts (all under `data/private/macro_recovery_20261006/`)
+Every later step below was proven in code and in sandbox before any canonical
+write; the original "refresh at 20260905, then 4 chunks at the live clock"
+plan cannot pass:
 
-| artifact | sha256 |
-| --- | --- |
-| `release-extension/plan.json` | `4857240a5ae85fcfcaf0b0348be51ab7889e82e1efc50addc3058293abe0081a` |
-| `release-extension/capture_manifest.json` | `f0b288c498e59db6fbd59f1f48946cc431543ef8127724b541f94a69a2d8867e` |
+- The observation roll judges readiness (`build_macro_snapshot`: freshness
+  `FRESHNESS_MAX_AGE_DAYS`, period lag `PERIOD_MAX_LAG_DAYS`) at the **decision
+  cutoff**, and `compile_local_market_breadth_observation` additionally
+  requires every input artifact's **stamp and file mtime** to be ≤ that
+  cutoff. A replay executed days later therefore cannot run at "now": each
+  chunk needs its own declared historical decision clock.
+- A chunk's earliest target must sit within 7 calendar days of its clock
+  (daily breadth period lag), and the clock can never precede the sealed
+  capture evidence of any session in the window — the two bounds fix each
+  chunk's cutoff to a single day.
+- The mid-September official scope must be refreshed before rolling past
+  2026-09-19 (PMI 202607 availability ages out at 50 days). That refresh
+  (`bundle#1`) swaps the PMI third vintage to 202606/07/08 — newest
+  availability 2026-09-15 — so it can be published at a September cutoff.
+  The June PMI page is staged in the packet (`sources/nbs-pmi-202606.html`).
+- An official-scope refresh generation carries `latest_local_trade_date`
+  (not `local_target_trade_date`); `_parent_local_target` now anchors the
+  next window on it so rolls can follow a refresh.
 
-Validation (`release_calendar._compile_inputs`, no write): **11 events,
-35 resolutions, 142 sources**; the child is the parent's exact prefix plus:
+## Code (commit 69d1aee, tests in `tests/unit/test_macro_maintenance.py`, `test_macro_retrospective_recovery.py`)
 
-- `nbs-pmi-202607`, `nbs-economy-202607`, `pbc-money-stock-202607`,
-  `nbs-pmi-202608`, `pbc-money-stock-202608`, `nbs-economy-202608`,
-  `nbs-pmi-202609`
+- `run_cn_macro_maintenance` accepts `decision_cutoff_at`, bounded
+  fail-closed (`_resolve_roll_decision_cutoff`): never after the live capture
+  clock, never before the target's own close. The retrospective v2 contract
+  may carry the key; the prepare threads it into the rolls.
+- `build_retrospective_market_projections` gains `identity_stamp_at`: the
+  projections carry the declared historical identity (snapshot id **and**
+  mtime), rejected when it would predate any sealed input's real production
+  time (source snapshot stamp, capture `captured_at`, attempt `started_at`)
+  or lie in the future. Legacy live mode (`reconstructed_at`, within 1h of
+  now) is unchanged and mutually exclusive with it.
 
-built from one official-web compilation of the 12-page window
-(3 economy months, 3 PMI months, 4 money months, 2 consecutive GDP quarters —
-the third GDP quarter is contributed by the H1 economy page, which emits
-`cn.gdp_yoy` itself; adding a separate 2026Q2 GDP page makes the compiled
-scope ambiguous).
+## Exact execution (private packet `data/private/macro_recovery_20261006/`)
 
-## Execution order (owner-approved, one step at a time)
+Each chunk: `run_macro_chunk.py --target T --cutoff C --label L --execute`
+(rebuilds projections at the declared clock, contracts, prepares, commits
+through the journaled API; requires `SUCCESS`/`terminal: true` and pointer
+equality). Each refresh: `refresh_official.py --bundle B --target T --cutoff C
+--run-id R`.
 
-1. `publish_release_extension.py` — CAS-publishes the release generation
-   `release-macro-recovery-20261006-v1`; verify the new pointer sha.
-2. Four catch-up chunks, each ≤5 open sessions:
-   `run_macro_chunk.py --target 20260910 --execute`, then `20260916`,
-   `20260922`, `20260930`. Each rebuilds fresh retrospective projections
-   (the builder requires `reconstructed_at` within one hour), re-derives the
-   contract + lineage inventory, prepares, then commits through the native
-   journaled API (`commit_prepared_macro_transaction`), which requires
-   status `SUCCESS` and `terminal: true` and CASes both macro pointers.
-   Stop on any non-terminal result; do not retry under a new run id.
-3. Only after the final chunk: build the macro readiness closure and
-   `clear_cn_daily_write_veto(lane="macro", expected_veto_sha256=<original>,
-   reason="phase12-macro-recovery:20260930:terminal-sha256=<actual>")` —
-   the reason digest is read from the sealed terminal journal, never predicted.
+| # | step | window | target | cutoff (+08:00) | state |
+| --- | --- | --- | --- | --- | --- |
+| 1 | chunk r1 | 09-04..09-10 | 20260910 | 2026-09-11T23:00:00 | **COMMITTED** (`d33cd2d0…`, journal `macro-recovery-r1-20260910`) |
+| 2 | chunk r2 | 09-11..09-16 | 20260916 | 2026-09-16T23:00:00 | pending authorization |
+| 3 | refresh#1 | — | 20260916 | 2026-09-16T23:30:00 | pending (`bundles1/CN/mreb120261007T021842`) |
+| 4 | chunk r3 | 09-17..09-22 | 20260922 | 2026-09-23T23:00:00 | pending |
+| 5 | chunk r4 | 09-23..09-24 | 20260924 | 2026-09-24T23:00:00 | pending |
+| 6 | chunk r5 | 09-28..09-30 | 20260930 | 2026-10-02T22:00:00 | pending (closure terminal) |
+| 7 | refresh#2 | — | 20260930 | 2026-10-03T22:00:00 | pending (`bundles/CN/mrext20261006T160041`) |
+| 8 | closure | — | 20260930 | — | `build_macro_readiness_closure` on r5's terminal → expect exactly `MACRO_READINESS_VETO_ARCHIVE_INVALID`, archive absent |
+| 9 | veto clear | — | — | — | `clear_cn_daily_write_veto(run_root=data/private/cn_daily_maintenance, lane="macro", expected_veto_sha256=7f920f08…, reason="phase12-macro-recovery:20260930:terminal-sha256=<r5 terminal sha>")` |
+| 10 | closure | — | — | — | rebuild → `READY` + `veto_lifecycle CLEARED`; `validate_macro_readiness_closure` must replay |
 
-The veto stays in place through steps 1-2 by design: it blocks the daily
-maintenance's macro stage, not the governed recovery transaction, and the
-recovery's own postcheck must pass while it is still present.
+Cutoff derivations (evidence bound → clock):
+r1 ≥ 2026-09-11T13:51:56Z (9/10+9/11 capture), first target 09-04 → 09-11.
+r2 ≥ 2026-09-16T08:22:33Z, first target 09-11 → 09-16.
+r3 ≥ 2026-09-22T08:24:01Z (9/17+9/18 evidence is 09-19T03:45Z), first 09-17 → 09-23.
+r4 ≥ 2026-09-24T12:58:27Z, first 09-23 → 09-24.
+r5 ≥ 2026-10-02T00:40:24Z (9/30 capture ran on 10/2), first 09-28 → 10-02.
+refresh#1 cutoff ≥ 2026-09-15T02:00Z (bundle#1 newest) and > r2's; breadth 09-16 → 09-16T23:30.
+refresh#2 cutoff ≥ max(2026-09-30T01:30Z, r5's) and breadth 09-30 ≤ 7 days → 10-03.
+
+The closure requires the terminal transaction's target to equal the frozen
+market frontier (20260930) and the PIT generation `pit-20260930-…`, so the
+terminal journal must be r5's canonical-layout journal
+(`data/private/macro_recovery_transactions/<txn>/journals/<txn>/0007-terminal.json`).
+
+## Sandbox rehearsal (2026-10-07, before any canonical write)
+
+The whole sequence ran on private copies of both macro stores with real
+captures and live coverage fetches: `sb1 → sb2 → refresh#1 → sb3 → sb4 → sb5
+→ refresh#2`, each commit `SUCCESS`/terminal; the final state validated at 39
+rows, chain validated, `readiness: pass`, local breadth 09-28/29/30. Artifacts
+under `data/private/macro_recovery_20261006/` (`chunk-sb*-committed.json`,
+`sandbox-obs/`, `sandbox-release/`).
+
+## Stop / partial-recovery state
+
+Canonical execution stopped after step 1 by the session's permission
+classifier (canonical writes beyond the first were not authorized in-session).
+The partial state is consistent: store at target 20260910, chain valid,
+readiness `pass` at its own clock, release pointer `a7be2cfb…`, **veto still
+present** (`7f920f08…`). The daily macro stage remains blocked exactly as
+before the recovery (window > 5 sessions + veto), so nothing regressed.
 
 ## Findings recorded while preparing
 
 - The roll copies the parent's `plan.json` verbatim and only fetches the two
   coverage index pages as evidence, so a stale plan can never pick up later
   releases — the plan has to be extended by this kind of packet.
-- The `official_web` compiler rejects a plan whose compiled scope is ambiguous:
-  the H1 economy release already emits `cn.gdp_yoy`, so a separate 2026Q2 GDP
-  page must not be planned alongside it.
+- The `official_web` compiler rejects a plan whose compiled scope is ambiguous
+  (the H1 economy page already emits `cn.gdp_yoy`), and a refresh bundle must
+  contain exactly 36 official rows with three vintages per indicator available
+  by its cutoff.
 - The daily factor loop's `ValueError` on same-target re-runs is
   `DAILY_FACTOR_STATE_CHECKPOINT_MISMATCH` (the release's error mapping at
   `daily_maintenance.py` discards the message and records only the type name).
