@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -23,6 +23,7 @@ def _write(path: Path, value: object) -> str:
 def _fixture(
     tmp_path: Path,
     targets: tuple[str, ...] = ("20260818", "20260819", "20260820"),
+    captured_at: str | None = None,
 ):
     attempt = tmp_path / "attempt"
     scope = attempt / "scope.json"
@@ -62,6 +63,8 @@ def _fixture(
         "target_trade_dates": list(targets),
         "sessions": sessions,
     }
+    if captured_at is not None:
+        capture["captured_at"] = captured_at
     capture_sha = _write(capture_path, capture)
     source_path = tmp_path / "data/parquet/cn/_snapshots/source.json"
     source = {
@@ -168,3 +171,96 @@ def test_retrospective_projection_rejects_backdated_reconstruction(tmp_path: Pat
             reconstructed_at="2026-08-18T00:00:00+00:00",
             output_root=tmp_path / "candidates",
         )
+
+
+def test_retrospective_identity_stamp_replays_historical_clock(tmp_path: Path) -> None:
+    attempt, source_path, source_sha, capture_path, capture_sha = _fixture(
+        tmp_path, captured_at="2026-08-20T18:30:00Z"
+    )
+    identity = "2026-08-21T06:00:00+00:00"
+    result = build_retrospective_market_projections(
+        source_snapshot_manifest_path=source_path,
+        expected_source_snapshot_sha256=source_sha,
+        capture_manifest_path=capture_path,
+        expected_capture_manifest_sha256=capture_sha,
+        attempt_root=attempt,
+        identity_stamp_at=identity,
+        output_root=tmp_path / "candidates",
+    )
+
+    assert result["reconstructed_at"] == "2026-08-21T06:00:00+00:00"
+    expected_stamps = [
+        "20260821T055800Z",
+        "20260821T055900Z",
+        "20260821T060000Z",
+    ]
+    for row, stamp in zip(result["projections"], expected_stamps, strict=True):
+        projection = json.loads(Path(row["path"]).read_text())
+        assert projection["snapshot_id"] == stamp
+        reconstruction = projection["retrospective_reconstruction"]
+        assert reconstruction["classification"] == "RETROSPECTIVE_RECONSTRUCTION"
+        assert reconstruction["reconstructed_at"] == (
+            datetime.strptime(stamp, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc).isoformat()
+        )
+        assert reconstruction["source_snapshot_manifest_sha256"] == source_sha
+        mtime = Path(row["path"]).stat().st_mtime
+        assert (
+            mtime
+            == datetime.strptime(stamp, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc).timestamp()
+        )
+
+
+def test_retrospective_identity_stamp_cannot_predate_sealed_evidence(tmp_path: Path) -> None:
+    attempt, source_path, source_sha, capture_path, capture_sha = _fixture(
+        tmp_path, captured_at="2026-08-21T05:59:30Z"
+    )
+    with pytest.raises(MacroRetrospectiveRecoveryError, match="identity_stamp_before_evidence"):
+        build_retrospective_market_projections(
+            source_snapshot_manifest_path=source_path,
+            expected_source_snapshot_sha256=source_sha,
+            capture_manifest_path=capture_path,
+            expected_capture_manifest_sha256=capture_sha,
+            attempt_root=attempt,
+            identity_stamp_at="2026-08-21T06:00:00+00:00",
+            output_root=tmp_path / "candidates",
+        )
+
+
+def test_retrospective_identity_stamp_rejects_future_clock(tmp_path: Path) -> None:
+    attempt, source_path, source_sha, capture_path, capture_sha = _fixture(tmp_path)
+    future = (datetime.now(timezone.utc).replace(microsecond=0) + timedelta(days=2)).isoformat()
+    with pytest.raises(MacroRetrospectiveRecoveryError, match="identity_stamp_in_future"):
+        build_retrospective_market_projections(
+            source_snapshot_manifest_path=source_path,
+            expected_source_snapshot_sha256=source_sha,
+            capture_manifest_path=capture_path,
+            expected_capture_manifest_sha256=capture_sha,
+            attempt_root=attempt,
+            identity_stamp_at=future,
+            output_root=tmp_path / "candidates",
+        )
+
+
+def test_retrospective_time_mode_must_be_exactly_one(tmp_path: Path) -> None:
+    attempt, source_path, source_sha, capture_path, capture_sha = _fixture(tmp_path)
+    stamps = (
+        datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        "2026-08-21T06:00:00+00:00",
+    )
+    for reconstructed_at, identity_stamp in (
+        (stamps[0], stamps[1]),
+        (None, None),
+    ):
+        with pytest.raises(
+            MacroRetrospectiveRecoveryError, match="reconstruction_time_mode_invalid"
+        ):
+            build_retrospective_market_projections(
+                source_snapshot_manifest_path=source_path,
+                expected_source_snapshot_sha256=source_sha,
+                capture_manifest_path=capture_path,
+                expected_capture_manifest_sha256=capture_sha,
+                attempt_root=attempt,
+                reconstructed_at=reconstructed_at,
+                identity_stamp_at=identity_stamp,
+                output_root=tmp_path / "candidates",
+            )

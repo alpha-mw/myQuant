@@ -45,6 +45,53 @@ class MacroMaintenanceError(RuntimeError):
     """Raised before a governed pointer write when maintenance cannot close."""
 
 
+def _parent_local_target(metadata: Mapping[str, Any]) -> str:
+    """Anchor the next catch-up window on the newest exact local session.
+
+    Roll generations record ``local_target_trade_date``; official-scope
+    refresh generations (which replace the whole official scope but retain
+    local breadth rows) record the newest retained local date as
+    ``latest_local_trade_date`` instead.  Both are exact and sealed, so either
+    can anchor the window.
+    """
+
+    return str(
+        metadata.get("local_target_trade_date") or metadata.get("latest_local_trade_date") or ""
+    )
+
+
+def _resolve_roll_decision_cutoff(
+    *,
+    decision_cutoff_at: Any | None,
+    capture_cutoff_at: str,
+    target: str,
+) -> str:
+    """Return the decision clock the observation roll is judged at.
+
+    Without a contract declaration the live capture clock is the decision
+    clock.  A retrospective transaction may instead replay the historical
+    decision that owned its target session; the declared clock is bounded
+    fail-closed on both sides so no caller can move it past the live capture
+    or before the target's own close.
+    """
+
+    from quant_investor.macro.contracts import parse_timestamp
+    from quant_investor.macro.snapshot import published_cutoff
+
+    if decision_cutoff_at is None:
+        return capture_cutoff_at
+    try:
+        parsed_decision = parse_timestamp(decision_cutoff_at, field_name="decision_cutoff_at")
+        parsed_capture = parse_timestamp(capture_cutoff_at, field_name="captured_at")
+    except ValueError as exc:
+        raise MacroMaintenanceError("macro_decision_cutoff_invalid") from exc
+    if parsed_decision > parsed_capture:
+        raise MacroMaintenanceError("macro_decision_cutoff_after_capture")
+    if parsed_decision < published_cutoff(target):
+        raise MacroMaintenanceError("macro_decision_cutoff_before_target")
+    return parsed_decision.isoformat()
+
+
 def _private_preparation_root(path: str | Path) -> Path:
     unresolved = Path(path).expanduser()
     if not unresolved.is_absolute():
@@ -172,7 +219,7 @@ def _expected_retrospective_coverage_targets(
     _rows, projection = load_observations(observations_root)
     manifest = dict(projection.get("generation_manifest") or {})
     metadata = dict(manifest.get("metadata") or projection.get("metadata") or {})
-    parent_target = str(metadata.get("local_target_trade_date") or "")
+    parent_target = _parent_local_target(metadata)
     target = str(target_date).replace("-", "")
     open_days_path = Path(release.identity.generation_path) / "market_open_days.json"
     try:
@@ -237,6 +284,7 @@ def run_cn_macro_maintenance(
     commit: bool = False,
     fetcher: Callable[[str, str], tuple[bytes, str]] | None = None,
     retrospective_coverage_by_target: Mapping[str, Mapping[str, str]] | None = None,
+    decision_cutoff_at: Any | None = None,
 ) -> dict[str, Any]:
     """Extend issuer coverage, then roll the exact local breadth observation.
 
@@ -309,6 +357,13 @@ def run_cn_macro_maintenance(
             )
         )
     cutoff_at = max(item[3] for item in captures)
+    # The release evidence always carries its real live capture time; only the
+    # observation roll may run at a declared historical decision clock.
+    roll_cutoff_at = _resolve_roll_decision_cutoff(
+        decision_cutoff_at=decision_cutoff_at,
+        capture_cutoff_at=cutoff_at,
+        target=target,
+    )
 
     generation_root = Path(release.identity.generation_path)
     with tempfile.TemporaryDirectory(prefix="cn-macro-maintenance-") as temporary:
@@ -410,7 +465,7 @@ def run_cn_macro_maintenance(
         existing_metadata = dict(
             existing_manifest.get("metadata") or existing_projection.get("metadata") or {}
         )
-        parent_target = str(existing_metadata.get("local_target_trade_date") or "")
+        parent_target = _parent_local_target(existing_metadata)
         catch_up_targets = [value for value in pinned_open_dates if parent_target < value <= target]
         if not catch_up_targets or len(catch_up_targets) > 5:
             raise MacroMaintenanceError("macro_observation_catch_up_window_invalid")
@@ -440,7 +495,7 @@ def run_cn_macro_maintenance(
                 scope_artifact_path=scope_artifact_path,
                 expected_scope_artifact_sha256=expected_scope_artifact_sha256,
                 target_as_of=catch_up_target,
-                decision_cutoff_at=cutoff_at,
+                decision_cutoff_at=roll_cutoff_at,
                 pinned_open_dates=pinned_open_dates,
                 market_open_days_path=release_open_days_path,
                 expected_market_open_days_sha256=(release_result.evidence.market_open_days_sha256),
@@ -595,7 +650,10 @@ def prepare_cn_macro_maintenance_transaction(
                     "macro-retrospective-canonical-transaction.v1",
                     "macro-retrospective-canonical-transaction.v2",
                 }
-                or set(retrospective_contract) != expected_contract_keys
+                or not expected_contract_keys.issubset(set(retrospective_contract))
+                or not set(retrospective_contract).issubset(
+                    expected_contract_keys | {"decision_cutoff_at"}
+                )
                 or retrospective_contract.get("classification")
                 != "MIXED_RETROSPECTIVE_AND_CANONICAL"
                 or retrospective_contract.get("target_date") != str(target_date).replace("-", "")
@@ -728,6 +786,11 @@ def prepare_cn_macro_maintenance_transaction(
                 expected_pointer_sha256=expected_observations_pointer_sha256,
             )
         prepared_root.mkdir(mode=0o700)
+        contract_decision_cutoff = (
+            retrospective_contract.get("decision_cutoff_at")
+            if isinstance(retrospective_contract, dict)
+            else None
+        )
         legacy_result = run_cn_macro_maintenance(
             market=market,
             target_date=target_date,
@@ -747,6 +810,7 @@ def prepare_cn_macro_maintenance_transaction(
             commit=True,
             fetcher=fetcher,
             retrospective_coverage_by_target=retrospective_coverage_by_target,
+            decision_cutoff_at=contract_decision_cutoff,
         )
         if legacy_result.get("status") != "OK":
             raise MacroMaintenanceError(

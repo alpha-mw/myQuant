@@ -110,10 +110,23 @@ def build_retrospective_market_projections(
     capture_manifest_path: Path,
     expected_capture_manifest_sha256: str,
     attempt_root: Path,
-    reconstructed_at: str,
     output_root: Path,
+    reconstructed_at: str | None = None,
+    identity_stamp_at: str | None = None,
 ) -> dict[str, Any]:
-    """Build target-specific projections without changing any canonical pointer."""
+    """Build target-specific projections without changing any canonical pointer.
+
+    ``reconstructed_at`` is the live mode: the projections are stamped within
+    one hour of now, which binds them to a decision taken at the live clock.
+
+    ``identity_stamp_at`` is the retrospective-replay mode: the caller declares
+    the historical clock the projections stand for (a replay of a past
+    decision).  It is bounded fail-closed on both sides -- never in the future
+    and never before the real production time recorded in the sealed evidence
+    it is built from (source snapshot stamp, capture ``captured_at`` and the
+    attempt's ``started_at``) -- so a replay can never claim to predate its own
+    inputs.  Exactly one of the two must be provided.
+    """
 
     source, source_raw = _read_json(
         source_snapshot_manifest_path,
@@ -125,15 +138,18 @@ def build_retrospective_market_projections(
         expected_capture_manifest_sha256,
         label="capture_manifest",
     )
+    if (reconstructed_at is None) == (identity_stamp_at is None):
+        raise MacroRetrospectiveRecoveryError("reconstruction_time_mode_invalid")
+    declared_stamp = reconstructed_at if reconstructed_at is not None else identity_stamp_at
     try:
-        base_stamp = datetime.fromisoformat(reconstructed_at.replace("Z", "+00:00"))
+        base_stamp = datetime.fromisoformat(str(declared_stamp).replace("Z", "+00:00"))
     except ValueError as exc:
         raise MacroRetrospectiveRecoveryError("reconstructed_at_invalid") from exc
     if base_stamp.tzinfo is None:
         raise MacroRetrospectiveRecoveryError("reconstructed_at_invalid")
     base_stamp = base_stamp.astimezone(timezone.utc).replace(microsecond=0)
     now = datetime.now(timezone.utc)
-    if base_stamp > now or now - base_stamp > timedelta(hours=1):
+    if reconstructed_at is not None and (base_stamp > now or now - base_stamp > timedelta(hours=1)):
         raise MacroRetrospectiveRecoveryError("reconstructed_at_not_current")
     if (
         source.get("metadata", {}).get("capture_manifest_sha256")
@@ -152,6 +168,48 @@ def build_retrospective_market_projections(
         or source.get("latest_complete_trade_date") != targets[-1]
     ):
         raise MacroRetrospectiveRecoveryError("capture_target_set_invalid")
+    if identity_stamp_at is not None:
+        if base_stamp > now:
+            raise MacroRetrospectiveRecoveryError("identity_stamp_in_future")
+        evidence_times: list[datetime] = []
+        source_stamp = str(source.get("snapshot_id") or "").strip()
+        if source_stamp:
+            try:
+                evidence_times.append(
+                    datetime.strptime(source_stamp, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+                )
+            except ValueError as exc:
+                raise MacroRetrospectiveRecoveryError("source_snapshot_stamp_invalid") from exc
+        captured_at = capture.get("captured_at")
+        if captured_at:
+            try:
+                evidence_times.append(
+                    datetime.fromisoformat(str(captured_at).replace("Z", "+00:00")).astimezone(
+                        timezone.utc
+                    )
+                )
+            except ValueError as exc:
+                raise MacroRetrospectiveRecoveryError("capture_captured_at_invalid") from exc
+        started_path = attempt_root / "started.json"
+        if started_path.is_file():
+            try:
+                started = json.loads(started_path.read_text(encoding="utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise MacroRetrospectiveRecoveryError("attempt_started_invalid") from exc
+            started_at = started.get("started_at") if isinstance(started, dict) else None
+            if started_at:
+                try:
+                    evidence_times.append(
+                        datetime.fromisoformat(str(started_at).replace("Z", "+00:00")).astimezone(
+                            timezone.utc
+                        )
+                    )
+                except ValueError as exc:
+                    raise MacroRetrospectiveRecoveryError("attempt_started_invalid") from exc
+        if evidence_times:
+            evidence_bound = max(item.replace(microsecond=0) for item in evidence_times)
+            if base_stamp - timedelta(seconds=60 * (len(targets) - 1)) < evidence_bound:
+                raise MacroRetrospectiveRecoveryError("identity_stamp_before_evidence")
     by_target = {str(row.get("trade_date")): row for row in sessions}
     if set(by_target) != set(targets):
         raise MacroRetrospectiveRecoveryError("capture_session_set_invalid")
@@ -180,7 +238,10 @@ def build_retrospective_market_projections(
         evidence, _ = _read_json(evidence_path, evidence_sha, label="classification_evidence")
         if evidence.get("target_trade_date") != target:
             raise MacroRetrospectiveRecoveryError("classification_target_mismatch")
-        stamp = base_stamp + timedelta(seconds=index)
+        if identity_stamp_at is not None:
+            stamp = base_stamp - timedelta(seconds=60 * (len(targets) - 1 - index))
+        else:
+            stamp = base_stamp + timedelta(seconds=index)
         snapshot_id = stamp.strftime("%Y%m%dT%H%M%SZ")
         path = snapshots_root / f"{snapshot_id}.json"
         coverage = _coverage(
@@ -226,6 +287,12 @@ def build_retrospective_market_projections(
         if not path.exists():
             path.write_bytes(raw)
             os.chmod(path, 0o600)
+        if identity_stamp_at is not None:
+            # Readers treat the artifact's mtime as its availability clock; a
+            # replayed projection carries its declared identity clock, already
+            # bounded below by the sealed evidence above.
+            stamp_ns = int(stamp.timestamp() * 1_000_000_000)
+            os.utime(path, ns=(stamp_ns, stamp_ns))
         rows.append({"target_trade_date": target, "path": str(path), "sha256": _sha(raw)})
     manifest = {
         "schema_version": "macro-retrospective-market-reconstruction.v1",
@@ -251,6 +318,9 @@ def build_retrospective_market_projections(
     if not manifest_path.exists():
         manifest_path.write_bytes(manifest_raw)
         os.chmod(manifest_path, 0o600)
+    if identity_stamp_at is not None:
+        manifest_ns = int(base_stamp.timestamp() * 1_000_000_000)
+        os.utime(manifest_path, ns=(manifest_ns, manifest_ns))
     return {**manifest, "manifest_path": str(manifest_path), "manifest_sha256": _sha(manifest_raw)}
 
 

@@ -176,3 +176,57 @@ def test_live_capture_is_hash_bound_before_both_publishers(tmp_path: Path, monke
         "coverage_response",
         "coverage_receipt",
     }
+
+
+def test_roll_decision_cutoff_defaults_to_live_capture_clock() -> None:
+    assert (
+        maintenance._resolve_roll_decision_cutoff(
+            decision_cutoff_at=None,
+            capture_cutoff_at="2026-09-11T13:51:56+00:00",
+            target="20260910",
+        )
+        == "2026-09-11T13:51:56+00:00"
+    )
+
+
+def test_roll_decision_cutoff_accepts_bounded_historical_clock() -> None:
+    assert (
+        maintenance._resolve_roll_decision_cutoff(
+            decision_cutoff_at="2026-09-11T23:00:00+08:00",
+            capture_cutoff_at="2026-10-07T02:00:00+00:00",
+            target="20260910",
+        )
+        == "2026-09-11T15:00:00+00:00"
+    )
+
+
+def test_roll_decision_cutoff_rejects_after_capture_before_target_and_invalid() -> None:
+    with pytest.raises(maintenance.MacroMaintenanceError, match="after_capture"):
+        maintenance._resolve_roll_decision_cutoff(
+            decision_cutoff_at="2026-10-08T00:00:00+00:00",
+            capture_cutoff_at="2026-10-07T02:00:00+00:00",
+            target="20260910",
+        )
+    with pytest.raises(maintenance.MacroMaintenanceError, match="before_target"):
+        maintenance._resolve_roll_decision_cutoff(
+            decision_cutoff_at="2026-09-09T23:00:00+08:00",
+            capture_cutoff_at="2026-10-07T02:00:00+00:00",
+            target="20260910",
+        )
+    with pytest.raises(maintenance.MacroMaintenanceError, match="cutoff_invalid"):
+        maintenance._resolve_roll_decision_cutoff(
+            decision_cutoff_at="2026-09-11",
+            capture_cutoff_at="2026-10-07T02:00:00+00:00",
+            target="20260910",
+        )
+
+
+def test_parent_local_target_accepts_roll_and_refresh_anchors() -> None:
+    assert maintenance._parent_local_target({"local_target_trade_date": "20260910"}) == "20260910"
+    assert (
+        maintenance._parent_local_target(
+            {"latest_local_trade_date": "20260916", "retained_local_trade_dates": []}
+        )
+        == "20260916"
+    )
+    assert maintenance._parent_local_target({}) == ""
