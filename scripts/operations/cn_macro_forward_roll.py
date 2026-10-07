@@ -128,7 +128,12 @@ def main() -> int:
     parser.add_argument("--target", required=True, help="open session, e.g. 20261008")
     parser.add_argument("--workspace", default=None, help="live workspace (data lives here)")
     parser.add_argument(
-        "--execute", action="store_true", help="commit; default is a read-only check"
+        "--execute", action="store_true", help="commit; default prepares but does not commit"
+    )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="guards only: no network, no prepare, no writes beyond the receipt",
     )
     args = parser.parse_args()
     target = str(args.target).replace("-", "")
@@ -210,6 +215,20 @@ def main() -> int:
     except DailyMaintenanceError as exc:
         raise SystemExit(f"daily maintenance lock refused: {exc}") from exc
     try:
+        if args.check:
+            return _finish(
+                _receipt(
+                    {
+                        "status": "CHECK_OK",
+                        "generation_id": pointer.get("generation_id"),
+                        "observations_pointer_sha256": _sha(observations_root / "_latest.json"),
+                        "note": (
+                            "guards passed (lock free, run landed, frontier on target); "
+                            "no network, no prepare"
+                        ),
+                    }
+                )
+            )
         if (
             str(metadata.get("local_target_trade_date") or "") == target
             and metadata.get("local_snapshot_manifest_sha256") == snapshot_sha
