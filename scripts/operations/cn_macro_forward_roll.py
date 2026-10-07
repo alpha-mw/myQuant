@@ -13,12 +13,15 @@ writes a new `MACRO_WRITE_VETO.json`, so after this roll the veto must be
 cleared again (with this roll's terminal journal sha) and the readiness
 closure rebuilt — see `docs/runbooks/macro_recovery_20261006.md`.
 
-Run it from a git-clean checkout of the committed code (e.g. the pinned
-worktree `~/mySpace/myQuant-worktrees/macro-bridge`), pointing `--workspace`
-at the live workspace:
+Run it from a git-clean checkout of the committed code (the pinned worktree
+`~/mySpace/myQuant-worktrees/macro-bridge`), pointing `--workspace` at the
+live workspace; `PYTHONPATH` makes the worktree's code win over the main
+tree's venv:
 
-    uv run python scripts/operations/cn_macro_forward_roll.py \\
-        --workspace /Users/maxwell/mySpace/myQuant --target 20261008 --execute
+    PYTHONPATH=~/mySpace/myQuant-worktrees/macro-bridge \\
+      /Users/maxwell/mySpace/myQuant/.venv/bin/python \\
+      ~/mySpace/myQuant-worktrees/macro-bridge/scripts/operations/cn_macro_forward_roll.py \\
+      --workspace /Users/maxwell/mySpace/myQuant --target 20261008 --execute
 
 The script refuses to run when the importing repository has uncommitted
 changes under `quant_investor/` or `scripts/`, when the daily maintenance lock

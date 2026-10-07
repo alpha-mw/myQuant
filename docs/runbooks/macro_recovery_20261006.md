@@ -160,22 +160,27 @@ evening is four steps, each separately authorized.
    lock is held, and requires step 1's state:
 
    ```bash
-   cd ~/mySpace/myQuant-worktrees/macro-bridge
-   uv run python scripts/operations/cn_macro_forward_roll.py \
-       --workspace /Users/maxwell/mySpace/myQuant --target 20261008 --execute
+   PYTHONPATH=~/mySpace/myQuant-worktrees/macro-bridge \
+     /Users/maxwell/mySpace/myQuant/.venv/bin/python \
+     ~/mySpace/myQuant-worktrees/macro-bridge/scripts/operations/cn_macro_forward_roll.py \
+     --workspace /Users/maxwell/mySpace/myQuant --target 20261008 --execute
    ```
 
-   It acquires `data/private/cn_daily_maintenance/.daily-maintenance.lock`,
-   fetches the two official coverage index pages (live, like the daily stage),
-   and must return `SUCCESS` with `terminal: true`; the receipt records the
-   code commit, the run-landing evidence, the veto sha for step 3, and the
-   terminal journal sha. A repeat reports `NO_ACTION`.)
+   (`PYTHONPATH` makes the process import the worktree's committed code —
+   verified to win over the main tree's venv — while `--workspace` keeps every
+   data read/write on the live workspace.) It acquires
+   `data/private/cn_daily_maintenance/.daily-maintenance.lock`, fetches the two
+   official coverage index pages (live, like the daily stage), and must return
+   `SUCCESS` with `terminal: true`; the receipt records the code commit, the
+   run-landing evidence, the veto sha for step 3, and the terminal journal sha.
+   A repeat reports `NO_ACTION`.)
 3. **Clear the new veto** with the exact sha from step 1/2 and a reason bound
    to the bridge roll's terminal journal sha, then verify the archive bytes
-   and the clear receipt:
+   and the clear receipt (same clean-worktree interpreter):
 
    ```bash
-   uv run python - <<'PY'
+   PYTHONPATH=~/mySpace/myQuant-worktrees/macro-bridge \
+     /Users/maxwell/mySpace/myQuant/.venv/bin/python - <<'PY'
    import json
    from pathlib import Path
    from quant_investor.market.daily_maintenance import clear_cn_daily_write_veto
