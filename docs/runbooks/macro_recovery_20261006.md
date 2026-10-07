@@ -204,12 +204,32 @@ evening is four steps, each separately authorized.
    ))
    PY
    ```
-4. **Rebuild the readiness closure** on the bridge roll's terminal journal
-   (`build_macro_readiness_closure` with the relative path
-   `data/private/macro_recovery_transactions/macro-forward-20261008/journals/
-   macro-forward-20261008/0007-terminal.json`): expect `READY` with
-   `veto_lifecycle` `NOT_PRESENT` (no veto was bound into this plain
-   transaction) and a replaying `validate_macro_readiness_closure`.
+4. **Rebuild the readiness closure** on the bridge roll's terminal journal —
+   expect `READY` with `veto_lifecycle` `NOT_PRESENT` (no veto was bound into
+   this plain transaction) and a replaying `validate_macro_readiness_closure`:
+
+   ```bash
+   PYTHONPATH=~/mySpace/myQuant-worktrees/macro-bridge \
+     /Users/maxwell/mySpace/myQuant/.venv/bin/python - <<'PY'
+   import hashlib, json
+   from pathlib import Path
+   from quant_investor.macro.readiness_closure import (
+       build_macro_readiness_closure, validate_macro_readiness_closure,
+   )
+   WS = Path("/Users/maxwell/mySpace/myQuant")
+   rel = ("data/private/macro_recovery_transactions/macro-forward-20261008/"
+          "journals/macro-forward-20261008/0007-terminal.json")
+   tsha = hashlib.sha256((WS / rel).read_bytes()).hexdigest()
+   closure = build_macro_readiness_closure(workspace_root=WS, terminal_path=rel, terminal_sha256=tsha)
+   print("status:", closure["status"], "| veto_lifecycle:", closure["veto_lifecycle"]["state"])
+   print("replays:", validate_macro_readiness_closure(workspace_root=WS, closure=closure) == closure)
+   PY
+   ```
+
+   (Both the step-3 and step-4 command shapes were exercised on the live
+   workspace 2026-10-07: the clear call returned `NO_ACTION` with no veto
+   present and zero side effects, and the closure rebuilt `READY`/replaying on
+   the recovery's real terminal.)
 
 After step 3 the later same-day attempts self-heal (their macro fast path
 needs `local_target_trade_date == target` plus the exact market binding, which
