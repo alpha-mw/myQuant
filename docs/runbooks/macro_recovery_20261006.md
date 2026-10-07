@@ -252,11 +252,29 @@ in addition to the release-side work of record —
 
 - `69d1aee` (anchor fix) and `53822bc`/`1cf8acd`/`55de41c` (replay provenance
   and the bridge) from this workstream;
-- the two reviewed `daily_maintenance.py` fixes, which are currently
-  **uncommitted** in the working tree (`daily_maintenance.py` carries
-  `"blocker": str(exc) or type(exc).__name__`; `daily_factor_loop.py` carries
-  the checkpoint-state changes) — their author must commit them first, since
-  `release-prepare` builds from a clean checkout;
+- the **release branch's feature line**: `660f066` (the active release) lives
+  on `fix/intraday-halt-suspension`, which is **not an ancestor of main**, and
+  it is where the native cross-release continuation machinery is committed
+  (`quant_investor/market/factor_native_continuation.py`, the
+  `native-seal`/`native-continue` CLI, the `daily_factor_loop.py` revisions).
+  Verified 2026-10-07: commit `2259530` — the target of
+  `release_repoint_20261008.md` — contains **none** of it (`factor_native_
+  continuation.py` absent; no `native_seal`/`native_continue` anywhere under
+  `quant_investor`, none in the CLI). A cutover to `2259530` as-is would both
+  regress that production feature and make the repoint runbook's step 5
+  (`native-continue` on the new release) impossible. The next release must
+  therefore be built from a commit that **merges or carries
+  `fix/intraday-halt-suspension`**;
+- the genuinely main-line, still-uncommitted fixes in the working tree:
+  `daily_maintenance.py` (the `"blocker": str(exc) or type(exc).__name__`
+  retention, `exit_code = 2`, `ContractError` classification) and its
+  companion `daily_contract.py` change (blobs differ from both HEAD and
+  `660f066`; dated 2026-09-24; the 110 related tests pass on the dirty tree).
+  Their author must commit them first, since `release-prepare` builds from a
+  clean checkout. Note the tree also holds **byte-identical imported copies of
+  `660f066`'s files** (`daily_factor_loop.py`, `factor_native_continuation.py`
+  and its three test files) — an uncommitted import for acceptance runs, not
+  main-line work; do not mistake it for the same fix.
 
 Deadline: before the next official refresh, hard stop when PMI 202609 ages
 out of the 50-day window (~2026-11-19). Until then the bridge stays in
