@@ -694,6 +694,68 @@ class FactorValidationStore:
             implementation_component_refs
         ) != {LOW_DOLLAR_VOLUME, BLEND_W80}:
             raise FactorGovernanceError("implementation component refs are not exact")
+        return self._store_validator_manifest(
+            release=release,
+            contextual=contextual,
+            decoder=decoder,
+            implementation_component_refs=implementation_component_refs,
+        )
+
+    def build_prospective_validator_manifest(
+        self,
+        *,
+        release_manifest_ref: Mapping[str, Any],
+        contextual_validator_component_ref: Mapping[str, Any],
+        source_decoder_component_ref: Mapping[str, Any],
+        implementation_component_refs: Mapping[str, Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        """Build a validator manifest over the prospective (non-Bootstrap) registry.
+
+        The sealed Bootstrap implementation tree is unchanged; this path only
+        accepts factor IDs in ``PROSPECTIVE_FACTOR_IDS`` so ``factor mine`` can
+        preregister the reviewed candidate batch under a separate manifest.
+        """
+
+        from .implementations import PROSPECTIVE_FACTOR_IDS
+
+        _, release = self._resolve(
+            release_manifest_ref,
+            label="release_manifest_ref",
+            expected_kind="system.release",
+        )
+        _, contextual = self._resolve(
+            contextual_validator_component_ref,
+            label="contextual_validator_component_ref",
+            expected_kind="system.installed_component_manifest",
+        )
+        _, decoder = self._resolve(
+            source_decoder_component_ref,
+            label="source_decoder_component_ref",
+            expected_kind="system.installed_component_manifest",
+        )
+        validate_installed_component_manifest(contextual)
+        validate_installed_component_manifest(decoder)
+        if (
+            type(implementation_component_refs) is not dict
+            or not implementation_component_refs
+            or not set(implementation_component_refs).issubset(PROSPECTIVE_FACTOR_IDS)
+        ):
+            raise FactorGovernanceError("prospective implementation component refs are not exact")
+        return self._store_validator_manifest(
+            release=release,
+            contextual=contextual,
+            decoder=decoder,
+            implementation_component_refs=implementation_component_refs,
+        )
+
+    def _store_validator_manifest(
+        self,
+        *,
+        release: Mapping[str, Any],
+        contextual: Mapping[str, Any],
+        decoder: Mapping[str, Any],
+        implementation_component_refs: Mapping[str, Mapping[str, Any]],
+    ) -> dict[str, Any]:
         implementations: dict[str, dict[str, Any]] = {}
         for factor_id in sorted(implementation_component_refs, key=lambda value: value.encode()):
             _, component = self._resolve(

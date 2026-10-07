@@ -267,8 +267,10 @@ def build_validator_manifest(
         )
         component_refs[factor_id] = artifact_ref(normalized)
 
+    factor_ids = tuple(sorted(component_refs, key=lambda value: value.encode("utf-8")))
     implementation_rows = installed_implementation_rows(
-        implementation_component_refs=component_refs
+        implementation_component_refs=component_refs,
+        factor_ids=factor_ids,
     )
     payload = _manifest_payload(
         release_manifest_ref=artifact_ref(release),

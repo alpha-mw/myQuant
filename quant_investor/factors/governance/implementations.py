@@ -1,4 +1,10 @@
-"""Finite installed Factor implementations used by trusted source replay."""
+"""Finite installed Factor implementations used by trusted source replay.
+
+The Bootstrap tree sealed into Factor production authority binds exactly the
+LOW/W80 entrypoints. Prospective candidates live in a separate registry so
+extending the mineable set does not rewrite that tree. Callers that omit
+``factor_ids`` therefore receive the Bootstrap set only.
+"""
 
 from __future__ import annotations
 
@@ -8,12 +14,22 @@ from dataclasses import dataclass
 import hashlib
 import inspect
 import textwrap
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 import pandas as pd
 
 from quant_investor.contracts import canonical_json_bytes, parse_canonical_json_bytes
 
+from ..lifecycle_candidates import (
+    DOWNSIDE_VOLATILITY_20D,
+    MAX_RETURN_20D,
+    PRICE_VOLUME_CANDIDATES,
+    SHORT_REVERSAL_5D,
+    VOLATILITY_PENALTY_5D,
+    VOLATILITY_PENALTY_10D,
+    compute_price_volume_candidates,
+    require_candidate,
+)
 from .bootstrap import (
     BLEND_W80,
     CANONICAL_PARQUET,
@@ -24,6 +40,8 @@ from .bootstrap import (
 )
 from .common import require_sha256
 from .errors import FactorGovernanceError
+
+RegistryName = Literal["bootstrap", "prospective", "all"]
 
 
 @dataclass(frozen=True)
@@ -56,14 +74,63 @@ def _blend_w80(
     return compute_bootstrap_signals(frames, source_format=CANONICAL_PARQUET)[BLEND_W80]
 
 
-_ENTRYPOINTS: Final = {
+def _pv_volatility_penalty_5d(frames: Mapping[str, pd.DataFrame]) -> pd.Series:
+    return compute_price_volume_candidates(
+        frames, source_format=CANONICAL_PARQUET, factor_ids=[VOLATILITY_PENALTY_5D]
+    )[VOLATILITY_PENALTY_5D]
+
+
+def _pv_volatility_penalty_10d(frames: Mapping[str, pd.DataFrame]) -> pd.Series:
+    return compute_price_volume_candidates(
+        frames, source_format=CANONICAL_PARQUET, factor_ids=[VOLATILITY_PENALTY_10D]
+    )[VOLATILITY_PENALTY_10D]
+
+
+def _pv_downside_volatility_20d(frames: Mapping[str, pd.DataFrame]) -> pd.Series:
+    return compute_price_volume_candidates(
+        frames, source_format=CANONICAL_PARQUET, factor_ids=[DOWNSIDE_VOLATILITY_20D]
+    )[DOWNSIDE_VOLATILITY_20D]
+
+
+def _pv_short_reversal_5d(frames: Mapping[str, pd.DataFrame]) -> pd.Series:
+    return compute_price_volume_candidates(
+        frames, source_format=CANONICAL_PARQUET, factor_ids=[SHORT_REVERSAL_5D]
+    )[SHORT_REVERSAL_5D]
+
+
+def _pv_max_return_20d(frames: Mapping[str, pd.DataFrame]) -> pd.Series:
+    return compute_price_volume_candidates(
+        frames, source_format=CANONICAL_PARQUET, factor_ids=[MAX_RETURN_20D]
+    )[MAX_RETURN_20D]
+
+
+_BOOTSTRAP_ENTRYPOINTS: Final = {
     LOW_DOLLAR_VOLUME: _low_dollar_volume,
     BLEND_W80: _blend_w80,
 }
 
+_PROSPECTIVE_ENTRYPOINTS: Final = {
+    VOLATILITY_PENALTY_5D: _pv_volatility_penalty_5d,
+    VOLATILITY_PENALTY_10D: _pv_volatility_penalty_10d,
+    DOWNSIDE_VOLATILITY_20D: _pv_downside_volatility_20d,
+    SHORT_REVERSAL_5D: _pv_short_reversal_5d,
+    MAX_RETURN_20D: _pv_max_return_20d,
+}
+
+_ENTRYPOINTS: Final = {**_BOOTSTRAP_ENTRYPOINTS, **_PROSPECTIVE_ENTRYPOINTS}
+
+BOOTSTRAP_FACTOR_IDS: Final = frozenset(_BOOTSTRAP_ENTRYPOINTS)
+PROSPECTIVE_FACTOR_IDS: Final = frozenset(_PROSPECTIVE_ENTRYPOINTS)
+INSTALLED_FACTOR_IDS: Final = frozenset(_ENTRYPOINTS)
+
 _PRIMITIVES: Final = {
     LOW_DOLLAR_VOLUME: "low_dollar_volume",
     BLEND_W80: "volstab_momentum_amihud_blend",
+    VOLATILITY_PENALTY_5D: "negative_return_std",
+    VOLATILITY_PENALTY_10D: "negative_return_std",
+    DOWNSIDE_VOLATILITY_20D: "negative_downside_return_std",
+    SHORT_REVERSAL_5D: "negative_window_return",
+    MAX_RETURN_20D: "negative_max_daily_return",
 }
 
 _NORMALIZED_EXPRESSIONS: Final = {
@@ -82,37 +149,82 @@ _NORMALIZED_EXPRESSIONS: Final = {
     ),
 }
 
+_PROSPECTIVE_FORMULAS: Final = {
+    VOLATILITY_PENALTY_5D: "-std(adj_close_return[t-4:t])",
+    VOLATILITY_PENALTY_10D: "-std(adj_close_return[t-9:t])",
+    DOWNSIDE_VOLATILITY_20D: "-std(min(adj_close_return[t-19:t], 0))",
+    SHORT_REVERSAL_5D: "-(adj_close[t]/adj_close[t-5]-1)",
+    MAX_RETURN_20D: "-max(adj_close_return[t-19:t])",
+}
+
+
+def _registry_ids(registry: RegistryName) -> frozenset[str]:
+    if registry == "bootstrap":
+        return BOOTSTRAP_FACTOR_IDS
+    if registry == "prospective":
+        return PROSPECTIVE_FACTOR_IDS
+    if registry == "all":
+        return INSTALLED_FACTOR_IDS
+    raise FactorGovernanceError("factor implementation registry is unknown")
+
 
 def _definition_by_factor_id() -> dict[str, dict[str, object]]:
     return {
         str(row["factor_id"]): row
         for row in bootstrap_factor_definitions()
-        if row["factor_id"] in _ENTRYPOINTS
+        if row["factor_id"] in _BOOTSTRAP_ENTRYPOINTS
     }
 
 
+def _prospective_parameters(factor_id: str) -> dict[str, Any]:
+    definition = require_candidate(factor_id)
+    body: dict[str, Any] = {"operator": definition.operator}
+    if definition.window_open_sessions is not None:
+        body["window_open_sessions"] = definition.window_open_sessions
+    return body
+
+
 def _installed_implementation(factor_id: str) -> InstalledFactorImplementation:
-    definitions = _definition_by_factor_id()
-    definition = definitions.get(factor_id)
     entrypoint = _ENTRYPOINTS.get(factor_id)
-    if definition is None or entrypoint is None:
+    if entrypoint is None:
         raise FactorGovernanceError("factor implementation is not installed")
-    input_fields = definition["input_fields"]
-    if not isinstance(input_fields, list) or not all(type(value) is str for value in input_fields):
-        raise FactorGovernanceError("installed Factor input fields are invalid")
+    if factor_id in _BOOTSTRAP_ENTRYPOINTS:
+        definition = _definition_by_factor_id().get(factor_id)
+        if definition is None:
+            raise FactorGovernanceError("factor implementation is not installed")
+        input_fields = definition["input_fields"]
+        if not isinstance(input_fields, list) or not all(
+            type(value) is str for value in input_fields
+        ):
+            raise FactorGovernanceError("installed Factor input fields are invalid")
+        return InstalledFactorImplementation(
+            factor_id=factor_id,
+            implementation_id=f"installed-{factor_id}",
+            module_name=entrypoint.__module__,
+            qualified_name=entrypoint.__qualname__,
+            family=str(definition["family"]),
+            primitive=_PRIMITIVES[factor_id],
+            direction=str(definition["direction"]),
+            formula=str(definition["formula"]),
+            normalized_expression=_NORMALIZED_EXPRESSIONS[factor_id],
+            parameters_json=canonical_json_bytes(definition["parameters"]).decode("utf-8"),
+            input_fields=tuple(input_fields),
+            required_source_roles=required_source_roles_for_factor(factor_id),
+        )
+    candidate = require_candidate(factor_id)
     return InstalledFactorImplementation(
         factor_id=factor_id,
         implementation_id=f"installed-{factor_id}",
         module_name=entrypoint.__module__,
         qualified_name=entrypoint.__qualname__,
-        family=str(definition["family"]),
+        family=candidate.family,
         primitive=_PRIMITIVES[factor_id],
-        direction=str(definition["direction"]),
-        formula=str(definition["formula"]),
-        normalized_expression=_NORMALIZED_EXPRESSIONS[factor_id],
-        parameters_json=canonical_json_bytes(definition["parameters"]).decode("utf-8"),
-        input_fields=tuple(input_fields),
-        required_source_roles=required_source_roles_for_factor(factor_id),
+        direction=candidate.direction,
+        formula=_PROSPECTIVE_FORMULAS[factor_id],
+        normalized_expression=candidate.normalized_expression(),
+        parameters_json=canonical_json_bytes(_prospective_parameters(factor_id)).decode("utf-8"),
+        input_fields=candidate.input_fields,
+        required_source_roles=candidate.required_source_roles,
     )
 
 
@@ -144,11 +256,22 @@ def installed_implementation_rows(
     *,
     implementation_component_refs: Mapping[str, Mapping[str, Any]],
     factor_ids: Sequence[str] | None = None,
+    registry: RegistryName = "bootstrap",
 ) -> list[dict[str, Any]]:
-    """Return exact installed rows; no runtime registration or plugin discovery."""
+    """Return exact installed rows; no runtime registration or plugin discovery.
 
-    requested = set(_ENTRYPOINTS if factor_ids is None else factor_ids)
-    if not requested or not requested.issubset(_ENTRYPOINTS):
+    Omitting ``factor_ids`` returns the Bootstrap set so production authority can
+    replay the sealed implementation tree. Prospective mine paths must pass the
+    candidate IDs explicitly (or ``registry="prospective"``).
+    """
+
+    allowed = _registry_ids(registry if factor_ids is None else "all")
+    requested = set(BOOTSTRAP_FACTOR_IDS if factor_ids is None else factor_ids)
+    if factor_ids is None and registry != "bootstrap":
+        requested = set(_registry_ids(registry))
+    if not requested or not requested.issubset(allowed):
+        raise FactorGovernanceError("requested Factor implementation set is not installed")
+    if not requested.issubset(INSTALLED_FACTOR_IDS):
         raise FactorGovernanceError("requested Factor implementation set is not installed")
     if set(implementation_component_refs) != requested:
         raise FactorGovernanceError("implementation component refs are not exact")
@@ -252,14 +375,30 @@ def compute_installed_signals(
     requested = list(factor_ids)
     if not requested or len(requested) != len(set(requested)):
         raise FactorGovernanceError("factor implementation request is empty or duplicated")
-    if not set(requested).issubset(_ENTRYPOINTS):
+    if not set(requested).issubset(INSTALLED_FACTOR_IDS):
         raise FactorGovernanceError("factor implementation is not installed")
-    all_signals = compute_bootstrap_signals(frames, source_format=CANONICAL_PARQUET)
-    return {factor_id: all_signals[factor_id].copy() for factor_id in requested}
+    result: dict[str, pd.Series] = {}
+    bootstrap_ids = [factor_id for factor_id in requested if factor_id in BOOTSTRAP_FACTOR_IDS]
+    prospective_ids = [factor_id for factor_id in requested if factor_id in PROSPECTIVE_FACTOR_IDS]
+    if bootstrap_ids:
+        all_signals = compute_bootstrap_signals(frames, source_format=CANONICAL_PARQUET)
+        result.update({factor_id: all_signals[factor_id].copy() for factor_id in bootstrap_ids})
+    if prospective_ids:
+        if set(prospective_ids) - set(PRICE_VOLUME_CANDIDATES):
+            raise FactorGovernanceError("factor implementation is not installed")
+        result.update(
+            compute_price_volume_candidates(
+                frames, source_format=CANONICAL_PARQUET, factor_ids=prospective_ids
+            )
+        )
+    return {factor_id: result[factor_id] for factor_id in requested}
 
 
 __all__ = [
+    "BOOTSTRAP_FACTOR_IDS",
+    "INSTALLED_FACTOR_IDS",
     "InstalledFactorImplementation",
+    "PROSPECTIVE_FACTOR_IDS",
     "compute_installed_signals",
     "implementation_code_sha256",
     "installed_implementation_rows",

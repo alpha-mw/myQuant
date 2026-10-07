@@ -146,3 +146,20 @@ proves only that the signal was sealed before its future outcomes. Until target
 sessions arrive, report `outcome_state=WAITING_FOR_FUTURE_SESSIONS`; do not
 invent IC, RankIC, horizon outcomes or maturity. Production observation never
 changes Factor, System, Mainline, portfolio, broker, order, or trade authority.
+
+## Monthly lifecycle monitor (non-authorizing)
+
+After the monthly Factor evidence review (`myquant-factor-v4`), run the read-only
+lifecycle monitor. It never changes weights, pointers, or admission:
+
+```bash
+uv run python scripts/research_factor_lifecycle_monitor.py --workspace-root .
+```
+
+Outputs land under `reports/factor_lifecycle/monitor-*.json`. States
+`INSUFFICIENT_EVIDENCE` and `SOURCE_BLOCKED` are not alpha failure. Governed
+`factor.lifecycle_policy` / `factor.lifecycle_decision` artifacts
+(`quant_investor/factors/governance/lifecycle.py`) are also non-authorizing;
+applying a sealed weight proposal requires separate Factor production
+authorization plus exact cost and capacity evidence. Probation never enters
+production under policy v1.
