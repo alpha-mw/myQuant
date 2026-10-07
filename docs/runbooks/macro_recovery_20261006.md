@@ -52,18 +52,22 @@ through the journaled API; requires `SUCCESS`/`terminal: true` and pointer
 equality). Each refresh: `refresh_official.py --bundle B --target T --cutoff C
 --run-id R`.
 
+All ten steps executed 2026-10-07, each commit `SUCCESS`/`terminal: true`
+with pointer equality verified; receipts in the packet
+(`chunk-r*-committed.json`, `readiness-closure.json`).
+
 | # | step | window | target | cutoff (+08:00) | state |
 | --- | --- | --- | --- | --- | --- |
-| 1 | chunk r1 | 09-04..09-10 | 20260910 | 2026-09-11T23:00:00 | **COMMITTED** (`d33cd2d0…`, journal `macro-recovery-r1-20260910`) |
-| 2 | chunk r2 | 09-11..09-16 | 20260916 | 2026-09-16T23:00:00 | pending authorization |
-| 3 | refresh#1 | — | 20260916 | 2026-09-16T23:30:00 | pending (`bundles1/CN/mreb120261007T021842`) |
-| 4 | chunk r3 | 09-17..09-22 | 20260922 | 2026-09-23T23:00:00 | pending |
-| 5 | chunk r4 | 09-23..09-24 | 20260924 | 2026-09-24T23:00:00 | pending |
-| 6 | chunk r5 | 09-28..09-30 | 20260930 | 2026-10-02T22:00:00 | pending (closure terminal) |
-| 7 | refresh#2 | — | 20260930 | 2026-10-03T22:00:00 | pending (`bundles/CN/mrext20261006T160041`) |
-| 8 | closure | — | 20260930 | — | `build_macro_readiness_closure` on r5's terminal → expect exactly `MACRO_READINESS_VETO_ARCHIVE_INVALID`, archive absent |
-| 9 | veto clear | — | — | — | `clear_cn_daily_write_veto(run_root=data/private/cn_daily_maintenance, lane="macro", expected_veto_sha256=7f920f08…, reason="phase12-macro-recovery:20260930:terminal-sha256=<r5 terminal sha>")` |
-| 10 | closure | — | — | — | rebuild → `READY` + `veto_lifecycle CLEARED`; `validate_macro_readiness_closure` must replay |
+| 1 | chunk r1 | 09-04..09-10 | 20260910 | 2026-09-11T23:00:00 | COMMITTED → observations `d33cd2d0…`, release `a7be2cfb…` |
+| 2 | chunk r2 | 09-11..09-16 | 20260916 | 2026-09-16T23:00:00 | COMMITTED → `f128c534…`, `a812caff…` |
+| 3 | refresh#1 | — | 20260916 | 2026-09-16T23:30:00 | PROMOTED (`bundles1/CN/mreb120261007T021842`) → `96b55944…` |
+| 4 | chunk r3 | 09-17..09-22 | 20260922 | 2026-09-23T23:00:00 | COMMITTED → `51707c6b…`, `52d3e3ce…` |
+| 5 | chunk r4 | 09-23..09-24 | 20260924 | 2026-09-24T23:00:00 | COMMITTED → `2a513b31…`, `4111de94…` |
+| 6 | chunk r5 | 09-28..09-30 | 20260930 | 2026-10-02T22:00:00 | COMMITTED → `0c8d9cff…`, `0913e3f0…`; terminal journal sha `33cfbb2e…` |
+| 7 | refresh#2 | — | 20260930 | 2026-10-03T22:00:00 | PROMOTED (`bundles/CN/mrext20261006T160041`) → `e438f6b2…` |
+| 8 | closure pre-check | — | 20260930 | — | refused with exactly `MACRO_READINESS_VETO_ARCHIVE_INVALID`, archive genuinely absent |
+| 9 | veto clear | — | — | — | CLEARED at 2026-10-07T02:48:13Z, archive `veto_archive/7f920f08….json`, reason `phase12-macro-recovery:20260930:terminal-sha256=33cfbb2e…` |
+| 10 | closure | — | 20260930 | — | `READY` + `veto_lifecycle CLEARED`; `validate_macro_readiness_closure` replays; saved as `readiness-closure.json` (sha `2d608732…`) |
 
 Cutoff derivations (evidence bound → clock):
 r1 ≥ 2026-09-11T13:51:56Z (9/10+9/11 capture), first target 09-04 → 09-11.
@@ -88,14 +92,25 @@ rows, chain validated, `readiness: pass`, local breadth 09-28/29/30. Artifacts
 under `data/private/macro_recovery_20261006/` (`chunk-sb*-committed.json`,
 `sandbox-obs/`, `sandbox-release/`).
 
-## Stop / partial-recovery state
+## Completed state (2026-10-07)
 
-Canonical execution stopped after step 1 by the session's permission
-classifier (canonical writes beyond the first were not authorized in-session).
-The partial state is consistent: store at target 20260910, chain valid,
-readiness `pass` at its own clock, release pointer `a7be2cfb…`, **veto still
-present** (`7f920f08…`). The daily macro stage remains blocked exactly as
-before the recovery (window > 5 sessions + veto), so nothing regressed.
+Final store: generation `macro-recovery-refresh2`, target 20260930, 39 rows,
+chain validated, `readiness: pass` at its recorded clock (2026-10-03T14:00Z);
+newest official rows PMI 202609 (available 2026-09-30) and the 202608
+economy/money vintages. Market and PIT pointers unchanged (`9a07ed56…`,
+`2f3c758c…`); release `0913e3f0…`, observations `e438f6b2…`; veto archived
+with its exact bytes and a unique clear receipt.
+
+The next daily window (20261008) resolves to `['20261008']`, so the 10-08
+daily maintenance can roll the macro chain forward normally; October releases
+will still need a further release-plan extension packet when they come due
+(the roll copies the parent plan verbatim by design).
+
+Interim note: canonical execution was briefly paused after step 1 by the
+session's permission classifier (canonical writes beyond the first required
+an explicit in-session owner authorization, which was then given). The
+partial state was consistent: store at target 20260910, chain valid,
+readiness `pass` at its own clock, veto still present, nothing regressed.
 
 ## Findings recorded while preparing
 
