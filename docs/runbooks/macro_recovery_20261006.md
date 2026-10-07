@@ -143,10 +143,11 @@ instead — so the 2026-10-08 daily macro stage reads an empty anchor and the
 fix is `_parent_local_target` (commit `69d1aee`, `69d1aee` not in `2259530`).
 Until a release carries it:
 
-1. The 10-08 daily run completes with the macro stage `BLOCKED`/`PARTIAL`
+1. The first attempt of the 10-08 daily run (the `1620` slot, market capture
+   landing ~16:20 +08) completes with the macro stage `BLOCKED`/`PARTIAL`
    (no canonical macro write happens there; the prepare fails inside its
    private candidate).
-2. After that evening's market capture completes, run from the repo:
+2. After the first attempt's market capture completes, run from the repo:
 
    ```bash
    uv run python scripts/operations/cn_macro_forward_roll.py --target 20261008 --execute
@@ -154,14 +155,29 @@ Until a release carries it:
 
    This is the daily component's own call (`daily_components.macro`) on the
    live clock — no reconstruction — and it makes the head a roll generation
-   with `local_target_trade_date = 20261008`, so every later daily run works
-   under the old release code until the next official refresh.
+   with `local_target_trade_date = 20261008` plus the exact market binding.
+   It is idempotent (a repeat reports `NO_ACTION`).
+3. Later same-day attempts then self-heal: the live release's
+   `daily_components.macro` fast path requires
+   `local_target_trade_date == context.target_date` and the exact market
+   binding, which the bridge now satisfies, so they report `NO_ACTION`
+   instead of hitting the window rule — verified against the live install's
+   code. Nightly digest/panel runs that read the latest attempt therefore
+   see a healthy macro stage.
 
-Durable follow-up: land `69d1aee` in the active release (fold it into the
-pending cutover, or run the full `docs/runbooks/release_repoint.md` sequence,
-including the factor-loop `native-seal`/`native-continue` migration). This is
-required before the next official refresh, and no later than when PMI 202609
-ages out of the 50-day window (~2026-11-19).
+Durable follow-up: land `69d1aee` in the active release.  Note the fuller
+picture, verified 2026-10-07: the release pointer cannot move right now at
+all.  The data volume's `st_dev` is 16777231 while sealed artifacts up to
+2026-10-02 record 16777230, so `market native-seal` fails its storage-identity
+check, and `docs/runbooks/release_repoint.md` step 5 (the factor-loop
+`native-seal`/`native-continue` migration) cannot complete; repointing
+`active.env` without it makes `daily_factor_loop.py` fail closed with
+`DAILY_FACTOR_STATE_INVALID` (the retained `factor-loop-state.json` carries
+the old `context_sha256`).  So the fix must ride the eventual cutover (commit
+`69d1aee` cherry-picks cleanly onto the prepared `2259530` line), and the
+bridge stays in service until that cutover happens — required before the next
+official refresh, and no later than when PMI 202609 ages out of the 50-day
+window (~2026-11-19).
 
 ## Provenance of replayed projections (`built_at_wall_clock`)
 
