@@ -126,6 +126,12 @@ def build_retrospective_market_projections(
     it is built from (source snapshot stamp, capture ``captured_at`` and the
     attempt's ``started_at``) -- so a replay can never claim to predate its own
     inputs.  Exactly one of the two must be provided.
+
+    In replay mode the artifacts' identity stamps (snapshot id and file mtime,
+    the clocks readers treat as availability) carry the declared historical
+    clock; ``built_at_wall_clock`` (in each projection's metadata and in the
+    candidate manifest) always records the real wall clock at which these bytes
+    were authored, so provenance is never lost inside the artifact itself.
     """
 
     source, source_raw = _read_json(
@@ -149,6 +155,7 @@ def build_retrospective_market_projections(
         raise MacroRetrospectiveRecoveryError("reconstructed_at_invalid")
     base_stamp = base_stamp.astimezone(timezone.utc).replace(microsecond=0)
     now = datetime.now(timezone.utc)
+    wall_clock = now.replace(microsecond=0)
     if reconstructed_at is not None and (base_stamp > now or now - base_stamp > timedelta(hours=1)):
         raise MacroRetrospectiveRecoveryError("reconstructed_at_not_current")
     if (
@@ -275,6 +282,11 @@ def build_retrospective_market_projections(
                 "coverage": coverage,
                 "reconstruction_classification": "RETROSPECTIVE_RECONSTRUCTION",
                 "reconstructed_at": stamp.isoformat(),
+                # The honest wall clock at which these bytes were authored.  The
+                # identity stamp above is the declared clock the projection
+                # stands for; this field keeps the real build time discoverable
+                # inside the artifact itself (readers ignore unknown metadata).
+                "built_at_wall_clock": wall_clock.isoformat(),
             }
         )
         projection["metadata"] = metadata
@@ -299,6 +311,7 @@ def build_retrospective_market_projections(
         "candidate_id": candidate_id,
         "classification": "RETROSPECTIVE_RECONSTRUCTION",
         "reconstructed_at": base_stamp.isoformat(),
+        "built_at_wall_clock": wall_clock.isoformat(),
         "source_snapshot_manifest_path": str(source_snapshot_manifest_path),
         "source_snapshot_manifest_sha256": expected_source_snapshot_sha256,
         "capture_manifest_path": str(capture_manifest_path),

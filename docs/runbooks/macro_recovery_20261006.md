@@ -126,3 +126,61 @@ readiness `pass` at its own clock, veto still present, nothing regressed.
   `daily_maintenance.py` discards the message and records only the type name).
   It is fail-closed and does not affect a new session; it only makes holiday
   and second-slot re-runs report BLOCKED.
+
+## Bridge until the active release carries the fix (needed for 2026-10-08)
+
+The active release (`660f066`, and the pending cutover commit `2259530`)
+computes the catch-up window from `local_target_trade_date` alone:
+
+```python
+parent_target = str(existing_metadata.get("local_target_trade_date") or "")
+```
+
+The store's newest generation is now `macro-recovery-refresh2` — an
+official-scope refresh generation, which records `latest_local_trade_date`
+instead — so the 2026-10-08 daily macro stage reads an empty anchor and the
+182 pinned open dates fail `macro_observation_catch_up_window_invalid`. The
+fix is `_parent_local_target` (commit `69d1aee`, `69d1aee` not in `2259530`).
+Until a release carries it:
+
+1. The 10-08 daily run completes with the macro stage `BLOCKED`/`PARTIAL`
+   (no canonical macro write happens there; the prepare fails inside its
+   private candidate).
+2. After that evening's market capture completes, run from the repo:
+
+   ```bash
+   uv run python scripts/operations/cn_macro_forward_roll.py --target 20261008 --execute
+   ```
+
+   This is the daily component's own call (`daily_components.macro`) on the
+   live clock — no reconstruction — and it makes the head a roll generation
+   with `local_target_trade_date = 20261008`, so every later daily run works
+   under the old release code until the next official refresh.
+
+Durable follow-up: land `69d1aee` in the active release (fold it into the
+pending cutover, or run the full `docs/runbooks/release_repoint.md` sequence,
+including the factor-loop `native-seal`/`native-continue` migration). This is
+required before the next official refresh, and no later than when PMI 202609
+ages out of the 50-day window (~2026-11-19).
+
+## Provenance of replayed projections (`built_at_wall_clock`)
+
+Replay mode stamps each projection's identity (snapshot id and file mtime —
+the clocks readers treat as availability) with the declared historical clock,
+bounded below by the sealed capture evidence (source snapshot stamp, capture
+`captured_at`, attempt `started_at`). To keep the real build time discoverable
+inside the artifacts, each projection's `metadata.built_at_wall_clock` and the
+candidate manifest's `built_at_wall_clock` now record the actual wall clock at
+which the bytes were authored. Reader compatibility was verified: the breadth
+compile reads named manifest fields only (never `metadata` key sets), the roll
+hash-checks the manifest bytes, and chain validation binds the projections by
+path+sha — so unknown metadata keys are invisible to current and older
+readers.
+
+Downstream status: the reconstruction label lives in the projected manifests
+(retained in the packet) and the store's local-breadth evidence binds them by
+path+sha, so an auditor can trace a store row to its reconstruction and its
+true build time. No consumer currently excludes or downgrades rows
+mechanically on this label (the only reader is the breadth compile itself);
+a forward-out-of-sample consumer must resolve the evidence refs before
+treating replayed rows as pre-available — recorded as a follow-up.

@@ -189,6 +189,11 @@ def test_retrospective_identity_stamp_replays_historical_clock(tmp_path: Path) -
     )
 
     assert result["reconstructed_at"] == "2026-08-21T06:00:00+00:00"
+    built_at = result["built_at_wall_clock"]
+    built = datetime.fromisoformat(built_at)
+    assert built.tzinfo is not None
+    assert abs((datetime.now(timezone.utc) - built).total_seconds()) < 300
+    assert built > datetime.fromisoformat("2026-08-21T06:00:00+00:00")
     expected_stamps = [
         "20260821T055800Z",
         "20260821T055900Z",
@@ -203,6 +208,7 @@ def test_retrospective_identity_stamp_replays_historical_clock(tmp_path: Path) -
             datetime.strptime(stamp, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc).isoformat()
         )
         assert reconstruction["source_snapshot_manifest_sha256"] == source_sha
+        assert projection["metadata"]["built_at_wall_clock"] == built_at
         mtime = Path(row["path"]).stat().st_mtime
         assert (
             mtime
