@@ -143,41 +143,76 @@ instead — so the 2026-10-08 daily macro stage reads an empty anchor and the
 fix is `_parent_local_target` (commit `69d1aee`, `69d1aee` not in `2259530`).
 Until a release carries it:
 
-1. The first attempt of the 10-08 daily run (the `1620` slot, market capture
-   landing ~16:20 +08) completes with the macro stage `BLOCKED`/`PARTIAL`
-   (no canonical macro write happens there; the prepare fails inside its
-   private candidate).
-2. After the first attempt's market capture completes, run from the repo:
+The failing daily macro stage also **writes a new `MACRO_WRITE_VETO.json`**
+(the live `daily_maintenance.py` does so on `macro_status == "BLOCKED"`), and
+the daily stage short-circuits on that file before it ever calls the macro
+component, so a bridge roll alone does not restore the lane: the full 10-08
+evening is four steps, each separately authorized.
+
+1. **Landing check** (no writes). Wait for the launcher's `ended.json`, then
+   confirm: the newest execute attempt for `20261008` has
+   `core_blockers == []`; the market snapshot's
+   `latest_complete_trade_date` is `20261008`; and a fresh
+   `MACRO_WRITE_VETO.json` exists (record its sha256).
+2. **Bridge roll** — the daily component's own call (`daily_components.macro`)
+   on the live clock, no reconstruction. Run it from the pinned clean worktree
+   (the script refuses to run from uncommitted code, refuses while the daily
+   lock is held, and requires step 1's state:
 
    ```bash
-   uv run python scripts/operations/cn_macro_forward_roll.py --target 20261008 --execute
+   cd ~/mySpace/myQuant-worktrees/macro-bridge
+   uv run python scripts/operations/cn_macro_forward_roll.py \
+       --workspace /Users/maxwell/mySpace/myQuant --target 20261008 --execute
    ```
 
-   This is the daily component's own call (`daily_components.macro`) on the
-   live clock — no reconstruction — and it makes the head a roll generation
-   with `local_target_trade_date = 20261008` plus the exact market binding.
-   It is idempotent (a repeat reports `NO_ACTION`).
-3. Later same-day attempts then self-heal: the live release's
-   `daily_components.macro` fast path requires
-   `local_target_trade_date == context.target_date` and the exact market
-   binding, which the bridge now satisfies, so they report `NO_ACTION`
-   instead of hitting the window rule — verified against the live install's
-   code. Nightly digest/panel runs that read the latest attempt therefore
-   see a healthy macro stage.
+   It acquires `data/private/cn_daily_maintenance/.daily-maintenance.lock`,
+   fetches the two official coverage index pages (live, like the daily stage),
+   and must return `SUCCESS` with `terminal: true`; the receipt records the
+   code commit, the run-landing evidence, the veto sha for step 3, and the
+   terminal journal sha. A repeat reports `NO_ACTION`.)
+3. **Clear the new veto** with the exact sha from step 1/2 and a reason bound
+   to the bridge roll's terminal journal sha, then verify the archive bytes
+   and the clear receipt:
 
-Durable follow-up: land `69d1aee` in the active release.  Note the fuller
-picture, verified 2026-10-07: the release pointer cannot move right now at
-all.  The data volume's `st_dev` is 16777231 while sealed artifacts up to
-2026-10-02 record 16777230, so `market native-seal` fails its storage-identity
-check, and `docs/runbooks/release_repoint.md` step 5 (the factor-loop
-`native-seal`/`native-continue` migration) cannot complete; repointing
-`active.env` without it makes `daily_factor_loop.py` fail closed with
-`DAILY_FACTOR_STATE_INVALID` (the retained `factor-loop-state.json` carries
-the old `context_sha256`).  So the fix must ride the eventual cutover (commit
-`69d1aee` cherry-picks cleanly onto the prepared `2259530` line), and the
-bridge stays in service until that cutover happens — required before the next
-official refresh, and no later than when PMI 202609 ages out of the 50-day
-window (~2026-11-19).
+   ```bash
+   uv run python - <<'PY'
+   import json
+   from pathlib import Path
+   from quant_investor.market.daily_maintenance import clear_cn_daily_write_veto
+   WS = Path("/Users/maxwell/mySpace/myQuant")
+   receipt = json.loads((WS / "data/private/macro_recovery_transactions/macro-forward-20261008/receipt.json").read_text())
+   print(clear_cn_daily_write_veto(
+       run_root=WS / "data/private/cn_daily_maintenance",
+       expected_veto_sha256=receipt["macro_write_veto"]["sha256"],
+       reason=f"phase12-macro-recovery:20261008:terminal-sha256={receipt['terminal_journal_sha256']}",
+       lane="macro",
+   ))
+   PY
+   ```
+4. **Rebuild the readiness closure** on the bridge roll's terminal journal
+   (`build_macro_readiness_closure` with the relative path
+   `data/private/macro_recovery_transactions/macro-forward-20261008/journals/
+   macro-forward-20261008/0007-terminal.json`): expect `READY` with
+   `veto_lifecycle` `NOT_PRESENT` (no veto was bound into this plain
+   transaction) and a replaying `validate_macro_readiness_closure`.
+
+After step 3 the later same-day attempts self-heal (their macro fast path
+needs `local_target_trade_date == target` plus the exact market binding, which
+step 2 restores), and 10-09 onward runs normally under the old release code.
+
+Durable follow-up — the fix must ride the next release switch, whose shape is
+now fixed by `docs/runbooks/release_repoint_20261008.md`: that switch is
+deferred until a session publishes a capture under the current boot (the
+2026-10-04 device-number drift makes `market native-seal` refuse the retained
+2026-09-30 capture), and it currently targets commit `2259530`, which does
+**not** contain `69d1aee`/`53822bc`. So option (a) means: rebuild the release
+from a new commit that carries the anchor fix (and, as reviewed, the
+`daily_maintenance.py` `str(exc)` retention and the same-target checkpoint
+idempotence fixes), regenerate the factor-loop context, and then follow the
+same `release_repoint_20261008.md` seal/continue flow. `69d1aee` cherry-picks
+cleanly onto `2259530` (verified 2026-10-07). Deadline: before the next
+official refresh, hard stop when PMI 202609 ages out of the 50-day window
+(~2026-11-19). Until then the bridge stays in service.
 
 ## Provenance of replayed projections (`built_at_wall_clock`)
 
